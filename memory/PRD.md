@@ -1,31 +1,32 @@
-# Courier Label Manager — PRD
+# Courier Label Manager — PRD (Iteration 2)
 
-## Problem (Gujarati)
-નાના બિઝનેસમેન જે લોકલ કુરિયર (દા.ત. નંદન કુરિયર) વાપરે છે તેમને API મળતી નથી અને લેબલ પ્રિન્ટ કાઢવામાં તકલીફ પડે છે. આ એપ શિપમેન્ટ મેનેજ કરે, tracking ID auto-generate કરે, beautiful labels print કરે (A4 1/2/4 per page or thermal 4x6), અને WhatsApp થી customer ને જણાવે.
+## Problem
+નાના બિઝનેસમેન જે લોકલ કુરિયર (નંદન કુરિયર, ઈન્ડિયા પોસ્ટ etc.) વાપરે છે — API નથી હોતી, label print કાઢવું મુશ્કેલ. એપ: shipment manage + tracking series auto + label print + Google Sheet થી orders import.
 
-## MVP Features (Built)
-- Dashboard with stats (Total / Pending / Delivered / COD total) + recent shipments + quick actions
-- Add Shipment form with 3 tracking input modes: Auto series / Manual / Camera barcode scan
-- Courier partners with series prefix + next number (auto-increment)
-- Shipments list: search, status filters (All/Pending/Delivered/Cancelled), mark delivered, WhatsApp share (wa.me), print, delete
-- Label preview + print via expo-print: A4 1/2/4 per page, Thermal 4x6, copies control, show/hide sender contact toggle, JsBarcode (CODE128) embedded via HTML
-- Settings: sender address (saved once), WhatsApp template with {customer_name}/{courier}/{tracking_id}/{eta_days}, courier CRUD
-- CSV export of all shipments
+## Iteration 2 Additions
+- **Google Sheet integration** (read-only, just paste public link) — auto-detect columns + manual re-map UI, picks from Sheet to auto-fill Add form
+- **Order details** — Order ID + Items (multi-line) per shipment
+- **Amount field always visible** — both Prepaid & COD
+- **Copy All** button — copies templated tracking message to clipboard
+- **Courier full CRUD** — contact phone/email/website/tracking URL template/notes + WhatsApp share button per courier
+- **Camera scan** — now uses correct SDK-54-compatible expo-camera@17.0.10 with proper permission flow
+
+## Known Limitations
+- **Sheet is read-only** — delivery status update back to Sheet requires OAuth / Apps Script (user explicitly chose to skip)
+- User must share Sheet as "Anyone with the link → Viewer" for public CSV read to work
 
 ## Tech Stack
-- Frontend: Expo (React Native) + expo-router (bottom tabs), expo-camera (barcode scan), expo-print, expo-sharing
-- Backend: FastAPI + Motor + MongoDB
-- Design: Swiss/High-Contrast Safety Orange (#FF5A00) with Jet Black accents, Courier mono for tracking IDs
+- Frontend: Expo Router (SDK 54) + expo-camera/print/sharing/clipboard
+- Backend: FastAPI + Motor + httpx for Google Sheet CSV fetch
+- Design: Swiss/High-Contrast (Safety Orange #FF5A00 + Jet Black)
 
-## Data Models
-- Shipment: id, tracking_id, courier_id/name, customer details, address, payment_mode (COD/Prepaid), cod_amount, weight, item_description, status, created_at, delivered_at
-- Courier: id, name, series_prefix, next_number, number_padding
-- Settings: sender address (+ show_contact), whatsapp_template, default_eta_days
+## API Routes (new)
+- GET /api/couriers/{id}
+- POST /api/sheets/preview {url} → headers + sample_rows + auto_mapping
+- GET /api/sheets/orders → parsed orders + already_shipped detection + headers_changed flag
+- Enhanced: /api/shipments now accepts order_id, items[], amount
+- /api/shipments/stats now includes revenue_total
+- /api/settings includes sheet{url,sheet_id,gid,headers,column_mapping} + copy_template
 
-## Seeded Defaults
-- Couriers: Nandan Courier (ND), DTDC (DT), ST Courier (ST), Trackon (TR), Other
-
-## Key Routes
-- /api/shipments CRUD + /stats + /export/csv
-- /api/couriers CRUD + /next-tracking + /consume-tracking
-- /api/settings GET/PUT
+## Seeded couriers
+Nandan Courier (ND), DTDC (DT), India Post (IP), ST Courier (ST), Trackon (TR)
