@@ -146,7 +146,7 @@ export default function Shipments() {
       Alert.alert("No phone", "Customer phone not set.");
       return;
     }
-    const msg = buildWhatsAppText(s, settings);
+    const msg = buildWhatsAppText(s, settings, findCourier(s));
     const phone = cleanPhone(s.customer_phone);
     Linking.openURL(`https://wa.me/${phone}?text=${encodeURIComponent(msg)}`);
   };

@@ -103,7 +103,8 @@ class Settings(BaseModel):
     brand: BrandConfig = Field(default_factory=BrandConfig)
     whatsapp_template: str = (
         "નમસ્તે {customer_name}, તમારું પાર્સલ {courier} દ્વારા મોકલાયું છે. "
-        "Tracking ID: {tracking_id}. અપેક્ષિત ડિલિવરી: {eta_days} દિવસ."
+        "Tracking ID: {tracking_id}\nTrack here: {tracking_url}\n"
+        "અપેક્ષિત ડિલિવરી: {eta_days} દિવસ."
     )
     copy_template: str = (
         "Hi {customer_name}, your order #{order_id} has been shipped via {courier}. "
@@ -198,19 +199,64 @@ def strip_id(doc: dict) -> dict:
 
 
 async def seed_defaults():
+    # Default tracking URL templates for common couriers
+    default_tracking_urls = {
+        "Nandan Courier": "https://nandancourier.com/track?id={tracking_id}",
+        "DTDC": "https://www.dtdc.in/tracking/tracking_results.asp?strCnno={tracking_id}",
+        "India Post": "https://www.indiapost.gov.in/_layouts/15/dop.portal.tracking/trackconsignment.aspx?LocationId={tracking_id}",
+        "ST Courier": "https://stcourier.com/track/shipment?trackingNumber={tracking_id}",
+        "Trackon": "https://trackon.in/Tracking/MultiTracking?trackingNo={tracking_id}",
+        "Anjani Courier": "https://anjanicourier.in/tracking?awb={tracking_id}",
+        "Professional Courier": "https://www.tpcindia.com/Tracking2.aspx?id={tracking_id}",
+        "Delhivery": "https://www.delhivery.com/track/package/{tracking_id}",
+        "BlueDart": "https://www.bluedart.com/tracking?awb={tracking_id}",
+        "Ekart": "https://ekartlogistics.com/shipmenttrack/{tracking_id}",
+    }
+
     existing = await db.couriers.count_documents({})
     if existing == 0:
         defaults = [
             Courier(name="Nandan Courier", series_prefix="ND", next_number=1, number_padding=5,
-                    contact_phone="", website_url="https://www.nandancourier.com"),
+                    contact_phone="", website_url="https://www.nandancourier.com",
+                    tracking_url_template=default_tracking_urls["Nandan Courier"]),
             Courier(name="DTDC", series_prefix="DT", next_number=1, number_padding=5,
-                    contact_phone="", website_url="https://www.dtdc.in"),
+                    contact_phone="", website_url="https://www.dtdc.in",
+                    tracking_url_template=default_tracking_urls["DTDC"]),
             Courier(name="India Post", series_prefix="IP", next_number=1, number_padding=5,
-                    contact_phone="1800 266 6868", website_url="https://www.indiapost.gov.in"),
-            Courier(name="ST Courier", series_prefix="ST", next_number=1, number_padding=5),
-            Courier(name="Trackon", series_prefix="TR", next_number=1, number_padding=5),
+                    contact_phone="1800 266 6868", website_url="https://www.indiapost.gov.in",
+                    tracking_url_template=default_tracking_urls["India Post"]),
+            Courier(name="ST Courier", series_prefix="ST", next_number=1, number_padding=5,
+                    tracking_url_template=default_tracking_urls["ST Courier"]),
+            Courier(name="Trackon", series_prefix="TR", next_number=1, number_padding=5,
+                    tracking_url_template=default_tracking_urls["Trackon"]),
+            Courier(name="Anjani Courier", series_prefix="AJ", next_number=1, number_padding=5,
+                    tracking_url_template=default_tracking_urls["Anjani Courier"]),
         ]
         await db.couriers.insert_many([c.model_dump() for c in defaults])
+    else:
+        # Migration: fill in missing tracking_url_template for existing couriers by matching name
+        cursor = db.couriers.find(
+            {"$or": [
+                {"tracking_url_template": {"$in": ["", None]}},
+                {"tracking_url_template": {"$exists": False}},
+            ]},
+            {"_id": 0, "id": 1, "name": 1},
+        )
+        async for c in cursor:
+            nm = (c.get("name") or "").strip()
+            # try exact match first, then case-insensitive contains
+            url = default_tracking_urls.get(nm)
+            if not url:
+                low = nm.lower()
+                for k, v in default_tracking_urls.items():
+                    if k.lower() in low or low in k.lower():
+                        url = v
+                        break
+            if url:
+                await db.couriers.update_one(
+                    {"id": c["id"]},
+                    {"$set": {"tracking_url_template": url}},
+                )
 
     s = await db.settings.find_one({"id": "default"})
     if not s:
