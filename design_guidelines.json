@@ -1,0 +1,97 @@
+{
+  "theme": "light",
+  "archetype": "4 (Swiss & High-Contrast)",
+  "emotional_tone": "Utilitarian, Trustworthy, Fast, Reliable",
+  "colors": {
+    "primary": "#FF5A00",
+    "primary_hover": "#E04F00",
+    "secondary": "#0A0A0A",
+    "background": "#F4F5F7",
+    "surface": "#FFFFFF",
+    "text_main": "#111827",
+    "text_muted": "#4B5563",
+    "border": "#D1D5DB",
+    "success_bg": "#ECFDF5",
+    "success_text": "#059669",
+    "warning_bg": "#FFFBEB",
+    "warning_text": "#D97706"
+  },
+  "typography": {
+    "headings": {
+      "family": "Chivo",
+      "weights": ["600", "800"],
+      "usage": "Page titles, Metric numbers, Section headers"
+    },
+    "body": {
+      "family": "IBM Plex Sans",
+      "weights": ["400", "500", "600"],
+      "usage": "General text, form labels, small text"
+    },
+    "mono": {
+      "family": "JetBrains Mono",
+      "weights": ["500", "700"],
+      "usage": "Tracking IDs, bar codes, numeric data"
+    }
+  },
+  "layout_and_spacing": {
+    "philosophy": "Mobile-first, high density utility. App-like layout spanning max-w-md mx-auto. Use 'Control Room' grid philosophy for metrics.",
+    "container": "w-full max-w-md mx-auto min-h-screen pb-20 bg-background relative shadow-2xl",
+    "padding": "p-4 sm:p-6",
+    "surface_strategy": "Grid Borders and Flat Solid. Sharp, functional containers.",
+    "radius": "rounded-lg"
+  },
+  "components": {
+    "bottom_navigation": {
+      "style": "fixed bottom-0 w-full max-w-md mx-auto bg-white border-t-2 border-gray-200 z-50 flex justify-around py-3 pb-safe",
+      "active_state": "text-[#FF5A00]",
+      "inactive_state": "text-gray-400"
+    },
+    "cards": {
+      "style": "bg-white border-2 border-gray-200 rounded-lg p-4 transition-all relative overflow-hidden",
+      "hover": "border-[#FF5A00] shadow-sm"
+    },
+    "inputs": {
+      "style": "w-full h-12 border-2 border-gray-200 rounded-lg px-4 font-body text-gray-900 focus:border-[#FF5A00] focus:ring-0 outline-none transition-colors",
+      "label": "block text-sm font-semibold text-gray-700 mb-1.5"
+    },
+    "buttons": {
+      "primary": "w-full flex items-center justify-center bg-[#FF5A00] text-white h-12 rounded-lg font-bold text-base hover:bg-[#E04F00] active:scale-[0.98] transition-all",
+      "secondary": "w-full flex items-center justify-center bg-gray-100 text-gray-900 h-12 rounded-lg font-bold text-base hover:bg-gray-200 active:scale-[0.98] transition-all",
+      "outline": "w-full flex items-center justify-center border-2 border-gray-200 text-gray-700 h-12 rounded-lg font-bold text-base hover:border-[#FF5A00] hover:text-[#FF5A00] active:scale-[0.98] transition-all"
+    },
+    "status_badges": {
+      "delivered": "inline-flex items-center bg-green-100 text-green-700 font-bold px-2.5 py-0.5 rounded text-xs uppercase tracking-wider",
+      "pending": "inline-flex items-center bg-yellow-100 text-yellow-700 font-bold px-2.5 py-0.5 rounded text-xs uppercase tracking-wider"
+    },
+    "scanner_ui": {
+      "container": "relative bg-black rounded-lg aspect-square w-full overflow-hidden flex items-center justify-center shadow-inner",
+      "frame": "absolute inset-4 border-2 border-[#FF5A00]/50 rounded-lg",
+      "corners": "absolute w-8 h-8 border-[#FF5A00] border-4",
+      "laser": "absolute top-1/2 left-0 w-full h-[2px] bg-[#FF5A00] shadow-[0_0_12px_#FF5A00] animate-pulse"
+    }
+  },
+  "motion_and_interactions": {
+    "hover": "Subtle color and border transitions (duration-200).",
+    "active": "Press-down effect (scale-[0.98]) on buttons for physical feedback.",
+    "page_transition": "Simple fade-in or slide-in from right for new views."
+  },
+  "icons_and_assets": {
+    "library": "lucide-react",
+    "instructions": "Use Lucide React icons. Use bold stroke weights (strokeWidth={2.5}) for a utilitarian, highly legible look."
+  },
+  "media": {
+    "empty_box_hero": "https://images.unsplash.com/photo-1771848194068-169d817a1d6f?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NTYxODh8MHwxfHNlYXJjaHwxfHxkZWxpdmVyeSUyMHBhY2thZ2UlMjBlbXB0eSUyMGJveHxlbnwwfHx8fDE3NzY1MzIzNjJ8MA&ixlib=rb-4.1.0&q=85",
+    "empty_box_alt": "https://images.unsplash.com/photo-1573376671570-bc0e9aab13a1?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NTYxODh8MHwxfHNlYXJjaHwzfHxkZWxpdmVyeSUyMHBhY2thZ2UlMjBlbXB0eSUyMGJveHxlbnwwfHx8fDE3NzY1MzIzNjJ8MA&ixlib=rb-4.1.0&q=85"
+  },
+  "instructions_to_main_agent": [
+    "You are building a React.js application using Tailwind CSS, structured to look and act like a Mobile App (React Native/Expo equivalent).",
+    "Constrain the main layout to 'max-w-md mx-auto min-h-screen bg-gray-50' with a fixed bottom navigation bar.",
+    "Data-testid attributes MUST be applied to all interactive elements (buttons, inputs, tabs, list items) using kebab-case role-based names.",
+    "All components must be written in Javascript (.js, .jsx), not Typescript.",
+    "Include a dynamic Barcode generation using a library like 'react-barcode' for the Label Print views.",
+    "Implement clear toggle states for WhatsApp messaging and COD/Prepaid options.",
+    "Shipment tracking IDs should use the auto-increment logic visibly (e.g., highlighting '580', '581'). Use JetBrains Mono for tracking numbers.",
+    "For shipping label generation, ensure accurate A4 layout dividing (1, 2, or 4 per page) and a dedicated Thermal layout view.",
+    "Ensure high contrast across all elements. Avoid soft shadows; use solid 2px borders."
+  ]
+}
