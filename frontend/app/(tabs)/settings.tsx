@@ -332,6 +332,50 @@ export default function SettingsScreen() {
   );
 }
 
+function CourierRow({
+  courier,
+  onUpdate,
+  onDelete,
+}: {
+  courier: Courier;
+  onUpdate: (n: number) => void;
+  onDelete: () => void;
+}) {
+  const [value, setValue] = useState(String(courier.next_number));
+  useEffect(() => setValue(String(courier.next_number)), [courier.next_number]);
+  return (
+    <View style={styles.courierCard} testID={`courier-card-${courier.name}`}>
+      <View style={{ flex: 1 }}>
+        <Text style={styles.courierName}>{courier.name}</Text>
+        <Text style={styles.courierSub}>
+          Prefix: <Text style={styles.mono}>{courier.series_prefix || "—"}</Text>
+        </Text>
+        <View style={{ flexDirection: "row", alignItems: "center", marginTop: 6, gap: 6 }}>
+          <Text style={styles.courierSub}>Next #</Text>
+          <TextInput
+            testID={`edit-next-${courier.name}`}
+            value={value}
+            onChangeText={setValue}
+            onBlur={() => {
+              const n = Number(value);
+              if (!isNaN(n) && n !== courier.next_number) onUpdate(n);
+            }}
+            keyboardType="number-pad"
+            style={styles.nextInput}
+          />
+        </View>
+      </View>
+      <TouchableOpacity
+        onPress={onDelete}
+        testID={`delete-courier-${courier.name}`}
+        style={styles.actionIcon}
+      >
+        <Ionicons name="trash-outline" size={18} color={colors.dangerText} />
+      </TouchableOpacity>
+    </View>
+  );
+}
+
 function Section({
   title,
   icon,
@@ -440,6 +484,18 @@ const styles = StyleSheet.create({
   courierName: { fontWeight: "800", color: colors.text, fontSize: 14 },
   courierSub: { fontSize: 12, color: colors.textMuted, marginTop: 2 },
   mono: { fontFamily: "Courier", fontWeight: "800", color: colors.text },
+  nextInput: {
+    height: 32,
+    minWidth: 80,
+    borderWidth: 1,
+    borderColor: "#E5E7EB",
+    borderRadius: 6,
+    paddingHorizontal: 8,
+    fontFamily: "Courier",
+    fontWeight: "800",
+    color: colors.text,
+    backgroundColor: "#fff",
+  },
   actionIcon: {
     width: 34,
     height: 34,
