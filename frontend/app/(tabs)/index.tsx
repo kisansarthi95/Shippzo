@@ -68,13 +68,22 @@ export default function Dashboard() {
           <Text style={styles.headerTitle}>નમસ્તે 👋</Text>
           <Text style={styles.headerSub}>Ship smart. Print fast.</Text>
         </View>
-        <TouchableOpacity
-          testID="open-scanner-btn"
-          style={styles.headerAction}
-          onPress={() => router.push("/scanner?returnTo=add")}
-        >
-          <Ionicons name="scan" size={22} color="#fff" />
-        </TouchableOpacity>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+          <TouchableOpacity
+            testID="dashboard-refresh-btn"
+            style={[styles.headerAction, { backgroundColor: colors.primary }]}
+            onPress={() => { setRefreshing(true); load(); }}
+          >
+            <Ionicons name="refresh" size={20} color="#fff" />
+          </TouchableOpacity>
+          <TouchableOpacity
+            testID="open-scanner-btn"
+            style={styles.headerAction}
+            onPress={() => router.push("/scanner?returnTo=add")}
+          >
+            <Ionicons name="scan" size={22} color="#fff" />
+          </TouchableOpacity>
+        </View>
       </View>
 
       <ScrollView

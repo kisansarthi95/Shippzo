@@ -31,6 +31,11 @@ export default function LabelScreen() {
   const [copies, setCopies] = useState(1);
   const [showContact, setShowContact] = useState(true);
 
+  const [brand, setBrand] = useState<{ name: string; logo_base64: string }>({
+    name: "",
+    logo_base64: "",
+  });
+
   const load = useCallback(async () => {
     try {
       const [s, settings] = await Promise.all([
@@ -39,6 +44,7 @@ export default function LabelScreen() {
       ]);
       setShipment(s);
       setSender(settings.sender);
+      setBrand(settings.brand || { name: "", logo_base64: "" });
       setShowContact(settings.sender.show_contact);
     } catch (e: any) {
       Alert.alert("Error", e?.message || "Failed to load");
@@ -54,8 +60,12 @@ export default function LabelScreen() {
   const getHtml = () => {
     if (!shipment || !sender) return "";
     const shipments = Array.from({ length: copies }, () => shipment);
-    const opts: LabelOptions = { perPage, showSenderContact: showContact };
-    return buildLabelHtml(shipments, sender, opts);
+    const opts: LabelOptions = {
+      perPage,
+      showSenderContact: showContact,
+      brand: { name: brand.name, logo_base64: brand.logo_base64 },
+    };
+    return buildLabelHtml(shipments, { ...sender, show_contact: showContact }, opts);
   };
 
   const printNow = async () => {
@@ -122,11 +132,24 @@ export default function LabelScreen() {
         {/* Preview Card */}
         <View style={styles.preview} testID="label-preview">
           <View style={styles.previewHdr}>
-            <Text style={styles.previewCourier}>{shipment.courier_name}</Text>
+            <View style={{ flex: 1, flexDirection: "row", alignItems: "center", gap: 8 }}>
+              {brand.logo_base64 ? (
+                <View style={{ width: 32, height: 32, backgroundColor: "#F3F4F6", borderRadius: 4 }} />
+              ) : null}
+              <Text style={styles.previewCourier} numberOfLines={1}>
+                {brand.name || sender.name || "Your Brand"}
+              </Text>
+            </View>
             {shipment.payment_mode === "COD" ? (
-              <Text style={styles.codBadge}>COD ₹{shipment.amount || shipment.cod_amount}</Text>
+              <View style={{ alignItems: "flex-end" }}>
+                <Text style={styles.codBadge}>COD ₹{shipment.amount || shipment.cod_amount}</Text>
+                <Text style={styles.paySubText}>via {shipment.courier_name}</Text>
+              </View>
             ) : (
-              <Text style={styles.prepaidBadge}>PREPAID ₹{shipment.amount || 0}</Text>
+              <View style={{ alignItems: "flex-end" }}>
+                <Text style={styles.prepaidBadge}>PREPAID ₹{shipment.amount || 0}</Text>
+                <Text style={styles.paySubText}>via {shipment.courier_name}</Text>
+              </View>
             )}
           </View>
           <View style={styles.previewBody}>
@@ -361,6 +384,12 @@ const styles = StyleSheet.create({
     fontWeight: "800",
     fontSize: 12,
     overflow: "hidden",
+  },
+  paySubText: {
+    fontSize: 9,
+    color: colors.textMuted,
+    marginTop: 3,
+    fontWeight: "600",
   },
   previewBody: { flexDirection: "row", gap: 8, marginTop: 10 },
   blk: {

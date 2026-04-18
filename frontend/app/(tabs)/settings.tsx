@@ -30,6 +30,7 @@ export default function SettingsScreen() {
   const [copyTemplate, setCopyTemplate] = useState("");
   const [etaDays, setEtaDays] = useState("7");
   const [couriers, setCouriers] = useState<Courier[]>([]);
+  const [brandName, setBrandName] = useState("");
 
   // Sheet
   const [sheetUrl, setSheetUrl] = useState("");
@@ -47,6 +48,7 @@ export default function SettingsScreen() {
     setCopyTemplate(s.copy_template);
     setEtaDays(String(s.default_eta_days));
     setCouriers(cs);
+    setBrandName(s.brand?.name || "");
     if (s.sheet?.sheet_id) {
       setSheetStatus("connected");
       setSheetUrl(s.sheet.url);
@@ -66,6 +68,7 @@ export default function SettingsScreen() {
     try {
       await Api.updateSettings({
         sender,
+        brand: { name: brandName, logo_base64: "" },
         whatsapp_template: template,
         copy_template: copyTemplate,
         default_eta_days: Number(etaDays) || 7,
@@ -348,6 +351,23 @@ export default function SettingsScreen() {
               </View>
             </TouchableOpacity>
           </Modal>
+
+          {/* Brand */}
+          <Section title="Brand on Labels" icon="pricetag-outline">
+            <Text style={styles.hint}>
+              Shown large at the top of every printed label. Leave blank to use Sender Name.
+            </Text>
+            <Field label="Brand / Business Name">
+              <TextInput
+                testID="brand-name-input"
+                value={brandName}
+                onChangeText={setBrandName}
+                placeholder="e.g. Mahek Creations"
+                placeholderTextColor="#9CA3AF"
+                style={styles.input}
+              />
+            </Field>
+          </Section>
 
           {/* Sender */}
           <Section title="Sender / From Address" icon="business-outline">

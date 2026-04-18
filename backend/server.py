@@ -89,12 +89,18 @@ class SheetConfig(BaseModel):
     tab_name: str = ""
     headers: List[str] = Field(default_factory=list)
     column_mapping: Dict[str, str] = Field(default_factory=dict)
-    # mapping keys: order_id, customer_name, phone, address, city, state, pincode, item, amount, timestamp
+    auto_refresh_minutes: int = 0   # 0 = disabled
+
+
+class BrandConfig(BaseModel):
+    name: str = ""          # e.g. "Mahek Creations"
+    logo_base64: str = ""   # optional: data uri or base64 string for label top
 
 
 class Settings(BaseModel):
     id: str = "default"
     sender: SenderAddress = Field(default_factory=SenderAddress)
+    brand: BrandConfig = Field(default_factory=BrandConfig)
     whatsapp_template: str = (
         "નમસ્તે {customer_name}, તમારું પાર્સલ {courier} દ્વારા મોકલાયું છે. "
         "Tracking ID: {tracking_id}. અપેક્ષિત ડિલિવરી: {eta_days} દિવસ."
@@ -109,6 +115,7 @@ class Settings(BaseModel):
 
 class SettingsUpdate(BaseModel):
     sender: Optional[SenderAddress] = None
+    brand: Optional[BrandConfig] = None
     whatsapp_template: Optional[str] = None
     copy_template: Optional[str] = None
     default_eta_days: Optional[int] = None
@@ -308,6 +315,8 @@ async def update_settings(payload: SettingsUpdate):
     update: Dict[str, Any] = {}
     if payload.sender is not None:
         update["sender"] = payload.sender.model_dump()
+    if payload.brand is not None:
+        update["brand"] = payload.brand.model_dump()
     if payload.whatsapp_template is not None:
         update["whatsapp_template"] = payload.whatsapp_template
     if payload.copy_template is not None:
@@ -640,6 +649,28 @@ async def export_csv():
             d.get("status", ""), d.get("created_at", ""), d.get("delivered_at", ""),
         ])
     return PlainTextResponse(buf.getvalue(), media_type="text/csv")
+
+
+@api_router.get("/shipments/by-tracking/{tracking_id}")
+async def get_shipment_by_tracking(tracking_id: str):
+    doc = await db.shipments.find_one(
+        {"tracking_id": {"$regex": f"^{tracking_id}$", "$options": "i"}},
+        {"_id": 0},
+    )
+    if not doc:
+        raise HTTPException(status_code=404, detail="Not found")
+    return Shipment(**doc)
+
+
+@api_router.post("/shipments/bulk-fetch")
+async def bulk_fetch(payload: Dict[str, List[str]]):
+    ids = payload.get("ids", [])
+    if not ids:
+        return []
+    docs = await db.shipments.find({"id": {"$in": ids}}, {"_id": 0}).to_list(500)
+    by_id = {d["id"]: Shipment(**d) for d in docs}
+    ordered = [by_id[i].model_dump() for i in ids if i in by_id]
+    return ordered
 
 
 @api_router.get("/shipments/{shipment_id}", response_model=Shipment)

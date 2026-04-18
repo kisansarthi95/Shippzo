@@ -32,6 +32,11 @@ export type SenderAddress = {
   show_contact: boolean;
 };
 
+export type Brand = {
+  name: string;
+  logo_base64: string;
+};
+
 export type SheetConfig = {
   url: string;
   sheet_id: string;
@@ -39,11 +44,13 @@ export type SheetConfig = {
   tab_name: string;
   headers: string[];
   column_mapping: Record<string, string>;
+  auto_refresh_minutes?: number;
 };
 
 export type Settings = {
   id: string;
   sender: SenderAddress;
+  brand: Brand;
   whatsapp_template: string;
   copy_template: string;
   default_eta_days: number;
@@ -154,6 +161,10 @@ export const Api = {
         revenue_total: number;
       }>("/shipments/stats")
       .then((r) => r.data),
+  getShipmentByTracking: (tracking_id: string) =>
+    api.get<Shipment>(`/shipments/by-tracking/${encodeURIComponent(tracking_id)}`).then((r) => r.data),
+  bulkFetch: (ids: string[]) =>
+    api.post<Shipment[]>(`/shipments/bulk-fetch`, { ids }).then((r) => r.data),
   getShipment: (id: string) =>
     api.get<Shipment>(`/shipments/${id}`).then((r) => r.data),
   createShipment: (data: Partial<Shipment>) =>

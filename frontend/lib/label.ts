@@ -1,8 +1,11 @@
 import type { Shipment, SenderAddress } from "./api";
 
+export type Brand = { name?: string; logo_base64?: string };
+
 export type LabelOptions = {
   perPage: 1 | 2 | 4 | "thermal" | "barcode";
   showSenderContact: boolean;
+  brand?: Brand;
 };
 
 const escape = (s: string) =>
@@ -52,10 +55,18 @@ function receiverBlock(s: Shipment) {
 
 function singleLabel(s: Shipment, sender: SenderAddress, opts: LabelOptions) {
   const amt = s.amount || s.cod_amount || 0;
-  const codBadge =
+  const brandName = opts.brand?.name?.trim() || sender.name || "Courier Label Manager";
+  const logo = opts.brand?.logo_base64?.trim();
+  const logoImg = logo
+    ? (logo.startsWith("data:") ? logo : `data:image/png;base64,${logo}`)
+    : "";
+
+  const paymentLine =
     s.payment_mode === "COD"
-      ? `<div class="cod">COD ₹${Number(amt).toFixed(0)}</div>`
-      : `<div class="prepaid">PREPAID${amt ? ` ₹${Number(amt).toFixed(0)}` : ""}</div>`;
+      ? `<div class="pay-big cod-big">COD ₹${Number(amt).toFixed(0)}</div>
+         <div class="pay-sub">Collect from customer · via ${escape(s.courier_name || "")}</div>`
+      : `<div class="pay-big prepaid-big">PREPAID${amt ? ` · ₹${Number(amt).toFixed(0)}` : ""}</div>
+         <div class="pay-sub">Payment received · via ${escape(s.courier_name || "")}</div>`;
 
   const itemsText =
     s.items && s.items.length
@@ -65,8 +76,11 @@ function singleLabel(s: Shipment, sender: SenderAddress, opts: LabelOptions) {
   return `
   <div class="label">
     <div class="hdr">
-      <div class="courier">${escape(s.courier_name || "Courier")}</div>
-      ${codBadge}
+      <div class="brand-wrap">
+        ${logoImg ? `<img class="brand-logo" src="${logoImg}" />` : ""}
+        <div class="brand-name">${escape(brandName)}</div>
+      </div>
+      ${paymentLine}
     </div>
     <div class="body">
       ${senderBlock(sender, opts.showSenderContact)}

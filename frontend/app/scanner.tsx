@@ -7,6 +7,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { CameraView, useCameraPermissions } from "expo-camera";
+import { Api } from "../lib/api";
 import { colors } from "../lib/theme";
 
 export default function ScannerModal() {
@@ -36,9 +37,19 @@ export default function ScannerModal() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [permission?.canAskAgain, permission?.granted, isWeb]);
 
-  const submitValue = (value: string) => {
+  const submitValue = async (value: string) => {
     const v = value.trim();
     if (!v) return;
+    // First check if this tracking already exists
+    try {
+      const existing = await Api.getShipmentByTracking(v);
+      if (existing?.id) {
+        router.replace(`/label/${existing.id}`);
+        return;
+      }
+    } catch {
+      // 404 means new — proceed
+    }
     if (params.returnTo === "add") {
       router.replace({ pathname: "/(tabs)/add", params: { scanned: v } });
     } else {
