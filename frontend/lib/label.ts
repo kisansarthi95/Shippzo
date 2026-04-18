@@ -51,10 +51,16 @@ function receiverBlock(s: Shipment) {
 }
 
 function singleLabel(s: Shipment, sender: SenderAddress, opts: LabelOptions) {
+  const amt = s.amount || s.cod_amount || 0;
   const codBadge =
     s.payment_mode === "COD"
-      ? `<div class="cod">COD ₹${s.cod_amount?.toFixed ? s.cod_amount.toFixed(0) : s.cod_amount}</div>`
-      : `<div class="prepaid">PREPAID</div>`;
+      ? `<div class="cod">COD ₹${Number(amt).toFixed(0)}</div>`
+      : `<div class="prepaid">PREPAID${amt ? ` ₹${Number(amt).toFixed(0)}` : ""}</div>`;
+
+  const itemsText =
+    s.items && s.items.length
+      ? s.items.join(", ")
+      : (s.item_description || "-");
 
   return `
   <div class="label">
@@ -67,8 +73,11 @@ function singleLabel(s: Shipment, sender: SenderAddress, opts: LabelOptions) {
       ${receiverBlock(s)}
     </div>
     <div class="meta">
+      ${s.order_id ? `<div><span class="lbl">Order #:</span> ${escape(s.order_id)}</div>` : ""}
       <div><span class="lbl">Weight:</span> ${escape(s.weight || "-")}</div>
-      <div><span class="lbl">Item:</span> ${escape(s.item_description || "-")}</div>
+    </div>
+    <div class="meta">
+      <div><span class="lbl">Items:</span> ${escape(itemsText)}</div>
     </div>
     <div class="track">
       <div class="track-id">${escape(s.tracking_id)}</div>

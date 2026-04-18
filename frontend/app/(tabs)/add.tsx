@@ -10,16 +10,42 @@ import {
   KeyboardAvoidingView,
   Platform,
   ActivityIndicator,
+  Modal,
+  FlatList,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useLocalSearchParams, useRouter } from "expo-router";
-import { Api, Courier } from "../../lib/api";
+import { Api, Courier, SheetOrder } from "../../lib/api";
 import { colors } from "../../lib/theme";
+
+function splitAddress(full: string): {
+  line1: string;
+  line2: string;
+  city: string;
+  state: string;
+  pincode: string;
+} {
+  const clean = (full || "").trim();
+  if (!clean) return { line1: "", line2: "", city: "", state: "", pincode: "" };
+  const pinMatch = clean.match(/(\d{6})/);
+  const pincode = pinMatch ? pinMatch[1] : "";
+  const parts = clean.split(/[,\n]/).map((p) => p.trim()).filter(Boolean);
+  let line1 = parts[0] || "";
+  let line2 = parts[1] || "";
+  let city = "";
+  let state = "";
+  if (parts.length >= 3) city = parts[parts.length - 2] || "";
+  if (parts.length >= 2) {
+    const last = parts[parts.length - 1].replace(/\d{6}/, "").trim();
+    state = last || state;
+  }
+  return { line1, line2, city, state, pincode };
+}
 
 export default function AddShipment() {
   const router = useRouter();
-  const params = useLocalSearchParams<{ scanned?: string }>();
+  const params = useLocalSearchParams<{ scanned?: string; fromSheet?: string }>();
 
   const [couriers, setCouriers] = useState<Courier[]>([]);
   const [selectedCourier, setSelectedCourier] = useState<Courier | null>(null);
@@ -27,6 +53,7 @@ export default function AddShipment() {
   const [nextPreview, setNextPreview] = useState<string>("");
 
   const [trackingId, setTrackingId] = useState("");
+  const [orderId, setOrderId] = useState("");
   const [customerName, setCustomerName] = useState("");
   const [customerPhone, setCustomerPhone] = useState("");
   const [addr1, setAddr1] = useState("");
@@ -35,16 +62,28 @@ export default function AddShipment() {
   const [state, setState] = useState("");
   const [pincode, setPincode] = useState("");
   const [paymentMode, setPaymentMode] = useState<"COD" | "Prepaid">("Prepaid");
-  const [codAmount, setCodAmount] = useState("");
+  const [amount, setAmount] = useState("");
+  const [itemsText, setItemsText] = useState(""); // newline or comma separated
   const [weight, setWeight] = useState("");
-  const [itemDesc, setItemDesc] = useState("");
+  const [sheetRowKey, setSheetRowKey] = useState("");
   const [saving, setSaving] = useState(false);
+
+  const [sheetConnected, setSheetConnected] = useState(false);
+  const [showImport, setShowImport] = useState(false);
+  const [importLoading, setImportLoading] = useState(false);
+  const [importOrders, setImportOrders] = useState<SheetOrder[]>([]);
+  const [importFilter, setImportFilter] = useState<"pending" | "all">("pending");
+  const [importSearch, setImportSearch] = useState("");
 
   useEffect(() => {
     (async () => {
-      const cs = await Api.listCouriers();
+      const [cs, settings] = await Promise.all([
+        Api.listCouriers(),
+        Api.getSettings(),
+      ]);
       setCouriers(cs);
       if (cs.length > 0) setSelectedCourier(cs[0]);
+      setSheetConnected(Boolean(settings.sheet?.sheet_id));
     })();
   }, []);
 
@@ -68,7 +107,56 @@ export default function AddShipment() {
     }
   }, [params.scanned]);
 
+  const openImport = useCallback(async () => {
+    if (!sheetConnected) {
+      Alert.alert(
+        "Google Sheet not connected",
+        "Go to Settings → Google Sheet and paste your sheet link first."
+      );
+      return;
+    }
+    setShowImport(true);
+    setImportLoading(true);
+    try {
+      const res = await Api.sheetsOrders();
+      setImportOrders(res.orders);
+      if (res.headers_changed) {
+        Alert.alert(
+          "Sheet columns changed",
+          "Your sheet's column structure has changed. Open Settings → Google Sheet to re-map columns."
+        );
+      }
+    } catch (e: any) {
+      Alert.alert("Import error", e?.response?.data?.detail || e?.message || "Failed");
+      setShowImport(false);
+    } finally {
+      setImportLoading(false);
+    }
+  }, [sheetConnected]);
+
+  const pickOrder = (o: SheetOrder) => {
+    const addr = splitAddress(o.address);
+    setOrderId(o.order_id);
+    setCustomerName(o.customer_name);
+    setCustomerPhone(o.phone);
+    setAddr1(addr.line1);
+    setAddr2(addr.line2);
+    setCity(o.city || addr.city);
+    setState(o.state || addr.state);
+    setPincode(o.pincode || addr.pincode);
+    const amt = (o.amount || "").replace(/[^\d.]/g, "");
+    setAmount(amt);
+    const items = (o.item || "")
+      .split(/[,\n;|]/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+    setItemsText(items.join("\n"));
+    setSheetRowKey(o.row_key);
+    setShowImport(false);
+  };
+
   const resetForm = () => {
+    setOrderId("");
     setCustomerName("");
     setCustomerPhone("");
     setAddr1("");
@@ -77,9 +165,10 @@ export default function AddShipment() {
     setState("");
     setPincode("");
     setPaymentMode("Prepaid");
-    setCodAmount("");
+    setAmount("");
+    setItemsText("");
     setWeight("");
-    setItemDesc("");
+    setSheetRowKey("");
   };
 
   const save = useCallback(
@@ -99,10 +188,15 @@ export default function AddShipment() {
           const r = await Api.consumeTracking(selectedCourier.id);
           finalTracking = r.tracking_id;
         }
+        const items = itemsText
+          .split(/\n|,|;/)
+          .map((s) => s.trim())
+          .filter(Boolean);
         const created = await Api.createShipment({
           tracking_id: finalTracking,
           courier_id: selectedCourier?.id,
           courier_name: selectedCourier?.name,
+          order_id: orderId.trim(),
           customer_name: customerName.trim(),
           customer_phone: customerPhone.trim(),
           address_line1: addr1.trim(),
@@ -111,9 +205,11 @@ export default function AddShipment() {
           state: state.trim(),
           pincode: pincode.trim(),
           payment_mode: paymentMode,
-          cod_amount: paymentMode === "COD" ? Number(codAmount) || 0 : 0,
+          amount: Number(amount) || 0,
+          items,
+          item_description: items.join(", "),
           weight: weight.trim(),
-          item_description: itemDesc.trim(),
+          sheet_row_key: sheetRowKey,
         });
         resetForm();
         if (thenPrint) {
@@ -124,7 +220,7 @@ export default function AddShipment() {
           ]);
         }
       } catch (e: any) {
-        Alert.alert("Error", e?.message || "Failed to save");
+        Alert.alert("Error", e?.response?.data?.detail || e?.message || "Failed to save");
       } finally {
         setSaving(false);
       }
@@ -133,6 +229,7 @@ export default function AddShipment() {
       autoTracking,
       selectedCourier,
       trackingId,
+      orderId,
       customerName,
       customerPhone,
       addr1,
@@ -141,12 +238,25 @@ export default function AddShipment() {
       state,
       pincode,
       paymentMode,
-      codAmount,
+      amount,
+      itemsText,
       weight,
-      itemDesc,
+      sheetRowKey,
       router,
     ]
   );
+
+  const filteredImport = importOrders.filter((o) => {
+    if (importFilter === "pending" && o.already_shipped) return false;
+    const q = importSearch.trim().toLowerCase();
+    if (!q) return true;
+    return (
+      o.order_id.toLowerCase().includes(q) ||
+      o.customer_name.toLowerCase().includes(q) ||
+      o.phone.toLowerCase().includes(q) ||
+      o.city.toLowerCase().includes(q)
+    );
+  });
 
   return (
     <SafeAreaView style={styles.safe} edges={["top"]}>
@@ -171,6 +281,29 @@ export default function AddShipment() {
           contentContainerStyle={{ padding: 16, paddingBottom: 100 }}
           keyboardShouldPersistTaps="handled"
         >
+          {/* Import from Sheet */}
+          <TouchableOpacity
+            testID="import-from-sheet-btn"
+            onPress={openImport}
+            style={[
+              styles.importBtn,
+              !sheetConnected && { opacity: 0.55 },
+            ]}
+          >
+            <Ionicons name="cloud-download" size={20} color="#fff" />
+            <View style={{ flex: 1 }}>
+              <Text style={styles.importBtnTitle}>
+                {sheetConnected ? "Import from Google Sheet" : "Connect Google Sheet in Settings"}
+              </Text>
+              <Text style={styles.importBtnSub}>
+                {sheetConnected
+                  ? "Auto-fill customer, order, amount from your form/sheet"
+                  : "Settings → Google Sheet → paste link"}
+              </Text>
+            </View>
+            <Ionicons name="chevron-forward" size={18} color="#fff" />
+          </TouchableOpacity>
+
           {/* Courier */}
           <Section title="Courier Partner">
             <ScrollView
@@ -212,12 +345,7 @@ export default function AddShipment() {
                   size={14}
                   color={autoTracking ? "#fff" : colors.text}
                 />
-                <Text
-                  style={[
-                    styles.toggleText,
-                    autoTracking && { color: "#fff" },
-                  ]}
-                >
+                <Text style={[styles.toggleText, autoTracking && { color: "#fff" }]}>
                   Auto Series
                 </Text>
               </TouchableOpacity>
@@ -231,12 +359,7 @@ export default function AddShipment() {
                   size={14}
                   color={!autoTracking ? "#fff" : colors.text}
                 />
-                <Text
-                  style={[
-                    styles.toggleText,
-                    !autoTracking && { color: "#fff" },
-                  ]}
-                >
+                <Text style={[styles.toggleText, !autoTracking && { color: "#fff" }]}>
                   Manual / Scan
                 </Text>
               </TouchableOpacity>
@@ -252,10 +375,33 @@ export default function AddShipment() {
               autoCapitalize="characters"
             />
             {autoTracking && nextPreview ? (
-              <Text style={styles.hint}>
-                Next auto-tracking: {nextPreview}
-              </Text>
+              <Text style={styles.hint}>Next auto: {nextPreview}</Text>
             ) : null}
+          </Section>
+
+          {/* Order */}
+          <Section title="Order Details">
+            <Field label="Order ID">
+              <TextInput
+                testID="order-id-input"
+                value={orderId}
+                onChangeText={setOrderId}
+                placeholder="Order ID / Invoice #"
+                placeholderTextColor="#9CA3AF"
+                style={styles.input}
+              />
+            </Field>
+            <Field label="Items / Products">
+              <TextInput
+                testID="items-input"
+                value={itemsText}
+                onChangeText={setItemsText}
+                placeholder="One item per line (or comma separated)"
+                placeholderTextColor="#9CA3AF"
+                multiline
+                style={[styles.input, { height: 80, textAlignVertical: "top", paddingTop: 10 }]}
+              />
+            </Field>
           </Section>
 
           {/* Customer */}
@@ -345,7 +491,7 @@ export default function AddShipment() {
             </Field>
           </Section>
 
-          {/* Payment */}
+          {/* Payment & Parcel */}
           <Section title="Payment & Parcel">
             <View style={styles.toggleRow}>
               <TouchableOpacity
@@ -361,12 +507,7 @@ export default function AddShipment() {
                   size={14}
                   color={paymentMode === "Prepaid" ? "#fff" : colors.text}
                 />
-                <Text
-                  style={[
-                    styles.toggleText,
-                    paymentMode === "Prepaid" && { color: "#fff" },
-                  ]}
-                >
+                <Text style={[styles.toggleText, paymentMode === "Prepaid" && { color: "#fff" }]}>
                   Prepaid
                 </Text>
               </TouchableOpacity>
@@ -383,56 +524,32 @@ export default function AddShipment() {
                   size={14}
                   color={paymentMode === "COD" ? "#fff" : colors.text}
                 />
-                <Text
-                  style={[
-                    styles.toggleText,
-                    paymentMode === "COD" && { color: "#fff" },
-                  ]}
-                >
+                <Text style={[styles.toggleText, paymentMode === "COD" && { color: "#fff" }]}>
                   COD
                 </Text>
               </TouchableOpacity>
             </View>
-            {paymentMode === "COD" && (
-              <Field label="COD Amount (₹)">
-                <TextInput
-                  testID="cod-amount-input"
-                  value={codAmount}
-                  onChangeText={setCodAmount}
-                  placeholder="Amount to collect"
-                  placeholderTextColor="#9CA3AF"
-                  keyboardType="number-pad"
-                  style={styles.input}
-                />
-              </Field>
-            )}
-            <View style={styles.grid2}>
-              <View style={{ flex: 1 }}>
-                <Field label="Weight">
-                  <TextInput
-                    testID="weight-input"
-                    value={weight}
-                    onChangeText={setWeight}
-                    placeholder="e.g. 0.5 kg"
-                    placeholderTextColor="#9CA3AF"
-                    style={styles.input}
-                  />
-                </Field>
-              </View>
-              <View style={{ width: 12 }} />
-              <View style={{ flex: 1 }}>
-                <Field label="Item">
-                  <TextInput
-                    testID="item-input"
-                    value={itemDesc}
-                    onChangeText={setItemDesc}
-                    placeholder="Contents"
-                    placeholderTextColor="#9CA3AF"
-                    style={styles.input}
-                  />
-                </Field>
-              </View>
-            </View>
+            <Field label={paymentMode === "COD" ? "COD Amount (₹)" : "Order Amount (₹)"}>
+              <TextInput
+                testID="amount-input"
+                value={amount}
+                onChangeText={setAmount}
+                placeholder={paymentMode === "COD" ? "Amount to collect" : "Order value"}
+                placeholderTextColor="#9CA3AF"
+                keyboardType="decimal-pad"
+                style={styles.input}
+              />
+            </Field>
+            <Field label="Weight">
+              <TextInput
+                testID="weight-input"
+                value={weight}
+                onChangeText={setWeight}
+                placeholder="e.g. 0.5 kg"
+                placeholderTextColor="#9CA3AF"
+                style={styles.input}
+              />
+            </Field>
           </Section>
 
           <View style={styles.ctaRow}>
@@ -463,6 +580,128 @@ export default function AddShipment() {
           </View>
         </ScrollView>
       </KeyboardAvoidingView>
+
+      {/* Import Modal */}
+      <Modal visible={showImport} animationType="slide" onRequestClose={() => setShowImport(false)}>
+        <SafeAreaView style={styles.modalSafe}>
+          <View style={styles.modalHeader}>
+            <TouchableOpacity
+              testID="import-close"
+              onPress={() => setShowImport(false)}
+              style={styles.modalClose}
+            >
+              <Ionicons name="close" size={22} color={colors.text} />
+            </TouchableOpacity>
+            <Text style={styles.modalTitle}>Import from Sheet</Text>
+            <TouchableOpacity
+              testID="import-refresh"
+              onPress={openImport}
+              style={styles.modalClose}
+            >
+              <Ionicons name="refresh" size={20} color={colors.text} />
+            </TouchableOpacity>
+          </View>
+
+          <View style={styles.modalSearchWrap}>
+            <Ionicons name="search" size={16} color={colors.textMuted} />
+            <TextInput
+              testID="import-search"
+              placeholder="Search order, name, phone"
+              placeholderTextColor="#9CA3AF"
+              value={importSearch}
+              onChangeText={setImportSearch}
+              style={styles.modalSearch}
+            />
+          </View>
+          <View style={styles.filterRow}>
+            <TouchableOpacity
+              testID="import-filter-pending"
+              onPress={() => setImportFilter("pending")}
+              style={[
+                styles.filterPill,
+                importFilter === "pending" && styles.filterPillActive,
+              ]}
+            >
+              <Text
+                style={[
+                  styles.filterText,
+                  importFilter === "pending" && { color: "#fff" },
+                ]}
+              >
+                Not yet shipped
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              testID="import-filter-all"
+              onPress={() => setImportFilter("all")}
+              style={[
+                styles.filterPill,
+                importFilter === "all" && styles.filterPillActive,
+              ]}
+            >
+              <Text
+                style={[
+                  styles.filterText,
+                  importFilter === "all" && { color: "#fff" },
+                ]}
+              >
+                All {importOrders.length ? `(${importOrders.length})` : ""}
+              </Text>
+            </TouchableOpacity>
+          </View>
+
+          {importLoading ? (
+            <ActivityIndicator color={colors.primary} style={{ marginTop: 24 }} />
+          ) : (
+            <FlatList
+              data={filteredImport}
+              keyExtractor={(o) => o.row_key || String(o.row_index)}
+              contentContainerStyle={{ padding: 12, paddingBottom: 32 }}
+              ListEmptyComponent={
+                <Text style={styles.emptyImport}>
+                  {importOrders.length === 0
+                    ? "No rows found in your sheet."
+                    : "No matching orders."}
+                </Text>
+              }
+              renderItem={({ item }) => (
+                <TouchableOpacity
+                  testID={`import-row-${item.row_index}`}
+                  onPress={() => pickOrder(item)}
+                  style={[
+                    styles.orderCard,
+                    item.already_shipped && { opacity: 0.55 },
+                  ]}
+                >
+                  <View style={{ flex: 1 }}>
+                    <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+                      <Text style={styles.orderCustomer}>
+                        {item.customer_name || "(no name)"}
+                      </Text>
+                      {item.already_shipped && (
+                        <View style={styles.shippedChip}>
+                          <Text style={styles.shippedChipText}>SHIPPED</Text>
+                        </View>
+                      )}
+                    </View>
+                    <Text style={styles.orderLine}>
+                      {item.order_id ? `Order #${item.order_id} · ` : ""}
+                      {item.phone || "no phone"}
+                    </Text>
+                    <Text style={styles.orderLine} numberOfLines={1}>
+                      {[item.city, item.state, item.pincode].filter(Boolean).join(", ")}
+                    </Text>
+                    <Text style={styles.orderItem} numberOfLines={2}>
+                      📦 {item.item || "—"} · ₹{item.amount || "0"}
+                    </Text>
+                  </View>
+                  <Ionicons name="chevron-forward" size={20} color={colors.textMuted} />
+                </TouchableOpacity>
+              )}
+            />
+          )}
+        </SafeAreaView>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -519,6 +758,17 @@ const styles = StyleSheet.create({
     borderRadius: 999,
   },
   scanPillText: { color: colors.primary, fontWeight: "700" },
+  importBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    backgroundColor: colors.secondary,
+    borderRadius: 12,
+    padding: 14,
+    marginBottom: 14,
+  },
+  importBtnTitle: { color: "#fff", fontWeight: "800", fontSize: 14 },
+  importBtnSub: { color: "rgba(255,255,255,0.7)", fontSize: 11, marginTop: 2 },
   section: {
     backgroundColor: colors.surface,
     borderWidth: 2,
@@ -542,7 +792,7 @@ const styles = StyleSheet.create({
     marginBottom: 6,
   },
   input: {
-    height: 46,
+    minHeight: 46,
     borderWidth: 2,
     borderColor: "#E5E7EB",
     borderRadius: 10,
@@ -565,10 +815,7 @@ const styles = StyleSheet.create({
     borderRadius: 999,
     backgroundColor: "#fff",
   },
-  pillActive: {
-    backgroundColor: colors.secondary,
-    borderColor: colors.secondary,
-  },
+  pillActive: { backgroundColor: colors.secondary, borderColor: colors.secondary },
   pillText: { fontWeight: "700", color: colors.text, fontSize: 13 },
   toggleRow: { flexDirection: "row", gap: 8, marginBottom: 10 },
   toggleBtn: {
@@ -582,10 +829,7 @@ const styles = StyleSheet.create({
     borderColor: "#E5E7EB",
     borderRadius: 10,
   },
-  toggleBtnActive: {
-    backgroundColor: colors.primary,
-    borderColor: colors.primary,
-  },
+  toggleBtnActive: { backgroundColor: colors.primary, borderColor: colors.primary },
   toggleText: { fontWeight: "700", color: colors.text, fontSize: 13 },
   hint: { fontSize: 12, color: colors.textMuted, marginTop: 6 },
   grid2: { flexDirection: "row" },
@@ -614,4 +858,85 @@ const styles = StyleSheet.create({
     borderRadius: 12,
   },
   primaryBtnText: { fontWeight: "800", color: "#fff" },
+
+  modalSafe: { flex: 1, backgroundColor: colors.background },
+  modalHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: "#E5E7EB",
+    backgroundColor: "#fff",
+  },
+  modalClose: {
+    width: 40,
+    height: 40,
+    borderRadius: 10,
+    backgroundColor: "#F3F4F6",
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  modalTitle: { fontSize: 17, fontWeight: "800", color: colors.text },
+  modalSearchWrap: {
+    marginHorizontal: 12,
+    marginTop: 10,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    height: 44,
+    borderWidth: 2,
+    borderColor: "#E5E7EB",
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    backgroundColor: "#fff",
+  },
+  modalSearch: { flex: 1, color: colors.text, fontSize: 14 },
+  filterRow: {
+    flexDirection: "row",
+    gap: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+  filterPill: {
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderWidth: 2,
+    borderColor: "#E5E7EB",
+    borderRadius: 999,
+    backgroundColor: "#fff",
+  },
+  filterPillActive: { backgroundColor: colors.secondary, borderColor: colors.secondary },
+  filterText: { fontWeight: "700", fontSize: 12, color: colors.text },
+  orderCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#fff",
+    borderWidth: 2,
+    borderColor: "#E5E7EB",
+    borderRadius: 12,
+    padding: 12,
+    marginBottom: 8,
+  },
+  orderCustomer: { fontSize: 15, fontWeight: "800", color: colors.text },
+  orderLine: { fontSize: 12, color: colors.textMuted, marginTop: 2 },
+  orderItem: { fontSize: 12, color: colors.text, marginTop: 4, fontWeight: "600" },
+  shippedChip: {
+    backgroundColor: colors.successBg,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+  },
+  shippedChipText: {
+    fontSize: 9,
+    fontWeight: "800",
+    color: colors.successText,
+    letterSpacing: 0.5,
+  },
+  emptyImport: {
+    textAlign: "center",
+    color: colors.textMuted,
+    marginTop: 30,
+  },
 });

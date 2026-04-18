@@ -4,7 +4,7 @@ const BASE = process.env.EXPO_PUBLIC_BACKEND_URL;
 
 export const api = axios.create({
   baseURL: `${BASE}/api`,
-  timeout: 20000,
+  timeout: 25000,
 });
 
 export type Courier = {
@@ -13,6 +13,11 @@ export type Courier = {
   series_prefix: string;
   next_number: number;
   number_padding: number;
+  contact_phone: string;
+  contact_email: string;
+  website_url: string;
+  tracking_url_template: string;
+  notes: string;
   created_at: string;
 };
 
@@ -27,11 +32,22 @@ export type SenderAddress = {
   show_contact: boolean;
 };
 
+export type SheetConfig = {
+  url: string;
+  sheet_id: string;
+  gid: string;
+  tab_name: string;
+  headers: string[];
+  column_mapping: Record<string, string>;
+};
+
 export type Settings = {
   id: string;
   sender: SenderAddress;
   whatsapp_template: string;
+  copy_template: string;
   default_eta_days: number;
+  sheet: SheetConfig;
 };
 
 export type Shipment = {
@@ -39,6 +55,7 @@ export type Shipment = {
   tracking_id: string;
   courier_id?: string;
   courier_name: string;
+  order_id: string;
   customer_name: string;
   customer_phone: string;
   address_line1: string;
@@ -47,22 +64,51 @@ export type Shipment = {
   state: string;
   pincode: string;
   payment_mode: "COD" | "Prepaid";
+  amount: number;
   cod_amount: number;
-  weight: string;
+  items: string[];
   item_description: string;
+  weight: string;
   status: "Pending" | "Delivered" | "Cancelled";
   created_at: string;
   delivered_at?: string | null;
+  sheet_row_key?: string;
+};
+
+export type SheetPreview = {
+  sheet_id: string;
+  gid: string;
+  headers: string[];
+  sample_rows: Record<string, string>[];
+  total_rows: number;
+  auto_mapping: Record<string, string>;
+};
+
+export type SheetOrder = {
+  row_key: string;
+  row_index: number;
+  order_id: string;
+  customer_name: string;
+  phone: string;
+  address: string;
+  city: string;
+  state: string;
+  pincode: string;
+  item: string;
+  amount: string;
+  timestamp: string;
+  already_shipped: boolean;
+  raw: Record<string, string>;
 };
 
 export const Api = {
   listCouriers: () => api.get<Courier[]>("/couriers").then((r) => r.data),
+  getCourier: (id: string) => api.get<Courier>(`/couriers/${id}`).then((r) => r.data),
   createCourier: (data: Partial<Courier>) =>
     api.post<Courier>("/couriers", data).then((r) => r.data),
   updateCourier: (id: string, data: Partial<Courier>) =>
     api.put<Courier>(`/couriers/${id}`, data).then((r) => r.data),
-  deleteCourier: (id: string) =>
-    api.delete(`/couriers/${id}`).then((r) => r.data),
+  deleteCourier: (id: string) => api.delete(`/couriers/${id}`).then((r) => r.data),
   peekNextTracking: (id: string) =>
     api
       .get<{ tracking_id: string; next_number: number }>(
@@ -78,6 +124,18 @@ export const Api = {
   updateSettings: (data: Partial<Settings>) =>
     api.put<Settings>("/settings", data).then((r) => r.data),
 
+  sheetsPreview: (url: string) =>
+    api.post<SheetPreview>("/sheets/preview", { url }).then((r) => r.data),
+  sheetsOrders: () =>
+    api
+      .get<{
+        headers: string[];
+        headers_changed: boolean;
+        orders: SheetOrder[];
+        total: number;
+      }>("/sheets/orders")
+      .then((r) => r.data),
+
   listShipments: (params?: {
     status?: string;
     courier_id?: string;
@@ -90,6 +148,7 @@ export const Api = {
         delivered: number;
         pending: number;
         cod_total: number;
+        revenue_total: number;
       }>("/shipments/stats")
       .then((r) => r.data),
   getShipment: (id: string) =>
@@ -102,3 +161,16 @@ export const Api = {
     api.delete(`/shipments/${id}`).then((r) => r.data),
   csvUrl: () => `${BASE}/api/shipments/export/csv`,
 };
+
+export const SHEET_FIELDS: { key: string; label: string }[] = [
+  { key: "order_id", label: "Order ID" },
+  { key: "customer_name", label: "Customer Name" },
+  { key: "phone", label: "Phone" },
+  { key: "address", label: "Address" },
+  { key: "city", label: "City" },
+  { key: "state", label: "State" },
+  { key: "pincode", label: "Pincode" },
+  { key: "item", label: "Item / Product" },
+  { key: "amount", label: "Amount" },
+  { key: "timestamp", label: "Timestamp" },
+];

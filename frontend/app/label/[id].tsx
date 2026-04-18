@@ -120,9 +120,9 @@ export default function LabelScreen() {
           <View style={styles.previewHdr}>
             <Text style={styles.previewCourier}>{shipment.courier_name}</Text>
             {shipment.payment_mode === "COD" ? (
-              <Text style={styles.codBadge}>COD ₹{shipment.cod_amount}</Text>
+              <Text style={styles.codBadge}>COD ₹{shipment.amount || shipment.cod_amount}</Text>
             ) : (
-              <Text style={styles.prepaidBadge}>PREPAID</Text>
+              <Text style={styles.prepaidBadge}>PREPAID ₹{shipment.amount || 0}</Text>
             )}
           </View>
           <View style={styles.previewBody}>
@@ -161,8 +161,17 @@ export default function LabelScreen() {
           </View>
           <View style={styles.metaRow}>
             <Text style={styles.metaText}>Weight: {shipment.weight || "—"}</Text>
-            <Text style={styles.metaText}>Item: {shipment.item_description || "—"}</Text>
+            <Text style={styles.metaText}>
+              {shipment.items && shipment.items.length > 0
+                ? `Items: ${shipment.items.join(", ")}`
+                : `Item: ${shipment.item_description || "—"}`}
+            </Text>
           </View>
+          {!!shipment.order_id && (
+            <View style={styles.metaRow}>
+              <Text style={styles.metaText}>Order #: {shipment.order_id}</Text>
+            </View>
+          )}
           <View style={styles.trackBlock}>
             <Text style={styles.trackLabel}>TRACKING ID</Text>
             <Text style={styles.trackId}>{shipment.tracking_id}</Text>

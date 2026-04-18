@@ -1,0 +1,130 @@
+{
+  "summary": "Iteration 2 comprehensive testing complete. Backend: 16/16 tests passed (100%). Frontend: All new features working - Courier contact fields with full CRUD, Google Sheets integration UI, Shipment enhancements (order_id, items array, amount for both modes), Copy All button, improved label preview. All iteration 2 requirements verified.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {
+        "screen": "Global",
+        "issues": [
+          "Deprecated shadow* style props warnings in console (non-blocking, React Native Web compatibility)",
+          "Deprecated pointerEvents props warnings in console (non-blocking, React Native Web compatibility)"
+        ]
+      }
+    ],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration_2.py",
+    "/app/test_reports/pytest/pytest_iteration_2.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "All new courier fields (contact_phone, contact_email, website_url, tracking_url_template, notes) properly implemented in backend and frontend",
+    "GET /api/couriers/{id} endpoint working correctly",
+    "Google Sheets integration endpoints (POST /api/sheets/preview, GET /api/sheets/orders) implemented with proper error handling",
+    "Settings now includes sheet config and copy_template fields",
+    "Shipment model enhanced with order_id, items (List[str]), and amount field for both Prepaid and COD modes",
+    "Stats endpoint now returns revenue_total in addition to cod_total",
+    "CSV export includes new columns: Order ID, Items, Amount",
+    "Search now includes order_id field",
+    "Frontend /courier/[id] route fully functional with all contact fields and action buttons (Copy Contact, WhatsApp share)",
+    "Add Shipment screen shows Import from Google Sheet button (disabled when not connected)",
+    "Order Details section with Order ID and Items textarea present",
+    "Amount field visible in BOTH Prepaid and COD modes (not only COD)",
+    "Shipments list shows Order # badge and items line per shipment",
+    "Copy All button present and functional (copies tracking details to clipboard)",
+    "Settings has Google Sheet section with URL input and Fetch & Preview button",
+    "Settings has Copy-All Template field",
+    "Courier cards in Settings are tappable and navigate to /courier/{id}",
+    "Label preview shows Prepaid with amount (e.g. 'PREPAID ₹750'), items list, and order # when present",
+    "Scanner modal on web shows manual input fallback as expected"
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration_2.py"
+  ],
+  "success_rate": {
+    "backend": "100% (16/16 tests passed)",
+    "frontend": "100% (All iteration 2 features working - Dashboard, Add Shipment with new fields, Shipments list with Order # and items, Label preview with Prepaid amount, Settings with Google Sheet section, Courier edit screen with full contact fields)"
+  },
+  "seed_data_creation": "Backend tests created multiple test shipments with new fields (order_id, items array, amount for Prepaid and COD). Test couriers created with contact information. All test data properly prefixed with TEST_ for easy identification.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Iteration 2 fully functional with 100% backend test pass rate (16/16 tests). All new features verified: (1) Courier enhancements - contact_phone, contact_email, website_url, tracking_url_template, notes fields working with GET /api/couriers/{id} endpoint. (2) Google Sheets integration - POST /api/sheets/preview and GET /api/sheets/orders endpoints working, Settings includes sheet config. (3) Shipment enhancements - order_id, items array, amount field for BOTH Prepaid and COD modes working correctly. (4) Stats now returns revenue_total. (5) CSV export includes Order ID, Items, Amount columns. (6) Frontend - /courier/[id] route with full CRUD, Copy All button functional, Google Sheet section in Settings, improved label preview showing Prepaid amount + items + order #. App is production-ready for iteration 2.",
+  "backend_test_summary": {
+    "total_tests": 16,
+    "passed": 16,
+    "failed": 0,
+    "test_categories": {
+      "courier_enhancements": "5 tests - list with new fields, GET single courier, create with contact fields, update contact fields, 404 handling",
+      "google_sheets_integration": "4 tests - invalid URL returns 400, valid public URL preview, settings includes sheet config, update settings with sheet payload",
+      "shipment_enhancements": "3 tests - create with order_id and items, COD with amount, items empty array default",
+      "stats_enhancements": "2 tests - stats includes revenue_total, revenue_total calculation",
+      "csv_export_enhancements": "1 test - CSV includes Order ID, Items, Amount columns",
+      "search_enhancements": "1 test - search by order_id"
+    }
+  },
+  "frontend_test_summary": {
+    "tested_screens": [
+      "Dashboard - ✅ Loads correctly, stat cards render",
+      "Add Shipment - ✅ Import from Google Sheet button present, Order Details section (Order ID + Items inputs), Amount field visible in BOTH Prepaid and COD modes, form submission works",
+      "Shipments List - ✅ Shows Order # badge and items line, Copy All button present and functional",
+      "Label Preview - ✅ Shows Prepaid with amount (PREPAID ₹750), items list (T-Shirt, Jeans, Shoes), Order # (TEST-ORDER-001), layout options working",
+      "Settings - ✅ Google Sheet section with URL input and Fetch & Preview button, Copy-All Template field, Courier cards tappable",
+      "Courier Edit (/courier/[id]) - ✅ All fields present (name, prefix, padding, next number, phone, email, website, tracking URL template, notes), Copy Contact and WhatsApp share buttons working",
+      "Scanner Modal - ✅ Manual input fallback on web working as expected"
+    ],
+    "tested_features": [
+      "Courier contact fields - ✅ All new fields (phone, email, website, tracking URL, notes) present and editable",
+      "GET /api/couriers/{id} - ✅ Single courier fetch working",
+      "Google Sheets integration UI - ✅ Settings section present with URL input and preview button",
+      "Order ID field - ✅ Present in Add form and displayed in shipments list and label",
+      "Items array - ✅ Textarea in Add form, displayed in shipments list and label preview",
+      "Amount field for Prepaid - ✅ Visible and working in Prepaid mode (not only COD)",
+      "Copy All button - ✅ Present in shipment actions, copies to clipboard without crashing",
+      "Label preview enhancements - ✅ Shows Prepaid amount, items list, order # when present",
+      "Courier edit screen - ✅ Full CRUD with all contact fields, Copy Contact and WhatsApp share buttons"
+    ]
+  },
+  "iteration_2_features_verified": {
+    "backend": [
+      "✅ GET /api/couriers returns couriers with NEW fields: contact_phone, contact_email, website_url, tracking_url_template, notes",
+      "✅ POST /api/couriers with full payload including contact info persists correctly",
+      "✅ PUT /api/couriers/{id} updates contact_phone / tracking_url_template / website_url / notes",
+      "✅ GET /api/couriers/{id} single-fetch endpoint works",
+      "✅ GET /api/settings now includes sheet {url, sheet_id, gid, headers, column_mapping} and copy_template fields",
+      "✅ PUT /api/settings with sheet payload persists column_mapping",
+      "✅ POST /api/sheets/preview with invalid URL returns 400 with helpful message",
+      "✅ POST /api/sheets/preview with valid PUBLIC Google Sheet URL returns headers + sample_rows + auto_mapping (tested with Google's official sample sheet)",
+      "✅ POST /api/shipments now accepts order_id, items (array), amount (prepaid); verify items array persists",
+      "✅ GET /api/shipments/stats now returns revenue_total in addition to cod_total",
+      "✅ GET /api/shipments/export/csv includes new columns (Order ID, Items, Amount)"
+    ],
+    "frontend": [
+      "✅ Dashboard loads at /, all stat cards render",
+      "✅ Tab navigation works. Tap Ship (+) tab opens Add screen",
+      "✅ Add screen shows 'Import from Google Sheet' button at top (disabled look when not connected)",
+      "✅ Add screen has new sections: Order Details (Order ID + Items textarea), Payment & Parcel showing Amount field ALWAYS (both in Prepaid and COD modes)",
+      "✅ Filling Add form with Prepaid mode + amount (750) + order_id + items (multiline) saves successfully",
+      "✅ Shipments list shows new Order # badge and items line per shipment; Copy All button (copy-outline icon) appears in actions",
+      "✅ Copy All button works (doesn't crash) — it copies tracking details to clipboard",
+      "✅ Settings tab has NEW top section 'Google Sheet (Orders source)' with URL input and 'Fetch & Preview' button",
+      "✅ Settings has new Templates section with Copy-All Template field",
+      "✅ Settings - Couriers section now shows each courier as tappable card navigating to /courier/{id}",
+      "✅ Courier edit screen (/courier/new and /courier/{id}) opens with fields: name, prefix, padding, next number, phone, email, website, tracking URL template, notes. Save creates/updates courier.",
+      "✅ Courier edit screen for existing courier shows Copy Contact + WhatsApp share buttons",
+      "✅ Label preview (/label/{id}) now shows Prepaid with amount (e.g. 'PREPAID ₹750'), items list, and order # if present",
+      "✅ Scanner modal on web shows manual input fallback with 'Enter tracking ID' input"
+    ]
+  },
+  "notes": {
+    "google_sheets_preview": "The Google Sheets preview endpoint was tested with the official Google Sheets sample (1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms). The endpoint successfully fetched headers, sample rows, and auto-mapping. Error handling for invalid URLs and non-public sheets works correctly.",
+    "camera_scanning": "Camera scanning cannot be tested on web preview (shows manual input fallback as expected). This is correct behavior - camera works on Expo Go mobile app.",
+    "clipboard_api": "Copy All button uses navigator.clipboard on web, which works correctly. Alert confirmation appears after copying.",
+    "seeded_couriers": "Database has 5 seeded couriers from iteration 1 (Nandan Courier, DTDC, ST Courier, Trackon, Other). The seed function in server.py would seed 'India Post' with contact_phone '1800 266 6868' on fresh database, but existing data is preserved."
+  }
+}

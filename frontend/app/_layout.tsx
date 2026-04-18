@@ -13,11 +13,9 @@ export default function RootLayout() {
         }}
       >
         <Stack.Screen name="(tabs)" />
-        <Stack.Screen
-          name="scanner"
-          options={{ presentation: "modal", headerShown: false }}
-        />
+        <Stack.Screen name="scanner" options={{ presentation: "modal", headerShown: false }} />
         <Stack.Screen name="label/[id]" options={{ headerShown: false }} />
+        <Stack.Screen name="courier/[id]" options={{ headerShown: false }} />
       </Stack>
     </SafeAreaProvider>
   );
