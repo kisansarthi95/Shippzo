@@ -47,6 +47,81 @@ export default function Shipments() {
   const findCourier = (s: Shipment) =>
     couriers.find((c) => c.id === s.courier_id) || null;
 
+  const dateFilteredItems = useMemo(() => {
+    if (dateFilter === "all") return items;
+    const now = Date.now();
+    const cutoff =
+      dateFilter === "today"
+        ? now - 24 * 60 * 60 * 1000
+        : dateFilter === "week"
+        ? now - 7 * 24 * 60 * 60 * 1000
+        : now - 30 * 24 * 60 * 60 * 1000;
+    return items.filter((s) => {
+      const t = Date.parse(s.created_at || "");
+      return !isNaN(t) && t >= cutoff;
+    });
+  }, [items, dateFilter]);
+
+  const toggleSelect = (id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const selectAllVisible = () => {
+    setSelectedIds(new Set(dateFilteredItems.map((i) => i.id)));
+  };
+
+  const clearSelection = () => {
+    setSelectedIds(new Set());
+    setSelectMode(false);
+  };
+
+  const bulkPrint = async () => {
+    if (selectedIds.size === 0 || !settings) {
+      Alert.alert("Select shipments", "Tap shipments to select first.");
+      return;
+    }
+    try {
+      const shipments = await Api.bulkFetch(Array.from(selectedIds));
+      if (shipments.length === 0) return;
+      const html = buildLabelHtml(shipments, settings.sender, {
+        perPage: bulkPerPage,
+        showSenderContact: settings.sender.show_contact,
+        brand: settings.brand,
+      });
+      await Print.printAsync({ html });
+    } catch (e: any) {
+      Alert.alert("Error", e?.message || "Failed");
+    }
+  };
+
+  const bulkPreviewPdf = async () => {
+    if (selectedIds.size === 0 || !settings) {
+      Alert.alert("Select shipments", "Tap shipments to select first.");
+      return;
+    }
+    try {
+      const shipments = await Api.bulkFetch(Array.from(selectedIds));
+      const html = buildLabelHtml(shipments, settings.sender, {
+        perPage: bulkPerPage,
+        showSenderContact: settings.sender.show_contact,
+        brand: settings.brand,
+      });
+      const { uri } = await Print.printToFileAsync({ html });
+      if (Platform.OS === "web" && typeof window !== "undefined") {
+        window.open(uri, "_blank");
+      } else if (await Sharing.isAvailableAsync()) {
+        await Sharing.shareAsync(uri, { mimeType: "application/pdf" });
+      }
+    } catch (e: any) {
+      Alert.alert("Error", e?.message || "Failed");
+    }
+  };
+
   const toggleDelivered = async (s: Shipment) => {
     const newStatus = s.status === "Delivered" ? "Pending" : "Delivered";
     await Api.updateShipment(s.id, { status: newStatus });
