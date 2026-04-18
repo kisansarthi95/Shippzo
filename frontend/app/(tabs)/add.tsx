@@ -45,7 +45,7 @@ function splitAddress(full: string): {
 
 export default function AddShipment() {
   const router = useRouter();
-  const params = useLocalSearchParams<{ scanned?: string; fromSheet?: string }>();
+  const params = useLocalSearchParams<{ scanned?: string; fromSheet?: string; prefill?: string }>();
 
   const [couriers, setCouriers] = useState<Courier[]>([]);
   const [selectedCourier, setSelectedCourier] = useState<Courier | null>(null);
@@ -107,6 +107,33 @@ export default function AddShipment() {
       setTrackingId(String(params.scanned));
     }
   }, [params.scanned]);
+
+  useEffect(() => {
+    if (params.prefill) {
+      try {
+        const o = JSON.parse(String(params.prefill));
+        const addr = splitAddress(o.address || "");
+        setOrderId(o.order_id || "");
+        setCustomerName(o.customer_name || "");
+        setCustomerPhone(o.phone || "");
+        setAddr1(addr.line1);
+        setAddr2(addr.line2);
+        setCity(o.city || addr.city);
+        setState(o.state || addr.state);
+        setPincode(o.pincode || addr.pincode);
+        const amt = String(o.amount || "").replace(/[^\d.]/g, "");
+        setAmount(amt);
+        const items = String(o.item || "")
+          .split(/[,\n;|]/)
+          .map((s: string) => s.trim())
+          .filter(Boolean);
+        setItemsText(items.join("\n"));
+        setSheetRowKey(o.row_key || "");
+      } catch {
+        // ignore
+      }
+    }
+  }, [params.prefill]);
 
   const openImport = useCallback(async () => {
     if (!sheetConnected) {
