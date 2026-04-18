@@ -549,25 +549,70 @@ async def shipments_stats():
     pending = await db.shipments.count_documents({"status": "Pending"})
     cod_cursor = db.shipments.aggregate([
         {"$match": {"payment_mode": "COD", "status": {"$ne": "Cancelled"}}},
-        {"$group": {"_id": None, "sum": {"$sum": "$amount"}}},
+        {"$group": {"_id": None, "sum": {"$sum": "$amount"}, "count": {"$sum": 1}}},
     ])
     cod_sum = 0.0
+    cod_count = 0
     async for row in cod_cursor:
         cod_sum = float(row.get("sum", 0.0))
-    revenue_cursor = db.shipments.aggregate([
-        {"$match": {"status": {"$ne": "Cancelled"}}},
-        {"$group": {"_id": None, "sum": {"$sum": "$amount"}}},
+        cod_count = int(row.get("count", 0))
+    prepaid_cursor = db.shipments.aggregate([
+        {"$match": {"payment_mode": "Prepaid", "status": {"$ne": "Cancelled"}}},
+        {"$group": {"_id": None, "sum": {"$sum": "$amount"}, "count": {"$sum": 1}}},
     ])
-    revenue = 0.0
-    async for row in revenue_cursor:
-        revenue = float(row.get("sum", 0.0))
+    prepaid_sum = 0.0
+    prepaid_count = 0
+    async for row in prepaid_cursor:
+        prepaid_sum = float(row.get("sum", 0.0))
+        prepaid_count = int(row.get("count", 0))
     return {
         "total": total,
         "delivered": delivered,
         "pending": pending,
         "cod_total": cod_sum,
-        "revenue_total": revenue,
+        "cod_count": cod_count,
+        "prepaid_total": prepaid_sum,
+        "prepaid_count": prepaid_count,
+        "revenue_total": cod_sum + prepaid_sum,
     }
+
+
+@api_router.get("/sheets/sample-template", response_class=PlainTextResponse)
+async def sheets_sample_template():
+    """Return a CSV with ideal column layout + example rows for users to import into Google Sheets."""
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow([
+        "Timestamp", "Order ID", "Name", "Phone", "Address",
+        "City", "State", "Pincode", "Item", "Amount", "Payment Mode",
+    ])
+    samples = [
+        ["2026-01-15 10:30:00", "ORD-1001", "Ramesh Patel", "9876543210",
+         "12, Navrangpura Main Road, Ellisbridge",
+         "Ahmedabad", "Gujarat", "380006",
+         "Cotton Kurta Large - Blue", "850", "COD"],
+        ["2026-01-15 11:12:45", "ORD-1002", "Priya Shah", "9823456710",
+         "B-204, Sunrise Apts, Satellite Road",
+         "Ahmedabad", "Gujarat", "380015",
+         "Silk Saree Red; Matching Blouse", "2499", "Prepaid"],
+        ["2026-01-15 14:02:10", "ORD-1003", "Rahul Mehta", "9812345678",
+         "Shop 7, Main Bazaar, Near Bus Stand",
+         "Rajkot", "Gujarat", "360001",
+         "Men Jeans 32 - Dark Blue", "1299", "COD"],
+        ["2026-01-15 16:47:22", "ORD-1004", "Anjali Desai", "9801234567",
+         "45, Gulab Nagar, Adajan",
+         "Surat", "Gujarat", "395009",
+         "Kids T-shirt Small; Shorts", "699", "Prepaid"],
+    ]
+    for row in samples:
+        w.writerow(row)
+    return PlainTextResponse(
+        buf.getvalue(),
+        media_type="text/csv",
+        headers={
+            "Content-Disposition": 'attachment; filename="courier_sheet_template.csv"'
+        },
+    )
 
 
 @api_router.get("/shipments/export/csv", response_class=PlainTextResponse)

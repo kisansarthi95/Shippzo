@@ -1,7 +1,7 @@
 import type { Shipment, SenderAddress } from "./api";
 
 export type LabelOptions = {
-  perPage: 1 | 2 | 4 | "thermal";
+  perPage: 1 | 2 | 4 | "thermal" | "barcode";
   showSenderContact: boolean;
 };
 
@@ -94,9 +94,52 @@ export function buildLabelHtml(
   sender: SenderAddress,
   opts: LabelOptions
 ): string {
+  const perPage = opts.perPage;
+
+  // Barcode-only small sticker layout (50x25mm each, 1 per thermal sheet)
+  if (perPage === "barcode") {
+    const pages = shipments
+      .map(
+        (s) => `
+      <div class="sheet-sticker">
+        <div class="sticker">
+          <div class="sticker-track">${escape(s.tracking_id)}</div>
+          <svg class="barcode" jsbarcode-value="${escape(s.tracking_id)}"
+            jsbarcode-format="CODE128" jsbarcode-displayvalue="false"
+            jsbarcode-height="40" jsbarcode-margin="0"></svg>
+          <div class="sticker-sub">${escape(s.courier_name || "")}${s.order_id ? " · #" + escape(s.order_id) : ""}</div>
+        </div>
+      </div>`
+      )
+      .join("");
+    return `<!doctype html>
+<html><head><meta charset="utf-8" />
+<title>Barcode Stickers</title>
+<script src="https://cdn.jsdelivr.net/npm/jsbarcode@3.11.6/dist/JsBarcode.all.min.js"></script>
+<style>
+  @page { size: 50mm 25mm; margin: 1mm; }
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, Arial, sans-serif; margin: 0; }
+  .sheet-sticker { page-break-after: always; }
+  .sticker { width: 48mm; height: 23mm; padding: 1mm; text-align: center;
+    display: flex; flex-direction: column; justify-content: center; align-items: center;
+    border: 1px solid #0A0A0A; border-radius: 1mm; }
+  .sticker-track { font-family: 'Courier New', monospace; font-weight: 800;
+    font-size: 10pt; letter-spacing: 1.5px; color: #0A0A0A; }
+  .sticker-sub { font-size: 6pt; color: #4B5563; margin-top: 1mm; }
+  .barcode { width: 42mm; height: 40px; margin-top: 1mm; }
+</style>
+</head><body>${pages}
+<script>
+  document.addEventListener('DOMContentLoaded', function () {
+    try { JsBarcode('.barcode').init(); } catch(e) {}
+  });
+</script>
+</body></html>`;
+  }
+
   const labels = shipments.map((s) => singleLabel(s, sender, opts)).join("");
 
-  const perPage = opts.perPage;
   const gridCss =
     perPage === 4
       ? `.sheet { display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; page-break-after: always; }
@@ -107,8 +150,7 @@ export function buildLabelHtml(
       : perPage === 1
       ? `.sheet { display: block; page-break-after: always; }
          .label { height: 260mm; }`
-      : // thermal
-        `.sheet { display: block; page-break-after: always; }
+      : `.sheet { display: block; page-break-after: always; }
          .label { height: 145mm; width: 100mm; }`;
 
   const pageCss =
@@ -116,7 +158,6 @@ export function buildLabelHtml(
       ? `@page { size: 100mm 150mm; margin: 2mm; }`
       : `@page { size: A4; margin: 5mm; }`;
 
-  // group into pages
   const chunkSize = perPage === "thermal" ? 1 : (perPage as number);
   const pages: string[] = [];
   const sheets = shipments;

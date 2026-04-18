@@ -20,6 +20,10 @@ type Stats = {
   delivered: number;
   pending: number;
   cod_total: number;
+  cod_count: number;
+  prepaid_total: number;
+  prepaid_count: number;
+  revenue_total: number;
 };
 
 export default function Dashboard() {
@@ -107,11 +111,25 @@ export default function Dashboard() {
                 tone="success"
               />
               <StatCard
+                testID="stat-revenue"
+                label="Total Revenue"
+                value={`₹${(stats?.revenue_total ?? 0).toFixed(0)}`}
+                icon="trending-up"
+                tone="primary"
+              />
+              <StatCard
                 testID="stat-cod"
-                label="COD Total"
+                label={`COD · ${stats?.cod_count ?? 0}`}
                 value={`₹${(stats?.cod_total ?? 0).toFixed(0)}`}
                 icon="cash-outline"
-                tone="primary"
+                tone="neutral"
+              />
+              <StatCard
+                testID="stat-prepaid"
+                label={`Prepaid · ${stats?.prepaid_count ?? 0}`}
+                value={`₹${(stats?.prepaid_total ?? 0).toFixed(0)}`}
+                icon="card-outline"
+                tone="neutral"
               />
             </View>
 

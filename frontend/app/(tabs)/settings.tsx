@@ -13,8 +13,7 @@ import {
   ActivityIndicator,
   Modal,
   Linking,
-} from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
+} from "react-native";import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter, useFocusEffect } from "expo-router";
 import { Api, Courier, Settings as SettingsT, SenderAddress, SheetPreview, SHEET_FIELDS } from "../../lib/api";
@@ -157,6 +156,31 @@ export default function SettingsScreen() {
         >
           {/* Google Sheet */}
           <Section title="Google Sheet (Orders source)" icon="logo-google">
+            <View style={styles.sampleBox} testID="sheet-sample-box">
+              <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+                <Ionicons name="bulb-outline" size={14} color={colors.primary} />
+                <Text style={styles.sampleTitle}>First time? Use the sample template</Text>
+              </View>
+              <Text style={styles.sampleText}>
+                Download the sample CSV → open Google Sheets → File → Import → upload CSV → Replace current sheet. Share as "Anyone with the link → Viewer" and paste URL below.
+              </Text>
+              <Text style={styles.sampleCols}>
+                Columns: Timestamp · Order ID · Name · Phone · Address · City · State · Pincode · Item · Amount · Payment Mode
+              </Text>
+              <TouchableOpacity
+                testID="sheet-download-sample"
+                style={styles.sampleBtn}
+                onPress={() =>
+                  Linking.openURL(
+                    `${process.env.EXPO_PUBLIC_BACKEND_URL}/api/sheets/sample-template`
+                  )
+                }
+              >
+                <Ionicons name="download-outline" size={16} color="#fff" />
+                <Text style={styles.sampleBtnText}>Download Sample CSV</Text>
+              </TouchableOpacity>
+            </View>
+
             {sheetStatus === "connected" && !preview ? (
               <View>
                 <View style={styles.connectedBox}>
@@ -416,6 +440,12 @@ export default function SettingsScreen() {
 
           {/* Templates */}
           <Section title="Customer Messages" icon="chatbubbles-outline">
+            <View style={styles.infoBox} testID="messages-info-box">
+              <Ionicons name="information-circle-outline" size={16} color={colors.primary} />
+              <Text style={styles.infoText}>
+                <Text style={{ fontWeight: "800" }}>How templates work:</Text> These messages are NOT auto-sent. When you tap the WhatsApp or Copy icons on a shipment, the app fills in the template with actual values (customer name, tracking ID, etc.) and opens WhatsApp or copies to clipboard. The ETA days field is just a placeholder number you can customize — it's not a scheduler.
+              </Text>
+            </View>
             <Field label="WhatsApp Template (for notification)">
               <Text style={styles.hint}>
                 Use: {"{customer_name}"}, {"{courier}"}, {"{tracking_id}"}, {"{eta_days}"}
@@ -661,4 +691,54 @@ const styles = StyleSheet.create({
     borderBottomColor: "#F3F4F6",
   },
   pickerItemText: { color: colors.text, fontWeight: "600" },
+
+  sampleBox: {
+    padding: 12,
+    borderWidth: 2,
+    borderStyle: "dashed",
+    borderColor: colors.primary,
+    borderRadius: 10,
+    marginBottom: 12,
+    backgroundColor: "#FFF7ED",
+  },
+  sampleTitle: {
+    fontSize: 13,
+    fontWeight: "800",
+    color: colors.text,
+  },
+  sampleText: { fontSize: 12, color: colors.text, marginTop: 6, lineHeight: 17 },
+  sampleCols: {
+    fontSize: 11,
+    color: colors.textMuted,
+    marginTop: 6,
+    fontFamily: "Courier",
+  },
+  sampleBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    height: 40,
+    backgroundColor: colors.primary,
+    borderRadius: 8,
+    marginTop: 10,
+  },
+  sampleBtnText: { color: "#fff", fontWeight: "800", fontSize: 13 },
+
+  infoBox: {
+    flexDirection: "row",
+    gap: 8,
+    padding: 10,
+    backgroundColor: "#FFF7ED",
+    borderWidth: 1,
+    borderColor: "#FED7AA",
+    borderRadius: 8,
+    marginBottom: 10,
+  },
+  infoText: {
+    flex: 1,
+    color: colors.text,
+    fontSize: 12,
+    lineHeight: 17,
+  },
 });

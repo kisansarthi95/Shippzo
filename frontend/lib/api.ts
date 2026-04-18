@@ -148,6 +148,9 @@ export const Api = {
         delivered: number;
         pending: number;
         cod_total: number;
+        cod_count: number;
+        prepaid_total: number;
+        prepaid_count: number;
         revenue_total: number;
       }>("/shipments/stats")
       .then((r) => r.data),

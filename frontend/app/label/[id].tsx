@@ -68,15 +68,19 @@ export default function LabelScreen() {
     }
   };
 
-  const sharePdf = async () => {
+  const previewPdf = async () => {
     const html = getHtml();
     if (!html) return;
     try {
       const { uri } = await Print.printToFileAsync({ html });
+      if (Platform.OS === "web") {
+        if (typeof window !== "undefined") window.open(uri, "_blank");
+        return;
+      }
       if (await Sharing.isAvailableAsync()) {
         await Sharing.shareAsync(uri, {
           mimeType: "application/pdf",
-          dialogTitle: "Share label PDF",
+          dialogTitle: "Preview label PDF",
           UTI: "com.adobe.pdf",
         });
       } else {
@@ -188,6 +192,7 @@ export default function LabelScreen() {
               { k: 2 as PerPage, label: "A4 · 2/page" },
               { k: 4 as PerPage, label: "A4 · 4/page" },
               { k: "thermal" as PerPage, label: "Thermal 4x6" },
+              { k: "barcode" as PerPage, label: "Barcode Sticker 50x25mm" },
             ].map((opt) => {
               const active = perPage === opt.k;
               return (
@@ -268,13 +273,13 @@ export default function LabelScreen() {
 
         <View style={styles.ctaRow}>
           <TouchableOpacity
-            testID="share-pdf-btn"
+            testID="preview-pdf-btn"
             style={styles.secondaryBtn}
-            onPress={sharePdf}
+            onPress={previewPdf}
           >
-            <Ionicons name="share-outline" size={18} color={colors.text} />
+            <Ionicons name="eye-outline" size={18} color={colors.text} />
             <Text style={styles.secondaryBtnText}>
-              {Platform.OS === "web" ? "Save PDF" : "Share PDF"}
+              {Platform.OS === "web" ? "Preview PDF" : "Preview / Share"}
             </Text>
           </TouchableOpacity>
           <TouchableOpacity
@@ -283,7 +288,9 @@ export default function LabelScreen() {
             onPress={printNow}
           >
             <Ionicons name="print" size={18} color="#fff" />
-            <Text style={styles.primaryBtnText}>Print Labels</Text>
+            <Text style={styles.primaryBtnText}>
+              {perPage === "barcode" ? "Print Stickers" : "Print Labels"}
+            </Text>
           </TouchableOpacity>
         </View>
       </ScrollView>

@@ -65,6 +65,7 @@ export default function AddShipment() {
   const [amount, setAmount] = useState("");
   const [itemsText, setItemsText] = useState(""); // newline or comma separated
   const [weight, setWeight] = useState("");
+  const [weightUnit, setWeightUnit] = useState<"g" | "kg">("g");
   const [sheetRowKey, setSheetRowKey] = useState("");
   const [saving, setSaving] = useState(false);
 
@@ -208,7 +209,7 @@ export default function AddShipment() {
           amount: Number(amount) || 0,
           items,
           item_description: items.join(", "),
-          weight: weight.trim(),
+          weight: weight.trim() ? `${weight.trim()} ${weightUnit}` : "",
           sheet_row_key: sheetRowKey,
         });
         resetForm();
@@ -541,14 +542,39 @@ export default function AddShipment() {
               />
             </Field>
             <Field label="Weight">
-              <TextInput
-                testID="weight-input"
-                value={weight}
-                onChangeText={setWeight}
-                placeholder="e.g. 0.5 kg"
-                placeholderTextColor="#9CA3AF"
-                style={styles.input}
-              />
+              <View style={{ flexDirection: "row", gap: 8, alignItems: "stretch" }}>
+                <TextInput
+                  testID="weight-input"
+                  value={weight}
+                  onChangeText={setWeight}
+                  placeholder={weightUnit === "g" ? "e.g. 250" : "e.g. 0.5"}
+                  placeholderTextColor="#9CA3AF"
+                  keyboardType="decimal-pad"
+                  style={[styles.input, { flex: 1 }]}
+                />
+                <View style={{ flexDirection: "row", gap: 4 }}>
+                  <TouchableOpacity
+                    testID="weight-unit-g"
+                    onPress={() => setWeightUnit("g")}
+                    style={[
+                      styles.unitBtn,
+                      weightUnit === "g" && styles.unitBtnActive,
+                    ]}
+                  >
+                    <Text style={[styles.unitText, weightUnit === "g" && { color: "#fff" }]}>g</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    testID="weight-unit-kg"
+                    onPress={() => setWeightUnit("kg")}
+                    style={[
+                      styles.unitBtn,
+                      weightUnit === "kg" && styles.unitBtnActive,
+                    ]}
+                  >
+                    <Text style={[styles.unitText, weightUnit === "kg" && { color: "#fff" }]}>kg</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
             </Field>
           </Section>
 
@@ -939,4 +965,19 @@ const styles = StyleSheet.create({
     color: colors.textMuted,
     marginTop: 30,
   },
+  unitBtn: {
+    width: 44,
+    height: 46,
+    borderWidth: 2,
+    borderColor: "#E5E7EB",
+    borderRadius: 10,
+    justifyContent: "center",
+    alignItems: "center",
+    backgroundColor: "#fff",
+  },
+  unitBtnActive: {
+    backgroundColor: colors.primary,
+    borderColor: colors.primary,
+  },
+  unitText: { fontWeight: "800", color: colors.text, fontSize: 13 },
 });
