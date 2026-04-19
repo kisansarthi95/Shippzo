@@ -1,4 +1,5 @@
 import type { Shipment, SenderAddress } from "./api";
+// bwip-js supports React Native via its default export (needs react-zlib-js installed)
 import bwipjs from "bwip-js";
 
 export type Brand = { name?: string; logo_base64?: string };
