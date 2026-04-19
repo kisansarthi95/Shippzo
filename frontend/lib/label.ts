@@ -245,7 +245,7 @@ export function buildLabelHtml(
     min-height: 20mm; }
   .brand-wrap { display: flex; align-items: center; gap: 3mm; flex: 1; min-width: 0; }
   .brand-logo-square { max-width: 22mm; max-height: 22mm; object-fit: contain; }
-  .brand-logo-wide   { max-width: 80mm; max-height: 22mm; object-fit: contain; }
+  .brand-logo-wide   { max-width: 100%; width: 100%; max-height: 22mm; height: auto; object-fit: contain; display: block; }
   .brand-name { font-size: 17pt; font-weight: 900; letter-spacing: -0.2px;
     line-height: 1.1; word-break: break-word; max-width: 100%; }
   .pay-wrap { text-align: right; flex-shrink: 0; }
