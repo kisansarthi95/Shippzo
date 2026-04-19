@@ -174,7 +174,7 @@ export default function LabelScreen() {
               </View>
             ) : (
               <View style={{ alignItems: "flex-end" }}>
-                <Text style={styles.prepaidBadge}>PREPAID ₹{shipment.amount || 0}</Text>
+                <Text style={styles.prepaidBadge}>PAID ₹{shipment.amount || 0}</Text>
                 <Text style={styles.paySubText}>via {shipment.courier_name}</Text>
               </View>
             )}

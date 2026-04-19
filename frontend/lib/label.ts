@@ -65,11 +65,16 @@ function singleLabel(s: Shipment, sender: SenderAddress, opts: LabelOptions) {
   const logoImg = logo
     ? (logo.startsWith("data:") ? logo : `data:image/png;base64,${logo}`)
     : "";
+  // Show ONLY logo if present; otherwise brand name as fallback
+  const brandHeader = logoImg
+    ? `<img class="brand-logo-only" src="${logoImg}" />`
+    : `<div class="brand-name">${escape(brandName)}</div>`;
 
   const isCod = s.payment_mode === "COD";
+  // Use short label: "PAID" instead of "PREPAID", "COD" stays
   const payPillText = isCod
     ? `COD ₹${Number(amt).toFixed(0)}`
-    : `PREPAID${amt ? ` ₹${Number(amt).toFixed(0)}` : ""}`;
+    : `PAID${amt ? ` ₹${Number(amt).toFixed(0)}` : ""}`;
   const payPillClass = isCod ? "pay-pill cod" : "pay-pill prepaid";
   const courierLine = s.courier_name
     ? `<div class="courier-sub">via ${escape(s.courier_name)}</div>`
@@ -82,36 +87,60 @@ function singleLabel(s: Shipment, sender: SenderAddress, opts: LabelOptions) {
 
   const bcSvg = renderBarcodeSvg(s.tracking_id);
 
+  // Compact sender "FROM" line (goes into footer area, above barcode)
+  const senderFooterLine = (() => {
+    const addr = [
+      sender.address_line1,
+      sender.address_line2,
+      [sender.city, sender.state, sender.pincode].filter(Boolean).join(", "),
+    ].filter(Boolean).join(", ");
+    const parts = [
+      `<b>${escape(sender.name || "Sender")}</b>`,
+      escape(addr),
+    ];
+    if (opts.showSenderContact && sender.phone) {
+      parts.push(`📞 <b>${escape(sender.phone)}</b>`);
+    }
+    return parts.filter(Boolean).join(" · ");
+  })();
+
   return `
   <div class="label">
+    <!-- TOP (fixed height) -->
     <div class="hdr">
-      <div class="brand-wrap">
-        ${logoImg ? `<img class="brand-logo" src="${logoImg}" />` : ""}
-        <div class="brand-name">${escape(brandName)}</div>
-      </div>
+      <div class="brand-wrap">${brandHeader}</div>
       <div class="pay-wrap">
         <div class="${payPillClass}">${payPillText}</div>
         ${courierLine}
       </div>
     </div>
 
-    <div class="body">
-      ${senderBlock(sender, opts.showSenderContact)}
-      ${receiverBlock(s)}
+    <!-- MIDDLE (flex – can shrink/grow) -->
+    <div class="mid">
+      <div class="recv-block">
+        <div class="blk-title">DELIVER TO</div>
+        <div class="blk-name">${escape(s.customer_name)}</div>
+        ${[s.address_line1, s.address_line2,
+           [s.city, s.state, s.pincode].filter(Boolean).join(", ")]
+           .filter(Boolean)
+           .map((l) => `<div class="blk-line">${escape(l)}</div>`).join("")}
+        ${s.customer_phone ? `<div class="blk-contact">📞 <b>${escape(s.customer_phone)}</b></div>` : ""}
+      </div>
+
+      <div class="meta-row">
+        ${s.order_id ? `<span><b class="lbl">Order:</b> ${escape(s.order_id)}</span>` : ""}
+        ${s.weight ? `<span><b class="lbl">Wt:</b> ${escape(s.weight)}</span>` : ""}
+        <span><b class="lbl">Item:</b> ${escape(itemsText)}</span>
+      </div>
     </div>
 
-    <div class="meta-row">
-      ${s.order_id ? `<div class="meta-item"><span class="lbl">Order #:</span> ${escape(s.order_id)}</div>` : "<div></div>"}
-      ${s.weight ? `<div class="meta-item right"><span class="lbl">Weight:</span> ${escape(s.weight)}</div>` : ""}
-    </div>
-    <div class="meta-row">
-      <div class="meta-item"><span class="lbl">Items:</span> ${escape(itemsText)}</div>
-    </div>
-
-    <div class="track">
-      <div class="track-label">TRACKING ID</div>
-      <div class="track-id">${escape(s.tracking_id)}</div>
-      <div class="barcode-wrap">${bcSvg}</div>
+    <!-- BOTTOM (fixed height, barcode never cut) -->
+    <div class="footer">
+      <div class="sender-line">From: ${senderFooterLine}</div>
+      <div class="track-wrap">
+        <div class="track-id">${escape(s.tracking_id)}</div>
+        <div class="barcode-wrap">${bcSvg}</div>
+      </div>
     </div>
   </div>
   `;
@@ -201,51 +230,52 @@ export function buildLabelHtml(
   body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif;
     margin: 0; color: #0A0A0A; }
   ${gridCss}
-  .label { border: 2px solid #0A0A0A; padding: 6mm; display: flex; flex-direction: column;
-    break-inside: avoid; background: #fff; border-radius: 3mm; }
+  /* Label is a 3-row grid: fixed header, flexible middle, fixed footer */
+  .label { border: 2px solid #0A0A0A; padding: 5mm;
+    break-inside: avoid; background: #fff; border-radius: 3mm;
+    display: grid; grid-template-rows: auto 1fr auto; gap: 3mm; overflow: hidden; }
 
-  /* Header: brand on left, payment pill on right */
-  .hdr { display: flex; justify-content: space-between; align-items: flex-start;
-    border-bottom: 2px solid #0A0A0A; padding-bottom: 3mm; gap: 4mm; }
+  /* ---- TOP (fixed) ---- */
+  .hdr { display: flex; justify-content: space-between; align-items: center;
+    border-bottom: 2px solid #0A0A0A; padding-bottom: 3mm; gap: 4mm;
+    min-height: 20mm; }
   .brand-wrap { display: flex; align-items: center; gap: 3mm; flex: 1; min-width: 0; }
-  .brand-logo { width: 14mm; height: 14mm; object-fit: contain; border-radius: 2mm; }
-  .brand-name { font-size: 20pt; font-weight: 900; letter-spacing: -0.3px; line-height: 1.1;
-    word-break: break-word; }
+  .brand-logo-only { max-width: 60mm; max-height: 20mm; object-fit: contain; }
+  .brand-name { font-size: 17pt; font-weight: 900; letter-spacing: -0.2px;
+    line-height: 1.1; word-break: break-word; max-width: 100%; }
   .pay-wrap { text-align: right; flex-shrink: 0; }
-  .pay-pill { display: inline-block; padding: 2.5mm 4mm; font-weight: 900;
-    font-size: 13pt; border-radius: 999px; line-height: 1; white-space: nowrap;
+  .pay-pill { display: inline-block; padding: 2.5mm 4.5mm; font-weight: 900;
+    font-size: 14pt; border-radius: 999px; line-height: 1; white-space: nowrap;
     letter-spacing: 0.5px; }
   .pay-pill.prepaid { background: #0A0A0A; color: #fff; }
   .pay-pill.cod { background: #FF5A00; color: #fff; }
   .courier-sub { margin-top: 1.5mm; font-size: 9pt; color: #4B5563; font-weight: 600; }
 
-  /* From / To */
-  .body { display: grid; grid-template-columns: 1fr 1.15fr; gap: 4mm; margin-top: 4mm; }
-  .blk { padding: 3mm; border-radius: 3mm; }
-  .blk.sender { border: 1.5px dashed #6B7280; }
-  .blk.receiver { border: 1.5px solid #0A0A0A; background: #F4F5F7; }
+  /* ---- MIDDLE (flex) ---- */
+  .mid { display: flex; flex-direction: column; gap: 3mm; overflow: hidden; min-height: 0; }
+  .recv-block { border: 1.5px solid #0A0A0A; border-radius: 3mm;
+    padding: 3mm 3.5mm; background: #F4F5F7; flex: 1; overflow: hidden; }
   .blk-title { font-size: 8pt; font-weight: 800; color: #4B5563;
     letter-spacing: 2px; margin-bottom: 2mm; }
-  .blk-name { font-size: 13pt; font-weight: 900; margin-bottom: 1.5mm; line-height: 1.15; }
-  .blk-line { font-size: 10pt; line-height: 1.35; color: #1F2937; }
-  .blk-contact { font-size: 10pt; margin-top: 2mm; font-weight: 700; }
-
-  /* Meta rows */
-  .meta-row { display: flex; justify-content: space-between; font-size: 10pt;
-    border-top: 1px solid #E5E7EB; padding-top: 2mm; margin-top: 3mm; gap: 4mm; }
-  .meta-item { color: #0A0A0A; }
-  .meta-item.right { text-align: right; }
+  .blk-name { font-size: 14pt; font-weight: 900; margin-bottom: 2mm; line-height: 1.15; }
+  .blk-line { font-size: 11pt; line-height: 1.35; color: #1F2937; }
+  .blk-contact { font-size: 11pt; margin-top: 2mm; font-weight: 700; }
+  .meta-row { display: flex; flex-wrap: wrap; gap: 3mm 5mm; font-size: 9.5pt;
+    padding-top: 1mm; }
   .meta-row .lbl { color: #6B7280; font-weight: 700; }
 
-  /* Tracking block */
-  .track { margin-top: 4mm; border-top: 2px solid #0A0A0A; padding-top: 4mm;
-    text-align: center; }
-  .track-label { font-size: 8pt; font-weight: 800; color: #4B5563;
-    letter-spacing: 3px; margin-bottom: 1.5mm; }
-  .track-id { font-family: 'Courier New', monospace; font-size: 18pt; font-weight: 900;
-    letter-spacing: 3px; margin-bottom: 2mm; }
-  .barcode-wrap { display: flex; justify-content: center; align-items: center; }
-  .barcode-wrap svg { width: 80%; height: auto; max-height: 18mm; }
+  /* ---- BOTTOM (fixed – barcode never cut) ---- */
+  .footer { border-top: 2px solid #0A0A0A; padding-top: 3mm;
+    display: flex; flex-direction: column; gap: 2.5mm; }
+  .sender-line { font-size: 8pt; color: #4B5563; line-height: 1.3;
+    word-break: break-word; }
+  .sender-line b { color: #1F2937; }
+  .track-wrap { text-align: center; }
+  .track-id { font-family: 'Courier New', monospace; font-size: 14pt; font-weight: 900;
+    letter-spacing: 2.5px; margin-bottom: 1.5mm; }
+  .barcode-wrap { display: flex; justify-content: center; align-items: center;
+    height: 16mm; }
+  .barcode-wrap svg { width: 92%; height: 16mm; max-height: 16mm; }
 </style>
 </head>
 <body>
