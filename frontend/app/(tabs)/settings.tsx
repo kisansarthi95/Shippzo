@@ -19,6 +19,74 @@ import { useRouter, useFocusEffect } from "expo-router";
 import { Api, Courier, Settings as SettingsT, SenderAddress, SheetPreview, SHEET_FIELDS } from "../../lib/api";
 import { colors } from "../../lib/theme";
 
+// Professional templates with blank lines for breathing room
+const PRESETS = {
+  wa_gujarati: (
+    "નમસ્તે {customer_name} 🙏\n" +
+    "\n" +
+    "તમારો ઓર્ડર #{order_id} સફળતાપૂર્વક મોકલવામાં આવ્યો છે.\n" +
+    "\n" +
+    "📦 Courier: {courier}\n" +
+    "🔖 Tracking ID: {tracking_id}\n" +
+    "\n" +
+    "🔗 Track your order:\n" +
+    "{tracking_url}\n" +
+    "\n" +
+    "⏱ અપેક્ષિત ડિલિવરી: {eta_days} દિવસ\n" +
+    "\n" +
+    "આભાર!"
+  ),
+  wa_english: (
+    "Hi {customer_name} 👋\n" +
+    "\n" +
+    "Your order #{order_id} has been shipped.\n" +
+    "\n" +
+    "📦 Courier: {courier}\n" +
+    "🔖 Tracking ID: {tracking_id}\n" +
+    "\n" +
+    "🔗 Track here:\n" +
+    "{tracking_url}\n" +
+    "\n" +
+    "⏱ Expected delivery: {eta_days} days\n" +
+    "\n" +
+    "Thank you for your order!"
+  ),
+  copy_pro: (
+    "Hi {customer_name},\n" +
+    "\n" +
+    "Your order #{order_id} has been shipped.\n" +
+    "\n" +
+    "Courier: {courier}\n" +
+    "Tracking ID: {tracking_id}\n" +
+    "Amount: ₹{amount}\n" +
+    "\n" +
+    "Track your order:\n" +
+    "{tracking_url}\n" +
+    "\n" +
+    "Thank you!"
+  ),
+};
+
+// Sample data for live preview
+const SAMPLE = {
+  customer_name: "Ramesh Patel",
+  order_id: "ORD-1001",
+  courier: "Nandan Courier",
+  tracking_id: "ND00123",
+  tracking_url: "https://nandancourier.com/track?id=ND00123",
+  amount: "850",
+  eta_days: "7",
+};
+
+function fillTemplate(tpl: string, brand?: string): string {
+  let out = tpl;
+  Object.entries(SAMPLE).forEach(([k, v]) => {
+    out = out.replace(new RegExp(`\\{${k}\\}`, "g"), v);
+  });
+  if (brand) out = `${out}\n\n— ${brand}`;
+  return out;
+}
+
 export default function SettingsScreen() {
   const router = useRouter();
 
@@ -28,6 +96,7 @@ export default function SettingsScreen() {
   });
   const [template, setTemplate] = useState("");
   const [copyTemplate, setCopyTemplate] = useState("");
+  const [showPreview, setShowPreview] = useState(true);
   const [etaDays, setEtaDays] = useState("7");
   const [couriers, setCouriers] = useState<Courier[]>([]);
   const [brandName, setBrandName] = useState("");
@@ -468,27 +537,77 @@ export default function SettingsScreen() {
             </View>
             <Field label="WhatsApp Template (for notification)">
               <Text style={styles.hint}>
-                Use: {"{customer_name}"}, {"{courier}"}, {"{tracking_id}"}, {"{eta_days}"}
+                Use: {"{customer_name}"}, {"{order_id}"}, {"{courier}"}, {"{tracking_id}"}, {"{tracking_url}"}, {"{amount}"}, {"{eta_days}"}
               </Text>
+              <View style={styles.presetRow}>
+                <TouchableOpacity
+                  style={styles.presetBtn}
+                  onPress={() => setTemplate(PRESETS.wa_gujarati)}
+                  testID="preset-wa-gu"
+                >
+                  <Ionicons name="sparkles-outline" size={13} color={colors.primary} />
+                  <Text style={styles.presetText}>ગુજરાતી Professional</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.presetBtn}
+                  onPress={() => setTemplate(PRESETS.wa_english)}
+                  testID="preset-wa-en"
+                >
+                  <Ionicons name="sparkles-outline" size={13} color={colors.primary} />
+                  <Text style={styles.presetText}>English Professional</Text>
+                </TouchableOpacity>
+              </View>
               <TextInput
                 testID="whatsapp-template-input"
                 value={template}
                 onChangeText={setTemplate}
                 multiline
-                style={[styles.input, { height: 100, textAlignVertical: "top", paddingTop: 10 }]}
+                style={[styles.input, { height: 160, textAlignVertical: "top", paddingTop: 10 }]}
               />
+              {showPreview && (
+                <View style={styles.previewBox}>
+                  <View style={styles.previewHeader}>
+                    <Ionicons name="eye-outline" size={14} color={colors.primary} />
+                    <Text style={styles.previewTitle}>Live Preview (WhatsApp)</Text>
+                  </View>
+                  <Text style={styles.previewText}>
+                    {fillTemplate(template || PRESETS.wa_gujarati, brandName)}
+                  </Text>
+                </View>
+              )}
             </Field>
             <Field label="Copy-All Template (for quick copy)">
               <Text style={styles.hint}>
                 Use: {"{customer_name}"}, {"{order_id}"}, {"{courier}"}, {"{tracking_id}"}, {"{tracking_url}"}, {"{amount}"}
               </Text>
+              <View style={styles.presetRow}>
+                <TouchableOpacity
+                  style={styles.presetBtn}
+                  onPress={() => setCopyTemplate(PRESETS.copy_pro)}
+                  testID="preset-copy-pro"
+                >
+                  <Ionicons name="sparkles-outline" size={13} color={colors.primary} />
+                  <Text style={styles.presetText}>Professional Layout</Text>
+                </TouchableOpacity>
+              </View>
               <TextInput
                 testID="copy-template-input"
                 value={copyTemplate}
                 onChangeText={setCopyTemplate}
                 multiline
-                style={[styles.input, { height: 100, textAlignVertical: "top", paddingTop: 10 }]}
+                style={[styles.input, { height: 160, textAlignVertical: "top", paddingTop: 10 }]}
               />
+              {showPreview && (
+                <View style={styles.previewBox}>
+                  <View style={styles.previewHeader}>
+                    <Ionicons name="eye-outline" size={14} color={colors.primary} />
+                    <Text style={styles.previewTitle}>Live Preview (Copy)</Text>
+                  </View>
+                  <Text style={styles.previewText}>
+                    {fillTemplate(copyTemplate || PRESETS.copy_pro, brandName)}
+                  </Text>
+                </View>
+              )}
             </Field>
             <Field label="Default ETA (days)">
               <TextInput
@@ -760,5 +879,54 @@ const styles = StyleSheet.create({
     color: colors.text,
     fontSize: 12,
     lineHeight: 17,
+  },
+  presetRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 6,
+    marginBottom: 8,
+  },
+  presetBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: colors.primary,
+    backgroundColor: "#FFF7ED",
+  },
+  presetText: {
+    fontSize: 11,
+    fontWeight: "700",
+    color: colors.primary,
+  },
+  previewBox: {
+    marginTop: 8,
+    padding: 12,
+    backgroundColor: "#ECFDF5",
+    borderWidth: 1,
+    borderColor: "#A7F3D0",
+    borderRadius: 10,
+  },
+  previewHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    marginBottom: 6,
+    paddingBottom: 6,
+    borderBottomWidth: 1,
+    borderBottomColor: "#A7F3D0",
+  },
+  previewTitle: {
+    fontSize: 12,
+    fontWeight: "800",
+    color: "#065F46",
+  },
+  previewText: {
+    fontSize: 13,
+    color: "#064E3B",
+    lineHeight: 20,
   },
 });
