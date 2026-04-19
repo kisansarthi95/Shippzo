@@ -194,15 +194,15 @@ export function buildLabelHtml(
 
   const gridCss =
     perPage === 4
-      ? `.sheet { display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; page-break-after: always; gap: 2mm; }
+      ? `.sheet { display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; page-break-after: always; gap: 2mm; width: 100%; }
          .label { height: 140mm; }`
       : perPage === 2
-      ? `.sheet { display: grid; grid-template-columns: 1fr; grid-template-rows: 1fr 1fr; page-break-after: always; gap: 2mm; }
+      ? `.sheet { display: grid; grid-template-columns: 1fr; grid-template-rows: 1fr 1fr; page-break-after: always; gap: 2mm; width: 100%; }
          .label { height: 140mm; }`
       : perPage === 1
-      ? `.sheet { display: block; page-break-after: always; }
+      ? `.sheet { display: block; page-break-after: always; width: 100%; }
          .label { height: 260mm; }`
-      : `.sheet { display: block; page-break-after: always; }
+      : `.sheet { display: block; page-break-after: always; width: 100mm; }
          .label { height: 145mm; width: 100mm; }`;
 
   const pageCss =
@@ -237,7 +237,8 @@ export function buildLabelHtml(
   /* Label is a 3-row grid: fixed header, flexible middle, fixed footer */
   .label { border: 2px solid #0A0A0A; padding: 5mm;
     break-inside: avoid; background: #fff; border-radius: 3mm;
-    display: grid; grid-template-rows: auto 1fr auto; gap: 3mm; overflow: hidden; }
+    display: grid; grid-template-rows: auto 1fr auto; gap: 3mm; overflow: hidden;
+    width: 100%; max-width: 100%; box-sizing: border-box; }
 
   /* ---- TOP (fixed) ---- */
   .hdr { display: flex; justify-content: space-between; align-items: center;
