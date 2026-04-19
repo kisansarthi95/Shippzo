@@ -1,6 +1,5 @@
 import type { Shipment, SenderAddress } from "./api";
-// bwip-js supports React Native via its default export (needs react-zlib-js installed)
-import bwipjs from "bwip-js";
+import { barcodeSvg } from "./barcode";
 
 export type Brand = { name?: string; logo_base64?: string };
 
@@ -16,23 +15,10 @@ const escape = (s: string) =>
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;");
 
-// Generate a CODE128 barcode as SVG string using bwip-js. No CDN / runtime JS needed.
-function barcodeSvg(value: string, opts?: { height?: number; scale?: number; width?: number }): string {
-  try {
-    const svg = bwipjs.toSVG({
-      bcid: "code128",
-      text: value || "NA",
-      scale: opts?.scale ?? 2,
-      height: opts?.height ?? 14, // mm
-      includetext: false,
-      backgroundcolor: "FFFFFF",
-      paddingwidth: 0,
-      paddingheight: 0,
-    });
-    return svg;
-  } catch (e) {
-    return `<div style="font-family:monospace;font-weight:800;letter-spacing:2px;">${escape(value)}</div>`;
-  }
+// Generate a CODE128 barcode as SVG string using pure JS encoder.
+// No native/RN/zlib deps — works in Hermes, browser, Node.
+function renderBarcodeSvg(value: string): string {
+  return barcodeSvg(value || "NA");
 }
 
 function senderBlock(sender: SenderAddress, show: boolean) {
@@ -94,7 +80,7 @@ function singleLabel(s: Shipment, sender: SenderAddress, opts: LabelOptions) {
       ? s.items.join(", ")
       : (s.item_description || "-");
 
-  const bcSvg = barcodeSvg(s.tracking_id, { height: 14, scale: 2 });
+  const bcSvg = renderBarcodeSvg(s.tracking_id);
 
   return `
   <div class="label">
@@ -142,7 +128,7 @@ export function buildLabelHtml(
   if (perPage === "barcode") {
     const pages = shipments
       .map((s) => {
-        const bcSvg = barcodeSvg(s.tracking_id, { height: 10, scale: 2 });
+        const bcSvg = renderBarcodeSvg(s.tracking_id);
         return `
       <div class="sheet-sticker">
         <div class="sticker">
