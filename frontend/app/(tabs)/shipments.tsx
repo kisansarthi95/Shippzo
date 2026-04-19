@@ -33,16 +33,22 @@ export default function Shipments() {
   const load = useCallback(async () => {
     const q: any = { search: search || undefined };
     if (status !== "All") q.status = status;
-    const [list, s, cs] = await Promise.all([
-      Api.listShipments(q), Api.getSettings(), Api.listCouriers(),
-    ]);
-    setItems(list);
-    setSettings(s);
-    setCouriers(cs);
-    setRefreshing(false);
+    try {
+      const [list, s, cs] = await Promise.all([
+        Api.listShipments(q), Api.getSettings(), Api.listCouriers(),
+      ]);
+      setItems(list);
+      setSettings(s);
+      setCouriers(cs);
+    } catch (e: any) {
+      // silently ignore transient failures so no global toast
+      console.log("shipments load error:", e?.message || e);
+    } finally {
+      setRefreshing(false);
+    }
   }, [search, status]);
 
-  useFocusEffect(useCallback(() => { load(); }, [load]));
+  useFocusEffect(useCallback(() => { load().catch(() => {}); }, [load]));
 
   const findCourier = (s: Shipment) =>
     couriers.find((c) => c.id === s.courier_id) || null;

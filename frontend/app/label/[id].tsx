@@ -16,9 +16,31 @@ import * as Print from "expo-print";
 import * as Sharing from "expo-sharing";
 import { Api, SenderAddress, Shipment } from "../../lib/api";
 import { buildLabelHtml, LabelOptions } from "../../lib/label";
+import { barcodeBars } from "../../lib/barcode";
 import { colors } from "../../lib/theme";
 
 type PerPage = 1 | 2 | 4 | "thermal";
+
+// Lightweight native barcode preview using <View> bars
+function BarcodePreview({ value, height = 40 }: { value: string; height?: number }) {
+  const { runs, totalWidth } = barcodeBars(value || "NA");
+  return (
+    <View style={{ flexDirection: "row", height, width: "85%", alignSelf: "center" }}>
+      {runs.map((r, i) => (
+        <View
+          key={i}
+          style={{
+            flexGrow: r.w,
+            flexShrink: 0,
+            flexBasis: 0,
+            backgroundColor: r.on ? "#000" : "#fff",
+          }}
+        />
+      ))}
+    </View>
+  );
+}
+
 
 export default function LabelScreen() {
   const router = useRouter();
@@ -101,6 +123,11 @@ export default function LabelScreen() {
     }
   };
 
+  const goBack = () => {
+    if (router.canGoBack()) router.back();
+    else router.replace("/(tabs)/shipments");
+  };
+
   if (loading || !shipment || !sender) {
     return (
       <SafeAreaView style={styles.safe}>
@@ -114,7 +141,7 @@ export default function LabelScreen() {
       <View style={styles.header}>
         <TouchableOpacity
           testID="label-back"
-          onPress={() => router.back()}
+          onPress={goBack}
           style={styles.backBtn}
         >
           <Ionicons name="arrow-back" size={22} color={colors.text} />
@@ -202,7 +229,7 @@ export default function LabelScreen() {
           <View style={styles.trackBlock}>
             <Text style={styles.trackLabel}>TRACKING ID</Text>
             <Text style={styles.trackId}>{shipment.tracking_id}</Text>
-            <View style={styles.barcodeStub} />
+            <BarcodePreview value={shipment.tracking_id} height={40} />
           </View>
         </View>
 

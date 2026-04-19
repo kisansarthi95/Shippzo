@@ -76,3 +76,33 @@ export function barcodeSvg(value: string): string {
   const { path, width, height } = code128SvgPath(value, 2);
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none"><path d="${path}" fill="#000"/></svg>`;
 }
+
+// Helper to return an array of bar widths (runs of 1's and 0's) for rendering
+// the barcode natively with <View> rectangles in React Native previews.
+export function barcodeBars(value: string): { runs: { on: boolean; w: number }[]; totalWidth: number } {
+  if (!value) value = " ";
+  const data: number[] = [];
+  for (let i = 0; i < value.length; i++) {
+    const c = value.charCodeAt(i);
+    if (c >= 32 && c <= 127) data.push(c - 32);
+    else data.push(31);
+  }
+  const codes = [START_B, ...data];
+  codes.push(code128bChecksum(codes));
+  codes.push(STOP);
+  let bits = "";
+  for (const c of codes) bits += CODE128_PATTERNS[c];
+  bits += "11";
+  const runs: { on: boolean; w: number }[] = [];
+  let i = 0;
+  let totalWidth = 0;
+  while (i < bits.length) {
+    const ch = bits[i];
+    let run = 1;
+    while (i + run < bits.length && bits[i + run] === ch) run++;
+    runs.push({ on: ch === "1", w: run });
+    totalWidth += run;
+    i += run;
+  }
+  return { runs, totalWidth };
+}
