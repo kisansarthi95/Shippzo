@@ -1,4 +1,5 @@
 import type { Shipment, SenderAddress } from "./api";
+import bwipjs from "bwip-js";
 
 export type Brand = { name?: string; logo_base64?: string };
 
@@ -14,20 +15,37 @@ const escape = (s: string) =>
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;");
 
+// Generate a CODE128 barcode as SVG string using bwip-js. No CDN / runtime JS needed.
+function barcodeSvg(value: string, opts?: { height?: number; scale?: number; width?: number }): string {
+  try {
+    const svg = bwipjs.toSVG({
+      bcid: "code128",
+      text: value || "NA",
+      scale: opts?.scale ?? 2,
+      height: opts?.height ?? 14, // mm
+      includetext: false,
+      backgroundcolor: "FFFFFF",
+      paddingwidth: 0,
+      paddingheight: 0,
+    });
+    return svg;
+  } catch (e) {
+    return `<div style="font-family:monospace;font-weight:800;letter-spacing:2px;">${escape(value)}</div>`;
+  }
+}
+
 function senderBlock(sender: SenderAddress, show: boolean) {
   const lines = [
-    sender.name,
     sender.address_line1,
     sender.address_line2,
     [sender.city, sender.state, sender.pincode].filter(Boolean).join(", "),
   ].filter(Boolean);
   const contact = show && sender.phone ? `📞 ${escape(sender.phone)}` : "";
   return `
-    <div class="blk">
+    <div class="blk sender">
       <div class="blk-title">FROM</div>
       <div class="blk-name">${escape(sender.name || "Sender")}</div>
       ${lines
-        .slice(1)
         .map((l) => `<div class="blk-line">${escape(l)}</div>`)
         .join("")}
       ${contact ? `<div class="blk-contact">${contact}</div>` : ""}
@@ -61,17 +79,21 @@ function singleLabel(s: Shipment, sender: SenderAddress, opts: LabelOptions) {
     ? (logo.startsWith("data:") ? logo : `data:image/png;base64,${logo}`)
     : "";
 
-  const paymentLine =
-    s.payment_mode === "COD"
-      ? `<div class="pay-big cod-big">COD ₹${Number(amt).toFixed(0)}</div>
-         <div class="pay-sub">Collect from customer · via ${escape(s.courier_name || "")}</div>`
-      : `<div class="pay-big prepaid-big">PREPAID${amt ? ` · ₹${Number(amt).toFixed(0)}` : ""}</div>
-         <div class="pay-sub">Payment received · via ${escape(s.courier_name || "")}</div>`;
+  const isCod = s.payment_mode === "COD";
+  const payPillText = isCod
+    ? `COD ₹${Number(amt).toFixed(0)}`
+    : `PREPAID${amt ? ` ₹${Number(amt).toFixed(0)}` : ""}`;
+  const payPillClass = isCod ? "pay-pill cod" : "pay-pill prepaid";
+  const courierLine = s.courier_name
+    ? `<div class="courier-sub">via ${escape(s.courier_name)}</div>`
+    : "";
 
   const itemsText =
     s.items && s.items.length
       ? s.items.join(", ")
       : (s.item_description || "-");
+
+  const bcSvg = barcodeSvg(s.tracking_id, { height: 14, scale: 2 });
 
   return `
   <div class="label">
@@ -80,24 +102,29 @@ function singleLabel(s: Shipment, sender: SenderAddress, opts: LabelOptions) {
         ${logoImg ? `<img class="brand-logo" src="${logoImg}" />` : ""}
         <div class="brand-name">${escape(brandName)}</div>
       </div>
-      ${paymentLine}
+      <div class="pay-wrap">
+        <div class="${payPillClass}">${payPillText}</div>
+        ${courierLine}
+      </div>
     </div>
+
     <div class="body">
       ${senderBlock(sender, opts.showSenderContact)}
       ${receiverBlock(s)}
     </div>
-    <div class="meta">
-      ${s.order_id ? `<div><span class="lbl">Order #:</span> ${escape(s.order_id)}</div>` : ""}
-      <div><span class="lbl">Weight:</span> ${escape(s.weight || "-")}</div>
+
+    <div class="meta-row">
+      ${s.order_id ? `<div class="meta-item"><span class="lbl">Order #:</span> ${escape(s.order_id)}</div>` : "<div></div>"}
+      ${s.weight ? `<div class="meta-item right"><span class="lbl">Weight:</span> ${escape(s.weight)}</div>` : ""}
     </div>
-    <div class="meta">
-      <div><span class="lbl">Items:</span> ${escape(itemsText)}</div>
+    <div class="meta-row">
+      <div class="meta-item"><span class="lbl">Items:</span> ${escape(itemsText)}</div>
     </div>
+
     <div class="track">
+      <div class="track-label">TRACKING ID</div>
       <div class="track-id">${escape(s.tracking_id)}</div>
-      <svg class="barcode" jsbarcode-value="${escape(s.tracking_id)}"
-        jsbarcode-format="CODE128" jsbarcode-displayvalue="false"
-        jsbarcode-height="45" jsbarcode-margin="0"></svg>
+      <div class="barcode-wrap">${bcSvg}</div>
     </div>
   </div>
   `;
@@ -110,26 +137,24 @@ export function buildLabelHtml(
 ): string {
   const perPage = opts.perPage;
 
-  // Barcode-only small sticker layout (50x25mm each, 1 per thermal sheet)
+  // Barcode-only small sticker layout (50x25mm each)
   if (perPage === "barcode") {
     const pages = shipments
-      .map(
-        (s) => `
+      .map((s) => {
+        const bcSvg = barcodeSvg(s.tracking_id, { height: 10, scale: 2 });
+        return `
       <div class="sheet-sticker">
         <div class="sticker">
           <div class="sticker-track">${escape(s.tracking_id)}</div>
-          <svg class="barcode" jsbarcode-value="${escape(s.tracking_id)}"
-            jsbarcode-format="CODE128" jsbarcode-displayvalue="false"
-            jsbarcode-height="40" jsbarcode-margin="0"></svg>
+          <div class="sticker-bc">${bcSvg}</div>
           <div class="sticker-sub">${escape(s.courier_name || "")}${s.order_id ? " · #" + escape(s.order_id) : ""}</div>
         </div>
-      </div>`
-      )
+      </div>`;
+      })
       .join("");
     return `<!doctype html>
 <html><head><meta charset="utf-8" />
 <title>Barcode Stickers</title>
-<script src="https://cdn.jsdelivr.net/npm/jsbarcode@3.11.6/dist/JsBarcode.all.min.js"></script>
 <style>
   @page { size: 50mm 25mm; margin: 1mm; }
   * { box-sizing: border-box; }
@@ -139,27 +164,20 @@ export function buildLabelHtml(
     display: flex; flex-direction: column; justify-content: center; align-items: center;
     border: 1px solid #0A0A0A; border-radius: 1mm; }
   .sticker-track { font-family: 'Courier New', monospace; font-weight: 800;
-    font-size: 10pt; letter-spacing: 1.5px; color: #0A0A0A; }
+    font-size: 9pt; letter-spacing: 1.2px; color: #0A0A0A; }
+  .sticker-bc { margin-top: 1mm; }
+  .sticker-bc svg { width: 42mm !important; height: 10mm !important; }
   .sticker-sub { font-size: 6pt; color: #4B5563; margin-top: 1mm; }
-  .barcode { width: 42mm; height: 40px; margin-top: 1mm; }
 </style>
-</head><body>${pages}
-<script>
-  document.addEventListener('DOMContentLoaded', function () {
-    try { JsBarcode('.barcode').init(); } catch(e) {}
-  });
-</script>
-</body></html>`;
+</head><body>${pages}</body></html>`;
   }
-
-  const labels = shipments.map((s) => singleLabel(s, sender, opts)).join("");
 
   const gridCss =
     perPage === 4
-      ? `.sheet { display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; page-break-after: always; }
+      ? `.sheet { display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; page-break-after: always; gap: 2mm; }
          .label { height: 140mm; }`
       : perPage === 2
-      ? `.sheet { display: grid; grid-template-columns: 1fr; grid-template-rows: 1fr 1fr; page-break-after: always; }
+      ? `.sheet { display: grid; grid-template-columns: 1fr; grid-template-rows: 1fr 1fr; page-break-after: always; gap: 2mm; }
          .label { height: 140mm; }`
       : perPage === 1
       ? `.sheet { display: block; page-break-after: always; }
@@ -182,7 +200,7 @@ export function buildLabelHtml(
       .join("");
     pages.push(`<div class="sheet">${page}</div>`);
   }
-  const allPages = pages.length ? pages.join("") : `<div class="sheet">${labels}</div>`;
+  const allPages = pages.length ? pages.join("") : `<div class="sheet"></div>`;
 
   return `
 <!doctype html>
@@ -190,7 +208,6 @@ export function buildLabelHtml(
 <head>
 <meta charset="utf-8" />
 <title>Shipping Labels</title>
-<script src="https://cdn.jsdelivr.net/npm/jsbarcode@3.11.6/dist/JsBarcode.all.min.js"></script>
 <style>
   ${pageCss}
   * { box-sizing: border-box; }
@@ -198,39 +215,54 @@ export function buildLabelHtml(
     margin: 0; color: #0A0A0A; }
   ${gridCss}
   .label { border: 2px solid #0A0A0A; padding: 6mm; display: flex; flex-direction: column;
-    justify-content: space-between; break-inside: avoid; background: #fff; }
-  .hdr { display: flex; justify-content: space-between; align-items: center;
-    border-bottom: 2px solid #0A0A0A; padding-bottom: 4mm; }
-  .courier { font-size: 18pt; font-weight: 800; letter-spacing: 0.5px; }
-  .cod { background: #FF5A00; color: #fff; padding: 3mm 5mm; font-weight: 800;
-    font-size: 14pt; border-radius: 4px; }
-  .prepaid { background: #0A0A0A; color: #fff; padding: 3mm 5mm; font-weight: 800;
-    font-size: 12pt; border-radius: 4px; }
-  .body { display: grid; grid-template-columns: 1fr 1.3fr; gap: 4mm; margin-top: 4mm; }
-  .blk { padding: 3mm; border: 1px dashed #4B5563; border-radius: 4px; }
-  .blk.receiver { border: 2px solid #0A0A0A; background: #F4F5F7; }
-  .blk-title { font-size: 8pt; font-weight: 700; color: #4B5563;
-    letter-spacing: 1px; margin-bottom: 2mm; }
-  .blk-name { font-size: 13pt; font-weight: 800; margin-bottom: 1mm; }
-  .blk-line { font-size: 10pt; line-height: 1.3; }
-  .blk-contact { font-size: 10pt; margin-top: 2mm; font-weight: 600; }
-  .meta { display: flex; justify-content: space-between; font-size: 9pt;
-    border-top: 1px solid #D1D5DB; padding-top: 2mm; margin-top: 3mm; }
-  .meta .lbl { color: #4B5563; font-weight: 700; }
-  .track { margin-top: 3mm; border-top: 2px solid #0A0A0A; padding-top: 3mm;
-    text-align: center; }
-  .track-id { font-family: 'Courier New', monospace; font-size: 16pt; font-weight: 800;
+    break-inside: avoid; background: #fff; border-radius: 3mm; }
+
+  /* Header: brand on left, payment pill on right */
+  .hdr { display: flex; justify-content: space-between; align-items: flex-start;
+    border-bottom: 2px solid #0A0A0A; padding-bottom: 3mm; gap: 4mm; }
+  .brand-wrap { display: flex; align-items: center; gap: 3mm; flex: 1; min-width: 0; }
+  .brand-logo { width: 14mm; height: 14mm; object-fit: contain; border-radius: 2mm; }
+  .brand-name { font-size: 20pt; font-weight: 900; letter-spacing: -0.3px; line-height: 1.1;
+    word-break: break-word; }
+  .pay-wrap { text-align: right; flex-shrink: 0; }
+  .pay-pill { display: inline-block; padding: 2.5mm 4mm; font-weight: 900;
+    font-size: 13pt; border-radius: 999px; line-height: 1; white-space: nowrap;
+    letter-spacing: 0.5px; }
+  .pay-pill.prepaid { background: #0A0A0A; color: #fff; }
+  .pay-pill.cod { background: #FF5A00; color: #fff; }
+  .courier-sub { margin-top: 1.5mm; font-size: 9pt; color: #4B5563; font-weight: 600; }
+
+  /* From / To */
+  .body { display: grid; grid-template-columns: 1fr 1.15fr; gap: 4mm; margin-top: 4mm; }
+  .blk { padding: 3mm; border-radius: 3mm; }
+  .blk.sender { border: 1.5px dashed #6B7280; }
+  .blk.receiver { border: 1.5px solid #0A0A0A; background: #F4F5F7; }
+  .blk-title { font-size: 8pt; font-weight: 800; color: #4B5563;
     letter-spacing: 2px; margin-bottom: 2mm; }
-  .barcode { width: 85%; height: 45px; }
+  .blk-name { font-size: 13pt; font-weight: 900; margin-bottom: 1.5mm; line-height: 1.15; }
+  .blk-line { font-size: 10pt; line-height: 1.35; color: #1F2937; }
+  .blk-contact { font-size: 10pt; margin-top: 2mm; font-weight: 700; }
+
+  /* Meta rows */
+  .meta-row { display: flex; justify-content: space-between; font-size: 10pt;
+    border-top: 1px solid #E5E7EB; padding-top: 2mm; margin-top: 3mm; gap: 4mm; }
+  .meta-item { color: #0A0A0A; }
+  .meta-item.right { text-align: right; }
+  .meta-row .lbl { color: #6B7280; font-weight: 700; }
+
+  /* Tracking block */
+  .track { margin-top: 4mm; border-top: 2px solid #0A0A0A; padding-top: 4mm;
+    text-align: center; }
+  .track-label { font-size: 8pt; font-weight: 800; color: #4B5563;
+    letter-spacing: 3px; margin-bottom: 1.5mm; }
+  .track-id { font-family: 'Courier New', monospace; font-size: 18pt; font-weight: 900;
+    letter-spacing: 3px; margin-bottom: 2mm; }
+  .barcode-wrap { display: flex; justify-content: center; align-items: center; }
+  .barcode-wrap svg { width: 80%; height: auto; max-height: 18mm; }
 </style>
 </head>
 <body>
   ${allPages}
-  <script>
-    document.addEventListener('DOMContentLoaded', function () {
-      try { JsBarcode('.barcode').init(); } catch (e) { console.log(e); }
-    });
-  </script>
 </body>
 </html>`;
 }
