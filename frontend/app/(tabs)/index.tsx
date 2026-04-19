@@ -209,7 +209,7 @@ export default function Dashboard() {
                   Linking.openURL("https://chatgpt.com/gpts").catch(() => {})
                 }
               >
-                <Ionicons name="logo-chatbox" size={14} color="#7C3AED" />
+                <Ionicons name="chatbubbles-outline" size={14} color="#7C3AED" />
                 <Text style={styles.quickBtnText}>Open GPT</Text>
               </TouchableOpacity>
             </View>

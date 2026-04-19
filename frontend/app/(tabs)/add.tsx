@@ -67,6 +67,7 @@ export default function AddShipment() {
   const [weight, setWeight] = useState("");
   const [weightUnit, setWeightUnit] = useState<"g" | "kg">("g");
   const [sheetRowKey, setSheetRowKey] = useState("");
+  const [pendingOrderId, setPendingOrderId] = useState("");
   const [saving, setSaving] = useState(false);
 
   const [sheetConnected, setSheetConnected] = useState(false);
@@ -129,6 +130,21 @@ export default function AddShipment() {
           .filter(Boolean);
         setItemsText(items.join("\n"));
         setSheetRowKey(o.row_key || "");
+        // New fields (from Smart Paste)
+        if (o.payment_mode === "COD") setPaymentMode("COD");
+        else if (o.payment_mode === "PAID" || o.payment_mode === "Prepaid") setPaymentMode("Prepaid");
+        if (o.weight) {
+          const wStr = String(o.weight);
+          const m = /^(\d+\.?\d*)\s*(g|kg|gm|gms|grams|kilogram)?/i.exec(wStr);
+          if (m) {
+            setWeight(m[1]);
+            const u = (m[2] || "g").toLowerCase();
+            setWeightUnit(u.startsWith("k") ? "kg" : "g");
+          } else {
+            setWeight(wStr);
+          }
+        }
+        if (o.pending_order_id) setPendingOrderId(String(o.pending_order_id));
       } catch {
         // ignore
       }
@@ -239,6 +255,17 @@ export default function AddShipment() {
           weight: weight.trim() ? `${weight.trim()} ${weightUnit}` : "",
           sheet_row_key: sheetRowKey,
         });
+        // If shipment came from a pending order (Smart Paste queue), mark it shipped
+        if (pendingOrderId) {
+          try {
+            await Api.updatePendingOrder(pendingOrderId, {
+              status: "shipped",
+              shipment_id: created.id,
+              tracking_id: created.tracking_id,
+              processed_at: new Date().toISOString(),
+            } as any);
+          } catch {/* ignore */}
+        }
         resetForm();
         if (thenPrint) {
           router.replace(`/label/${created.id}`);

@@ -42,28 +42,33 @@ export default function OrdersFromSheet() {
     } catch {/* ignore */}
   }, []);
 
-  const shipPasteOrder = async (order: PendingOrder, courier: Courier) => {
-    try {
-      setShipping(true);
-      const ship = await Api.shipPendingOrder(order.id, courier.id);
-      setShipping(false);
-      setShipModalOrder(null);
-      await loadPasteOrders();
-      Alert.alert(
-        "✅ Shipment created",
-        `Tracking ID: ${ship.tracking_id}`,
-        [
-          { text: "OK", style: "cancel" },
-          {
-            text: "View Label →",
-            onPress: () => router.push({ pathname: "/label/[id]", params: { id: ship.id } }),
-          },
-        ]
-      );
-    } catch (e: any) {
-      setShipping(false);
-      Alert.alert("Ship failed", e?.response?.data?.detail || e?.message || "Try again");
-    }
+  const shipPasteOrder = (order: PendingOrder) => {
+    // Same flow as Sheet orders — navigate to Add with prefill.
+    // User can edit fields, choose courier, and pick tracking ID
+    // (auto/manual/scan). Add screen will finalize the pending order.
+    router.push({
+      pathname: "/(tabs)/add",
+      params: {
+        prefill: JSON.stringify({
+          order_id: order.order_id_hint || "",
+          customer_name: order.customer_name,
+          phone: order.customer_phone,
+          address:
+            [order.address_line1, order.address_line2]
+              .filter(Boolean)
+              .join(", ") || order.address_line1,
+          city: order.city,
+          state: order.state,
+          pincode: order.pincode,
+          item: order.items,
+          amount: order.amount,
+          payment_mode: order.payment_mode,
+          weight: order.weight,
+          pending_order_id: order.id,
+          source: "paste",
+        }),
+      },
+    });
   };
 
   const deletePasteOrder = async (order: PendingOrder) => {
@@ -218,7 +223,7 @@ export default function OrdersFromSheet() {
                 </Text>
                 <TouchableOpacity
                   style={styles.shipBtn}
-                  onPress={() => setShipModalOrder(po)}
+                  onPress={() => shipPasteOrder(po)}
                   testID={`ship-order-${po.id}`}
                 >
                   <Ionicons name="rocket-outline" size={14} color="#fff" />

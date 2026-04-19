@@ -847,70 +847,72 @@ def _normalize_digits(s: str) -> str:
 def parse_structured_paste(text: str) -> Dict[str, Any]:
     """Parse the fixed format the user pastes (from Custom GPT).
 
-    Expected format (one field per line):
-      NAME: ...
-      PHONE: 10-digit
-      ADDRESS_1: ...
-      ADDRESS_2: ... (optional)
-      CITY: ...
-      STATE: ...
-      PINCODE: 6-digit
-      ITEMS: ...
-      AMOUNT: ...
-      PAYMENT: COD|PAID
-      COURIER: ... (optional)
-      ORDER_ID: ... (optional)
-      WEIGHT: ... (optional)
-      NOTES: ... (optional)
+    Accepts BOTH multi-line AND single-line formats. Detects field
+    keywords (NAME:, PHONE:, ADDRESS_1:, ...) regardless of newlines.
     """
     text = _normalize_digits(text or "").strip()
     result: Dict[str, str] = {}
     confidence: Dict[str, str] = {}
     warnings: List[str] = []
 
-    key_map = {
-        "NAME": "customer_name",
-        "PHONE": "customer_phone",
-        "MOBILE": "customer_phone",
-        "CONTACT": "customer_phone",
-        "ADDRESS_1": "address_line1",
-        "ADDRESS1": "address_line1",
-        "ADDRESS": "address_line1",
-        "ADDRESS_2": "address_line2",
-        "ADDRESS2": "address_line2",
-        "CITY": "city",
-        "STATE": "state",
-        "PINCODE": "pincode",
-        "PIN": "pincode",
-        "ITEMS": "items",
-        "ITEM": "items",
-        "AMOUNT": "amount",
-        "PRICE": "amount",
-        "TOTAL": "amount",
-        "PAYMENT": "payment_mode",
-        "PAY": "payment_mode",
-        "COURIER": "courier_hint",
-        "ORDER_ID": "order_id_hint",
-        "ORDER": "order_id_hint",
-        "WEIGHT": "weight",
-        "WT": "weight",
-        "NOTES": "notes",
-        "NOTE": "notes",
-    }
+    # Canonical field keys (order matters: longer keys first where ambiguous)
+    FIELD_KEYS = [
+        ("ADDRESS_1", "address_line1"),
+        ("ADDRESS1", "address_line1"),
+        ("ADDRESS_2", "address_line2"),
+        ("ADDRESS2", "address_line2"),
+        ("ADDRESS", "address_line1"),
+        ("CUSTOMER_NAME", "customer_name"),
+        ("NAME", "customer_name"),
+        ("MOBILE", "customer_phone"),
+        ("CONTACT", "customer_phone"),
+        ("PHONE", "customer_phone"),
+        ("CITY", "city"),
+        ("STATE", "state"),
+        ("PINCODE", "pincode"),
+        ("PIN", "pincode"),
+        ("ITEMS", "items"),
+        ("ITEM", "items"),
+        ("AMOUNT", "amount"),
+        ("PRICE", "amount"),
+        ("TOTAL", "amount"),
+        ("PAYMENT_MODE", "payment_mode"),
+        ("PAYMENT", "payment_mode"),
+        ("PAY", "payment_mode"),
+        ("COURIER", "courier_hint"),
+        ("ORDER_ID", "order_id_hint"),
+        ("ORDER", "order_id_hint"),
+        ("WEIGHT", "weight"),
+        ("WT", "weight"),
+        ("NOTES", "notes"),
+        ("NOTE", "notes"),
+    ]
 
-    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
-    for line in lines:
-        if ":" not in line:
-            continue
-        key_part, _, value = line.partition(":")
-        key = re.sub(r"[^A-Za-z0-9_]", "", key_part).upper()
-        mapped = key_map.get(key)
+    # Build a regex that matches "(KEY):" boundaries.
+    keys_alt = "|".join(k for k, _ in FIELD_KEYS)
+    pattern = re.compile(rf"\b({keys_alt})\s*:\s*", re.IGNORECASE)
+    matches = list(pattern.finditer(text))
+
+    for i, m in enumerate(matches):
+        key_raw = m.group(1).upper()
+        # find canonical mapping
+        mapped = None
+        for k, v in FIELD_KEYS:
+            if k == key_raw:
+                mapped = v
+                break
         if not mapped:
             continue
-        val = value.strip()
-        if val in ("-", "—", "_", ""):
+        start = m.end()
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+        val = text[start:end].strip().strip(",;").strip()
+        # clean trailing punctuation
+        val = re.sub(r"[\s,;.]+$", "", val)
+        if val in ("-", "—", "_", "") or val.lower() in ("none", "null", "empty", "n/a", "na"):
             continue
-        result[mapped] = val
+        # Don't overwrite if already set (first occurrence wins)
+        if mapped not in result:
+            result[mapped] = val
 
     # Clean & normalize
     if "customer_phone" in result:
@@ -940,30 +942,24 @@ def parse_structured_paste(text: str) -> Dict[str, Any]:
             except Exception:
                 confidence["amount"] = "low"
         else:
-            confidence["amount"] = "low"
+            result.pop("amount", None)
 
     if "payment_mode" in result:
         v = result["payment_mode"].upper()
         if "COD" in v or "CASH" in v or "નકદ" in v or "ડિલિવરી" in v:
             result["payment_mode"] = "COD"
-        else:
+        elif "PAID" in v or "PREPAID" in v or "UPI" in v or "ONLINE" in v:
             result["payment_mode"] = "PAID"
-        confidence["payment_mode"] = "high"
+        else:
+            result.pop("payment_mode", None)
 
-    # Confidence for other fields (present = high, missing = missing)
     for field in ["customer_name", "address_line1", "city", "state", "items"]:
         if result.get(field):
             confidence.setdefault(field, "high")
         else:
             confidence[field] = "missing"
-            if field in ("customer_name", "address_line1", "city"):
-                warnings.append(f"Missing: {field}")
 
-    return {
-        "fields": result,
-        "confidence": confidence,
-        "warnings": warnings,
-    }
+    return {"fields": result, "confidence": confidence, "warnings": warnings}
 
 
 @api_router.post("/smart-paste/parse")
