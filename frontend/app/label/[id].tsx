@@ -60,6 +60,7 @@ export default function LabelScreen() {
   });
   const [preferLogo, setPreferLogo] = useState<boolean>(true);
   const [logoShape, setLogoShape] = useState<"square" | "wide">("square");
+  const [logoRatio, setLogoRatio] = useState<number | null>(null); // naturalW/naturalH
 
   const load = useCallback(async () => {
     try {
@@ -87,12 +88,15 @@ export default function LabelScreen() {
   const getHtml = () => {
     if (!shipment || !sender) return "";
     const shipments = Array.from({ length: copies }, () => shipment);
+    // Auto-switch to wide layout if image natural ratio is wide, regardless of saved setting
+    const effectiveShape: "square" | "wide" =
+      logoShape === "wide" || (logoRatio !== null && logoRatio >= 2.2) ? "wide" : "square";
     const opts: LabelOptions = {
       perPage,
       showSenderContact: showContact,
       brand: { name: brand.name, logo_base64: brand.logo_base64 },
       preferLogo,
-      logoShape,
+      logoShape: effectiveShape,
     };
     return buildLabelHtml(shipments, { ...sender, show_contact: showContact }, opts);
   };
@@ -129,6 +133,21 @@ export default function LabelScreen() {
       Alert.alert("Error", e?.message || "Failed to generate PDF");
     }
   };
+
+  useEffect(() => {
+    if (brand.logo_base64) {
+      const uri = brand.logo_base64.startsWith("data:")
+        ? brand.logo_base64
+        : `data:image/png;base64,${brand.logo_base64}`;
+      Image.getSize(
+        uri,
+        (w, h) => setLogoRatio(w / Math.max(1, h)),
+        () => setLogoRatio(null),
+      );
+    } else {
+      setLogoRatio(null);
+    }
+  }, [brand.logo_base64]);
 
   const goBack = () => {
     if (router.canGoBack()) router.back();
@@ -169,18 +188,32 @@ export default function LabelScreen() {
           <View style={styles.previewHdr}>
             <View style={{ flex: 1, minWidth: 0, justifyContent: "center" }}>
               {brand.logo_base64 && preferLogo ? (
-                <Image
-                  source={{
-                    uri: brand.logo_base64.startsWith("data:")
-                      ? brand.logo_base64
-                      : `data:image/png;base64,${brand.logo_base64}`,
-                  }}
-                  style={
-                    logoShape === "wide"
-                      ? { width: 200, height: 54, resizeMode: "contain" }
-                      : { width: 72, height: 72, resizeMode: "contain" }
-                  }
-                />
+                (() => {
+                  // Auto-detect "wide" if natural image ratio > 2:1 OR user chose wide
+                  const isWide = logoShape === "wide" || (logoRatio !== null && logoRatio >= 2.2);
+                  return (
+                    <Image
+                      source={{
+                        uri: brand.logo_base64.startsWith("data:")
+                          ? brand.logo_base64
+                          : `data:image/png;base64,${brand.logo_base64}`,
+                      }}
+                      onLoad={(e: any) => {
+                        const src: any = e?.nativeEvent?.source;
+                        if (src?.width && src?.height) {
+                          setLogoRatio(src.width / src.height);
+                        } else if (typeof Image !== "undefined" && e?.target?.naturalWidth) {
+                          setLogoRatio(e.target.naturalWidth / e.target.naturalHeight);
+                        }
+                      }}
+                      style={
+                        isWide
+                          ? { width: "100%", height: 70, resizeMode: "contain", alignSelf: "flex-start" }
+                          : { width: 84, height: 84, resizeMode: "contain", alignSelf: "flex-start" }
+                      }
+                    />
+                  );
+                })()
               ) : (
                 <Text style={styles.previewCourier} numberOfLines={2}>
                   {brand.name || sender.name || "Your Brand"}
