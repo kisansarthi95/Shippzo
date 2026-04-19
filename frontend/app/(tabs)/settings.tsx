@@ -105,6 +105,7 @@ export default function SettingsScreen() {
   const [brandName, setBrandName] = useState("");
   const [brandLogo, setBrandLogo] = useState("");
   const [preferLogo, setPreferLogo] = useState(true);
+  const [logoShape, setLogoShape] = useState<"square" | "wide">("square");
 
   // Sheet
   const [sheetUrl, setSheetUrl] = useState("");
@@ -125,6 +126,7 @@ export default function SettingsScreen() {
     setBrandName(s.brand?.name || "");
     setBrandLogo(s.brand?.logo_base64 || "");
     setPreferLogo((s as any).prefer_logo !== false);
+    setLogoShape(((s as any).logo_shape as any) === "wide" ? "wide" : "square");
     if (s.sheet?.sheet_id) {
       setSheetStatus("connected");
       setSheetUrl(s.sheet.url);
@@ -149,6 +151,7 @@ export default function SettingsScreen() {
         copy_template: copyTemplate,
         default_eta_days: Number(etaDays) || 7,
         prefer_logo: preferLogo,
+        logo_shape: logoShape,
       } as Partial<SettingsT>);
       Alert.alert("Saved", "Settings saved successfully.");
     } catch (e: any) {
@@ -445,15 +448,47 @@ export default function SettingsScreen() {
               />
             </Field>
             <Field label="Logo (optional)">
-              <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
+              <View style={styles.segmentRow}>
+                <TouchableOpacity
+                  testID="logo-shape-square"
+                  style={[styles.segmentBtn, logoShape === "square" && styles.segmentBtnActive]}
+                  onPress={() => setLogoShape("square")}
+                >
+                  <Ionicons name="square-outline" size={14} color={logoShape === "square" ? "#fff" : colors.text} />
+                  <Text style={[styles.segmentText, logoShape === "square" && styles.segmentTextActive]}>
+                    Square (1:1)
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  testID="logo-shape-wide"
+                  style={[styles.segmentBtn, logoShape === "wide" && styles.segmentBtnActive]}
+                  onPress={() => setLogoShape("wide")}
+                >
+                  <Ionicons name="remove-outline" size={18} color={logoShape === "wide" ? "#fff" : colors.text} />
+                  <Text style={[styles.segmentText, logoShape === "wide" && styles.segmentTextActive]}>
+                    Wide / Banner (4:1)
+                  </Text>
+                </TouchableOpacity>
+              </View>
+              <View style={{ flexDirection: "row", alignItems: "center", gap: 10, marginTop: 8 }}>
                 {brandLogo ? (
                   <Image
                     source={{ uri: brandLogo.startsWith("data:") ? brandLogo : `data:image/png;base64,${brandLogo}` }}
-                    style={{ width: 70, height: 70, borderRadius: 10, backgroundColor: "#F3F4F6" }}
+                    style={
+                      logoShape === "wide"
+                        ? { width: 160, height: 40, borderRadius: 6, backgroundColor: "#F3F4F6" }
+                        : { width: 70, height: 70, borderRadius: 10, backgroundColor: "#F3F4F6" }
+                    }
                     resizeMode="contain"
                   />
                 ) : (
-                  <View style={{ width: 70, height: 70, borderRadius: 10, backgroundColor: "#F3F4F6", alignItems: "center", justifyContent: "center" }}>
+                  <View
+                    style={
+                      logoShape === "wide"
+                        ? { width: 160, height: 40, borderRadius: 6, backgroundColor: "#F3F4F6", alignItems: "center", justifyContent: "center" }
+                        : { width: 70, height: 70, borderRadius: 10, backgroundColor: "#F3F4F6", alignItems: "center", justifyContent: "center" }
+                    }
+                  >
                     <Ionicons name="image-outline" size={28} color={colors.textMuted} />
                   </View>
                 )}
@@ -466,9 +501,9 @@ export default function SettingsScreen() {
                         const res = await ImagePicker.launchImageLibraryAsync({
                           mediaTypes: ImagePicker.MediaTypeOptions.Images,
                           base64: true,
-                          quality: 0.8,
+                          quality: 0.85,
                           allowsEditing: true,
-                          aspect: [1, 1],
+                          aspect: logoShape === "wide" ? [4, 1] : [1, 1],
                         });
                         if (!res.canceled && res.assets?.[0]?.base64) {
                           setBrandLogo(`data:image/png;base64,${res.assets[0].base64}`);
@@ -479,7 +514,9 @@ export default function SettingsScreen() {
                     }}
                   >
                     <Ionicons name="cloud-upload-outline" size={14} color="#fff" />
-                    <Text style={styles.smallBtnText}>{brandLogo ? "Change Logo" : "Upload Logo"}</Text>
+                    <Text style={styles.smallBtnText}>
+                      {brandLogo ? "Change Logo" : `Upload ${logoShape === "wide" ? "Wide" : "Square"} Logo`}
+                    </Text>
                   </TouchableOpacity>
                   {!!brandLogo && (
                     <TouchableOpacity
@@ -493,6 +530,9 @@ export default function SettingsScreen() {
                   )}
                 </View>
               </View>
+              <Text style={styles.hint}>
+                💡 Tip: Pick the shape FIRST, then upload. Cropper will guide you to the right aspect.
+              </Text>
             </Field>
             <Field label="Show on Label">
               <View style={styles.segmentRow}>

@@ -112,6 +112,7 @@ class Settings(BaseModel):
     )
     default_eta_days: int = 7
     prefer_logo: bool = True  # true = show logo if uploaded; false = always show brand name
+    logo_shape: str = "square"  # "square" | "wide"
     sheet: SheetConfig = Field(default_factory=SheetConfig)
 
 
@@ -122,6 +123,7 @@ class SettingsUpdate(BaseModel):
     copy_template: Optional[str] = None
     default_eta_days: Optional[int] = None
     prefer_logo: Optional[bool] = None
+    logo_shape: Optional[str] = None
     sheet: Optional[SheetConfig] = None
 
 

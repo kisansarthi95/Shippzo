@@ -8,6 +8,7 @@ export type LabelOptions = {
   showSenderContact: boolean;
   brand?: Brand;
   preferLogo?: boolean; // true = show logo when available; false = always show name
+  logoShape?: "square" | "wide"; // influences rendered size
 };
 
 const escape = (s: string) =>
@@ -68,8 +69,9 @@ function singleLabel(s: Shipment, sender: SenderAddress, opts: LabelOptions) {
     : "";
   // Show logo if preferLogo!=false AND logo available; else brand name
   const usePreferLogo = opts.preferLogo !== false;
+  const logoClass = opts.logoShape === "wide" ? "brand-logo-wide" : "brand-logo-square";
   const brandHeader = logoImg && usePreferLogo
-    ? `<img class="brand-logo-only" src="${logoImg}" />`
+    ? `<img class="${logoClass}" src="${logoImg}" />`
     : `<div class="brand-name">${escape(brandName)}</div>`;
 
   const isCod = s.payment_mode === "COD";
@@ -242,7 +244,8 @@ export function buildLabelHtml(
     border-bottom: 2px solid #0A0A0A; padding-bottom: 3mm; gap: 4mm;
     min-height: 20mm; }
   .brand-wrap { display: flex; align-items: center; gap: 3mm; flex: 1; min-width: 0; }
-  .brand-logo-only { max-width: 60mm; max-height: 20mm; object-fit: contain; }
+  .brand-logo-square { max-width: 22mm; max-height: 22mm; object-fit: contain; }
+  .brand-logo-wide   { max-width: 80mm; max-height: 22mm; object-fit: contain; }
   .brand-name { font-size: 17pt; font-weight: 900; letter-spacing: -0.2px;
     line-height: 1.1; word-break: break-word; max-width: 100%; }
   .pay-wrap { text-align: right; flex-shrink: 0; }

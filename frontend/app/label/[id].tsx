@@ -59,6 +59,7 @@ export default function LabelScreen() {
     logo_base64: "",
   });
   const [preferLogo, setPreferLogo] = useState<boolean>(true);
+  const [logoShape, setLogoShape] = useState<"square" | "wide">("square");
 
   const load = useCallback(async () => {
     try {
@@ -71,6 +72,7 @@ export default function LabelScreen() {
       setBrand(settings.brand || { name: "", logo_base64: "" });
       setShowContact(settings.sender.show_contact);
       setPreferLogo((settings as any).prefer_logo !== false);
+      setLogoShape((settings as any).logo_shape === "wide" ? "wide" : "square");
     } catch (e: any) {
       Alert.alert("Error", e?.message || "Failed to load");
     } finally {
@@ -90,6 +92,7 @@ export default function LabelScreen() {
       showSenderContact: showContact,
       brand: { name: brand.name, logo_base64: brand.logo_base64 },
       preferLogo,
+      logoShape,
     };
     return buildLabelHtml(shipments, { ...sender, show_contact: showContact }, opts);
   };
@@ -172,7 +175,11 @@ export default function LabelScreen() {
                       ? brand.logo_base64
                       : `data:image/png;base64,${brand.logo_base64}`,
                   }}
-                  style={{ width: 140, height: 50, resizeMode: "contain" }}
+                  style={
+                    logoShape === "wide"
+                      ? { width: 200, height: 54, resizeMode: "contain" }
+                      : { width: 72, height: 72, resizeMode: "contain" }
+                  }
                 />
               ) : (
                 <Text style={styles.previewCourier} numberOfLines={2}>
