@@ -8,6 +8,7 @@ import {
   ActivityIndicator,
   Platform,
   Alert,
+  Image,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
@@ -57,6 +58,7 @@ export default function LabelScreen() {
     name: "",
     logo_base64: "",
   });
+  const [preferLogo, setPreferLogo] = useState<boolean>(true);
 
   const load = useCallback(async () => {
     try {
@@ -68,6 +70,7 @@ export default function LabelScreen() {
       setSender(settings.sender);
       setBrand(settings.brand || { name: "", logo_base64: "" });
       setShowContact(settings.sender.show_contact);
+      setPreferLogo((settings as any).prefer_logo !== false);
     } catch (e: any) {
       Alert.alert("Error", e?.message || "Failed to load");
     } finally {
@@ -86,6 +89,7 @@ export default function LabelScreen() {
       perPage,
       showSenderContact: showContact,
       brand: { name: brand.name, logo_base64: brand.logo_base64 },
+      preferLogo,
     };
     return buildLabelHtml(shipments, { ...sender, show_contact: showContact }, opts);
   };
@@ -156,16 +160,25 @@ export default function LabelScreen() {
         testID="label-scroll"
         contentContainerStyle={{ padding: 16, paddingBottom: 100 }}
       >
-        {/* Preview Card */}
+        {/* Preview Card — NEW 3-row layout: fixed header, flexible middle, fixed footer with barcode */}
         <View style={styles.preview} testID="label-preview">
+          {/* TOP (fixed) */}
           <View style={styles.previewHdr}>
-            <View style={{ flex: 1, flexDirection: "row", alignItems: "center", gap: 8 }}>
-              {brand.logo_base64 ? (
-                <View style={{ width: 32, height: 32, backgroundColor: "#F3F4F6", borderRadius: 4 }} />
-              ) : null}
-              <Text style={styles.previewCourier} numberOfLines={1}>
-                {brand.name || sender.name || "Your Brand"}
-              </Text>
+            <View style={{ flex: 1, minWidth: 0, justifyContent: "center" }}>
+              {brand.logo_base64 && preferLogo ? (
+                <Image
+                  source={{
+                    uri: brand.logo_base64.startsWith("data:")
+                      ? brand.logo_base64
+                      : `data:image/png;base64,${brand.logo_base64}`,
+                  }}
+                  style={{ width: 140, height: 50, resizeMode: "contain" }}
+                />
+              ) : (
+                <Text style={styles.previewCourier} numberOfLines={2}>
+                  {brand.name || sender.name || "Your Brand"}
+                </Text>
+              )}
             </View>
             {shipment.payment_mode === "COD" ? (
               <View style={{ alignItems: "flex-end" }}>
@@ -179,57 +192,55 @@ export default function LabelScreen() {
               </View>
             )}
           </View>
-          <View style={styles.previewBody}>
-            <View style={styles.blk}>
-              <Text style={styles.blkTitle}>FROM</Text>
-              <Text style={styles.blkName}>{sender.name || "Sender"}</Text>
-              <Text style={styles.blkLine}>{sender.address_line1}</Text>
-              {!!sender.address_line2 && (
-                <Text style={styles.blkLine}>{sender.address_line2}</Text>
-              )}
-              <Text style={styles.blkLine}>
-                {[sender.city, sender.state, sender.pincode]
-                  .filter(Boolean)
-                  .join(", ")}
+
+          {/* MIDDLE (flex) — spotlight DELIVER TO */}
+          <View style={[styles.blk, styles.blkReceiver, { marginTop: 10 }]}>
+            <Text style={styles.blkTitle}>DELIVER TO</Text>
+            <Text style={styles.blkName}>{shipment.customer_name}</Text>
+            <Text style={styles.blkLine}>{shipment.address_line1}</Text>
+            {!!shipment.address_line2 && (
+              <Text style={styles.blkLine}>{shipment.address_line2}</Text>
+            )}
+            <Text style={styles.blkLine}>
+              {[shipment.city, shipment.state, shipment.pincode]
+                .filter(Boolean)
+                .join(", ")}
+            </Text>
+            {!!shipment.customer_phone && (
+              <Text style={[styles.blkLine, { fontWeight: "800", marginTop: 4 }]}>
+                📞 {shipment.customer_phone}
               </Text>
-              {showContact && !!sender.phone && (
-                <Text style={styles.blkLine}>📞 {sender.phone}</Text>
-              )}
-            </View>
-            <View style={[styles.blk, styles.blkReceiver]}>
-              <Text style={styles.blkTitle}>TO</Text>
-              <Text style={styles.blkName}>{shipment.customer_name}</Text>
-              <Text style={styles.blkLine}>{shipment.address_line1}</Text>
-              {!!shipment.address_line2 && (
-                <Text style={styles.blkLine}>{shipment.address_line2}</Text>
-              )}
-              <Text style={styles.blkLine}>
-                {[shipment.city, shipment.state, shipment.pincode]
-                  .filter(Boolean)
-                  .join(", ")}
-              </Text>
-              {!!shipment.customer_phone && (
-                <Text style={styles.blkLine}>📞 {shipment.customer_phone}</Text>
-              )}
-            </View>
+            )}
           </View>
+
+          {/* META one-line */}
           <View style={styles.metaRow}>
-            <Text style={styles.metaText}>Weight: {shipment.weight || "—"}</Text>
-            <Text style={styles.metaText}>
-              {shipment.items && shipment.items.length > 0
-                ? `Items: ${shipment.items.join(", ")}`
-                : `Item: ${shipment.item_description || "—"}`}
+            {!!shipment.order_id && (
+              <Text style={styles.metaText}>Order: {shipment.order_id}</Text>
+            )}
+            {!!shipment.weight && (
+              <Text style={styles.metaText}>Wt: {shipment.weight}</Text>
+            )}
+            <Text style={[styles.metaText, { flex: 1 }]} numberOfLines={1}>
+              Item: {shipment.items && shipment.items.length > 0
+                ? shipment.items.join(", ")
+                : shipment.item_description || "—"}
             </Text>
           </View>
-          {!!shipment.order_id && (
-            <View style={styles.metaRow}>
-              <Text style={styles.metaText}>Order #: {shipment.order_id}</Text>
-            </View>
-          )}
-          <View style={styles.trackBlock}>
-            <Text style={styles.trackLabel}>TRACKING ID</Text>
+
+          {/* FOOTER (fixed) — sender thin line + tracking id + barcode, NEVER cut */}
+          <View style={styles.footerBlock}>
+            <Text style={styles.senderLine} numberOfLines={2}>
+              From: <Text style={{ fontWeight: "800" }}>{sender.name || "Sender"}</Text>
+              {sender.address_line1 ? ` · ${sender.address_line1}` : ""}
+              {sender.city ? `, ${sender.city}` : ""}
+              {sender.pincode ? ` ${sender.pincode}` : ""}
+              {showContact && sender.phone ? ` · 📞 ${sender.phone}` : ""}
+            </Text>
             <Text style={styles.trackId}>{shipment.tracking_id}</Text>
-            <BarcodePreview value={shipment.tracking_id} height={40} />
+            <View style={{ width: "100%", paddingHorizontal: 8, alignSelf: "center" }}>
+              <BarcodePreview value={shipment.tracking_id} height={46} />
+            </View>
           </View>
         </View>
 
@@ -445,13 +456,27 @@ const styles = StyleSheet.create({
   blkLine: { fontSize: 11, color: colors.text, marginTop: 2, lineHeight: 14 },
   metaRow: {
     flexDirection: "row",
-    justifyContent: "space-between",
+    flexWrap: "wrap",
+    gap: 10,
     marginTop: 10,
     paddingTop: 8,
     borderTopWidth: 1,
     borderTopColor: "#E5E7EB",
   },
   metaText: { fontSize: 11, color: colors.text, fontWeight: "600" },
+  footerBlock: {
+    marginTop: 12,
+    paddingTop: 10,
+    borderTopWidth: 2,
+    borderTopColor: colors.secondary,
+    alignItems: "stretch",
+  },
+  senderLine: {
+    fontSize: 10,
+    color: "#4B5563",
+    lineHeight: 14,
+    marginBottom: 8,
+  },
   trackBlock: {
     marginTop: 10,
     paddingTop: 10,
@@ -467,11 +492,13 @@ const styles = StyleSheet.create({
   },
   trackId: {
     fontFamily: "Courier",
-    fontSize: 18,
+    fontSize: 16,
     fontWeight: "800",
     letterSpacing: 2,
     color: colors.text,
-    marginTop: 4,
+    textAlign: "center",
+    marginBottom: 6,
+    marginTop: 2,
   },
   barcodeStub: {
     height: 40,

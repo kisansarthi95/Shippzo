@@ -111,6 +111,7 @@ class Settings(BaseModel):
         "Tracking ID: {tracking_id}. Track here: {tracking_url}"
     )
     default_eta_days: int = 7
+    prefer_logo: bool = True  # true = show logo if uploaded; false = always show brand name
     sheet: SheetConfig = Field(default_factory=SheetConfig)
 
 
@@ -120,6 +121,7 @@ class SettingsUpdate(BaseModel):
     whatsapp_template: Optional[str] = None
     copy_template: Optional[str] = None
     default_eta_days: Optional[int] = None
+    prefer_logo: Optional[bool] = None
     sheet: Optional[SheetConfig] = None
 
 

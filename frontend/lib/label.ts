@@ -7,6 +7,7 @@ export type LabelOptions = {
   perPage: 1 | 2 | 4 | "thermal" | "barcode";
   showSenderContact: boolean;
   brand?: Brand;
+  preferLogo?: boolean; // true = show logo when available; false = always show name
 };
 
 const escape = (s: string) =>
@@ -65,8 +66,9 @@ function singleLabel(s: Shipment, sender: SenderAddress, opts: LabelOptions) {
   const logoImg = logo
     ? (logo.startsWith("data:") ? logo : `data:image/png;base64,${logo}`)
     : "";
-  // Show ONLY logo if present; otherwise brand name as fallback
-  const brandHeader = logoImg
+  // Show logo if preferLogo!=false AND logo available; else brand name
+  const usePreferLogo = opts.preferLogo !== false;
+  const brandHeader = logoImg && usePreferLogo
     ? `<img class="brand-logo-only" src="${logoImg}" />`
     : `<div class="brand-name">${escape(brandName)}</div>`;
 

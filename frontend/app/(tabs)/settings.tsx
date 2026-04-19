@@ -13,7 +13,10 @@ import {
   ActivityIndicator,
   Modal,
   Linking,
-} from "react-native";import { SafeAreaView } from "react-native-safe-area-context";
+  Image,
+} from "react-native";
+import * as ImagePicker from "expo-image-picker";
+import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter, useFocusEffect } from "expo-router";
 import { Api, Courier, Settings as SettingsT, SenderAddress, SheetPreview, SHEET_FIELDS } from "../../lib/api";
@@ -100,6 +103,8 @@ export default function SettingsScreen() {
   const [etaDays, setEtaDays] = useState("7");
   const [couriers, setCouriers] = useState<Courier[]>([]);
   const [brandName, setBrandName] = useState("");
+  const [brandLogo, setBrandLogo] = useState("");
+  const [preferLogo, setPreferLogo] = useState(true);
 
   // Sheet
   const [sheetUrl, setSheetUrl] = useState("");
@@ -118,6 +123,8 @@ export default function SettingsScreen() {
     setEtaDays(String(s.default_eta_days));
     setCouriers(cs);
     setBrandName(s.brand?.name || "");
+    setBrandLogo(s.brand?.logo_base64 || "");
+    setPreferLogo((s as any).prefer_logo !== false);
     if (s.sheet?.sheet_id) {
       setSheetStatus("connected");
       setSheetUrl(s.sheet.url);
@@ -137,10 +144,11 @@ export default function SettingsScreen() {
     try {
       await Api.updateSettings({
         sender,
-        brand: { name: brandName, logo_base64: "" },
+        brand: { name: brandName, logo_base64: brandLogo },
         whatsapp_template: template,
         copy_template: copyTemplate,
         default_eta_days: Number(etaDays) || 7,
+        prefer_logo: preferLogo,
       } as Partial<SettingsT>);
       Alert.alert("Saved", "Settings saved successfully.");
     } catch (e: any) {
@@ -424,17 +432,95 @@ export default function SettingsScreen() {
           {/* Brand */}
           <Section title="Brand on Labels" icon="pricetag-outline">
             <Text style={styles.hint}>
-              Shown large at the top of every printed label. Leave blank to use Sender Name.
+              Shown at the top of every printed label. Upload a logo OR type a business name — and pick which one to show.
             </Text>
             <Field label="Brand / Business Name">
               <TextInput
                 testID="brand-name-input"
                 value={brandName}
                 onChangeText={setBrandName}
-                placeholder="e.g. Mahek Creations"
+                placeholder="e.g. Kisan Sarthi Organic"
                 placeholderTextColor="#9CA3AF"
                 style={styles.input}
               />
+            </Field>
+            <Field label="Logo (optional)">
+              <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
+                {brandLogo ? (
+                  <Image
+                    source={{ uri: brandLogo.startsWith("data:") ? brandLogo : `data:image/png;base64,${brandLogo}` }}
+                    style={{ width: 70, height: 70, borderRadius: 10, backgroundColor: "#F3F4F6" }}
+                    resizeMode="contain"
+                  />
+                ) : (
+                  <View style={{ width: 70, height: 70, borderRadius: 10, backgroundColor: "#F3F4F6", alignItems: "center", justifyContent: "center" }}>
+                    <Ionicons name="image-outline" size={28} color={colors.textMuted} />
+                  </View>
+                )}
+                <View style={{ flex: 1, gap: 6 }}>
+                  <TouchableOpacity
+                    testID="brand-logo-upload"
+                    style={[styles.smallBtn, { backgroundColor: colors.primary }]}
+                    onPress={async () => {
+                      try {
+                        const res = await ImagePicker.launchImageLibraryAsync({
+                          mediaTypes: ImagePicker.MediaTypeOptions.Images,
+                          base64: true,
+                          quality: 0.8,
+                          allowsEditing: true,
+                          aspect: [1, 1],
+                        });
+                        if (!res.canceled && res.assets?.[0]?.base64) {
+                          setBrandLogo(`data:image/png;base64,${res.assets[0].base64}`);
+                        }
+                      } catch (e: any) {
+                        Alert.alert("Upload failed", e?.message || "Could not pick image");
+                      }
+                    }}
+                  >
+                    <Ionicons name="cloud-upload-outline" size={14} color="#fff" />
+                    <Text style={styles.smallBtnText}>{brandLogo ? "Change Logo" : "Upload Logo"}</Text>
+                  </TouchableOpacity>
+                  {!!brandLogo && (
+                    <TouchableOpacity
+                      testID="brand-logo-remove"
+                      style={[styles.smallBtn, { backgroundColor: "#EF4444" }]}
+                      onPress={() => setBrandLogo("")}
+                    >
+                      <Ionicons name="trash-outline" size={14} color="#fff" />
+                      <Text style={styles.smallBtnText}>Remove</Text>
+                    </TouchableOpacity>
+                  )}
+                </View>
+              </View>
+            </Field>
+            <Field label="Show on Label">
+              <View style={styles.segmentRow}>
+                <TouchableOpacity
+                  testID="prefer-logo-on"
+                  style={[styles.segmentBtn, preferLogo && styles.segmentBtnActive]}
+                  onPress={() => setPreferLogo(true)}
+                  disabled={!brandLogo}
+                >
+                  <Ionicons name="image" size={14} color={preferLogo ? "#fff" : colors.text} />
+                  <Text style={[styles.segmentText, preferLogo && styles.segmentTextActive]}>
+                    Logo {!brandLogo && "(upload first)"}
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  testID="prefer-logo-off"
+                  style={[styles.segmentBtn, !preferLogo && styles.segmentBtnActive]}
+                  onPress={() => setPreferLogo(false)}
+                >
+                  <Ionicons name="text" size={14} color={!preferLogo ? "#fff" : colors.text} />
+                  <Text style={[styles.segmentText, !preferLogo && styles.segmentTextActive]}>
+                    Brand Name
+                  </Text>
+                </TouchableOpacity>
+              </View>
+              <Text style={styles.hint}>
+                {preferLogo && brandLogo ? "🖼 Labels will show your logo" : "🔤 Labels will show the brand name"}
+              </Text>
             </Field>
           </Section>
 
@@ -901,6 +987,51 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: "700",
     color: colors.primary,
+  },
+  smallBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+  },
+  smallBtnText: {
+    fontSize: 12,
+    fontWeight: "800",
+    color: "#fff",
+  },
+  segmentRow: {
+    flexDirection: "row",
+    gap: 6,
+    marginTop: 2,
+    marginBottom: 4,
+  },
+  segmentBtn: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    paddingVertical: 10,
+    paddingHorizontal: 10,
+    borderRadius: 8,
+    borderWidth: 1.5,
+    borderColor: "#E5E7EB",
+    backgroundColor: "#fff",
+  },
+  segmentBtnActive: {
+    backgroundColor: colors.primary,
+    borderColor: colors.primary,
+  },
+  segmentText: {
+    fontSize: 12,
+    fontWeight: "800",
+    color: colors.text,
+  },
+  segmentTextActive: {
+    color: "#fff",
   },
   previewBox: {
     marginTop: 8,
