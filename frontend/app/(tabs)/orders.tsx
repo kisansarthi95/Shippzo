@@ -1,12 +1,13 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   View, Text, StyleSheet, TextInput, TouchableOpacity,
-  FlatList, RefreshControl, ActivityIndicator, Alert,
+  FlatList, RefreshControl, ActivityIndicator, Alert, Modal,
+  ScrollView,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useFocusEffect, useRouter } from "expo-router";
-import { Api, SheetOrder } from "../../lib/api";
+import { Api, SheetOrder, PendingOrder, Courier } from "../../lib/api";
 import { colors } from "../../lib/theme";
 
 type Filter = "pending" | "shipped" | "all";
@@ -23,6 +24,61 @@ export default function OrdersFromSheet() {
   const [error, setError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Smart Paste pending orders queue
+  const [pasteOrders, setPasteOrders] = useState<PendingOrder[]>([]);
+  const [couriers, setCouriers] = useState<Courier[]>([]);
+  const [shipModalOrder, setShipModalOrder] = useState<PendingOrder | null>(null);
+  const [shipping, setShipping] = useState(false);
+
+  const loadPasteOrders = useCallback(async () => {
+    try {
+      const [pos, cs] = await Promise.all([
+        Api.listPendingOrders({ source: "paste", status: "pending" }),
+        Api.listCouriers(),
+      ]);
+      setPasteOrders(pos);
+      setCouriers(cs);
+    } catch {/* ignore */}
+  }, []);
+
+  const shipPasteOrder = async (order: PendingOrder, courier: Courier) => {
+    try {
+      setShipping(true);
+      const ship = await Api.shipPendingOrder(order.id, courier.id);
+      setShipping(false);
+      setShipModalOrder(null);
+      await loadPasteOrders();
+      Alert.alert(
+        "✅ Shipment created",
+        `Tracking ID: ${ship.tracking_id}`,
+        [
+          { text: "OK", style: "cancel" },
+          {
+            text: "View Label →",
+            onPress: () => router.push({ pathname: "/label/[id]", params: { id: ship.id } }),
+          },
+        ]
+      );
+    } catch (e: any) {
+      setShipping(false);
+      Alert.alert("Ship failed", e?.response?.data?.detail || e?.message || "Try again");
+    }
+  };
+
+  const deletePasteOrder = async (order: PendingOrder) => {
+    Alert.alert("Delete order?", `Remove ${order.customer_name || "order"} from queue?`, [
+      { text: "Cancel", style: "cancel" },
+      {
+        text: "Delete", style: "destructive", onPress: async () => {
+          try {
+            await Api.deletePendingOrder(order.id);
+            await loadPasteOrders();
+          } catch {/* ignore */}
+        },
+      },
+    ]);
+  };
 
   const load = useCallback(async () => {
     setError(null);
@@ -51,14 +107,16 @@ export default function OrdersFromSheet() {
   useFocusEffect(
     useCallback(() => {
       load();
+      loadPasteOrders();
       // auto-refresh every 60s while tab is focused
       intervalRef.current = setInterval(() => {
         load();
+        loadPasteOrders();
       }, 60_000);
       return () => {
         if (intervalRef.current) clearInterval(intervalRef.current);
       };
-    }, [load])
+    }, [load, loadPasteOrders])
   );
 
   const visible = orders.filter((o) => {
@@ -104,8 +162,8 @@ export default function OrdersFromSheet() {
           <Text style={styles.title}>Orders</Text>
           <Text style={styles.subtitle}>
             {connected
-              ? `${pendingCount} pending · synced ${lastSync ? timeAgo(lastSync) : "—"}`
-              : "Google Sheet not connected"}
+              ? `${pendingCount + pasteOrders.length} pending · synced ${lastSync ? timeAgo(lastSync) : "—"}`
+              : `${pasteOrders.length} pending from Smart Paste`}
           </Text>
         </View>
         <TouchableOpacity
@@ -114,11 +172,63 @@ export default function OrdersFromSheet() {
           onPress={() => {
             setRefreshing(true);
             load();
+            loadPasteOrders();
           }}
         >
           <Ionicons name="refresh" size={20} color="#fff" />
         </TouchableOpacity>
       </View>
+
+      {/* Paste Queue (always visible when has items) */}
+      {pasteOrders.length > 0 && (
+        <View style={styles.pasteQueueWrap}>
+          <View style={styles.pasteQueueHeader}>
+            <Ionicons name="sparkles" size={14} color="#7C3AED" />
+            <Text style={styles.pasteQueueTitle}>
+              Smart Paste Queue · {pasteOrders.length}
+            </Text>
+          </View>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={{ paddingHorizontal: 12, paddingBottom: 12, gap: 10 }}
+          >
+            {pasteOrders.map((po) => (
+              <View key={po.id} style={styles.pasteCard}>
+                <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+                  <View style={styles.pasteBadge}>
+                    <Text style={styles.pasteBadgeText}>✨ PASTE</Text>
+                  </View>
+                  <TouchableOpacity onPress={() => deletePasteOrder(po)} hitSlop={8}>
+                    <Ionicons name="close" size={18} color={colors.textMuted} />
+                  </TouchableOpacity>
+                </View>
+                <Text style={styles.pasteName} numberOfLines={1}>
+                  {po.customer_name || "(no name)"}
+                </Text>
+                <Text style={styles.pasteMeta} numberOfLines={1}>
+                  📞 {po.customer_phone || "—"} · {po.pincode || "—"}
+                </Text>
+                <Text style={styles.pasteMeta} numberOfLines={1}>
+                  {po.city || "—"}, {po.state || ""}
+                </Text>
+                <Text style={styles.pasteAmount}>
+                  {po.payment_mode === "COD" ? "💵 COD" : "✅ PAID"}{" "}
+                  ₹{Number(po.amount || 0).toFixed(0)}
+                </Text>
+                <TouchableOpacity
+                  style={styles.shipBtn}
+                  onPress={() => setShipModalOrder(po)}
+                  testID={`ship-order-${po.id}`}
+                >
+                  <Ionicons name="rocket-outline" size={14} color="#fff" />
+                  <Text style={styles.shipBtnText}>Ship this order</Text>
+                </TouchableOpacity>
+              </View>
+            ))}
+          </ScrollView>
+        </View>
+      )}
 
       {!connected ? (
         <View style={styles.empty} testID="orders-not-connected">
@@ -265,6 +375,66 @@ export default function OrdersFromSheet() {
           )}
         </>
       )}
+
+      {/* Courier Picker Modal for Ship This Order */}
+      <Modal
+        visible={!!shipModalOrder}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setShipModalOrder(null)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalCard}>
+            <View style={styles.modalHeader}>
+              <Ionicons name="rocket" size={18} color="#7C3AED" />
+              <Text style={styles.modalTitle}>Ship Order</Text>
+              <TouchableOpacity onPress={() => setShipModalOrder(null)} hitSlop={10}>
+                <Ionicons name="close" size={22} color={colors.text} />
+              </TouchableOpacity>
+            </View>
+            {shipModalOrder && (
+              <>
+                <View style={styles.shipSummary}>
+                  <Text style={styles.shipSummaryName}>{shipModalOrder.customer_name}</Text>
+                  <Text style={styles.shipSummaryLine}>
+                    📞 {shipModalOrder.customer_phone} · ₹{Number(shipModalOrder.amount || 0).toFixed(0)} {shipModalOrder.payment_mode}
+                  </Text>
+                  <Text style={styles.shipSummaryLine}>
+                    {shipModalOrder.city}, {shipModalOrder.state} - {shipModalOrder.pincode}
+                  </Text>
+                </View>
+                <Text style={styles.modalHint}>Pick a courier to allocate tracking ID:</Text>
+                <ScrollView style={{ maxHeight: 320 }}>
+                  {couriers.map((c) => (
+                    <TouchableOpacity
+                      key={c.id}
+                      style={styles.courierRow}
+                      onPress={() => shipPasteOrder(shipModalOrder, c)}
+                      disabled={shipping}
+                    >
+                      <View style={styles.courierIcon}>
+                        <Ionicons name="cube-outline" size={18} color={colors.primary} />
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.courierName}>{c.name}</Text>
+                        <Text style={styles.courierSub}>
+                          Next: {c.series_prefix}{String(c.next_number || 1).padStart(c.number_padding || 4, "0")}
+                        </Text>
+                      </View>
+                      <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
+                    </TouchableOpacity>
+                  ))}
+                </ScrollView>
+                {shipping && (
+                  <View style={{ padding: 10, alignItems: "center" }}>
+                    <ActivityIndicator color={colors.primary} />
+                  </View>
+                )}
+              </>
+            )}
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -365,4 +535,119 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20, paddingVertical: 12, borderRadius: 10,
   },
   primaryBtnText: { color: "#fff", fontWeight: "800" },
+
+  // Smart Paste queue styles
+  pasteQueueWrap: {
+    backgroundColor: "#F5F3FF",
+    borderBottomWidth: 1,
+    borderBottomColor: "#DDD6FE",
+    paddingTop: 10,
+  },
+  pasteQueueHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 14,
+    marginBottom: 8,
+  },
+  pasteQueueTitle: {
+    fontSize: 12,
+    fontWeight: "900",
+    color: "#5B21B6",
+    letterSpacing: 0.5,
+  },
+  pasteCard: {
+    width: 260,
+    backgroundColor: "#fff",
+    borderRadius: 12,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: "#DDD6FE",
+    gap: 4,
+  },
+  pasteBadge: {
+    alignSelf: "flex-start",
+    paddingVertical: 2,
+    paddingHorizontal: 8,
+    backgroundColor: "#7C3AED",
+    borderRadius: 8,
+  },
+  pasteBadgeText: { color: "#fff", fontSize: 10, fontWeight: "900" },
+  pasteName: {
+    fontSize: 14,
+    fontWeight: "800",
+    color: colors.text,
+    marginTop: 4,
+  },
+  pasteMeta: { fontSize: 11, color: colors.textMuted },
+  pasteAmount: { fontSize: 13, fontWeight: "800", color: colors.text, marginTop: 4 },
+  shipBtn: {
+    marginTop: 8,
+    backgroundColor: "#7C3AED",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 5,
+    paddingVertical: 8,
+    borderRadius: 8,
+  },
+  shipBtnText: { color: "#fff", fontSize: 12, fontWeight: "800" },
+
+  // Modal
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.55)",
+    justifyContent: "flex-end",
+  },
+  modalCard: {
+    backgroundColor: "#fff",
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    padding: 18,
+    paddingBottom: 30,
+    maxHeight: "80%",
+  },
+  modalHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    marginBottom: 8,
+  },
+  modalTitle: { flex: 1, fontSize: 16, fontWeight: "900", color: colors.text },
+  modalHint: {
+    fontSize: 12,
+    color: colors.textMuted,
+    marginBottom: 10,
+    lineHeight: 17,
+  },
+  shipSummary: {
+    padding: 12,
+    backgroundColor: "#F5F3FF",
+    borderRadius: 10,
+    marginBottom: 14,
+  },
+  shipSummaryName: { fontSize: 14, fontWeight: "900", color: colors.text },
+  shipSummaryLine: { fontSize: 12, color: colors.text, marginTop: 3 },
+  courierRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    paddingVertical: 12,
+    paddingHorizontal: 10,
+    borderRadius: 10,
+    marginBottom: 6,
+    borderWidth: 1,
+    borderColor: "#E5E7EB",
+    backgroundColor: "#FAFAFA",
+  },
+  courierIcon: {
+    width: 36,
+    height: 36,
+    borderRadius: 8,
+    backgroundColor: "#FFF7ED",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  courierName: { fontSize: 14, fontWeight: "800", color: colors.text },
+  courierSub: { fontSize: 11, color: colors.textMuted, marginTop: 2 },
 });

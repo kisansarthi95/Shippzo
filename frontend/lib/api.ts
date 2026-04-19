@@ -174,6 +174,53 @@ export const Api = {
   deleteShipment: (id: string) =>
     api.delete(`/shipments/${id}`).then((r) => r.data),
   csvUrl: () => `${BASE}/api/shipments/export/csv`,
+
+  // Smart Paste & Pending Orders
+  smartPasteParse: (text: string) =>
+    api.post<{ fields: any; confidence: any; warnings: string[] }>("/smart-paste/parse", { text })
+      .then((r) => r.data),
+  smartPasteCreate: (text: string) =>
+    api.post<PendingOrder>("/smart-paste", { text }).then((r) => r.data),
+  listPendingOrders: (params?: { source?: string; status?: string }) =>
+    api.get<PendingOrder[]>("/orders/pending", { params }).then((r) => r.data),
+  getPendingOrder: (id: string) =>
+    api.get<PendingOrder>(`/orders/pending/${id}`).then((r) => r.data),
+  updatePendingOrder: (id: string, data: Partial<PendingOrder>) =>
+    api.put<PendingOrder>(`/orders/pending/${id}`, data).then((r) => r.data),
+  deletePendingOrder: (id: string) =>
+    api.delete(`/orders/pending/${id}`).then((r) => r.data),
+  shipPendingOrder: (id: string, courier_id: string, overrides?: any) =>
+    api.post<Shipment>(`/orders/pending/${id}/ship`, { courier_id, overrides }).then((r) => r.data),
+  pendingOrdersCount: () =>
+    api.get<{ count: number }>("/orders/pending-count").then((r) => r.data),
+};
+
+export type PendingOrder = {
+  id: string;
+  source: "paste" | "sheet" | "manual";
+  status: "pending" | "shipped" | "skipped";
+  customer_name: string;
+  customer_phone: string;
+  address_line1: string;
+  address_line2: string;
+  city: string;
+  state: string;
+  pincode: string;
+  items: string;
+  amount: number;
+  payment_mode: "COD" | "PAID";
+  courier_hint?: string;
+  order_id_hint?: string;
+  weight?: string;
+  notes?: string;
+  sheet_row_num?: number;
+  raw_text?: string;
+  shipment_id?: string;
+  tracking_id?: string;
+  confidence?: Record<string, string>;
+  warnings?: string[];
+  created_at: string;
+  processed_at?: string;
 };
 
 export const SHEET_FIELDS: { key: string; label: string }[] = [

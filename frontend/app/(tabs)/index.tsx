@@ -8,10 +8,15 @@ import {
   RefreshControl,
   ActivityIndicator,
   Linking,
+  Alert,
+  Modal,
+  TextInput,
+  Platform,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useFocusEffect, useRouter } from "expo-router";
+import * as Clipboard from "expo-clipboard";
 import { Api, Shipment } from "../../lib/api";
 import { colors } from "../../lib/theme";
 
@@ -60,6 +65,80 @@ export default function Dashboard() {
     load().catch(() => {});
   };
 
+  // Smart Paste — hybrid flow: auto-paste from clipboard, fallback to modal
+  const [pasteModalOpen, setPasteModalOpen] = useState(false);
+  const [pasteText, setPasteText] = useState("");
+  const [pasting, setPasting] = useState(false);
+
+  const handleSmartPaste = async () => {
+    try {
+      setPasting(true);
+      let text = "";
+      try {
+        text = (await Clipboard.getStringAsync()) || "";
+      } catch {
+        text = "";
+      }
+      // Valid structured text check: must have "NAME:" OR "PHONE:" keyword
+      const hasStructure = /\b(NAME|PHONE|MOBILE|ADDRESS_1|PINCODE)\s*:/i.test(text);
+      if (!text.trim() || !hasStructure) {
+        // Fallback: open modal with empty textarea
+        setPasteText(text || "");
+        setPasteModalOpen(true);
+        setPasting(false);
+        return;
+      }
+      // Happy path: parse + save directly
+      await Api.smartPasteCreate(text);
+      setPasting(false);
+      Alert.alert(
+        "✅ Order added",
+        "Order queued in Orders tab. Ready to ship.",
+        [
+          { text: "OK", style: "cancel" },
+          { text: "View Orders →", onPress: () => router.push("/orders") },
+        ]
+      );
+    } catch (e: any) {
+      setPasting(false);
+      Alert.alert("Paste failed", e?.response?.data?.detail || e?.message || "Try again");
+    }
+  };
+
+  const submitPasteModal = async () => {
+    if (!pasteText.trim()) {
+      Alert.alert("Empty", "Please paste text first");
+      return;
+    }
+    try {
+      setPasting(true);
+      await Api.smartPasteCreate(pasteText);
+      setPasting(false);
+      setPasteModalOpen(false);
+      setPasteText("");
+      Alert.alert(
+        "✅ Order added",
+        "Order queued in Orders tab.",
+        [
+          { text: "OK", style: "cancel" },
+          { text: "View Orders →", onPress: () => router.push("/orders") },
+        ]
+      );
+    } catch (e: any) {
+      setPasting(false);
+      Alert.alert("Parse failed", e?.response?.data?.detail || e?.message || "Invalid format");
+    }
+  };
+
+  const pasteFromClipboardToModal = async () => {
+    try {
+      const t = await Clipboard.getStringAsync();
+      if (t) setPasteText(t);
+    } catch {
+      /* ignore */
+    }
+  };
+
   return (
     <SafeAreaView style={styles.safe} edges={["top"]}>
       <View style={styles.header}>
@@ -69,6 +148,18 @@ export default function Dashboard() {
           <Text style={styles.headerSub}>Ship smart. Print fast.</Text>
         </View>
         <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+          <TouchableOpacity
+            testID="smart-paste-btn"
+            style={[styles.headerAction, { backgroundColor: "#7C3AED" }]}
+            onPress={handleSmartPaste}
+            disabled={pasting}
+          >
+            {pasting ? (
+              <ActivityIndicator color="#fff" size="small" />
+            ) : (
+              <Ionicons name="sparkles" size={20} color="#fff" />
+            )}
+          </TouchableOpacity>
           <TouchableOpacity
             testID="dashboard-refresh-btn"
             style={[styles.headerAction, { backgroundColor: colors.primary }]}
@@ -85,6 +176,81 @@ export default function Dashboard() {
           </TouchableOpacity>
         </View>
       </View>
+
+      {/* Smart Paste Fallback Modal */}
+      <Modal
+        visible={pasteModalOpen}
+        animationType="slide"
+        transparent
+        onRequestClose={() => setPasteModalOpen(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalCard}>
+            <View style={styles.modalHeader}>
+              <Ionicons name="sparkles" size={18} color="#7C3AED" />
+              <Text style={styles.modalTitle}>Smart Paste</Text>
+              <TouchableOpacity onPress={() => setPasteModalOpen(false)} hitSlop={10}>
+                <Ionicons name="close" size={22} color={colors.text} />
+              </TouchableOpacity>
+            </View>
+
+            <Text style={styles.modalHint}>
+              Paste text from Shipment Parser GPT (14-line format).
+            </Text>
+
+            <View style={styles.quickRow}>
+              <TouchableOpacity style={styles.quickBtn} onPress={pasteFromClipboardToModal}>
+                <Ionicons name="clipboard-outline" size={14} color="#7C3AED" />
+                <Text style={styles.quickBtnText}>Paste Clipboard</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.quickBtn}
+                onPress={() =>
+                  Linking.openURL("https://chatgpt.com/gpts").catch(() => {})
+                }
+              >
+                <Ionicons name="logo-chatbox" size={14} color="#7C3AED" />
+                <Text style={styles.quickBtnText}>Open GPT</Text>
+              </TouchableOpacity>
+            </View>
+
+            <TextInput
+              testID="smart-paste-input"
+              value={pasteText}
+              onChangeText={setPasteText}
+              multiline
+              placeholder={"NAME: ...\nPHONE: ...\nADDRESS_1: ...\nCITY: ...\nPINCODE: ...\nAMOUNT: ...\nPAYMENT: COD / PAID"}
+              placeholderTextColor="#9CA3AF"
+              style={styles.modalInput}
+              autoFocus
+            />
+
+            <View style={styles.modalActions}>
+              <TouchableOpacity
+                style={[styles.modalBtn, { backgroundColor: "#E5E7EB" }]}
+                onPress={() => setPasteModalOpen(false)}
+              >
+                <Text style={[styles.modalBtnText, { color: colors.text }]}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                testID="smart-paste-submit"
+                style={[styles.modalBtn, { backgroundColor: "#7C3AED" }]}
+                onPress={submitPasteModal}
+                disabled={pasting}
+              >
+                {pasting ? (
+                  <ActivityIndicator size="small" color="#fff" />
+                ) : (
+                  <>
+                    <Ionicons name="sparkles" size={14} color="#fff" />
+                    <Text style={styles.modalBtnText}>Auto-fill & Queue</Text>
+                  </>
+                )}
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
 
       <ScrollView
         testID="dashboard-scroll"
@@ -429,4 +595,78 @@ const styles = StyleSheet.create({
     borderRadius: 10,
   },
   primaryBtnText: { color: "#fff", fontWeight: "800" },
+
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.55)",
+    justifyContent: "flex-end",
+  },
+  modalCard: {
+    backgroundColor: "#fff",
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    padding: 18,
+    paddingBottom: 30,
+  },
+  modalHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    marginBottom: 8,
+  },
+  modalTitle: {
+    flex: 1,
+    fontSize: 16,
+    fontWeight: "900",
+    color: colors.text,
+  },
+  modalHint: {
+    fontSize: 12,
+    color: colors.textMuted,
+    marginBottom: 10,
+    lineHeight: 17,
+  },
+  quickRow: {
+    flexDirection: "row",
+    gap: 8,
+    marginBottom: 10,
+  },
+  quickBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    paddingVertical: 7,
+    paddingHorizontal: 12,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "#7C3AED",
+    backgroundColor: "#F5F3FF",
+  },
+  quickBtnText: { fontSize: 11, fontWeight: "700", color: "#7C3AED" },
+  modalInput: {
+    borderWidth: 1.5,
+    borderColor: "#E5E7EB",
+    borderRadius: 10,
+    padding: 12,
+    minHeight: 160,
+    fontSize: 13,
+    textAlignVertical: "top",
+    color: colors.text,
+    backgroundColor: "#FAFAFA",
+  },
+  modalActions: {
+    flexDirection: "row",
+    gap: 8,
+    marginTop: 14,
+  },
+  modalBtn: {
+    flex: 1,
+    paddingVertical: 12,
+    borderRadius: 10,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+  },
+  modalBtnText: { color: "#fff", fontWeight: "800", fontSize: 13 },
 });

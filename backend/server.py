@@ -776,6 +776,335 @@ async def delete_shipment(shipment_id: str):
     return {"ok": True}
 
 
+# ---------------------- Pending Orders (Smart Paste + Sheet queue) ----------------------
+
+class PendingOrder(BaseModel):
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    source: str = "paste"  # "paste" | "sheet" | "manual"
+    status: str = "pending"  # "pending" | "shipped" | "skipped"
+
+    # Customer data
+    customer_name: str = ""
+    customer_phone: str = ""
+    address_line1: str = ""
+    address_line2: str = ""
+    city: str = ""
+    state: str = ""
+    pincode: str = ""
+    items: str = ""  # comma separated
+    amount: float = 0
+    payment_mode: str = "COD"  # "COD" | "PAID"
+
+    # Hints from paste
+    courier_hint: str = ""
+    order_id_hint: str = ""
+    weight: str = ""
+    notes: str = ""
+
+    # Source-specific
+    sheet_row_num: Optional[int] = None
+    raw_text: str = ""  # original pasted message (trimmed)
+
+    # Link when shipped
+    shipment_id: Optional[str] = None
+    tracking_id: Optional[str] = None
+
+    # Parse confidence (per field: "high" | "medium" | "low" | "missing")
+    confidence: Dict[str, str] = Field(default_factory=dict)
+    warnings: List[str] = Field(default_factory=list)
+
+    created_at: str = Field(default_factory=utcnow_iso)
+    processed_at: Optional[str] = None
+
+
+class SmartPasteRequest(BaseModel):
+    text: str
+
+
+class ShipOrderRequest(BaseModel):
+    courier_id: str
+    # optional overrides before creating the shipment
+    overrides: Optional[Dict[str, Any]] = None
+
+
+def _normalize_digits(s: str) -> str:
+    """Convert Gujarati/Hindi digits to English."""
+    if not s:
+        return s
+    gu = "૦૧૨૩૪૫૬૭૮૯"
+    hi = "०१२३४५६७८९"
+    out = []
+    for ch in s:
+        if ch in gu:
+            out.append(str(gu.index(ch)))
+        elif ch in hi:
+            out.append(str(hi.index(ch)))
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
+def parse_structured_paste(text: str) -> Dict[str, Any]:
+    """Parse the fixed format the user pastes (from Custom GPT).
+
+    Expected format (one field per line):
+      NAME: ...
+      PHONE: 10-digit
+      ADDRESS_1: ...
+      ADDRESS_2: ... (optional)
+      CITY: ...
+      STATE: ...
+      PINCODE: 6-digit
+      ITEMS: ...
+      AMOUNT: ...
+      PAYMENT: COD|PAID
+      COURIER: ... (optional)
+      ORDER_ID: ... (optional)
+      WEIGHT: ... (optional)
+      NOTES: ... (optional)
+    """
+    text = _normalize_digits(text or "").strip()
+    result: Dict[str, str] = {}
+    confidence: Dict[str, str] = {}
+    warnings: List[str] = []
+
+    key_map = {
+        "NAME": "customer_name",
+        "PHONE": "customer_phone",
+        "MOBILE": "customer_phone",
+        "CONTACT": "customer_phone",
+        "ADDRESS_1": "address_line1",
+        "ADDRESS1": "address_line1",
+        "ADDRESS": "address_line1",
+        "ADDRESS_2": "address_line2",
+        "ADDRESS2": "address_line2",
+        "CITY": "city",
+        "STATE": "state",
+        "PINCODE": "pincode",
+        "PIN": "pincode",
+        "ITEMS": "items",
+        "ITEM": "items",
+        "AMOUNT": "amount",
+        "PRICE": "amount",
+        "TOTAL": "amount",
+        "PAYMENT": "payment_mode",
+        "PAY": "payment_mode",
+        "COURIER": "courier_hint",
+        "ORDER_ID": "order_id_hint",
+        "ORDER": "order_id_hint",
+        "WEIGHT": "weight",
+        "WT": "weight",
+        "NOTES": "notes",
+        "NOTE": "notes",
+    }
+
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    for line in lines:
+        if ":" not in line:
+            continue
+        key_part, _, value = line.partition(":")
+        key = re.sub(r"[^A-Za-z0-9_]", "", key_part).upper()
+        mapped = key_map.get(key)
+        if not mapped:
+            continue
+        val = value.strip()
+        if val in ("-", "—", "_", ""):
+            continue
+        result[mapped] = val
+
+    # Clean & normalize
+    if "customer_phone" in result:
+        digits = re.sub(r"\D", "", result["customer_phone"])
+        if len(digits) > 10:
+            digits = digits[-10:]
+        result["customer_phone"] = digits
+        confidence["customer_phone"] = "high" if len(digits) == 10 else "low"
+        if len(digits) != 10:
+            warnings.append("Phone number doesn't look like 10 digits")
+
+    if "pincode" in result:
+        m = re.search(r"\b(\d{6})\b", result["pincode"])
+        if m:
+            result["pincode"] = m.group(1)
+            confidence["pincode"] = "high"
+        else:
+            confidence["pincode"] = "low"
+            warnings.append("Pincode should be 6 digits")
+
+    if "amount" in result:
+        m = re.search(r"(\d+(?:\.\d+)?)", result["amount"].replace(",", ""))
+        if m:
+            try:
+                result["amount"] = float(m.group(1))
+                confidence["amount"] = "high"
+            except Exception:
+                confidence["amount"] = "low"
+        else:
+            confidence["amount"] = "low"
+
+    if "payment_mode" in result:
+        v = result["payment_mode"].upper()
+        if "COD" in v or "CASH" in v or "નકદ" in v or "ડિલિવરી" in v:
+            result["payment_mode"] = "COD"
+        else:
+            result["payment_mode"] = "PAID"
+        confidence["payment_mode"] = "high"
+
+    # Confidence for other fields (present = high, missing = missing)
+    for field in ["customer_name", "address_line1", "city", "state", "items"]:
+        if result.get(field):
+            confidence.setdefault(field, "high")
+        else:
+            confidence[field] = "missing"
+            if field in ("customer_name", "address_line1", "city"):
+                warnings.append(f"Missing: {field}")
+
+    return {
+        "fields": result,
+        "confidence": confidence,
+        "warnings": warnings,
+    }
+
+
+@api_router.post("/smart-paste/parse")
+async def smart_paste_parse(payload: SmartPasteRequest):
+    """Parse pasted text only (no save) — for preview/dry-run."""
+    return parse_structured_paste(payload.text or "")
+
+
+@api_router.post("/smart-paste", response_model=PendingOrder)
+async def smart_paste_create(payload: SmartPasteRequest):
+    """Parse text and create a PendingOrder."""
+    parsed = parse_structured_paste(payload.text or "")
+    fields = parsed["fields"]
+    po = PendingOrder(
+        source="paste",
+        raw_text=(payload.text or "")[:2000],
+        confidence=parsed["confidence"],
+        warnings=parsed["warnings"],
+        **{k: v for k, v in fields.items() if k in PendingOrder.model_fields},
+    )
+    await db.pending_orders.insert_one(po.model_dump())
+    return po
+
+
+@api_router.get("/orders/pending", response_model=List[PendingOrder])
+async def list_pending_orders(source: Optional[str] = None, status: Optional[str] = None):
+    q: Dict[str, Any] = {}
+    if source:
+        q["source"] = source
+    if status:
+        q["status"] = status
+    else:
+        q["status"] = "pending"
+    cursor = db.pending_orders.find(q, {"_id": 0}).sort("created_at", -1)
+    return await cursor.to_list(length=500)
+
+
+@api_router.get("/orders/pending/{order_id}", response_model=PendingOrder)
+async def get_pending_order(order_id: str):
+    doc = await db.pending_orders.find_one({"id": order_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Order not found")
+    return doc
+
+
+@api_router.put("/orders/pending/{order_id}", response_model=PendingOrder)
+async def update_pending_order(order_id: str, payload: Dict[str, Any]):
+    # Allow partial field updates (user edits before shipping)
+    allowed = {k for k in PendingOrder.model_fields if k not in ("id", "created_at", "source")}
+    upd = {k: v for k, v in payload.items() if k in allowed}
+    if not upd:
+        raise HTTPException(status_code=400, detail="No valid fields to update")
+    res = await db.pending_orders.update_one({"id": order_id}, {"$set": upd})
+    if res.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Order not found")
+    doc = await db.pending_orders.find_one({"id": order_id}, {"_id": 0})
+    return doc
+
+
+@api_router.delete("/orders/pending/{order_id}")
+async def delete_pending_order(order_id: str):
+    res = await db.pending_orders.delete_one({"id": order_id})
+    if res.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Order not found")
+    return {"ok": True}
+
+
+@api_router.post("/orders/pending/{order_id}/ship", response_model=Shipment)
+async def ship_pending_order(order_id: str, payload: ShipOrderRequest):
+    """Promote a pending order to a real shipment — allocates tracking ID."""
+    order = await db.pending_orders.find_one({"id": order_id}, {"_id": 0})
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    if order.get("status") == "shipped":
+        raise HTTPException(status_code=400, detail="Order already shipped")
+
+    courier = await db.couriers.find_one({"id": payload.courier_id}, {"_id": 0})
+    if not courier:
+        raise HTTPException(status_code=404, detail="Courier not found")
+
+    # Allocate tracking ID
+    padding = int(courier.get("number_padding") or 4)
+    next_num = int(courier.get("next_number") or 1)
+    tracking_id = f"{courier.get('series_prefix','')}{str(next_num).zfill(padding)}"
+    await db.couriers.update_one({"id": courier["id"]}, {"$inc": {"next_number": 1}})
+
+    # Build shipment from order + optional overrides
+    overrides = payload.overrides or {}
+    def get(k, default=""):
+        return overrides.get(k, order.get(k, default))
+
+    # items as list (stored as comma separated in pending_orders)
+    items_str = get("items", "")
+    items_list = [s.strip() for s in (items_str.split(",") if items_str else []) if s.strip()]
+
+    ship_doc = {
+        "id": str(uuid.uuid4()),
+        "tracking_id": tracking_id,
+        "courier_id": courier["id"],
+        "courier_name": courier.get("name", ""),
+        "customer_name": get("customer_name"),
+        "customer_phone": get("customer_phone"),
+        "address_line1": get("address_line1"),
+        "address_line2": get("address_line2"),
+        "city": get("city"),
+        "state": get("state"),
+        "pincode": get("pincode"),
+        "items": items_list,
+        "item_description": items_str,
+        "amount": float(get("amount", 0) or 0),
+        "cod_amount": float(get("amount", 0) or 0) if get("payment_mode") == "COD" else 0,
+        "weight": get("weight"),
+        "payment_mode": get("payment_mode", "COD"),
+        "order_id": get("order_id_hint"),
+        "notes": get("notes"),
+        "status": "Pending",
+        "created_at": utcnow_iso(),
+        "updated_at": utcnow_iso(),
+    }
+    await db.shipments.insert_one(ship_doc)
+
+    # Mark order as shipped + link
+    await db.pending_orders.update_one(
+        {"id": order_id},
+        {"$set": {
+            "status": "shipped",
+            "processed_at": utcnow_iso(),
+            "shipment_id": ship_doc["id"],
+            "tracking_id": tracking_id,
+        }},
+    )
+    ship_doc.pop("_id", None)
+    return ship_doc
+
+
+@api_router.get("/orders/pending-count")
+async def pending_orders_count():
+    n = await db.pending_orders.count_documents({"status": "pending"})
+    return {"count": n}
+
+
 # ---------------------- App setup ----------------------
 
 app.include_router(api_router)
