@@ -51,13 +51,13 @@ export default function Dashboard() {
 
   useFocusEffect(
     useCallback(() => {
-      load();
+      load().catch(() => {});
     }, [load])
   );
 
   const onRefresh = () => {
     setRefreshing(true);
-    load();
+    load().catch(() => {});
   };
 
   return (

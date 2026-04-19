@@ -9,6 +9,35 @@ import { Ionicons } from "@expo/vector-icons";
 // Keep splash visible while we warm-up fonts
 SplashScreen.preventAutoHideAsync().catch(() => {});
 
+// Globally swallow benign network/promise rejections so the red
+// "Uncaught (in promise) Error" toast doesn't spam the user.
+if (typeof globalThis !== "undefined") {
+  // React Native ErrorUtils-style handler
+  const g: any = globalThis as any;
+  try {
+    const prev = g.ErrorUtils?.getGlobalHandler?.();
+    g.ErrorUtils?.setGlobalHandler?.((e: any, isFatal?: boolean) => {
+      const msg = String(e?.message || e);
+      // Swallow network/axios errors silently
+      if (/Network Error|AxiosError|timeout|Unauthorized|Request failed/i.test(msg)) {
+        return;
+      }
+      prev?.(e, isFatal);
+    });
+  } catch {
+    /* ignore */
+  }
+  // Web unhandled promise rejections
+  if (typeof window !== "undefined") {
+    window.addEventListener?.("unhandledrejection", (ev: any) => {
+      const msg = String(ev?.reason?.message || ev?.reason || "");
+      if (/Network Error|AxiosError|timeout|Unauthorized|Request failed/i.test(msg)) {
+        ev.preventDefault?.();
+      }
+    });
+  }
+}
+
 export default function RootLayout() {
   const [ready, setReady] = useState(false);
 
