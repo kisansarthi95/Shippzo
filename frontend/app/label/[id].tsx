@@ -190,7 +190,7 @@ export default function LabelScreen() {
         <View style={styles.preview} testID="label-preview">
           {/* TOP (fixed) */}
           <View style={styles.previewHdr}>
-            <View style={{ flex: 1, minWidth: 0, justifyContent: "center" }}>
+            <View style={{ flex: 1, minWidth: 0 }}>
               {brand.logo_base64 && preferLogo ? (
                 (() => {
                   // Auto-detect "wide" if natural image ratio > 2:1 OR user chose wide
@@ -212,8 +212,8 @@ export default function LabelScreen() {
                       }}
                       style={
                         isWide
-                          ? { width: "100%", height: 70, resizeMode: "contain", alignSelf: "flex-start" }
-                          : { width: 84, height: 84, resizeMode: "contain", alignSelf: "flex-start" }
+                          ? { width: "100%", height: 36, resizeMode: "contain", alignSelf: "flex-start" }
+                          : { width: 44, height: 44, resizeMode: "contain", alignSelf: "flex-start" }
                       }
                     />
                   );
@@ -223,6 +223,21 @@ export default function LabelScreen() {
                   {brand.name || sender.name || "Your Brand"}
                 </Text>
               )}
+              {/* Under-logo row: DD left · Order right */}
+              <View style={styles.brandMeta}>
+                <Text style={styles.brandMetaText}>
+                  {(() => {
+                    const d = new Date(shipment.created_at);
+                    const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+                    return !isNaN(d.getTime())
+                      ? `DD: ${d.getDate()} ${months[d.getMonth()]} ${d.getFullYear()}`
+                      : "";
+                  })()}
+                </Text>
+                <Text style={styles.brandMetaText}>
+                  {shipment.order_id ? `Order: ${shipment.order_id}` : ""}
+                </Text>
+              </View>
             </View>
             {shipment.payment_mode === "COD" ? (
               <View style={{ alignItems: "flex-end" }}>
@@ -231,13 +246,7 @@ export default function LabelScreen() {
                 {(() => {
                   const c = couriers.find((cc) => cc.id === shipment.courier_id || cc.name === shipment.courier_name);
                   const cid = (c as any)?.customer_id?.trim();
-                  const d = new Date(shipment.created_at);
-                  const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-                  const dd = !isNaN(d.getTime()) ? `${d.getDate()} ${months[d.getMonth()]} ${d.getFullYear()}` : "";
-                  const parts: string[] = [];
-                  if (dd) parts.push(`DD: ${dd}`);
-                  if (cid) parts.push(`Cust ID: ${cid}`);
-                  return parts.length ? <Text style={styles.paySubText}>{parts.join(" · ")}</Text> : null;
+                  return cid ? <Text style={styles.paySubText}>Cust ID: {cid}</Text> : null;
                 })()}
               </View>
             ) : (
@@ -247,13 +256,7 @@ export default function LabelScreen() {
                 {(() => {
                   const c = couriers.find((cc) => cc.id === shipment.courier_id || cc.name === shipment.courier_name);
                   const cid = (c as any)?.customer_id?.trim();
-                  const d = new Date(shipment.created_at);
-                  const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-                  const dd = !isNaN(d.getTime()) ? `${d.getDate()} ${months[d.getMonth()]} ${d.getFullYear()}` : "";
-                  const parts: string[] = [];
-                  if (dd) parts.push(`DD: ${dd}`);
-                  if (cid) parts.push(`Cust ID: ${cid}`);
-                  return parts.length ? <Text style={styles.paySubText}>{parts.join(" · ")}</Text> : null;
+                  return cid ? <Text style={styles.paySubText}>Cust ID: {cid}</Text> : null;
                 })()}
               </View>
             )}
@@ -281,9 +284,6 @@ export default function LabelScreen() {
 
           {/* META one-line */}
           <View style={styles.metaRow}>
-            {!!shipment.order_id && (
-              <Text style={styles.metaText}>Order: {shipment.order_id}</Text>
-            )}
             {!!shipment.weight && (
               <Text style={styles.metaText}>Wt: {shipment.weight}</Text>
             )}
@@ -458,7 +458,7 @@ const styles = StyleSheet.create({
   previewHdr: {
     flexDirection: "row",
     justifyContent: "space-between",
-    alignItems: "center",
+    alignItems: "flex-start",
     borderBottomWidth: 2,
     borderBottomColor: colors.secondary,
     paddingBottom: 10,
@@ -494,6 +494,18 @@ const styles = StyleSheet.create({
     color: colors.textMuted,
     marginTop: 3,
     fontWeight: "600",
+  },
+  brandMeta: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginTop: 6,
+    gap: 8,
+  },
+  brandMetaText: {
+    fontSize: 11,
+    color: colors.text,
+    fontWeight: "700",
   },
   previewBody: { flexDirection: "row", gap: 8, marginTop: 10 },
   blk: {

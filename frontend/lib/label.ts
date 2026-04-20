@@ -97,14 +97,11 @@ function singleLabel(s: Shipment, sender: SenderAddress, opts: LabelOptions) {
   );
   const custId = (courier?.customer_id || "").trim();
   const dispatchDate = formatDispatchDate(s.created_at);
-  const subBits: string[] = [];
-  if (dispatchDate) subBits.push(`DD: ${escape(dispatchDate)}`);
-  if (custId) subBits.push(`Cust ID: ${escape(custId)}`);
   const courierLine = s.courier_name
     ? `<div class="courier-sub">via ${escape(s.courier_name)}</div>${
-        subBits.length ? `<div class="courier-sub2">${subBits.join(" · ")}</div>` : ""
+        custId ? `<div class="courier-sub2">Cust ID: ${escape(custId)}</div>` : ""
       }`
-    : (subBits.length ? `<div class="courier-sub2">${subBits.join(" · ")}</div>` : "");
+    : (custId ? `<div class="courier-sub2">Cust ID: ${escape(custId)}</div>` : "");
 
   const itemsText =
     s.items && s.items.length
@@ -134,7 +131,13 @@ function singleLabel(s: Shipment, sender: SenderAddress, opts: LabelOptions) {
   <div class="label">
     <!-- TOP (fixed height) -->
     <div class="hdr">
-      <div class="brand-wrap">${brandHeader}</div>
+      <div class="brand-wrap">
+        ${brandHeader}
+        <div class="brand-meta">
+          <span class="bm-left">${dispatchDate ? `<b class="lbl">DD:</b> ${escape(dispatchDate)}` : ""}</span>
+          <span class="bm-right">${s.order_id ? `<b class="lbl">Order:</b> ${escape(s.order_id)}` : ""}</span>
+        </div>
+      </div>
       <div class="pay-wrap">
         <div class="${payPillClass}">${payPillText}</div>
         ${courierLine}
@@ -154,7 +157,6 @@ function singleLabel(s: Shipment, sender: SenderAddress, opts: LabelOptions) {
       </div>
 
       <div class="meta-row">
-        ${s.order_id ? `<span><b class="lbl">Order:</b> ${escape(s.order_id)}</span>` : ""}
         ${s.weight ? `<span><b class="lbl">Wt:</b> ${escape(s.weight)}</span>` : ""}
         <span><b class="lbl">Item:</b> ${escape(itemsText)}</span>
       </div>
@@ -263,12 +265,15 @@ export function buildLabelHtml(
     width: 100%; max-width: 100%; box-sizing: border-box; }
 
   /* ---- TOP (fixed) ---- */
-  .hdr { display: flex; justify-content: space-between; align-items: center;
-    border-bottom: 2px solid #0A0A0A; padding-bottom: 3mm; gap: 4mm;
-    min-height: 20mm; }
-  .brand-wrap { display: flex; align-items: center; gap: 3mm; flex: 1; min-width: 0; }
-  .brand-logo-square { max-width: 22mm; max-height: 22mm; object-fit: contain; }
-  .brand-logo-wide   { max-width: 100%; width: 100%; max-height: 22mm; height: auto; object-fit: contain; display: block; }
+  .hdr { display: flex; justify-content: space-between; align-items: flex-start;
+    border-bottom: 2px solid #0A0A0A; padding-bottom: 3mm; gap: 4mm; }
+  .brand-wrap { display: flex; flex-direction: column; align-items: stretch; gap: 1.5mm;
+    flex: 1; min-width: 0; }
+  .brand-logo-square { max-width: 14mm; max-height: 14mm; object-fit: contain; align-self: flex-start; }
+  .brand-logo-wide   { max-width: 100%; width: 100%; max-height: 12mm; height: auto; object-fit: contain; display: block; }
+  .brand-meta { display: flex; justify-content: space-between; gap: 3mm;
+    font-size: 9pt; color: #1F2937; }
+  .brand-meta .bm-left, .brand-meta .bm-right { white-space: nowrap; }
   .brand-name { font-size: 17pt; font-weight: 900; letter-spacing: -0.2px;
     line-height: 1.1; word-break: break-word; max-width: 100%; }
   .pay-wrap { text-align: right; flex-shrink: 0; }
