@@ -227,26 +227,34 @@ export default function LabelScreen() {
             {shipment.payment_mode === "COD" ? (
               <View style={{ alignItems: "flex-end" }}>
                 <Text style={styles.codBadge}>COD ₹{shipment.amount || shipment.cod_amount}</Text>
-                <Text style={styles.paySubText}>
-                  via {shipment.courier_name}
-                  {(() => {
-                    const c = couriers.find((cc) => cc.id === shipment.courier_id || cc.name === shipment.courier_name);
-                    const cid = (c as any)?.customer_id?.trim();
-                    return cid ? ` · Cust ID: ${cid}` : "";
-                  })()}
-                </Text>
+                <Text style={styles.paySubText}>via {shipment.courier_name}</Text>
+                {(() => {
+                  const c = couriers.find((cc) => cc.id === shipment.courier_id || cc.name === shipment.courier_name);
+                  const cid = (c as any)?.customer_id?.trim();
+                  const d = new Date(shipment.created_at);
+                  const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+                  const dd = !isNaN(d.getTime()) ? `${d.getDate()} ${months[d.getMonth()]} ${d.getFullYear()}` : "";
+                  const parts: string[] = [];
+                  if (dd) parts.push(`DD: ${dd}`);
+                  if (cid) parts.push(`Cust ID: ${cid}`);
+                  return parts.length ? <Text style={styles.paySubText}>{parts.join(" · ")}</Text> : null;
+                })()}
               </View>
             ) : (
               <View style={{ alignItems: "flex-end" }}>
                 <Text style={styles.prepaidBadge}>PAID ₹{shipment.amount || 0}</Text>
-                <Text style={styles.paySubText}>
-                  via {shipment.courier_name}
-                  {(() => {
-                    const c = couriers.find((cc) => cc.id === shipment.courier_id || cc.name === shipment.courier_name);
-                    const cid = (c as any)?.customer_id?.trim();
-                    return cid ? ` · Cust ID: ${cid}` : "";
-                  })()}
-                </Text>
+                <Text style={styles.paySubText}>via {shipment.courier_name}</Text>
+                {(() => {
+                  const c = couriers.find((cc) => cc.id === shipment.courier_id || cc.name === shipment.courier_name);
+                  const cid = (c as any)?.customer_id?.trim();
+                  const d = new Date(shipment.created_at);
+                  const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+                  const dd = !isNaN(d.getTime()) ? `${d.getDate()} ${months[d.getMonth()]} ${d.getFullYear()}` : "";
+                  const parts: string[] = [];
+                  if (dd) parts.push(`DD: ${dd}`);
+                  if (cid) parts.push(`Cust ID: ${cid}`);
+                  return parts.length ? <Text style={styles.paySubText}>{parts.join(" · ")}</Text> : null;
+                })()}
               </View>
             )}
           </View>
@@ -273,13 +281,6 @@ export default function LabelScreen() {
 
           {/* META one-line */}
           <View style={styles.metaRow}>
-            {(() => {
-              const d = new Date(shipment.created_at);
-              if (isNaN(d.getTime())) return null;
-              const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-              const label = `${d.getDate()} ${months[d.getMonth()]} ${d.getFullYear()}`;
-              return <Text style={styles.metaText}>Dispatch: {label}</Text>;
-            })()}
             {!!shipment.order_id && (
               <Text style={styles.metaText}>Order: {shipment.order_id}</Text>
             )}

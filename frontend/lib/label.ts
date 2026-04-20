@@ -96,11 +96,15 @@ function singleLabel(s: Shipment, sender: SenderAddress, opts: LabelOptions) {
     (c) => c.id === s.courier_id || c.name === s.courier_name
   );
   const custId = (courier?.customer_id || "").trim();
-  const courierLine = s.courier_name
-    ? `<div class="courier-sub">via ${escape(s.courier_name)}${custId ? ` · Cust ID: ${escape(custId)}` : ""}</div>`
-    : (custId ? `<div class="courier-sub">Cust ID: ${escape(custId)}</div>` : "");
-
   const dispatchDate = formatDispatchDate(s.created_at);
+  const subBits: string[] = [];
+  if (dispatchDate) subBits.push(`DD: ${escape(dispatchDate)}`);
+  if (custId) subBits.push(`Cust ID: ${escape(custId)}`);
+  const courierLine = s.courier_name
+    ? `<div class="courier-sub">via ${escape(s.courier_name)}</div>${
+        subBits.length ? `<div class="courier-sub2">${subBits.join(" · ")}</div>` : ""
+      }`
+    : (subBits.length ? `<div class="courier-sub2">${subBits.join(" · ")}</div>` : "");
 
   const itemsText =
     s.items && s.items.length
@@ -150,7 +154,6 @@ function singleLabel(s: Shipment, sender: SenderAddress, opts: LabelOptions) {
       </div>
 
       <div class="meta-row">
-        ${dispatchDate ? `<span><b class="lbl">Dispatch:</b> ${escape(dispatchDate)}</span>` : ""}
         ${s.order_id ? `<span><b class="lbl">Order:</b> ${escape(s.order_id)}</span>` : ""}
         ${s.weight ? `<span><b class="lbl">Wt:</b> ${escape(s.weight)}</span>` : ""}
         <span><b class="lbl">Item:</b> ${escape(itemsText)}</span>
@@ -275,6 +278,7 @@ export function buildLabelHtml(
   .pay-pill.prepaid { background: #0A0A0A; color: #fff; }
   .pay-pill.cod { background: #FF5A00; color: #fff; }
   .courier-sub { margin-top: 1.5mm; font-size: 9pt; color: #4B5563; font-weight: 600; }
+  .courier-sub2 { margin-top: 0.5mm; font-size: 8.5pt; color: #4B5563; font-weight: 600; }
 
   /* ---- MIDDLE (flex) ---- */
   .mid { display: flex; flex-direction: column; gap: 3mm; overflow: hidden; min-height: 0; }
