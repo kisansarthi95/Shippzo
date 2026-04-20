@@ -17,6 +17,7 @@ export type Courier = {
   contact_email: string;
   website_url: string;
   tracking_url_template: string;
+  customer_id: string;
   notes: string;
   created_at: string;
 };

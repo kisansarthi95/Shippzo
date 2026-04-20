@@ -101,3 +101,75 @@
 #====================================================================================================
 # Testing Data - Main Agent and testing sub agent both should log testing data below this section
 #====================================================================================================
+## Iteration: Courier Customer ID + Dispatch Date on Label (2026-04-20)
+
+### Backend Changes
+- Added optional `customer_id: str = ""` field to `Courier`, `CourierCreate`, `CourierUpdate` models in `/app/backend/server.py`.
+- Verified PUT `/api/couriers/{id}` accepts and returns `customer_id` correctly (tested via direct API call).
+
+### Frontend Changes
+- `/app/frontend/lib/api.ts`: Added `customer_id: string` to the `Courier` type.
+- `/app/frontend/app/courier/[id].tsx`: Added a "Customer ID (prints on label)" input field under the Tracking URL Template.
+- `/app/frontend/lib/label.ts`:
+  - Added `couriers?: Courier[]` to `LabelOptions`.
+  - Added `formatDispatchDate()` helper (e.g. `20 Apr 2026`).
+  - Renders `via <courier> · Cust ID: <customer_id>` below the PAID/COD pill on every printed label.
+  - Adds `Dispatch: <date>` as the first item in the meta-row.
+- `/app/frontend/app/(tabs)/shipments.tsx`: Passes `couriers` (already fetched) into `buildLabelHtml`.
+- `/app/frontend/app/label/[id].tsx`: Fetches couriers in `load()`, passes them into `buildLabelHtml`, and mirrors the Cust ID + Dispatch date in the in-app preview card.
+
+### Validation
+- Screenshot verified: preview shows `via Nandan Courier · Cust ID: 1000057527` and `Dispatch: 20 Apr 2026`.
+- Backend PUT endpoint round-trip verified.
+
+### Testing Required
+- Frontend label preview (in-app) and PDF generation with/without customer_id set.
+- Courier edit screen: save/reload `customer_id` persists and displays correctly.
+
+---
+
+## Backend Test Run: Courier customer_id Field (2026-04-20)
+
+backend:
+  - task: "Courier CRUD with customer_id field"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "testing"
+        -comment: |
+            All 16 assertions passed against
+            https://logistics-hub-740.preview.emergentagent.com/api
+            via /app/backend_test.py.
+            Verified:
+            1. GET /api/couriers returns list; every courier (including pre-existing
+               seeded ones) has `customer_id` field present as a string (empty ""
+               for legacy docs due to Pydantic model default).
+            2. POST /api/couriers with {name, customer_id, series_prefix,
+               next_number, number_padding, contact_phone, tracking_url_template}
+               returns 200 and persists customer_id="1000057527" + all other fields.
+            3. PUT /api/couriers/{id} with body {"customer_id":"1000057527"} updates
+               ONLY customer_id and preserves name, series_prefix, next_number,
+               number_padding, contact_phone, contact_email, website_url,
+               tracking_url_template, notes, created_at.
+            4. PUT /api/couriers/{id} with {"customer_id":""} successfully clears
+               the value (returned customer_id=""). The `v is not None` filter in
+               update_courier() correctly allows empty strings through.
+            5. GET /api/couriers/{id} after PUT returns the newly updated
+               customer_id ("9988776655").
+            6. Regression: POST without customer_id defaults it to ""; PUT with
+               only name/tracking_url_template/contact_phone/series_prefix updates
+               those fields and preserves previous customer_id.
+            7. DELETE /api/couriers/{id} cleanup succeeded for both test couriers.
+
+agent_communication:
+    -agent: "testing"
+    -message: |
+        Courier customer_id backend changes are fully working. 16/16 assertions
+        passed. No regressions detected. The PUT endpoint correctly accepts
+        empty string to clear the field (distinct from null/missing which is
+        ignored by the `v is not None` filter). Ready for frontend review.

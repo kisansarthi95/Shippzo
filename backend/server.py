@@ -43,6 +43,7 @@ class Courier(BaseModel):
     contact_email: str = ""
     website_url: str = ""
     tracking_url_template: str = ""   # e.g. "https://nandan.com/track?id={tracking_id}"
+    customer_id: str = ""             # e.g. India Post customer ID printed under courier name on label
     notes: str = ""
     created_at: str = Field(default_factory=utcnow_iso)
 
@@ -56,6 +57,7 @@ class CourierCreate(BaseModel):
     contact_email: Optional[str] = ""
     website_url: Optional[str] = ""
     tracking_url_template: Optional[str] = ""
+    customer_id: Optional[str] = ""
     notes: Optional[str] = ""
 
 
@@ -68,6 +70,7 @@ class CourierUpdate(BaseModel):
     contact_email: Optional[str] = None
     website_url: Optional[str] = None
     tracking_url_template: Optional[str] = None
+    customer_id: Optional[str] = None
     notes: Optional[str] = None
 
 

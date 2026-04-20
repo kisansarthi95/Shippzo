@@ -15,7 +15,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import * as Print from "expo-print";
 import * as Sharing from "expo-sharing";
-import { Api, SenderAddress, Shipment } from "../../lib/api";
+import { Api, SenderAddress, Shipment, Courier } from "../../lib/api";
 import { buildLabelHtml, LabelOptions } from "../../lib/label";
 import { barcodeBars } from "../../lib/barcode";
 import { colors } from "../../lib/theme";
@@ -48,6 +48,7 @@ export default function LabelScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const [shipment, setShipment] = useState<Shipment | null>(null);
   const [sender, setSender] = useState<SenderAddress | null>(null);
+  const [couriers, setCouriers] = useState<Courier[]>([]);
   const [loading, setLoading] = useState(true);
 
   const [perPage, setPerPage] = useState<PerPage>(4);
@@ -64,12 +65,14 @@ export default function LabelScreen() {
 
   const load = useCallback(async () => {
     try {
-      const [s, settings] = await Promise.all([
+      const [s, settings, cs] = await Promise.all([
         Api.getShipment(String(id)),
         Api.getSettings(),
+        Api.listCouriers().catch(() => [] as Courier[]),
       ]);
       setShipment(s);
       setSender(settings.sender);
+      setCouriers(cs);
       setBrand(settings.brand || { name: "", logo_base64: "" });
       setShowContact(settings.sender.show_contact);
       setPreferLogo((settings as any).prefer_logo !== false);
@@ -97,6 +100,7 @@ export default function LabelScreen() {
       brand: { name: brand.name, logo_base64: brand.logo_base64 },
       preferLogo,
       logoShape: effectiveShape,
+      couriers,
     };
     return buildLabelHtml(shipments, { ...sender, show_contact: showContact }, opts);
   };
@@ -223,12 +227,26 @@ export default function LabelScreen() {
             {shipment.payment_mode === "COD" ? (
               <View style={{ alignItems: "flex-end" }}>
                 <Text style={styles.codBadge}>COD ₹{shipment.amount || shipment.cod_amount}</Text>
-                <Text style={styles.paySubText}>via {shipment.courier_name}</Text>
+                <Text style={styles.paySubText}>
+                  via {shipment.courier_name}
+                  {(() => {
+                    const c = couriers.find((cc) => cc.id === shipment.courier_id || cc.name === shipment.courier_name);
+                    const cid = (c as any)?.customer_id?.trim();
+                    return cid ? ` · Cust ID: ${cid}` : "";
+                  })()}
+                </Text>
               </View>
             ) : (
               <View style={{ alignItems: "flex-end" }}>
                 <Text style={styles.prepaidBadge}>PAID ₹{shipment.amount || 0}</Text>
-                <Text style={styles.paySubText}>via {shipment.courier_name}</Text>
+                <Text style={styles.paySubText}>
+                  via {shipment.courier_name}
+                  {(() => {
+                    const c = couriers.find((cc) => cc.id === shipment.courier_id || cc.name === shipment.courier_name);
+                    const cid = (c as any)?.customer_id?.trim();
+                    return cid ? ` · Cust ID: ${cid}` : "";
+                  })()}
+                </Text>
               </View>
             )}
           </View>
@@ -255,6 +273,13 @@ export default function LabelScreen() {
 
           {/* META one-line */}
           <View style={styles.metaRow}>
+            {(() => {
+              const d = new Date(shipment.created_at);
+              if (isNaN(d.getTime())) return null;
+              const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+              const label = `${d.getDate()} ${months[d.getMonth()]} ${d.getFullYear()}`;
+              return <Text style={styles.metaText}>Dispatch: {label}</Text>;
+            })()}
             {!!shipment.order_id && (
               <Text style={styles.metaText}>Order: {shipment.order_id}</Text>
             )}

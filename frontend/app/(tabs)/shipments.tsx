@@ -98,6 +98,9 @@ export default function Shipments() {
         perPage: bulkPerPage,
         showSenderContact: settings.sender.show_contact,
         brand: settings.brand,
+        preferLogo: (settings as any).prefer_logo !== false,
+        logoShape: (settings as any).logo_shape === "wide" ? "wide" : "square",
+        couriers,
       });
       await Print.printAsync({ html });
     } catch (e: any) {
@@ -116,6 +119,9 @@ export default function Shipments() {
         perPage: bulkPerPage,
         showSenderContact: settings.sender.show_contact,
         brand: settings.brand,
+        preferLogo: (settings as any).prefer_logo !== false,
+        logoShape: (settings as any).logo_shape === "wide" ? "wide" : "square",
+        couriers,
       });
       const { uri } = await Print.printToFileAsync({ html });
       if (Platform.OS === "web" && typeof window !== "undefined") {

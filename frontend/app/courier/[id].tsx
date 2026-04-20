@@ -27,6 +27,7 @@ export default function CourierEdit() {
   const [email, setEmail] = useState("");
   const [website, setWebsite] = useState("");
   const [trackingTpl, setTrackingTpl] = useState("");
+  const [customerId, setCustomerId] = useState("");
   const [notes, setNotes] = useState("");
 
   const load = useCallback(async () => {
@@ -41,6 +42,7 @@ export default function CourierEdit() {
       setEmail(c.contact_email);
       setWebsite(c.website_url);
       setTrackingTpl(c.tracking_url_template);
+      setCustomerId((c as any).customer_id || "");
       setNotes(c.notes);
     } catch (e: any) {
       Alert.alert("Error", e?.message || "Failed to load");
@@ -68,8 +70,9 @@ export default function CourierEdit() {
         contact_email: email.trim(),
         website_url: website.trim(),
         tracking_url_template: trackingTpl.trim(),
+        customer_id: customerId.trim(),
         notes: notes.trim(),
-      };
+      } as any;
       if (isNew) {
         await Api.createCourier(payload);
       } else {
@@ -222,6 +225,16 @@ export default function CourierEdit() {
               <TextInput testID="courier-tracking-url-input" value={trackingTpl}
                 onChangeText={setTrackingTpl}
                 placeholder="https://courier.com/track?id={tracking_id}"
+                placeholderTextColor="#9CA3AF" autoCapitalize="none" style={styles.input} />
+            </Field>
+            <Field label="Customer ID (prints on label)">
+              <Text style={styles.hint}>
+                Optional. Shown as small text below the courier name on the printed label
+                (e.g. India Post Cust ID: 1000057527).
+              </Text>
+              <TextInput testID="courier-customer-id-input" value={customerId}
+                onChangeText={setCustomerId}
+                placeholder="e.g. 1000057527"
                 placeholderTextColor="#9CA3AF" autoCapitalize="none" style={styles.input} />
             </Field>
             <Field label="Notes">

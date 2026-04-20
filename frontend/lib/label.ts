@@ -1,4 +1,4 @@
-import type { Shipment, SenderAddress } from "./api";
+import type { Shipment, SenderAddress, Courier } from "./api";
 import { barcodeSvg } from "./barcode";
 
 export type Brand = { name?: string; logo_base64?: string };
@@ -9,6 +9,7 @@ export type LabelOptions = {
   brand?: Brand;
   preferLogo?: boolean; // true = show logo when available; false = always show name
   logoShape?: "square" | "wide"; // influences rendered size
+  couriers?: Courier[]; // used to pull per-courier customer_id onto the label
 };
 
 const escape = (s: string) =>
@@ -21,6 +22,15 @@ const escape = (s: string) =>
 // No native/RN/zlib deps — works in Hermes, browser, Node.
 function renderBarcodeSvg(value: string): string {
   return barcodeSvg(value || "NA");
+}
+
+// Format ISO timestamp to "15 Jan 2026" (locale-safe, no leading zero fuss).
+function formatDispatchDate(iso?: string | null): string {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return "";
+  const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+  return `${d.getDate()} ${months[d.getMonth()]} ${d.getFullYear()}`;
 }
 
 function senderBlock(sender: SenderAddress, show: boolean) {
@@ -80,9 +90,17 @@ function singleLabel(s: Shipment, sender: SenderAddress, opts: LabelOptions) {
     ? `COD ₹${Number(amt).toFixed(0)}`
     : `PAID${amt ? ` ₹${Number(amt).toFixed(0)}` : ""}`;
   const payPillClass = isCod ? "pay-pill cod" : "pay-pill prepaid";
+
+  // Look up courier's printable customer_id (if provided in options)
+  const courier = (opts.couriers || []).find(
+    (c) => c.id === s.courier_id || c.name === s.courier_name
+  );
+  const custId = (courier?.customer_id || "").trim();
   const courierLine = s.courier_name
-    ? `<div class="courier-sub">via ${escape(s.courier_name)}</div>`
-    : "";
+    ? `<div class="courier-sub">via ${escape(s.courier_name)}${custId ? ` · Cust ID: ${escape(custId)}` : ""}</div>`
+    : (custId ? `<div class="courier-sub">Cust ID: ${escape(custId)}</div>` : "");
+
+  const dispatchDate = formatDispatchDate(s.created_at);
 
   const itemsText =
     s.items && s.items.length
@@ -132,6 +150,7 @@ function singleLabel(s: Shipment, sender: SenderAddress, opts: LabelOptions) {
       </div>
 
       <div class="meta-row">
+        ${dispatchDate ? `<span><b class="lbl">Dispatch:</b> ${escape(dispatchDate)}</span>` : ""}
         ${s.order_id ? `<span><b class="lbl">Order:</b> ${escape(s.order_id)}</span>` : ""}
         ${s.weight ? `<span><b class="lbl">Wt:</b> ${escape(s.weight)}</span>` : ""}
         <span><b class="lbl">Item:</b> ${escape(itemsText)}</span>
