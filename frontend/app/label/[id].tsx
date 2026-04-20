@@ -223,7 +223,7 @@ export default function LabelScreen() {
                   {brand.name || sender.name || "Your Brand"}
                 </Text>
               )}
-              {/* Under-logo row: DD left · Order right */}
+              {/* Under-logo row: DD · OID (tight spacing) */}
               <View style={styles.brandMeta}>
                 <Text style={styles.brandMetaText}>
                   {(() => {
@@ -234,9 +234,9 @@ export default function LabelScreen() {
                       : "";
                   })()}
                 </Text>
-                <Text style={styles.brandMetaText}>
-                  {shipment.order_id ? `Order: ${shipment.order_id}` : ""}
-                </Text>
+                {!!shipment.order_id && (
+                  <Text style={styles.brandMetaText}>OID: {shipment.order_id}</Text>
+                )}
               </View>
             </View>
             {shipment.payment_mode === "COD" ? (
@@ -266,10 +266,11 @@ export default function LabelScreen() {
           <View style={[styles.blk, styles.blkReceiver, { marginTop: 10 }]}>
             <Text style={styles.blkTitle}>DELIVER TO</Text>
             <Text style={styles.blkName}>{shipment.customer_name}</Text>
-            <Text style={styles.blkLine}>{shipment.address_line1}</Text>
-            {!!shipment.address_line2 && (
-              <Text style={styles.blkLine}>{shipment.address_line2}</Text>
-            )}
+            {(() => {
+              const addr = [shipment.address_line1, shipment.address_line2]
+                .filter(Boolean).join(", ");
+              return addr ? <Text style={styles.blkLine}>{addr}</Text> : null;
+            })()}
             <Text style={styles.blkLine}>
               {[shipment.city, shipment.state, shipment.pincode]
                 .filter(Boolean)
@@ -497,10 +498,11 @@ const styles = StyleSheet.create({
   },
   brandMeta: {
     flexDirection: "row",
-    justifyContent: "space-between",
+    justifyContent: "flex-start",
     alignItems: "center",
+    flexWrap: "wrap",
     marginTop: 6,
-    gap: 8,
+    gap: 12,
   },
   brandMetaText: {
     fontSize: 11,

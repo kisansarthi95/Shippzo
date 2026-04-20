@@ -134,8 +134,8 @@ function singleLabel(s: Shipment, sender: SenderAddress, opts: LabelOptions) {
       <div class="brand-wrap">
         ${brandHeader}
         <div class="brand-meta">
-          <span class="bm-left">${dispatchDate ? `<b class="lbl">DD:</b> ${escape(dispatchDate)}` : ""}</span>
-          <span class="bm-right">${s.order_id ? `<b class="lbl">Order:</b> ${escape(s.order_id)}` : ""}</span>
+          ${dispatchDate ? `<span><b class="lbl">DD:</b> ${escape(dispatchDate)}</span>` : ""}
+          ${s.order_id ? `<span><b class="lbl">OID:</b> ${escape(s.order_id)}</span>` : ""}
         </div>
       </div>
       <div class="pay-wrap">
@@ -149,10 +149,12 @@ function singleLabel(s: Shipment, sender: SenderAddress, opts: LabelOptions) {
       <div class="recv-block">
         <div class="blk-title">DELIVER TO</div>
         <div class="blk-name">${escape(s.customer_name)}</div>
-        ${[s.address_line1, s.address_line2,
-           [s.city, s.state, s.pincode].filter(Boolean).join(", ")]
-           .filter(Boolean)
-           .map((l) => `<div class="blk-line">${escape(l)}</div>`).join("")}
+        ${(() => {
+          const addr = [s.address_line1, s.address_line2].filter(Boolean).join(", ");
+          const cityLine = [s.city, s.state, s.pincode].filter(Boolean).join(", ");
+          return [addr, cityLine].filter(Boolean)
+            .map((l) => `<div class="blk-line">${escape(l)}</div>`).join("");
+        })()}
         ${s.customer_phone ? `<div class="blk-contact">📞 <b>${escape(s.customer_phone)}</b></div>` : ""}
       </div>
 
@@ -271,9 +273,8 @@ export function buildLabelHtml(
     flex: 1; min-width: 0; }
   .brand-logo-square { max-width: 14mm; max-height: 14mm; object-fit: contain; align-self: flex-start; }
   .brand-logo-wide   { max-width: 100%; width: 100%; max-height: 12mm; height: auto; object-fit: contain; display: block; }
-  .brand-meta { display: flex; justify-content: space-between; gap: 3mm;
-    font-size: 9pt; color: #1F2937; }
-  .brand-meta .bm-left, .brand-meta .bm-right { white-space: nowrap; }
+  .brand-meta { display: flex; justify-content: flex-start; gap: 4mm;
+    font-size: 9pt; color: #1F2937; flex-wrap: wrap; }
   .brand-name { font-size: 17pt; font-weight: 900; letter-spacing: -0.2px;
     line-height: 1.1; word-break: break-word; max-width: 100%; }
   .pay-wrap { text-align: right; flex-shrink: 0; }
