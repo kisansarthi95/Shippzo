@@ -15,8 +15,9 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
-import { useLocalSearchParams, useRouter } from "expo-router";
+import { useLocalSearchParams, useRouter, useFocusEffect } from "expo-router";
 import { Api, Courier, SheetOrder } from "../../lib/api";
+import { scannerBridge } from "../../lib/scannerBridge";
 import { colors } from "../../lib/theme";
 
 function splitAddress(full: string): {
@@ -108,6 +109,18 @@ export default function AddShipment() {
       setTrackingId(String(params.scanned));
     }
   }, [params.scanned]);
+
+  // Pick up scanned value from bridge when returning from modal scanner
+  // (router.back preserves form state; we read the value here on focus).
+  useFocusEffect(
+    useCallback(() => {
+      const v = scannerBridge.consume();
+      if (v) {
+        setAutoTracking(false);
+        setTrackingId(v);
+      }
+    }, [])
+  );
 
   useEffect(() => {
     if (params.prefill) {
@@ -419,16 +432,32 @@ export default function AddShipment() {
                 </Text>
               </TouchableOpacity>
             </View>
-            <TextInput
-              testID="tracking-id-input"
-              value={trackingId}
-              editable={!autoTracking}
-              onChangeText={setTrackingId}
-              placeholder={autoTracking ? nextPreview : "Enter tracking ID"}
-              placeholderTextColor="#9CA3AF"
-              style={[styles.input, styles.trackingInput]}
-              autoCapitalize="characters"
-            />
+            <View style={{ position: "relative" }}>
+              <TextInput
+                testID="tracking-id-input"
+                value={trackingId}
+                editable={!autoTracking}
+                onChangeText={setTrackingId}
+                placeholder={autoTracking ? nextPreview : "Enter tracking ID"}
+                placeholderTextColor="#9CA3AF"
+                style={[
+                  styles.input,
+                  styles.trackingInput,
+                  !autoTracking && { paddingRight: 48 },
+                ]}
+                autoCapitalize="characters"
+              />
+              {!autoTracking && (
+                <TouchableOpacity
+                  testID="tracking-inline-scan"
+                  onPress={() => router.push("/scanner?returnTo=add")}
+                  style={styles.inlineScanBtn}
+                  hitSlop={8}
+                >
+                  <Ionicons name="camera" size={20} color={colors.primary} />
+                </TouchableOpacity>
+              )}
+            </View>
             {autoTracking && nextPreview ? (
               <Text style={styles.hint}>Next auto: {nextPreview}</Text>
             ) : null}
@@ -886,6 +915,15 @@ const styles = StyleSheet.create({
     fontWeight: "800",
     letterSpacing: 2,
     fontSize: 17,
+  },
+  inlineScanBtn: {
+    position: "absolute",
+    right: 6,
+    top: 0,
+    bottom: 0,
+    width: 40,
+    alignItems: "center",
+    justifyContent: "center",
   },
   pill: {
     paddingHorizontal: 16,

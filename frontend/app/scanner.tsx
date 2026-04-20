@@ -8,6 +8,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { CameraView, useCameraPermissions } from "expo-camera";
 import { Api } from "../lib/api";
+import { scannerBridge } from "../lib/scannerBridge";
 import { colors } from "../lib/theme";
 
 export default function ScannerModal() {
@@ -51,7 +52,9 @@ export default function ScannerModal() {
       // 404 means new — proceed
     }
     if (params.returnTo === "add") {
-      router.replace({ pathname: "/(tabs)/add", params: { scanned: v } });
+      // Preserve Add form state — stash value in bridge and dismiss modal
+      scannerBridge.push(v);
+      router.back();
     } else {
       router.back();
     }
