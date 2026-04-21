@@ -266,25 +266,31 @@ export function buildLabelHtml(
     display: grid; grid-template-rows: auto 1fr auto; gap: 3mm; overflow: hidden;
     width: 100%; max-width: 100%; box-sizing: border-box; }
 
-  /* ---- TOP (fixed) ---- */
+  /* ---- TOP (fixed, identical regardless of perPage) ---- */
   .hdr { display: flex; justify-content: space-between; align-items: flex-start;
     border-bottom: 2px solid #0A0A0A; padding-bottom: 3mm; gap: 4mm; }
-  .brand-wrap { display: flex; flex-direction: column; align-items: stretch; gap: 1.5mm;
-    flex: 1; min-width: 0; }
-  .brand-logo-square { max-width: 14mm; max-height: 14mm; object-fit: contain; align-self: flex-start; }
-  .brand-logo-wide   { max-width: 100%; width: 100%; max-height: 12mm; height: auto; object-fit: contain; display: block; }
-  .brand-meta { display: flex; justify-content: flex-start; gap: 4mm;
-    font-size: 9pt; color: #1F2937; flex-wrap: wrap; }
+  .brand-wrap { display: flex; flex-direction: column; align-items: flex-start; gap: 1.5mm;
+    flex: 1 1 auto; min-width: 0; overflow: hidden; }
+  .brand-logo-square { width: 14mm; height: 14mm; max-width: 14mm; max-height: 14mm;
+    object-fit: contain; display: block; flex-shrink: 0; }
+  .brand-logo-wide   { width: 100%; max-width: 100%; height: auto; max-height: 12mm;
+    object-fit: contain; display: block; flex-shrink: 0; }
+  .brand-meta { display: flex; flex-direction: row; justify-content: flex-start;
+    align-items: center; gap: 3mm 4mm; font-size: 8.5pt; color: #1F2937;
+    flex-wrap: wrap; width: 100%; }
+  .brand-meta span { white-space: nowrap; }
   .brand-name { font-size: 17pt; font-weight: 900; letter-spacing: -0.2px;
     line-height: 1.1; word-break: break-word; max-width: 100%; }
-  .pay-wrap { text-align: right; flex-shrink: 0; }
-  .pay-pill { display: inline-block; padding: 2.5mm 4.5mm; font-weight: 900;
-    font-size: 14pt; border-radius: 999px; line-height: 1; white-space: nowrap;
+  .pay-wrap { text-align: right; flex: 0 0 auto; min-width: 30mm; }
+  .pay-pill { display: inline-block; padding: 2.5mm 4mm; font-weight: 900;
+    font-size: 12pt; border-radius: 999px; line-height: 1; white-space: nowrap;
     letter-spacing: 0.5px; }
   .pay-pill.prepaid { background: #0A0A0A; color: #fff; }
   .pay-pill.cod { background: #FF5A00; color: #fff; }
-  .courier-sub { margin-top: 1.5mm; font-size: 9pt; color: #4B5563; font-weight: 600; }
-  .courier-sub2 { margin-top: 0.5mm; font-size: 8.5pt; color: #4B5563; font-weight: 600; }
+  .courier-sub { margin-top: 1.5mm; font-size: 8.5pt; color: #4B5563; font-weight: 600;
+    white-space: nowrap; }
+  .courier-sub2 { margin-top: 0.5mm; font-size: 8pt; color: #4B5563; font-weight: 600;
+    white-space: nowrap; }
 
   /* ---- MIDDLE (flex) ---- */
   .mid { display: flex; flex-direction: column; gap: 3mm; overflow: hidden; min-height: 0; }
