@@ -34,18 +34,21 @@ type Stats = {
 export default function Dashboard() {
   const router = useRouter();
   const [stats, setStats] = useState<Stats | null>(null);
+  const [pendingOrdersCount, setPendingOrdersCount] = useState<number>(0);
   const [recent, setRecent] = useState<Shipment[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
   const load = useCallback(async () => {
     try {
-      const [s, list] = await Promise.all([
+      const [s, list, oc] = await Promise.all([
         Api.getStats(),
         Api.listShipments({}),
+        Api.pendingOrdersCount().catch(() => ({ count: 0 })),
       ]);
       setStats(s);
       setRecent(list.slice(0, 5));
+      setPendingOrdersCount(oc?.count ?? 0);
     } catch {
       // ignore
     } finally {
@@ -353,23 +356,37 @@ export default function Dashboard() {
 
             <View style={styles.quickRow}>
               <QuickAction
-                testID="quick-new-shipment"
-                icon="add-circle"
-                label="New Shipment"
-                onPress={() => router.push("/(tabs)/add")}
-                primary
+                testID="quick-pending-orders"
+                icon="download-outline"
+                label="Pending Orders"
+                badge={pendingOrdersCount}
+                onPress={() => router.push("/(tabs)/orders")}
+                tone="violet"
               />
               <QuickAction
-                testID="quick-scan"
-                icon="scan"
-                label="Scan Tracking"
-                onPress={() => router.push("/scanner?returnTo=add")}
+                testID="quick-pending-shipments"
+                icon="cube-outline"
+                label="Pending Shipments"
+                badge={stats?.pending ?? 0}
+                onPress={() =>
+                  router.push({
+                    pathname: "/(tabs)/shipments",
+                    params: { status: "Pending" },
+                  })
+                }
+                tone="warning"
               />
               <QuickAction
-                testID="quick-export"
-                icon="download"
-                label="Export CSV"
-                onPress={() => Linking.openURL(Api.csvUrl())}
+                testID="quick-print-recent"
+                icon="print-outline"
+                label="Print Recent"
+                onPress={() =>
+                  router.push({
+                    pathname: "/(tabs)/shipments",
+                    params: { select: "1" },
+                  })
+                }
+                tone="neutral"
               />
             </View>
 
@@ -466,24 +483,49 @@ function QuickAction({
   label,
   onPress,
   primary,
+  badge,
+  tone = "neutral",
   testID,
 }: {
   icon: keyof typeof Ionicons.glyphMap;
   label: string;
   onPress: () => void;
   primary?: boolean;
+  badge?: number;
+  tone?: "neutral" | "violet" | "warning" | "success";
   testID?: string;
 }) {
+  const toneMap: Record<string, { bg: string; border: string; fg: string; badgeBg: string; badgeFg: string }> = {
+    neutral: { bg: "#fff", border: "#E5E7EB", fg: colors.text, badgeBg: colors.text, badgeFg: "#fff" },
+    violet: { bg: "#F5F3FF", border: "#DDD6FE", fg: "#6D28D9", badgeBg: "#7C3AED", badgeFg: "#fff" },
+    warning: { bg: "#FFFBEB", border: "#FDE68A", fg: "#B45309", badgeBg: "#F59E0B", badgeFg: "#fff" },
+    success: { bg: "#ECFDF5", border: "#A7F3D0", fg: "#047857", badgeBg: "#10B981", badgeFg: "#fff" },
+  };
+  const t = toneMap[tone];
+  const showBadge = typeof badge === "number" && badge > 0;
   return (
     <TouchableOpacity
       testID={testID}
       onPress={onPress}
-      style={[styles.quickBtn, primary && styles.quickBtnPrimary]}
+      style={[
+        styles.quickBtn,
+        { backgroundColor: t.bg, borderColor: t.border },
+        primary && styles.quickBtnPrimary,
+      ]}
+      activeOpacity={0.75}
     >
-      <Ionicons name={icon} size={22} color={primary ? "#fff" : colors.text} />
+      {showBadge && (
+        <View style={[styles.quickBadge, { backgroundColor: t.badgeBg }]}>
+          <Text style={[styles.quickBadgeText, { color: t.badgeFg }]} numberOfLines={1}>
+            {badge > 99 ? "99+" : String(badge)}
+          </Text>
+        </View>
+      )}
+      <Ionicons name={icon} size={22} color={primary ? "#fff" : t.fg} />
       <Text
-        style={[styles.quickLabel, primary && { color: "#fff" }]}
-        numberOfLines={1}
+        style={[styles.quickLabel, { color: primary ? "#fff" : t.fg }]}
+        numberOfLines={2}
+        allowFontScaling={false}
       >
         {label}
       </Text>
@@ -557,9 +599,10 @@ const styles = StyleSheet.create({
   },
   quickRow: {
     flexDirection: "row",
-    paddingHorizontal: 16,
-    marginTop: 14,
-    gap: 10,
+    paddingHorizontal: 12,
+    marginTop: 18,
+    marginBottom: 10,
+    gap: 8,
   },
   quickBtn: {
     flex: 1,
@@ -567,20 +610,42 @@ const styles = StyleSheet.create({
     borderWidth: 2,
     borderColor: "#E5E7EB",
     borderRadius: 12,
-    paddingVertical: 14,
+    paddingVertical: 12,
+    paddingHorizontal: 4,
+    minHeight: 82,
     alignItems: "center",
     justifyContent: "center",
-    gap: 6,
+    gap: 4,
+    position: "relative",
+    overflow: "hidden",
   },
   quickBtnPrimary: {
     backgroundColor: colors.primary,
     borderColor: colors.primary,
   },
   quickLabel: {
-    fontSize: 11,
+    fontSize: 10.5,
     fontWeight: "700",
     color: colors.text,
     textAlign: "center",
+    lineHeight: 13,
+    flexShrink: 1,
+  },
+  quickBadge: {
+    position: "absolute",
+    top: 6,
+    right: 6,
+    minWidth: 20,
+    height: 20,
+    paddingHorizontal: 5,
+    borderRadius: 10,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  quickBadgeText: {
+    fontSize: 10,
+    fontWeight: "800",
+    includeFontPadding: false,
   },
   sectionHeader: {
     flexDirection: "row",

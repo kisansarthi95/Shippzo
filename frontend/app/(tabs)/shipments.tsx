@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useState } from "react";
+import React, { useCallback, useMemo, useState, useEffect } from "react";
 import {
   View, Text, StyleSheet, TextInput, ScrollView, TouchableOpacity,
   FlatList, RefreshControl, Linking, Alert, Platform, Modal,
@@ -8,7 +8,7 @@ import { Ionicons } from "@expo/vector-icons";
 import * as Clipboard from "expo-clipboard";
 import * as Print from "expo-print";
 import * as Sharing from "expo-sharing";
-import { useFocusEffect, useRouter } from "expo-router";
+import { useFocusEffect, useRouter, useLocalSearchParams } from "expo-router";
 import DateTimePicker from "@react-native-community/datetimepicker";
 import { Api, Shipment, Settings, Courier } from "../../lib/api";
 import { buildCopyText, buildWhatsAppText, cleanPhone } from "../../lib/format";
@@ -20,6 +20,7 @@ type DateFilter = "all" | "today" | "week" | "month" | "custom";
 
 export default function Shipments() {
   const router = useRouter();
+  const params = useLocalSearchParams<{ status?: string; select?: string }>();
   const [items, setItems] = useState<Shipment[]>([]);
   const [couriers, setCouriers] = useState<Courier[]>([]);
   const [search, setSearch] = useState("");
@@ -54,6 +55,18 @@ export default function Shipments() {
   }, [search, status]);
 
   useFocusEffect(useCallback(() => { load().catch(() => {}); }, [load]));
+
+  // Handle deep-link params from Dashboard quick actions.
+  React.useEffect(() => {
+    const st = String(params.status || "");
+    if (st === "Pending" || st === "Delivered" || st === "Cancelled" || st === "All") {
+      setStatus(st as StatusFilter);
+    }
+    if (params.select === "1") {
+      setSelectMode(true);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [params.status, params.select]);
 
   const findCourier = (s: Shipment) =>
     couriers.find((c) => c.id === s.courier_id) || null;
