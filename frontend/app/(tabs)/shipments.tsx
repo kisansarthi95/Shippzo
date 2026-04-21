@@ -1,7 +1,7 @@
 import React, { useCallback, useMemo, useState } from "react";
 import {
   View, Text, StyleSheet, TextInput, ScrollView, TouchableOpacity,
-  FlatList, RefreshControl, Linking, Alert, Platform,
+  FlatList, RefreshControl, Linking, Alert, Platform, Modal,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
@@ -9,13 +9,14 @@ import * as Clipboard from "expo-clipboard";
 import * as Print from "expo-print";
 import * as Sharing from "expo-sharing";
 import { useFocusEffect, useRouter } from "expo-router";
+import DateTimePicker from "@react-native-community/datetimepicker";
 import { Api, Shipment, Settings, Courier } from "../../lib/api";
 import { buildCopyText, buildWhatsAppText, cleanPhone } from "../../lib/format";
 import { buildLabelHtml } from "../../lib/label";
 import { colors } from "../../lib/theme";
 
 type StatusFilter = "All" | "Pending" | "Delivered" | "Cancelled";
-type DateFilter = "all" | "today" | "week" | "month";
+type DateFilter = "all" | "today" | "week" | "month" | "custom";
 
 export default function Shipments() {
   const router = useRouter();
@@ -24,6 +25,10 @@ export default function Shipments() {
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState<StatusFilter>("All");
   const [dateFilter, setDateFilter] = useState<DateFilter>("all");
+  const [customFrom, setCustomFrom] = useState<Date | null>(null);
+  const [customTo, setCustomTo] = useState<Date | null>(null);
+  const [showDateModal, setShowDateModal] = useState(false);
+  const [pickerField, setPickerField] = useState<"from" | "to" | null>(null);
   const [selectMode, setSelectMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [bulkPerPage, setBulkPerPage] = useState<1 | 2 | 4>(4);
@@ -55,6 +60,15 @@ export default function Shipments() {
 
   const dateFilteredItems = useMemo(() => {
     if (dateFilter === "all") return items;
+    if (dateFilter === "custom") {
+      if (!customFrom && !customTo) return items;
+      const from = customFrom ? new Date(customFrom.getFullYear(), customFrom.getMonth(), customFrom.getDate()).getTime() : 0;
+      const to = customTo ? new Date(customTo.getFullYear(), customTo.getMonth(), customTo.getDate(), 23, 59, 59, 999).getTime() : Number.MAX_SAFE_INTEGER;
+      return items.filter((s) => {
+        const t = Date.parse(s.created_at || "");
+        return !isNaN(t) && t >= from && t <= to;
+      });
+    }
     const now = Date.now();
     const cutoff =
       dateFilter === "today"
@@ -66,7 +80,7 @@ export default function Shipments() {
       const t = Date.parse(s.created_at || "");
       return !isNaN(t) && t >= cutoff;
     });
-  }, [items, dateFilter]);
+  }, [items, dateFilter, customFrom, customTo]);
 
   const toggleSelect = (id: string) => {
     setSelectedIds((prev) => {
@@ -210,49 +224,98 @@ export default function Shipments() {
         />
       </View>
 
-      <ScrollView horizontal showsHorizontalScrollIndicator={false}
-        contentContainerStyle={styles.filterRow}>
-        {(["All", "Pending", "Delivered", "Cancelled"] as StatusFilter[]).map((f) => {
-          const active = status === f;
-          return (
-            <TouchableOpacity
-              key={f} testID={`filter-${f.toLowerCase()}`}
-              style={[styles.filterPill, active && styles.filterPillActive]}
-              onPress={() => setStatus(f)}
-            >
-              <Text style={[styles.filterText, active && { color: "#fff" }]}>{f}</Text>
-            </TouchableOpacity>
-          );
-        })}
-      </ScrollView>
+      <View style={styles.filterRowWrap}>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false}
+          contentContainerStyle={styles.filterRow}>
+          {(["All", "Pending", "Delivered", "Cancelled"] as StatusFilter[]).map((f) => {
+            const active = status === f;
+            return (
+              <TouchableOpacity
+                key={f} testID={`filter-${f.toLowerCase()}`}
+                style={[styles.filterPill, active && styles.filterPillActive]}
+                onPress={() => setStatus(f)}
+              >
+                <Text
+                  numberOfLines={1}
+                  allowFontScaling={false}
+                  style={[styles.filterText, { color: active ? "#fff" : colors.text }]}
+                >{f}</Text>
+              </TouchableOpacity>
+            );
+          })}
+        </ScrollView>
+      </View>
 
-      <ScrollView horizontal showsHorizontalScrollIndicator={false}
-        contentContainerStyle={[styles.filterRow, { paddingTop: 0 }]}>
-        {([
-          { key: "all", label: "All dates" },
-          { key: "today", label: "Last 24h" },
-          { key: "week", label: "Last 7 days" },
-          { key: "month", label: "Last 30 days" },
-        ] as const).map((f) => {
-          const active = dateFilter === f.key;
-          return (
-            <TouchableOpacity
-              key={f.key}
-              testID={`datefilter-${f.key}`}
-              onPress={() => setDateFilter(f.key)}
-              style={[
-                styles.filterPill,
-                { borderColor: colors.primary },
-                active && { backgroundColor: colors.primary, borderColor: colors.primary },
-              ]}
-            >
-              <Text style={[styles.filterText, { color: active ? "#fff" : colors.primary }]}>
-                {f.label}
-              </Text>
-            </TouchableOpacity>
-          );
-        })}
-      </ScrollView>
+      <View style={styles.filterRowWrap}>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false}
+          contentContainerStyle={[styles.filterRow, { paddingTop: 0 }]}>
+          {([
+            { key: "all", label: "All dates" },
+            { key: "today", label: "Last 24h" },
+            { key: "week", label: "Last 7 days" },
+            { key: "month", label: "Last 30 days" },
+          ] as const).map((f) => {
+            const active = dateFilter === f.key;
+            return (
+              <TouchableOpacity
+                key={f.key}
+                testID={`datefilter-${f.key}`}
+                onPress={() => setDateFilter(f.key)}
+                style={[
+                  styles.filterPill,
+                  { borderColor: colors.primary },
+                  active && { backgroundColor: colors.primary, borderColor: colors.primary },
+                ]}
+              >
+                <Text
+                  numberOfLines={1}
+                  allowFontScaling={false}
+                  style={[styles.filterText, { color: active ? "#fff" : colors.primary }]}
+                >
+                  {f.label}
+                </Text>
+              </TouchableOpacity>
+            );
+          })}
+          {/* Custom date range pill */}
+          {(() => {
+            const active = dateFilter === "custom";
+            const rangeLabel = (() => {
+              if (!active) return "Custom";
+              const fmt = (d: Date | null) =>
+                d ? `${d.getDate()}/${d.getMonth() + 1}` : "…";
+              return `${fmt(customFrom)} – ${fmt(customTo)}`;
+            })();
+            return (
+              <TouchableOpacity
+                testID="datefilter-custom"
+                onPress={() => {
+                  setDateFilter("custom");
+                  setShowDateModal(true);
+                }}
+                style={[
+                  styles.filterPill,
+                  { borderColor: colors.primary, flexDirection: "row", gap: 4 },
+                  active && { backgroundColor: colors.primary, borderColor: colors.primary },
+                ]}
+              >
+                <Ionicons
+                  name="calendar-outline"
+                  size={13}
+                  color={active ? "#fff" : colors.primary}
+                />
+                <Text
+                  numberOfLines={1}
+                  allowFontScaling={false}
+                  style={[styles.filterText, { color: active ? "#fff" : colors.primary }]}
+                >
+                  {rangeLabel}
+                </Text>
+              </TouchableOpacity>
+            );
+          })()}
+        </ScrollView>
+      </View>
 
       {selectMode && (
         <View style={styles.bulkBar} testID="bulk-bar">
@@ -394,6 +457,92 @@ export default function Shipments() {
           );
         }}
       />
+
+      {/* Custom date range modal */}
+      <Modal
+        visible={showDateModal}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowDateModal(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.dateModalCard}>
+            <View style={styles.dateModalHdr}>
+              <Ionicons name="calendar" size={18} color={colors.primary} />
+              <Text style={styles.dateModalTitle}>Custom Date Range</Text>
+              <TouchableOpacity onPress={() => setShowDateModal(false)} hitSlop={10}>
+                <Ionicons name="close" size={22} color={colors.text} />
+              </TouchableOpacity>
+            </View>
+            <Text style={styles.dateHint}>Select From &amp; To dates to filter shipments.</Text>
+
+            <TouchableOpacity
+              testID="picker-from"
+              style={styles.dateField}
+              onPress={() => setPickerField("from")}
+            >
+              <Text style={styles.dateFieldLabel}>From</Text>
+              <Text style={styles.dateFieldValue}>
+                {customFrom
+                  ? customFrom.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" })
+                  : "Tap to pick date"}
+              </Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              testID="picker-to"
+              style={styles.dateField}
+              onPress={() => setPickerField("to")}
+            >
+              <Text style={styles.dateFieldLabel}>To</Text>
+              <Text style={styles.dateFieldValue}>
+                {customTo
+                  ? customTo.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" })
+                  : "Tap to pick date"}
+              </Text>
+            </TouchableOpacity>
+
+            {pickerField && Platform.OS !== "web" && (
+              <DateTimePicker
+                value={(pickerField === "from" ? customFrom : customTo) || new Date()}
+                mode="date"
+                display={Platform.OS === "ios" ? "inline" : "default"}
+                maximumDate={new Date()}
+                onChange={(event: any, selected?: Date) => {
+                  // On Android native dialog, it dismisses automatically.
+                  if (Platform.OS === "android") setPickerField(null);
+                  if (event?.type === "dismissed") return;
+                  if (!selected) return;
+                  if (pickerField === "from") setCustomFrom(selected);
+                  else setCustomTo(selected);
+                }}
+              />
+            )}
+
+            <View style={styles.dateModalActions}>
+              <TouchableOpacity
+                style={styles.dateClearBtn}
+                onPress={() => {
+                  setCustomFrom(null);
+                  setCustomTo(null);
+                }}
+              >
+                <Text style={styles.dateClearText}>Clear</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                testID="apply-date-range"
+                style={styles.dateApplyBtn}
+                onPress={() => {
+                  setShowDateModal(false);
+                  setPickerField(null);
+                }}
+              >
+                <Text style={styles.dateApplyText}>Apply</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -446,6 +595,7 @@ const styles = StyleSheet.create({
     borderColor: "#E5E7EB", borderRadius: 10, paddingHorizontal: 12,
   },
   searchInput: { flex: 1, color: colors.text, fontSize: 15 },
+  filterRowWrap: { flexGrow: 0, flexShrink: 0 },
   filterRow: { paddingHorizontal: 16, paddingVertical: 12 },
   filterPill: {
     paddingHorizontal: 14,
@@ -524,4 +674,75 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     alignItems: "center",
   },
+
+  /* ----- Date Range Modal ----- */
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.45)",
+    justifyContent: "center",
+    alignItems: "center",
+    padding: 16,
+  },
+  dateModalCard: {
+    width: "100%",
+    maxWidth: 400,
+    backgroundColor: "#fff",
+    borderRadius: 16,
+    padding: 18,
+  },
+  dateModalHdr: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    marginBottom: 4,
+  },
+  dateModalTitle: {
+    flex: 1,
+    fontSize: 17,
+    fontWeight: "800",
+    color: colors.text,
+  },
+  dateHint: { fontSize: 12, color: colors.textMuted, marginBottom: 12 },
+  dateField: {
+    borderWidth: 2,
+    borderColor: "#E5E7EB",
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    marginBottom: 10,
+  },
+  dateFieldLabel: {
+    fontSize: 11,
+    fontWeight: "700",
+    color: colors.textMuted,
+    marginBottom: 2,
+  },
+  dateFieldValue: {
+    fontSize: 15,
+    fontWeight: "700",
+    color: colors.text,
+  },
+  dateModalActions: {
+    flexDirection: "row",
+    gap: 10,
+    marginTop: 8,
+  },
+  dateClearBtn: {
+    flex: 1,
+    paddingVertical: 12,
+    borderRadius: 10,
+    borderWidth: 2,
+    borderColor: "#E5E7EB",
+    alignItems: "center",
+    backgroundColor: "#fff",
+  },
+  dateClearText: { color: colors.text, fontWeight: "700" },
+  dateApplyBtn: {
+    flex: 1,
+    paddingVertical: 12,
+    borderRadius: 10,
+    backgroundColor: colors.primary,
+    alignItems: "center",
+  },
+  dateApplyText: { color: "#fff", fontWeight: "800" },
 });
