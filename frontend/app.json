@@ -11,7 +11,8 @@
     "ios": {
       "supportsTablet": true,
       "infoPlist": {
-        "NSCameraUsageDescription": "Scan courier tracking barcodes quickly"
+        "NSCameraUsageDescription": "Scan courier tracking barcodes quickly",
+        "LSApplicationQueriesSchemes": ["chatgpt"]
       }
     },
     "android": {

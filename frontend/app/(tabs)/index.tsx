@@ -205,9 +205,32 @@ export default function Dashboard() {
               </TouchableOpacity>
               <TouchableOpacity
                 style={styles.quickBtn}
-                onPress={() =>
-                  Linking.openURL("https://chatgpt.com/gpts").catch(() => {})
-                }
+                onPress={async () => {
+                  // Try native ChatGPT app first (iOS: chatgpt://, Android: intent with package).
+                  // Falls back to the web URL automatically if the app isn't installed.
+                  const webUrl = "https://chatgpt.com/gpts";
+                  try {
+                    if (Platform.OS === "android") {
+                      // Android intent with built-in browser fallback — if the ChatGPT
+                      // Android app (com.openai.chatgpt) isn't installed, it opens the web URL.
+                      const intent =
+                        "intent://chat#Intent;scheme=chatgpt;package=com.openai.chatgpt;" +
+                        "S.browser_fallback_url=" +
+                        encodeURIComponent(webUrl) +
+                        ";end";
+                      await Linking.openURL(intent);
+                    } else {
+                      // iOS: try the app's URL scheme, fall back to web URL on failure
+                      try {
+                        await Linking.openURL("chatgpt://");
+                      } catch {
+                        await Linking.openURL(webUrl);
+                      }
+                    }
+                  } catch {
+                    Linking.openURL(webUrl).catch(() => {});
+                  }
+                }}
               >
                 <Ionicons name="chatbubbles-outline" size={14} color="#7C3AED" />
                 <Text style={styles.quickBtnText}>Open GPT</Text>
