@@ -206,30 +206,50 @@ export default function Dashboard() {
               <TouchableOpacity
                 style={styles.quickBtn}
                 onPress={async () => {
-                  // Try native ChatGPT app first (iOS: chatgpt://, Android: intent with package).
-                  // Falls back to the web URL automatically if the app isn't installed.
+                  // Try native ChatGPT app first, fall back to web URL.
                   const webUrl = "https://chatgpt.com/gpts";
-                  try {
-                    if (Platform.OS === "android") {
-                      // Android intent with built-in browser fallback — if the ChatGPT
-                      // Android app (com.openai.chatgpt) isn't installed, it opens the web URL.
-                      const intent =
-                        "intent://chat#Intent;scheme=chatgpt;package=com.openai.chatgpt;" +
-                        "S.browser_fallback_url=" +
-                        encodeURIComponent(webUrl) +
-                        ";end";
-                      await Linking.openURL(intent);
-                    } else {
-                      // iOS: try the app's URL scheme, fall back to web URL on failure
-                      try {
-                        await Linking.openURL("chatgpt://");
-                      } catch {
-                        await Linking.openURL(webUrl);
-                      }
+
+                  // Helper: silently attempt each URL; return true on success.
+                  const tryOpen = async (url: string): Promise<boolean> => {
+                    try {
+                      await Linking.openURL(url);
+                      return true;
+                    } catch {
+                      return false;
                     }
-                  } catch {
-                    Linking.openURL(webUrl).catch(() => {});
+                  };
+
+                  if (Platform.OS === "android") {
+                    // 1) Custom scheme (some ChatGPT builds register chatgpt://)
+                    if (await tryOpen("chatgpt://")) return;
+                    // 2) Launch MAIN/LAUNCHER activity of the ChatGPT package
+                    //    directly. NEW_TASK flag (0x10000000) is required when
+                    //    starting an activity outside the current task.
+                    const mainIntent =
+                      "intent:#Intent;" +
+                      "action=android.intent.action.MAIN;" +
+                      "category=android.intent.category.LAUNCHER;" +
+                      "package=com.openai.chatgpt;" +
+                      "launchFlags=0x10000000;" +
+                      "end";
+                    if (await tryOpen(mainIntent)) return;
+                    // 3) Try opening chatgpt.com with package hint (App Links)
+                    const appLinkIntent =
+                      "intent://chatgpt.com/#Intent;" +
+                      "scheme=https;" +
+                      "package=com.openai.chatgpt;" +
+                      "launchFlags=0x10000000;" +
+                      "S.browser_fallback_url=" +
+                      encodeURIComponent(webUrl) +
+                      ";end";
+                    if (await tryOpen(appLinkIntent)) return;
+                  } else {
+                    // iOS: try the chatgpt:// URL scheme
+                    if (await tryOpen("chatgpt://")) return;
                   }
+
+                  // Last resort: open in browser
+                  Linking.openURL(webUrl).catch(() => {});
                 }}
               >
                 <Ionicons name="chatbubbles-outline" size={14} color="#7C3AED" />
