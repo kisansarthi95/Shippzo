@@ -12,6 +12,7 @@ import {
   Modal,
   TextInput,
   Platform,
+  useWindowDimensions,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
@@ -33,6 +34,9 @@ type Stats = {
 
 export default function Dashboard() {
   const router = useRouter();
+  const { width: screenWidth } = useWindowDimensions();
+  // 3-column stat grid: 16px horizontal padding + 10px × 2 gaps
+  const cardW = Math.floor((screenWidth - 32 - 20) / 3);
   const [stats, setStats] = useState<Stats | null>(null);
   const [pendingOrdersCount, setPendingOrdersCount] = useState<number>(0);
   const [recent, setRecent] = useState<Shipment[]>([]);
@@ -201,13 +205,13 @@ export default function Dashboard() {
               Paste text from Shipment Parser GPT (14-line format).
             </Text>
 
-            <View style={styles.quickRow}>
-              <TouchableOpacity style={styles.quickBtn} onPress={pasteFromClipboardToModal}>
+            <View style={styles.modalQuickRow}>
+              <TouchableOpacity style={styles.modalQuickBtn} onPress={pasteFromClipboardToModal}>
                 <Ionicons name="clipboard-outline" size={14} color="#7C3AED" />
-                <Text style={styles.quickBtnText}>Paste Clipboard</Text>
+                <Text style={styles.modalQuickBtnText}>Paste Clipboard</Text>
               </TouchableOpacity>
               <TouchableOpacity
-                style={styles.quickBtn}
+                style={styles.modalQuickBtn}
                 onPress={async () => {
                   // Try native ChatGPT app first, fall back to web URL.
                   const webUrl = "https://chatgpt.com/gpts";
@@ -316,6 +320,7 @@ export default function Dashboard() {
                 value={stats?.total ?? 0}
                 icon="cube-outline"
                 tone="neutral"
+                width={cardW}
               />
               <StatCard
                 testID="stat-pending"
@@ -323,20 +328,15 @@ export default function Dashboard() {
                 value={stats?.pending ?? 0}
                 icon="time-outline"
                 tone="warning"
+                width={cardW}
               />
               <StatCard
                 testID="stat-delivered"
                 label="Delivered"
                 value={stats?.delivered ?? 0}
-                icon="checkmark-done"
+                icon="checkmark-circle"
                 tone="success"
-              />
-              <StatCard
-                testID="stat-revenue"
-                label="Total Revenue"
-                value={`₹${(stats?.revenue_total ?? 0).toFixed(0)}`}
-                icon="trending-up"
-                tone="primary"
+                width={cardW}
               />
               <StatCard
                 testID="stat-cod"
@@ -344,6 +344,7 @@ export default function Dashboard() {
                 value={`₹${(stats?.cod_total ?? 0).toFixed(0)}`}
                 icon="cash-outline"
                 tone="neutral"
+                width={cardW}
               />
               <StatCard
                 testID="stat-prepaid"
@@ -351,11 +352,20 @@ export default function Dashboard() {
                 value={`₹${(stats?.prepaid_total ?? 0).toFixed(0)}`}
                 icon="card-outline"
                 tone="neutral"
+                width={cardW}
+              />
+              <StatCard
+                testID="stat-revenue"
+                label="Total Revenue"
+                value={`₹${(stats?.revenue_total ?? 0).toFixed(0)}`}
+                icon="trending-up"
+                tone="primary"
+                width={cardW}
               />
             </View>
 
-            <View style={styles.quickRow}>
-              <QuickAction
+            <View style={styles.pillsCol}>
+              <ActionPill
                 testID="quick-pending-orders"
                 icon="download-outline"
                 label="Pending Orders"
@@ -363,7 +373,7 @@ export default function Dashboard() {
                 onPress={() => router.push("/(tabs)/orders")}
                 tone="violet"
               />
-              <QuickAction
+              <ActionPill
                 testID="quick-pending-shipments"
                 icon="cube-outline"
                 label="Pending Shipments"
@@ -376,10 +386,10 @@ export default function Dashboard() {
                 }
                 tone="warning"
               />
-              <QuickAction
+              <ActionPill
                 testID="quick-print-recent"
                 icon="print-outline"
-                label="Print Recent"
+                label="Print All"
                 onPress={() =>
                   router.push({
                     pathname: "/(tabs)/shipments",
@@ -387,6 +397,7 @@ export default function Dashboard() {
                   })
                 }
                 tone="neutral"
+                chevron
               />
             </View>
 
@@ -450,54 +461,79 @@ function StatCard({
   icon,
   tone,
   testID,
+  width,
 }: {
   label: string;
   value: number | string;
   icon: keyof typeof Ionicons.glyphMap;
   tone: "neutral" | "warning" | "success" | "primary";
   testID?: string;
+  width?: number;
 }) {
-  const toneStyle =
-    tone === "primary"
-      ? { background: colors.primary, color: "#fff", sub: "rgba(255,255,255,0.8)" }
-      : tone === "success"
-      ? { background: colors.successBg, color: colors.successText, sub: "#059669" }
-      : tone === "warning"
-      ? { background: colors.warningBg, color: colors.warningText, sub: "#D97706" }
-      : { background: colors.surface, color: colors.text, sub: colors.textMuted };
+  // "primary" → full orange filled card (Total Revenue).
+  // Others → white card with color-coded icon + value.
+  const isPrimary = tone === "primary";
+  const accent =
+    tone === "success" ? "#10B981"
+    : tone === "warning" ? "#FF5A00"
+    : colors.text;
+
+  const sizeStyle = width ? { width } : null;
+
+  if (isPrimary) {
+    return (
+      <View testID={testID} style={[styles.statCard, styles.statCardPrimary, sizeStyle]}>
+        <Ionicons name={icon} size={18} color="#fff" />
+        <Text style={styles.statValuePrimary} numberOfLines={1} adjustsFontSizeToFit>
+          {value}
+        </Text>
+        <Text style={styles.statLabelPrimary} numberOfLines={2}>
+          {label}
+        </Text>
+      </View>
+    );
+  }
 
   return (
-    <View
-      testID={testID}
-      style={[styles.statCard, { backgroundColor: toneStyle.background }]}
-    >
-      <Ionicons name={icon} size={18} color={toneStyle.color} />
-      <Text style={[styles.statValue, { color: toneStyle.color }]}>{value}</Text>
-      <Text style={[styles.statLabel, { color: toneStyle.sub }]}>{label}</Text>
+    <View testID={testID} style={[styles.statCard, sizeStyle]}>
+      <Ionicons name={icon} size={18} color={accent} />
+      <Text
+        style={[styles.statValue, { color: accent }]}
+        numberOfLines={1}
+        adjustsFontSizeToFit
+      >
+        {value}
+      </Text>
+      <Text style={[styles.statLabel, { color: "#6B7280" }]} numberOfLines={2}>
+        {label}
+      </Text>
     </View>
   );
 }
 
-function QuickAction({
+function ActionPill({
   icon,
   label,
   onPress,
-  primary,
   badge,
   tone = "neutral",
   testID,
+  chevron,
 }: {
   icon: keyof typeof Ionicons.glyphMap;
   label: string;
   onPress: () => void;
-  primary?: boolean;
   badge?: number;
   tone?: "neutral" | "violet" | "warning" | "success";
   testID?: string;
+  chevron?: boolean;
 }) {
-  const toneMap: Record<string, { bg: string; border: string; fg: string; badgeBg: string; badgeFg: string }> = {
+  const toneMap: Record<
+    string,
+    { bg: string; border: string; fg: string; badgeBg: string; badgeFg: string }
+  > = {
     neutral: { bg: "#fff", border: "#E5E7EB", fg: colors.text, badgeBg: colors.text, badgeFg: "#fff" },
-    violet: { bg: "#F5F3FF", border: "#DDD6FE", fg: "#6D28D9", badgeBg: "#7C3AED", badgeFg: "#fff" },
+    violet:  { bg: "#F5F3FF", border: "#DDD6FE", fg: "#6D28D9", badgeBg: "#7C3AED", badgeFg: "#fff" },
     warning: { bg: "#FFFBEB", border: "#FDE68A", fg: "#B45309", badgeBg: "#F59E0B", badgeFg: "#fff" },
     success: { bg: "#ECFDF5", border: "#A7F3D0", fg: "#047857", badgeBg: "#10B981", badgeFg: "#fff" },
   };
@@ -507,28 +543,29 @@ function QuickAction({
     <TouchableOpacity
       testID={testID}
       onPress={onPress}
-      style={[
-        styles.quickBtn,
-        { backgroundColor: t.bg, borderColor: t.border },
-        primary && styles.quickBtnPrimary,
-      ]}
+      style={[styles.pillBtn, { backgroundColor: t.bg, borderColor: t.border }]}
       activeOpacity={0.75}
     >
-      {showBadge && (
-        <View style={[styles.quickBadge, { backgroundColor: t.badgeBg }]}>
-          <Text style={[styles.quickBadgeText, { color: t.badgeFg }]} numberOfLines={1}>
-            {badge > 99 ? "99+" : String(badge)}
-          </Text>
-        </View>
-      )}
-      <Ionicons name={icon} size={22} color={primary ? "#fff" : t.fg} />
+      <View style={[styles.pillIconWrap, { backgroundColor: "transparent" }]}>
+        <Ionicons name={icon} size={22} color={t.fg} />
+      </View>
       <Text
-        style={[styles.quickLabel, { color: primary ? "#fff" : t.fg }]}
-        numberOfLines={2}
+        style={[styles.pillLabel, { color: t.fg }]}
+        numberOfLines={1}
         allowFontScaling={false}
       >
         {label}
       </Text>
+      {showBadge && (
+        <View style={[styles.pillBadge, { backgroundColor: t.badgeBg }]}>
+          <Text style={[styles.pillBadgeText, { color: t.badgeFg }]} numberOfLines={1}>
+            {badge! > 99 ? "99+" : String(badge)}
+          </Text>
+        </View>
+      )}
+      {chevron && (
+        <Ionicons name="chevron-forward" size={20} color="#9CA3AF" style={{ marginLeft: 8 }} />
+      )}
     </TouchableOpacity>
   );
 }
@@ -581,70 +618,101 @@ const styles = StyleSheet.create({
     flexWrap: "wrap",
     paddingHorizontal: 16,
     gap: 10,
+    marginTop: 4,
   },
   statCard: {
-    width: "47.8%",
-    padding: 14,
-    borderRadius: 12,
-    borderWidth: 2,
-    borderColor: "#E5E7EB",
-  },
-  statValue: { fontSize: 26, fontWeight: "800", marginTop: 6 },
-  statLabel: {
-    fontSize: 11,
-    fontWeight: "700",
-    marginTop: 2,
-    letterSpacing: 0.5,
-    textTransform: "uppercase",
-  },
-  quickRow: {
-    flexDirection: "row",
-    paddingHorizontal: 12,
-    marginTop: 18,
-    marginBottom: 10,
-    gap: 8,
-  },
-  quickBtn: {
-    flex: 1,
-    backgroundColor: colors.surface,
-    borderWidth: 2,
-    borderColor: "#E5E7EB",
-    borderRadius: 12,
-    paddingVertical: 12,
-    paddingHorizontal: 4,
-    minHeight: 82,
+    flexBasis: "30%",
+    flexGrow: 1,
+    flexShrink: 1,
+    minWidth: 0,
+    backgroundColor: "#fff",
+    paddingVertical: 14,
+    paddingHorizontal: 8,
+    borderRadius: 14,
+    borderWidth: 1.5,
+    borderColor: "#EEF0F3",
     alignItems: "center",
     justifyContent: "center",
-    gap: 4,
-    position: "relative",
-    overflow: "hidden",
+    minHeight: 108,
   },
-  quickBtnPrimary: {
+  statCardPrimary: {
     backgroundColor: colors.primary,
     borderColor: colors.primary,
   },
-  quickLabel: {
-    fontSize: 10.5,
-    fontWeight: "700",
-    color: colors.text,
+  statValue: {
+    fontSize: 26,
+    fontWeight: "900",
+    marginTop: 6,
     textAlign: "center",
-    lineHeight: 13,
-    flexShrink: 1,
+    letterSpacing: -0.5,
   },
-  quickBadge: {
-    position: "absolute",
-    top: 6,
-    right: 6,
-    minWidth: 20,
-    height: 20,
-    paddingHorizontal: 5,
-    borderRadius: 10,
+  statValuePrimary: {
+    fontSize: 22,
+    fontWeight: "900",
+    marginTop: 6,
+    color: "#fff",
+    textAlign: "center",
+    letterSpacing: -0.5,
+  },
+  statLabel: {
+    fontSize: 10.5,
+    fontWeight: "800",
+    marginTop: 4,
+    letterSpacing: 0.8,
+    textTransform: "uppercase",
+    textAlign: "center",
+  },
+  statLabelPrimary: {
+    fontSize: 9.5,
+    fontWeight: "800",
+    marginTop: 4,
+    letterSpacing: 0.6,
+    textTransform: "uppercase",
+    color: "rgba(255,255,255,0.95)",
+    textAlign: "center",
+  },
+
+  /* Full-width stacked action pills (Pending Orders / Shipments / Print All) */
+  pillsCol: {
+    paddingHorizontal: 16,
+    marginTop: 16,
+    gap: 10,
+  },
+  pillBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#fff",
+    borderWidth: 1.5,
+    borderColor: "#E5E7EB",
+    borderRadius: 14,
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    minHeight: 56,
+  },
+  pillIconWrap: {
+    width: 28,
+    height: 28,
+    alignItems: "center",
+    justifyContent: "center",
+    marginRight: 10,
+  },
+  pillLabel: {
+    flex: 1,
+    fontSize: 15,
+    fontWeight: "800",
+    letterSpacing: 0.2,
+  },
+  pillBadge: {
+    minWidth: 36,
+    paddingHorizontal: 10,
+    height: 28,
+    borderRadius: 999,
     alignItems: "center",
     justifyContent: "center",
   },
-  quickBadgeText: {
-    fontSize: 10,
-    fontWeight: "800",
+  pillBadgeText: {
+    fontSize: 13,
+    fontWeight: "900",
     includeFontPadding: false,
   },
   sectionHeader: {
@@ -734,12 +802,12 @@ const styles = StyleSheet.create({
     marginBottom: 10,
     lineHeight: 17,
   },
-  quickRow: {
+  modalQuickRow: {
     flexDirection: "row",
     gap: 8,
     marginBottom: 10,
   },
-  quickBtn: {
+  modalQuickBtn: {
     flexDirection: "row",
     alignItems: "center",
     gap: 5,
@@ -750,7 +818,7 @@ const styles = StyleSheet.create({
     borderColor: "#7C3AED",
     backgroundColor: "#F5F3FF",
   },
-  quickBtnText: { fontSize: 11, fontWeight: "700", color: "#7C3AED" },
+  modalQuickBtnText: { fontSize: 11, fontWeight: "700", color: "#7C3AED" },
   modalInput: {
     borderWidth: 1.5,
     borderColor: "#E5E7EB",
