@@ -9,6 +9,12 @@ import { useLocalSearchParams, useRouter } from "expo-router";
 import { CameraView, useCameraPermissions } from "expo-camera";
 import { Api } from "../lib/api";
 import { scannerBridge } from "../lib/scannerBridge";
+import {
+  initScanFeedback,
+  playScanSuccess,
+  playScanError,
+  disposeScanFeedback,
+} from "../lib/scanFeedback";
 import { colors } from "../lib/theme";
 
 export default function ScannerModal() {
@@ -19,8 +25,17 @@ export default function ScannerModal() {
   const [scannedValue, setScannedValue] = useState<string | null>(null);
   const [manualValue, setManualValue] = useState("");
   const [requesting, setRequesting] = useState(false);
+  const [soundOn, setSoundOn] = useState(true);
 
   const isWeb = Platform.OS === "web";
+
+  // Pre-load the beep player as soon as scanner mounts — avoids first-scan delay.
+  useEffect(() => {
+    initScanFeedback();
+    return () => {
+      disposeScanFeedback();
+    };
+  }, []);
 
   const askPermission = async () => {
     setRequesting(true);
@@ -40,7 +55,10 @@ export default function ScannerModal() {
 
   const submitValue = async (value: string) => {
     const v = value.trim();
-    if (!v) return;
+    if (!v) {
+      playScanError();
+      return;
+    }
     // First check if this tracking already exists
     try {
       const existing = await Api.getShipmentByTracking(v);
@@ -64,6 +82,10 @@ export default function ScannerModal() {
     if (scannedRef.current) return;
     scannedRef.current = true;
     setScannedValue(data);
+    // Instant audio + haptic feedback (fire-and-forget).
+    if (soundOn) {
+      playScanSuccess();
+    }
     setTimeout(() => submitValue(data), 300);
   };
 
@@ -76,7 +98,18 @@ export default function ScannerModal() {
           <Ionicons name="close" size={22} color="#fff" />
         </TouchableOpacity>
         <Text style={styles.title}>Scan Tracking ID</Text>
-        <View style={{ width: 44 }} />
+        <TouchableOpacity
+          testID="sound-toggle"
+          onPress={() => setSoundOn((v) => !v)}
+          style={styles.closeBtn}
+          accessibilityLabel={soundOn ? "Mute scan beep" : "Unmute scan beep"}
+        >
+          <Ionicons
+            name={soundOn ? "volume-high" : "volume-mute"}
+            size={22}
+            color="#fff"
+          />
+        </TouchableOpacity>
       </View>
 
       {isWeb ? (
