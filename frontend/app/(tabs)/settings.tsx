@@ -106,6 +106,10 @@ export default function SettingsScreen() {
   const [brandLogo, setBrandLogo] = useState("");
   const [preferLogo, setPreferLogo] = useState(true);
   const [logoShape, setLogoShape] = useState<"square" | "wide">("square");
+  const [labelFields, setLabelFields] = useState({
+    oid: true, dispatch_date: true, weight: true, item: true, phone: true,
+    customer_id: true, token_info: false, box_dimensions: false, shipment_notes: false,
+  });
 
   // Sheet
   const [sheetUrl, setSheetUrl] = useState("");
@@ -127,6 +131,9 @@ export default function SettingsScreen() {
     setBrandLogo(s.brand?.logo_base64 || "");
     setPreferLogo((s as any).prefer_logo !== false);
     setLogoShape(((s as any).logo_shape as any) === "wide" ? "wide" : "square");
+    if ((s as any).label_fields) {
+      setLabelFields((prev) => ({ ...prev, ...(s as any).label_fields }));
+    }
     if (s.sheet?.sheet_id) {
       setSheetStatus("connected");
       setSheetUrl(s.sheet.url);
@@ -152,6 +159,7 @@ export default function SettingsScreen() {
         default_eta_days: Number(etaDays) || 7,
         prefer_logo: preferLogo,
         logo_shape: logoShape,
+        label_fields: labelFields,
       } as Partial<SettingsT>);
       Alert.alert("Saved", "Settings saved successfully.");
     } catch (e: any) {
@@ -564,6 +572,38 @@ export default function SettingsScreen() {
             </Field>
           </Section>
 
+          {/* Label Customization — field visibility toggles */}
+          <Section title="Label Fields (Show / Hide)" icon="options-outline">
+            <Text style={styles.hint}>
+              Toggle which optional fields appear on the printed label.
+              Core fields (Name, Address, Barcode, PAID/COD) always show.
+            </Text>
+            {([
+              { key: "oid" as const, label: "Order ID (OID)" },
+              { key: "dispatch_date" as const, label: "Dispatch Date (DD)" },
+              { key: "weight" as const, label: "Weight" },
+              { key: "item" as const, label: "Item Description" },
+              { key: "phone" as const, label: "Customer Phone" },
+              { key: "customer_id" as const, label: "Courier Customer ID" },
+              { key: "token_info" as const, label: "Token / Advance Info (footer)" },
+              { key: "box_dimensions" as const, label: "Box Dimensions" },
+              { key: "shipment_notes" as const, label: "Shipment Notes" },
+            ]).map((f) => (
+              <View key={f.key} style={styles.toggleRow}>
+                <Text style={styles.toggleLabel}>{f.label}</Text>
+                <Switch
+                  testID={`label-toggle-${f.key}`}
+                  value={!!(labelFields as any)[f.key]}
+                  onValueChange={(v) =>
+                    setLabelFields({ ...labelFields, [f.key]: v })
+                  }
+                  trackColor={{ false: "#E5E7EB", true: colors.primary }}
+                  thumbColor="#fff"
+                />
+              </View>
+            ))}
+          </Section>
+
           {/* Sender */}
           <Section title="Sender / From Address" icon="business-outline">
             <Field label="Business / Sender Name">
@@ -845,6 +885,21 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surface,
   },
   hint: { fontSize: 12, color: colors.textMuted, marginBottom: 4 },
+  toggleRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingVertical: 10,
+    borderTopWidth: 1,
+    borderTopColor: "#F3F4F6",
+  },
+  toggleLabel: {
+    flex: 1,
+    fontSize: 14,
+    color: colors.text,
+    fontWeight: "600",
+    paddingRight: 10,
+  },
   switchRow: {
     flexDirection: "row",
     alignItems: "center",

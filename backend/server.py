@@ -108,6 +108,19 @@ class BrandConfig(BaseModel):
     logo_base64: str = ""   # optional: data uri or base64 string for label top
 
 
+class LabelFields(BaseModel):
+    """Toggles for optional fields shown on the printed label."""
+    oid: bool = True
+    dispatch_date: bool = True
+    weight: bool = True
+    item: bool = True
+    phone: bool = True
+    customer_id: bool = True
+    token_info: bool = False
+    box_dimensions: bool = False
+    shipment_notes: bool = False
+
+
 class Settings(BaseModel):
     id: str = "default"
     sender: SenderAddress = Field(default_factory=SenderAddress)
@@ -125,6 +138,7 @@ class Settings(BaseModel):
     prefer_logo: bool = True  # true = show logo if uploaded; false = always show brand name
     logo_shape: str = "square"  # "square" | "wide"
     sheet: SheetConfig = Field(default_factory=SheetConfig)
+    label_fields: LabelFields = Field(default_factory=LabelFields)
 
 
 class SettingsUpdate(BaseModel):
@@ -136,6 +150,7 @@ class SettingsUpdate(BaseModel):
     prefer_logo: Optional[bool] = None
     logo_shape: Optional[str] = None
     sheet: Optional[SheetConfig] = None
+    label_fields: Optional[LabelFields] = None
 
 
 class Shipment(BaseModel):
@@ -157,6 +172,10 @@ class Shipment(BaseModel):
     items: List[str] = Field(default_factory=list)
     item_description: str = ""  # fallback text
     weight: str = ""
+    # Token / advance payment tracking (for COD split)
+    token_amount: float = 0.0   # advance already collected (prepaid portion)
+    box_dimensions: str = ""    # e.g. "30×20×10 cm"
+    shipment_notes: str = ""    # free text, shown on label if toggled on
     status: str = "Pending"
     created_at: str = Field(default_factory=utcnow_iso)
     delivered_at: Optional[str] = None
@@ -181,6 +200,9 @@ class ShipmentCreate(BaseModel):
     items: Optional[List[str]] = None
     item_description: Optional[str] = ""
     weight: Optional[str] = ""
+    token_amount: Optional[float] = 0.0
+    box_dimensions: Optional[str] = ""
+    shipment_notes: Optional[str] = ""
     sheet_row_key: Optional[str] = ""
 
 
@@ -202,6 +224,9 @@ class ShipmentUpdate(BaseModel):
     items: Optional[List[str]] = None
     item_description: Optional[str] = None
     weight: Optional[str] = None
+    token_amount: Optional[float] = None
+    box_dimensions: Optional[str] = None
+    shipment_notes: Optional[str] = None
     status: Optional[str] = None
 
 
@@ -386,6 +411,12 @@ async def update_settings(payload: SettingsUpdate):
         update["default_eta_days"] = payload.default_eta_days
     if payload.sheet is not None:
         update["sheet"] = payload.sheet.model_dump()
+    if payload.prefer_logo is not None:
+        update["prefer_logo"] = payload.prefer_logo
+    if payload.logo_shape is not None:
+        update["logo_shape"] = payload.logo_shape
+    if payload.label_fields is not None:
+        update["label_fields"] = payload.label_fields.model_dump()
     if not update:
         raise HTTPException(status_code=400, detail="No fields to update")
     res = await db.settings.find_one_and_update(

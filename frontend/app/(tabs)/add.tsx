@@ -64,6 +64,9 @@ export default function AddShipment() {
   const [pincode, setPincode] = useState("");
   const [paymentMode, setPaymentMode] = useState<"COD" | "Prepaid">("Prepaid");
   const [amount, setAmount] = useState("");
+  const [tokenAmount, setTokenAmount] = useState("");
+  const [boxDimensions, setBoxDimensions] = useState("");
+  const [shipmentNotes, setShipmentNotes] = useState("");
   const [itemsText, setItemsText] = useState(""); // newline or comma separated
   const [weight, setWeight] = useState("");
   const [weightUnit, setWeightUnit] = useState<"g" | "kg">("g");
@@ -225,6 +228,9 @@ export default function AddShipment() {
     setAmount("");
     setItemsText("");
     setWeight("");
+    setTokenAmount("");
+    setBoxDimensions("");
+    setShipmentNotes("");
     setSheetRowKey("");
   };
 
@@ -263,6 +269,12 @@ export default function AddShipment() {
           pincode: pincode.trim(),
           payment_mode: paymentMode,
           amount: Number(amount) || 0,
+          cod_amount: paymentMode === "COD"
+            ? Math.max(0, (Number(amount) || 0) - (Number(tokenAmount) || 0))
+            : 0,
+          token_amount: Number(tokenAmount) || 0,
+          box_dimensions: boxDimensions.trim(),
+          shipment_notes: shipmentNotes.trim(),
           items,
           item_description: items.join(", "),
           weight: weight.trim() ? `${weight.trim()} ${weightUnit}` : "",
@@ -658,6 +670,61 @@ export default function AddShipment() {
                   </TouchableOpacity>
                 </View>
               </View>
+            </Field>
+            {/* Token / Advance (shown for COD especially, but useful for all) */}
+            <Field label="Token / Advance Paid (optional)">
+              <View style={{ flexDirection: "row", gap: 8, alignItems: "center" }}>
+                <View style={{ flex: 1 }}>
+                  <TextInput
+                    testID="token-amount-input"
+                    value={tokenAmount}
+                    onChangeText={setTokenAmount}
+                    placeholder="e.g. 50"
+                    placeholderTextColor="#9CA3AF"
+                    keyboardType="decimal-pad"
+                    style={styles.input}
+                  />
+                </View>
+                <View style={{ flex: 1 }}>
+                  {(() => {
+                    const total = Number(amount) || 0;
+                    const tok = Number(tokenAmount) || 0;
+                    const cod = Math.max(0, total - tok);
+                    return (
+                      <View style={[styles.input, { justifyContent: "center", backgroundColor: "#F9FAFB" }]}>
+                        <Text style={{ color: tok > 0 ? colors.primary : "#9CA3AF", fontWeight: "700" }}>
+                          COD to collect: ₹{cod.toFixed(0)}
+                        </Text>
+                      </View>
+                    );
+                  })()}
+                </View>
+              </View>
+              <Text style={styles.hint}>
+                Prepaid portion already collected. Remaining shown on label.
+              </Text>
+            </Field>
+            <Field label="Box Dimensions (optional)">
+              <TextInput
+                testID="box-dim-input"
+                value={boxDimensions}
+                onChangeText={setBoxDimensions}
+                placeholder="e.g. 30x20x10 cm"
+                placeholderTextColor="#9CA3AF"
+                style={styles.input}
+              />
+            </Field>
+            <Field label="Shipment Notes (optional)">
+              <TextInput
+                testID="shipment-notes-input"
+                value={shipmentNotes}
+                onChangeText={setShipmentNotes}
+                placeholder="Fragile / Handle with care / Any special instruction"
+                placeholderTextColor="#9CA3AF"
+                multiline
+                numberOfLines={2}
+                style={[styles.input, { minHeight: 56, textAlignVertical: "top" }]}
+              />
             </Field>
           </Section>
 

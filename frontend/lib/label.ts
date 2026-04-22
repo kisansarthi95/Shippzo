@@ -1,4 +1,4 @@
-import type { Shipment, SenderAddress, Courier } from "./api";
+import type { Shipment, SenderAddress, Courier, LabelFields } from "./api";
 import { barcodeSvg } from "./barcode";
 
 export type Brand = { name?: string; logo_base64?: string };
@@ -10,6 +10,7 @@ export type LabelOptions = {
   preferLogo?: boolean; // true = show logo when available; false = always show name
   logoShape?: "square" | "wide"; // influences rendered size
   couriers?: Courier[]; // used to pull per-courier customer_id onto the label
+  labelFields?: Partial<LabelFields>; // user-chosen field visibility toggles
 };
 
 const escape = (s: string) =>
@@ -85,11 +86,23 @@ function singleLabel(s: Shipment, sender: SenderAddress, opts: LabelOptions) {
     : `<div class="brand-name">${escape(brandName)}</div>`;
 
   const isCod = s.payment_mode === "COD";
-  // Use short label: "PAID" instead of "PREPAID", "COD" stays
+  const tokenAmtPreview = Number((s as any).token_amount || 0);
+  const amtPreview = Number(amt) || 0;
+  const collectAmt = isCod ? Math.max(0, amtPreview - tokenAmtPreview) : 0;
+  // Pill shows ONLY what the delivery boy should collect.
+  // If Token was paid upfront (e.g., 300 total, 50 token) → COD ₹250.
+  // Token info (Total + Advance) appears in the small footer token-box.
   const payPillText = isCod
-    ? `COD ₹${Number(amt).toFixed(0)}`
-    : `PAID${amt ? ` ₹${Number(amt).toFixed(0)}` : ""}`;
+    ? `COD ₹${collectAmt.toFixed(0)}`
+    : `PAID${amtPreview ? ` ₹${amtPreview.toFixed(0)}` : ""}`;
   const payPillClass = isCod ? "pay-pill cod" : "pay-pill prepaid";
+
+  // ---- Label field visibility toggles (Phase A) ----
+  const lf = {
+    oid: true, dispatch_date: true, weight: true, item: true, phone: true,
+    customer_id: true, token_info: false, box_dimensions: false, shipment_notes: false,
+    ...(opts.labelFields || {}),
+  };
 
   // Look up courier's printable customer_id (if provided in options)
   const courier = (opts.couriers || []).find(
@@ -97,11 +110,12 @@ function singleLabel(s: Shipment, sender: SenderAddress, opts: LabelOptions) {
   );
   const custId = (courier?.customer_id || "").trim();
   const dispatchDate = formatDispatchDate(s.created_at);
+  const showCustId = lf.customer_id && custId;
   const courierLine = s.courier_name
     ? `<div class="courier-sub">via ${escape(s.courier_name)}</div>${
-        custId ? `<div class="courier-sub2">Cust ID: ${escape(custId)}</div>` : ""
+        showCustId ? `<div class="courier-sub2">Cust ID: ${escape(custId)}</div>` : ""
       }`
-    : (custId ? `<div class="courier-sub2">Cust ID: ${escape(custId)}</div>` : "");
+    : (showCustId ? `<div class="courier-sub2">Cust ID: ${escape(custId)}</div>` : "");
 
   const itemsText =
     s.items && s.items.length
@@ -109,6 +123,25 @@ function singleLabel(s: Shipment, sender: SenderAddress, opts: LabelOptions) {
       : (s.item_description || "-");
 
   const bcSvg = renderBarcodeSvg(s.tracking_id);
+
+  // Token / advance info (only if toggled on)
+  const tokenAmt = Number((s as any).token_amount || 0);
+  const amtNum = Number(s.amount || 0);
+  const codRemaining = s.payment_mode === "COD" ? Math.max(0, amtNum - tokenAmt) : 0;
+  const tokenFooterBlock = (lf.token_info && tokenAmt > 0)
+    ? `<div class="token-box">
+         <span class="tk-label">💰 Paid Advance:</span>
+         <span class="tk-val">₹${tokenAmt.toFixed(0)}</span>
+         <span class="tk-sep">·</span>
+         <span class="tk-label">Order Total:</span>
+         <span class="tk-val">₹${amtNum.toFixed(0)}</span>
+         ${s.payment_mode === "COD"
+           ? `<span class="tk-sep">·</span>
+              <span class="tk-label">COD to collect:</span>
+              <span class="tk-val strong">₹${codRemaining.toFixed(0)}</span>`
+           : ""}
+       </div>`
+    : "";
 
   // Compact sender "FROM" line (goes into footer area, above barcode)
   const senderFooterLine = (() => {
@@ -134,8 +167,8 @@ function singleLabel(s: Shipment, sender: SenderAddress, opts: LabelOptions) {
       <div class="brand-wrap">
         ${brandHeader}
         <div class="brand-meta">
-          ${dispatchDate ? `<span><b class="lbl">DD:</b> ${escape(dispatchDate)}</span>` : ""}
-          ${s.order_id ? `<span><b class="lbl">OID:</b> ${escape(s.order_id)}</span>` : ""}
+          ${(lf.dispatch_date && dispatchDate) ? `<span><b class="lbl">DD:</b> ${escape(dispatchDate)}</span>` : ""}
+          ${(lf.oid && s.order_id) ? `<span><b class="lbl">OID:</b> ${escape(s.order_id)}</span>` : ""}
         </div>
       </div>
       <div class="pay-wrap">
@@ -155,13 +188,16 @@ function singleLabel(s: Shipment, sender: SenderAddress, opts: LabelOptions) {
           return [addr, cityLine].filter(Boolean)
             .map((l) => `<div class="blk-line">${escape(l)}</div>`).join("");
         })()}
-        ${s.customer_phone ? `<div class="blk-contact">📞 <b>${escape(s.customer_phone)}</b></div>` : ""}
+        ${(lf.phone && s.customer_phone) ? `<div class="blk-contact">📞 <b>${escape(s.customer_phone)}</b></div>` : ""}
+        ${(lf.shipment_notes && (s as any).shipment_notes) ? `<div class="blk-notes">📝 ${escape((s as any).shipment_notes)}</div>` : ""}
       </div>
 
       <div class="meta-row">
-        ${s.weight ? `<span><b class="lbl">Wt:</b> ${escape(s.weight)}</span>` : ""}
-        <span><b class="lbl">Item:</b> ${escape(itemsText)}</span>
+        ${(lf.weight && s.weight) ? `<span><b class="lbl">Wt:</b> ${escape(s.weight)}</span>` : ""}
+        ${(lf.box_dimensions && (s as any).box_dimensions) ? `<span><b class="lbl">Box:</b> ${escape((s as any).box_dimensions)}</span>` : ""}
+        ${lf.item ? `<span><b class="lbl">Item:</b> ${escape(itemsText)}</span>` : ""}
       </div>
+      ${tokenFooterBlock}
     </div>
 
     <!-- BOTTOM (fixed height, barcode never cut) -->
@@ -291,6 +327,15 @@ export function buildLabelHtml(
     white-space: nowrap; }
   .courier-sub2 { margin-top: 0.5mm; font-size: 8pt; color: #4B5563; font-weight: 600;
     white-space: nowrap; }
+  /* Token / advance info — always at BOTTOM of mid section, small + muted */
+  .token-box { margin-top: 2mm; padding: 1.5mm 2mm; background: #F8FAFC;
+    border: 1px dashed #94A3B8; border-radius: 2mm; font-size: 8pt; color: #334155;
+    display: flex; gap: 2mm; align-items: center; flex-wrap: wrap; }
+  .token-box .tk-label { font-weight: 600; color: #475569; }
+  .token-box .tk-val { font-weight: 800; color: #0F172A; }
+  .token-box .tk-val.strong { color: #B45309; font-size: 9pt; }
+  .token-box .tk-sep { color: #CBD5E1; }
+  .blk-notes { margin-top: 1mm; font-size: 9pt; color: #475569; font-style: italic; }
 
   /* ---- MIDDLE (flex) ---- */
   .mid { display: flex; flex-direction: column; gap: 3mm; overflow: hidden; min-height: 0; }

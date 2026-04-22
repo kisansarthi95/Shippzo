@@ -128,6 +128,7 @@ export default function Shipments() {
         preferLogo: (settings as any).prefer_logo !== false,
         logoShape: (settings as any).logo_shape === "wide" ? "wide" : "square",
         couriers,
+        labelFields: (settings as any).label_fields,
       });
       await Print.printAsync({ html });
     } catch (e: any) {
@@ -149,6 +150,7 @@ export default function Shipments() {
         preferLogo: (settings as any).prefer_logo !== false,
         logoShape: (settings as any).logo_shape === "wide" ? "wide" : "square",
         couriers,
+        labelFields: (settings as any).label_fields,
       });
       const { uri } = await Print.printToFileAsync({ html });
       if (Platform.OS === "web" && typeof window !== "undefined") {

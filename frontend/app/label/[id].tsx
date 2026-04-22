@@ -62,6 +62,7 @@ export default function LabelScreen() {
   const [preferLogo, setPreferLogo] = useState<boolean>(true);
   const [logoShape, setLogoShape] = useState<"square" | "wide">("square");
   const [logoRatio, setLogoRatio] = useState<number | null>(null); // naturalW/naturalH
+  const [labelFields, setLabelFields] = useState<any>(null);
 
   const load = useCallback(async () => {
     try {
@@ -77,6 +78,7 @@ export default function LabelScreen() {
       setShowContact(settings.sender.show_contact);
       setPreferLogo((settings as any).prefer_logo !== false);
       setLogoShape((settings as any).logo_shape === "wide" ? "wide" : "square");
+      setLabelFields((settings as any).label_fields || null);
     } catch (e: any) {
       Alert.alert("Error", e?.message || "Failed to load");
     } finally {
@@ -101,6 +103,7 @@ export default function LabelScreen() {
       preferLogo,
       logoShape: effectiveShape,
       couriers,
+      labelFields: labelFields || undefined,
     };
     return buildLabelHtml(shipments, { ...sender, show_contact: showContact }, opts);
   };
@@ -241,12 +244,18 @@ export default function LabelScreen() {
             </View>
             {shipment.payment_mode === "COD" ? (
               <View style={{ alignItems: "flex-end" }}>
-                <Text style={styles.codBadge}>COD ₹{shipment.amount || shipment.cod_amount}</Text>
+                {(() => {
+                  const total = Number(shipment.amount || shipment.cod_amount || 0);
+                  const tok = Number((shipment as any).token_amount || 0);
+                  const collect = Math.max(0, total - tok);
+                  return <Text style={styles.codBadge}>COD ₹{collect}</Text>;
+                })()}
                 <Text style={styles.paySubText}>via {shipment.courier_name}</Text>
                 {(() => {
                   const c = couriers.find((cc) => cc.id === shipment.courier_id || cc.name === shipment.courier_name);
                   const cid = (c as any)?.customer_id?.trim();
-                  return cid ? <Text style={styles.paySubText}>Cust ID: {cid}</Text> : null;
+                  return (cid && (labelFields?.customer_id !== false))
+                    ? <Text style={styles.paySubText}>Cust ID: {cid}</Text> : null;
                 })()}
               </View>
             ) : (
@@ -256,7 +265,8 @@ export default function LabelScreen() {
                 {(() => {
                   const c = couriers.find((cc) => cc.id === shipment.courier_id || cc.name === shipment.courier_name);
                   const cid = (c as any)?.customer_id?.trim();
-                  return cid ? <Text style={styles.paySubText}>Cust ID: {cid}</Text> : null;
+                  return (cid && (labelFields?.customer_id !== false))
+                    ? <Text style={styles.paySubText}>Cust ID: {cid}</Text> : null;
                 })()}
               </View>
             )}

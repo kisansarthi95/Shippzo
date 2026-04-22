@@ -48,6 +48,18 @@ export type SheetConfig = {
   auto_refresh_minutes?: number;
 };
 
+export type LabelFields = {
+  oid: boolean;
+  dispatch_date: boolean;
+  weight: boolean;
+  item: boolean;
+  phone: boolean;
+  customer_id: boolean;
+  token_info: boolean;
+  box_dimensions: boolean;
+  shipment_notes: boolean;
+};
+
 export type Settings = {
   id: string;
   sender: SenderAddress;
@@ -56,6 +68,9 @@ export type Settings = {
   copy_template: string;
   default_eta_days: number;
   sheet: SheetConfig;
+  prefer_logo?: boolean;
+  logo_shape?: "square" | "wide";
+  label_fields?: LabelFields;
 };
 
 export type Shipment = {
@@ -77,6 +92,9 @@ export type Shipment = {
   items: string[];
   item_description: string;
   weight: string;
+  token_amount?: number;
+  box_dimensions?: string;
+  shipment_notes?: string;
   status: "Pending" | "Delivered" | "Cancelled";
   created_at: string;
   delivered_at?: string | null;
