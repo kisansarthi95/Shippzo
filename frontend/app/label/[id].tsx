@@ -63,6 +63,7 @@ export default function LabelScreen() {
   const [logoShape, setLogoShape] = useState<"square" | "wide">("square");
   const [logoRatio, setLogoRatio] = useState<number | null>(null); // naturalW/naturalH
   const [labelFields, setLabelFields] = useState<any>(null);
+  const [shipmentTagline, setShipmentTagline] = useState<string>("");
 
   const load = useCallback(async () => {
     try {
@@ -79,6 +80,7 @@ export default function LabelScreen() {
       setPreferLogo((settings as any).prefer_logo !== false);
       setLogoShape((settings as any).logo_shape === "wide" ? "wide" : "square");
       setLabelFields((settings as any).label_fields || null);
+      setShipmentTagline(String((settings as any).shipment_tagline || ""));
     } catch (e: any) {
       Alert.alert("Error", e?.message || "Failed to load");
     } finally {
@@ -104,6 +106,7 @@ export default function LabelScreen() {
       logoShape: effectiveShape,
       couriers,
       labelFields: labelFields || undefined,
+      shipmentTagline: shipmentTagline || undefined,
     };
     return buildLabelHtml(shipments, { ...sender, show_contact: showContact }, opts);
   };
@@ -291,9 +294,9 @@ export default function LabelScreen() {
                 📞 {shipment.customer_phone}
               </Text>
             )}
-            {!!(shipment as any).shipment_notes && labelFields?.shipment_notes && (
+            {!!(((shipment as any).shipment_notes || shipmentTagline).trim()) && labelFields?.shipment_notes && (
               <Text style={styles.notesLine} numberOfLines={2}>
-                📝 {(shipment as any).shipment_notes}
+                {((shipment as any).shipment_notes || shipmentTagline).trim()}
               </Text>
             )}
           </View>
@@ -315,12 +318,12 @@ export default function LabelScreen() {
             )}
           </View>
 
-          {/* Token / advance box — only if toggle ON and token > 0 */}
+          {/* Token / advance box — only if toggle ON, token > 0, AND payment is COD */}
           {(() => {
             const tok = Number((shipment as any).token_amount || 0);
             const total = Number(shipment.amount || 0);
             if (!labelFields?.token_info || tok <= 0) return null;
-            const cod = Math.max(0, total - tok);
+            if (shipment.payment_mode !== "COD") return null;
             return (
               <View style={styles.tokenBox}>
                 <Text style={styles.tokenLabel}>💰 Paid Advance:</Text>
@@ -328,13 +331,6 @@ export default function LabelScreen() {
                 <Text style={styles.tokenSep}>·</Text>
                 <Text style={styles.tokenLabel}>Order Total:</Text>
                 <Text style={styles.tokenVal}>₹{total.toFixed(0)}</Text>
-                {shipment.payment_mode === "COD" && (
-                  <>
-                    <Text style={styles.tokenSep}>·</Text>
-                    <Text style={styles.tokenLabel}>COD to collect:</Text>
-                    <Text style={[styles.tokenVal, { color: "#B45309" }]}>₹{cod.toFixed(0)}</Text>
-                  </>
-                )}
               </View>
             );
           })()}

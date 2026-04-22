@@ -70,6 +70,7 @@ export type Settings = {
   sheet: SheetConfig;
   prefer_logo?: boolean;
   logo_shape?: "square" | "wide";
+  shipment_tagline?: string;
   label_fields?: LabelFields;
 };
 

@@ -11,6 +11,7 @@ export type LabelOptions = {
   logoShape?: "square" | "wide"; // influences rendered size
   couriers?: Courier[]; // used to pull per-courier customer_id onto the label
   labelFields?: Partial<LabelFields>; // user-chosen field visibility toggles
+  shipmentTagline?: string; // fallback tagline when shipment.shipment_notes is empty
 };
 
 const escape = (s: string) =>
@@ -124,22 +125,17 @@ function singleLabel(s: Shipment, sender: SenderAddress, opts: LabelOptions) {
 
   const bcSvg = renderBarcodeSvg(s.tracking_id);
 
-  // Token / advance info (only if toggled on)
+  // Token / advance info (only if toggled on AND COD with real advance).
+  // For PAID/Prepaid orders we never show this box (no confusion possible).
   const tokenAmt = Number((s as any).token_amount || 0);
   const amtNum = Number(s.amount || 0);
-  const codRemaining = s.payment_mode === "COD" ? Math.max(0, amtNum - tokenAmt) : 0;
-  const tokenFooterBlock = (lf.token_info && tokenAmt > 0)
+  const tokenFooterBlock = (lf.token_info && tokenAmt > 0 && s.payment_mode === "COD")
     ? `<div class="token-box">
          <span class="tk-label">💰 Paid Advance:</span>
          <span class="tk-val">₹${tokenAmt.toFixed(0)}</span>
          <span class="tk-sep">·</span>
          <span class="tk-label">Order Total:</span>
          <span class="tk-val">₹${amtNum.toFixed(0)}</span>
-         ${s.payment_mode === "COD"
-           ? `<span class="tk-sep">·</span>
-              <span class="tk-label">COD to collect:</span>
-              <span class="tk-val strong">₹${codRemaining.toFixed(0)}</span>`
-           : ""}
        </div>`
     : "";
 
@@ -167,8 +163,8 @@ function singleLabel(s: Shipment, sender: SenderAddress, opts: LabelOptions) {
       <div class="brand-wrap">
         ${brandHeader}
         <div class="brand-meta">
-          ${(lf.dispatch_date && dispatchDate) ? `<span><b class="lbl">DD:</b> ${escape(dispatchDate)}</span>` : ""}
-          ${(lf.oid && s.order_id) ? `<span><b class="lbl">OID:</b> ${escape(s.order_id)}</span>` : ""}
+          ${(lf.dispatch_date && dispatchDate) ? `<span><b class="lbl">DD:</b> <b>${escape(dispatchDate)}</b></span>` : ""}
+          ${(lf.oid && s.order_id) ? `<span><b class="lbl">OID:</b> <b class="meta-val">${escape(s.order_id)}</b></span>` : ""}
         </div>
       </div>
       <div class="pay-wrap">
@@ -189,7 +185,13 @@ function singleLabel(s: Shipment, sender: SenderAddress, opts: LabelOptions) {
             .map((l) => `<div class="blk-line">${escape(l)}</div>`).join("");
         })()}
         ${(lf.phone && s.customer_phone) ? `<div class="blk-contact">📞 <b>${escape(s.customer_phone)}</b></div>` : ""}
-        ${(lf.shipment_notes && (s as any).shipment_notes) ? `<div class="blk-notes">📝 ${escape((s as any).shipment_notes)}</div>` : ""}
+        ${(() => {
+          if (!lf.shipment_notes) return "";
+          const perOrder = ((s as any).shipment_notes || "").trim();
+          const tagline = (opts.shipmentTagline || "").trim();
+          const text = perOrder || tagline;
+          return text ? `<div class="blk-notes">${escape(text)}</div>` : "";
+        })()}
       </div>
 
       <div class="meta-row">
@@ -315,6 +317,7 @@ export function buildLabelHtml(
     align-items: center; gap: 3mm 4mm; font-size: 8.5pt; color: #1F2937;
     flex-wrap: wrap; width: 100%; }
   .brand-meta span { white-space: nowrap; }
+  .brand-meta .meta-val { font-weight: 900; color: #0A0A0A; font-size: 9.5pt; }
   .brand-name { font-size: 17pt; font-weight: 900; letter-spacing: -0.2px;
     line-height: 1.1; word-break: break-word; max-width: 100%; }
   .pay-wrap { text-align: right; flex: 0 0 auto; min-width: 30mm; }
@@ -335,7 +338,8 @@ export function buildLabelHtml(
   .token-box .tk-val { font-weight: 800; color: #0F172A; }
   .token-box .tk-val.strong { color: #B45309; font-size: 9pt; }
   .token-box .tk-sep { color: #CBD5E1; }
-  .blk-notes { margin-top: 1mm; font-size: 9pt; color: #475569; font-style: italic; }
+  .blk-notes { margin-top: 2mm; font-size: 9.5pt; color: #334155; font-style: italic;
+    text-align: center; font-weight: 600; padding: 1mm 0; border-top: 1px dotted #CBD5E1; }
 
   /* ---- MIDDLE (flex) ---- */
   .mid { display: flex; flex-direction: column; gap: 3mm; overflow: hidden; min-height: 0; }

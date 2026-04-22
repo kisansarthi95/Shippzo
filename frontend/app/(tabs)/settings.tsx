@@ -106,6 +106,7 @@ export default function SettingsScreen() {
   const [brandLogo, setBrandLogo] = useState("");
   const [preferLogo, setPreferLogo] = useState(true);
   const [logoShape, setLogoShape] = useState<"square" | "wide">("square");
+  const [shipmentTagline, setShipmentTagline] = useState("");
   const [labelFields, setLabelFields] = useState({
     oid: true, dispatch_date: true, weight: true, item: true, phone: true,
     customer_id: true, token_info: false, box_dimensions: false, shipment_notes: false,
@@ -134,6 +135,7 @@ export default function SettingsScreen() {
     if ((s as any).label_fields) {
       setLabelFields((prev) => ({ ...prev, ...(s as any).label_fields }));
     }
+    setShipmentTagline(String((s as any).shipment_tagline || ""));
     if (s.sheet?.sheet_id) {
       setSheetStatus("connected");
       setSheetUrl(s.sheet.url);
@@ -159,6 +161,7 @@ export default function SettingsScreen() {
         default_eta_days: Number(etaDays) || 7,
         prefer_logo: preferLogo,
         logo_shape: logoShape,
+        shipment_tagline: shipmentTagline,
         label_fields: labelFields,
       } as Partial<SettingsT>);
       Alert.alert("Saved", "Settings saved successfully.");
@@ -578,6 +581,21 @@ export default function SettingsScreen() {
               Toggle which optional fields appear on the printed label.
               Core fields (Name, Address, Barcode, PAID/COD) always show.
             </Text>
+            {/* Default Tagline (shown in place of Shipment Notes when per-order notes empty) */}
+            <View style={{ marginBottom: 6 }}>
+              <Text style={styles.hint}>
+                Default Tagline (shown on label when "Shipment Notes" toggle is ON and a
+                shipment has no custom note — e.g. "Har Pal Prakruti ke Sang"):
+              </Text>
+              <TextInput
+                testID="shipment-tagline-input"
+                value={shipmentTagline}
+                onChangeText={setShipmentTagline}
+                placeholder="e.g. Har Pal Prakruti ke Sang"
+                placeholderTextColor="#9CA3AF"
+                style={[styles.input, { marginBottom: 6 }]}
+              />
+            </View>
             {([
               { key: "oid" as const, label: "Order ID (OID)" },
               { key: "dispatch_date" as const, label: "Dispatch Date (DD)" },

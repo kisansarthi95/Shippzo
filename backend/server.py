@@ -137,6 +137,7 @@ class Settings(BaseModel):
     default_eta_days: int = 7
     prefer_logo: bool = True  # true = show logo if uploaded; false = always show brand name
     logo_shape: str = "square"  # "square" | "wide"
+    shipment_tagline: str = ""  # Default tagline/notice for all shipments (e.g. "Har Pal Prakruti ke Sang"). Used if per-order shipment_notes is empty.
     sheet: SheetConfig = Field(default_factory=SheetConfig)
     label_fields: LabelFields = Field(default_factory=LabelFields)
 
@@ -149,6 +150,7 @@ class SettingsUpdate(BaseModel):
     default_eta_days: Optional[int] = None
     prefer_logo: Optional[bool] = None
     logo_shape: Optional[str] = None
+    shipment_tagline: Optional[str] = None
     sheet: Optional[SheetConfig] = None
     label_fields: Optional[LabelFields] = None
 
@@ -415,6 +417,8 @@ async def update_settings(payload: SettingsUpdate):
         update["prefer_logo"] = payload.prefer_logo
     if payload.logo_shape is not None:
         update["logo_shape"] = payload.logo_shape
+    if payload.shipment_tagline is not None:
+        update["shipment_tagline"] = payload.shipment_tagline
     if payload.label_fields is not None:
         update["label_fields"] = payload.label_fields.model_dump()
     if not update:
