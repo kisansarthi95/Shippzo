@@ -294,12 +294,17 @@ export default function LabelScreen() {
                 📞 {shipment.customer_phone}
               </Text>
             )}
-            {!!(shipment as any).shipment_notes && labelFields?.shipment_notes && (
-              <Text style={styles.notesLine} numberOfLines={2}>
+          </View>
+
+          {/* Shipment Notes — OUTSIDE Deliver-To block, ABOVE meta-row */}
+          {!!(shipment as any).shipment_notes && labelFields?.shipment_notes && (
+            <View style={styles.shipmentNotesBox}>
+              <Text style={styles.shipmentNotesText} numberOfLines={3}>
+                <Text style={styles.shipmentNotesLabel}>Notes: </Text>
                 {(shipment as any).shipment_notes}
               </Text>
-            )}
-          </View>
+            </View>
+          )}
 
           {/* META one-line */}
           <View style={styles.metaRow}>
@@ -552,6 +557,25 @@ const styles = StyleSheet.create({
     color: "#475569",
     fontStyle: "italic",
     marginTop: 4,
+  },
+  shipmentNotesBox: {
+    marginTop: 8,
+    paddingVertical: 6,
+    paddingHorizontal: 8,
+    backgroundColor: "#FFFBEB",
+    borderLeftWidth: 4,
+    borderLeftColor: "#F59E0B",
+    borderRadius: 3,
+  },
+  shipmentNotesText: {
+    fontSize: 11,
+    color: "#1F2937",
+    lineHeight: 15,
+  },
+  shipmentNotesLabel: {
+    fontWeight: "800",
+    color: "#B45309",
+    fontSize: 10.5,
   },
   tokenBox: {
     marginTop: 8,

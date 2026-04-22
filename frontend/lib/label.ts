@@ -170,8 +170,8 @@ function singleLabel(s: Shipment, sender: SenderAddress, opts: LabelOptions) {
       <div class="brand-wrap">
         ${brandHeader}
         <div class="brand-meta">
-          ${(lf.dispatch_date && dispatchDate) ? `<span><b class="lbl">DD:</b> <b>${escape(dispatchDate)}</b></span>` : ""}
-          ${(lf.oid && s.order_id) ? `<span><b class="lbl">OID:</b> <b class="meta-val">${escape(s.order_id)}</b></span>` : ""}
+          ${(lf.dispatch_date && dispatchDate) ? `<span class="dd-span"><b class="lbl">DD:</b> <b>${escape(dispatchDate)}</b></span>` : ""}
+          ${(lf.oid && s.order_id) ? `<span class="oid-span"><b class="lbl">OID:</b> <b class="meta-val">${escape(s.order_id)}</b></span>` : ""}
         </div>
       </div>
       <div class="pay-wrap">
@@ -325,11 +325,14 @@ export function buildLabelHtml(
   .brand-logo-wide   { width: 100%; max-width: 100%; height: auto; max-height: 12mm;
     object-fit: contain; display: block; flex-shrink: 0; }
   .brand-meta { display: flex; flex-direction: row; justify-content: flex-start;
-    align-items: center; gap: 2mm 3mm; font-size: 8pt; color: #1F2937;
-    flex-wrap: nowrap; width: 100%; overflow: hidden; }
+    align-items: center; gap: 1mm 3mm; font-size: 7.5pt; color: #1F2937;
+    flex-wrap: nowrap; width: 100%; overflow: hidden; line-height: 1.15;
+    margin-top: 0.5mm; }
   .brand-meta span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-    min-width: 0; }
-  .brand-meta .meta-val { font-weight: 900; color: #0A0A0A; font-size: 9pt; }
+    min-width: 0; flex: 0 1 auto; }
+  .brand-meta span.oid-span { flex: 1 1 auto; }
+  .brand-meta .lbl { color: #6B7280; font-weight: 700; }
+  .brand-meta .meta-val { font-weight: 900; color: #0A0A0A; font-size: 8pt; }
   .brand-name { font-size: 17pt; font-weight: 900; letter-spacing: -0.2px;
     line-height: 1.1; word-break: break-word; max-width: 100%; }
   .pay-wrap { text-align: right; flex: 0 0 auto; min-width: 30mm; }
