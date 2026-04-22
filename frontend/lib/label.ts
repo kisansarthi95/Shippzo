@@ -139,21 +139,28 @@ function singleLabel(s: Shipment, sender: SenderAddress, opts: LabelOptions) {
        </div>`
     : "";
 
-  // Compact sender "FROM" line (goes into footer area, above barcode)
-  const senderFooterLine = (() => {
+  // Compact sender "FROM" block (footer area, above barcode).
+  // Structure:
+  //   Line 1: From: [BrandName]            (bigger, bolder)
+  //   Line 2: [tagline]                    (italic, muted, below name) — if set
+  //   Line 3: address · 📞 phone           (small, muted)
+  const senderFooterBlock = (() => {
     const addr = [
       sender.address_line1,
       sender.address_line2,
       [sender.city, sender.state, sender.pincode].filter(Boolean).join(", "),
     ].filter(Boolean).join(", ");
-    const parts = [
-      `<b>${escape(sender.name || "Sender")}</b>`,
-      escape(addr),
-    ];
+    const tail: string[] = [];
+    if (addr) tail.push(escape(addr));
     if (opts.showSenderContact && sender.phone) {
-      parts.push(`📞 <b>${escape(sender.phone)}</b>`);
+      tail.push(`📞 <b>${escape(sender.phone)}</b>`);
     }
-    return parts.filter(Boolean).join(" · ");
+    const tagline = (opts.shipmentTagline || "").trim();
+    return `
+      <div class="sender-name-line">From: <b class="sender-brand">${escape(sender.name || "Sender")}</b></div>
+      ${tagline ? `<div class="sender-tagline">${escape(tagline)}</div>` : ""}
+      ${tail.length ? `<div class="sender-addr">${tail.join(" · ")}</div>` : ""}
+    `;
   })();
 
   return `
@@ -186,11 +193,13 @@ function singleLabel(s: Shipment, sender: SenderAddress, opts: LabelOptions) {
         })()}
         ${(lf.phone && s.customer_phone) ? `<div class="blk-contact">📞 <b>${escape(s.customer_phone)}</b></div>` : ""}
         ${(() => {
+          // Per-order shipment notes — below customer phone.
+          // Only shows when the user explicitly filled the "Shipment Notes" field
+          // in the Add Shipment form. Brand tagline is handled separately in the
+          // sender footer block (not here).
           if (!lf.shipment_notes) return "";
           const perOrder = ((s as any).shipment_notes || "").trim();
-          const tagline = (opts.shipmentTagline || "").trim();
-          const text = perOrder || tagline;
-          return text ? `<div class="blk-notes">${escape(text)}</div>` : "";
+          return perOrder ? `<div class="blk-notes">${escape(perOrder)}</div>` : "";
         })()}
       </div>
 
@@ -204,7 +213,7 @@ function singleLabel(s: Shipment, sender: SenderAddress, opts: LabelOptions) {
 
     <!-- BOTTOM (fixed height, barcode never cut) -->
     <div class="footer">
-      <div class="sender-line">From: ${senderFooterLine}</div>
+      <div class="sender-block">${senderFooterBlock}</div>
       <div class="track-wrap">
         <div class="track-id">${escape(s.tracking_id)}</div>
         <div class="barcode-wrap">${bcSvg}</div>
@@ -360,6 +369,16 @@ export function buildLabelHtml(
   .sender-line { font-size: 8pt; color: #4B5563; line-height: 1.3;
     word-break: break-word; }
   .sender-line b { color: #1F2937; }
+  /* --- Multi-line sender block (new) --- */
+  .sender-block { margin-bottom: 1mm; }
+  .sender-name-line { font-size: 9pt; color: #4B5563; line-height: 1.2; }
+  .sender-name-line .sender-brand { font-size: 12.5pt; color: #0A0A0A; font-weight: 900;
+    letter-spacing: 0.2px; }
+  .sender-tagline { font-size: 9pt; color: #334155; font-style: italic; font-weight: 600;
+    margin-top: 0.8mm; letter-spacing: 0.2px; }
+  .sender-addr { font-size: 7.8pt; color: #6B7280; line-height: 1.3; margin-top: 1mm;
+    word-break: break-word; }
+  .sender-addr b { color: #1F2937; }
   .track-wrap { text-align: center; }
   .track-id { font-family: 'Courier New', monospace; font-size: 14pt; font-weight: 900;
     letter-spacing: 2.5px; margin-bottom: 1.5mm; }

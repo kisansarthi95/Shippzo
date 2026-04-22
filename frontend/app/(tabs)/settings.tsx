@@ -581,17 +581,17 @@ export default function SettingsScreen() {
               Toggle which optional fields appear on the printed label.
               Core fields (Name, Address, Barcode, PAID/COD) always show.
             </Text>
-            {/* Default Tagline (shown in place of Shipment Notes when per-order notes empty) */}
+            {/* Brand Tagline (prints under the sender brand name in the label footer) */}
             <View style={{ marginBottom: 6 }}>
               <Text style={styles.hint}>
-                Default Tagline (shown on label when "Shipment Notes" toggle is ON and a
-                shipment has no custom note — e.g. "Har Pal Prakruti ke Sang"):
+                Brand Tagline — prints once on every label, under your brand name in the
+                "From" footer area (e.g. "Har Pal Prakruti Ke Sang"). Set once, applies to all.
               </Text>
               <TextInput
                 testID="shipment-tagline-input"
                 value={shipmentTagline}
                 onChangeText={setShipmentTagline}
-                placeholder="e.g. Har Pal Prakruti ke Sang"
+                placeholder="e.g. Har Pal Prakruti Ke Sang"
                 placeholderTextColor="#9CA3AF"
                 style={[styles.input, { marginBottom: 6 }]}
               />

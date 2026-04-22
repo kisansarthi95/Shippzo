@@ -294,9 +294,9 @@ export default function LabelScreen() {
                 📞 {shipment.customer_phone}
               </Text>
             )}
-            {!!(((shipment as any).shipment_notes || shipmentTagline).trim()) && labelFields?.shipment_notes && (
+            {!!(shipment as any).shipment_notes && labelFields?.shipment_notes && (
               <Text style={styles.notesLine} numberOfLines={2}>
-                {((shipment as any).shipment_notes || shipmentTagline).trim()}
+                {(shipment as any).shipment_notes}
               </Text>
             )}
           </View>
@@ -335,15 +335,26 @@ export default function LabelScreen() {
             );
           })()}
 
-          {/* FOOTER (fixed) — sender thin line + tracking id + barcode, NEVER cut */}
+          {/* FOOTER (fixed) — sender brand block + tracking id + barcode, NEVER cut */}
           <View style={styles.footerBlock}>
-            <Text style={styles.senderLine} numberOfLines={2}>
-              From: <Text style={{ fontWeight: "800" }}>{sender.name || "Sender"}</Text>
-              {sender.address_line1 ? ` · ${sender.address_line1}` : ""}
-              {sender.city ? `, ${sender.city}` : ""}
-              {sender.pincode ? ` ${sender.pincode}` : ""}
-              {showContact && sender.phone ? ` · 📞 ${sender.phone}` : ""}
-            </Text>
+            <View style={{ alignSelf: "stretch", marginBottom: 4 }}>
+              <Text style={styles.senderNameLine} numberOfLines={1}>
+                From: <Text style={styles.senderBrand}>{sender.name || "Sender"}</Text>
+              </Text>
+              {!!shipmentTagline && (
+                <Text style={styles.senderTagline} numberOfLines={1}>
+                  {shipmentTagline}
+                </Text>
+              )}
+              <Text style={styles.senderAddr} numberOfLines={2}>
+                {[
+                  sender.address_line1,
+                  sender.address_line2,
+                  [sender.city, sender.state, sender.pincode].filter(Boolean).join(", "),
+                ].filter(Boolean).join(", ")}
+                {showContact && sender.phone ? ` · 📞 ${sender.phone}` : ""}
+              </Text>
+            </View>
             <Text style={styles.trackId}>{shipment.tracking_id}</Text>
             <View style={{ width: "100%", paddingHorizontal: 8, alignSelf: "center" }}>
               <BarcodePreview value={shipment.tracking_id} height={46} />
@@ -629,6 +640,31 @@ const styles = StyleSheet.create({
     color: "#4B5563",
     lineHeight: 14,
     marginBottom: 8,
+  },
+  senderNameLine: {
+    fontSize: 11,
+    color: "#4B5563",
+    lineHeight: 14,
+  },
+  senderBrand: {
+    fontSize: 15,
+    fontWeight: "900",
+    color: "#0A0A0A",
+    letterSpacing: 0.2,
+  },
+  senderTagline: {
+    fontSize: 11,
+    color: "#334155",
+    fontStyle: "italic",
+    fontWeight: "600",
+    marginTop: 1,
+    letterSpacing: 0.2,
+  },
+  senderAddr: {
+    fontSize: 10,
+    color: "#6B7280",
+    lineHeight: 13,
+    marginTop: 3,
   },
   trackBlock: {
     marginTop: 10,
