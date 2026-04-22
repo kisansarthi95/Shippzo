@@ -12,7 +12,9 @@
       "supportsTablet": true,
       "infoPlist": {
         "NSCameraUsageDescription": "Scan courier tracking barcodes quickly",
-        "LSApplicationQueriesSchemes": ["chatgpt"]
+        "LSApplicationQueriesSchemes": [
+          "chatgpt"
+        ]
       }
     },
     "android": {
@@ -21,7 +23,9 @@
         "backgroundColor": "#FF5A00"
       },
       "edgeToEdgeEnabled": true,
-      "permissions": ["android.permission.CAMERA"]
+      "permissions": [
+        "android.permission.CAMERA"
+      ]
     },
     "web": {
       "bundler": "metro",
@@ -44,7 +48,8 @@
           "resizeMode": "contain",
           "backgroundColor": "#FFFFFF"
         }
-      ]
+      ],
+      "@react-native-community/datetimepicker"
     ],
     "experiments": {
       "typedRoutes": true

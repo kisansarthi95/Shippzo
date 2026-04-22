@@ -15,6 +15,14 @@ from typing import List, Optional, Dict, Any
 import uuid
 from datetime import datetime, timezone
 
+# Google Sheets writer (Service Account)
+try:
+    from sheet_writer import append_order_row as sheet_append_order_row
+    from sheet_writer import probe_connection as sheet_probe_connection
+except Exception as _sheet_import_err:  # pragma: no cover
+    sheet_append_order_row = None  # type: ignore
+    sheet_probe_connection = None  # type: ignore
+
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -973,9 +981,57 @@ async def smart_paste_parse(payload: SmartPasteRequest):
 
 @api_router.post("/smart-paste", response_model=PendingOrder)
 async def smart_paste_create(payload: SmartPasteRequest):
-    """Parse text and create a PendingOrder."""
+    """
+    Parse text → write to Google Sheet (Master) → save PendingOrder to Mongo.
+
+    RULE: If the Google Sheet write fails, we DO NOT save to Mongo and
+    return 502 so the client never sees a 'ghost' order that isn't in the
+    source-of-truth sheet.
+    """
     parsed = parse_structured_paste(payload.text or "")
     fields = parsed["fields"]
+
+    # ---- 1) Write to Google Master Sheet first (atomic) ----
+    sheet_meta: Dict[str, Any] = {"ok": False}
+    if sheet_append_order_row is not None:
+        try:
+            addr = " ".join(
+                [fields.get("address_line1", ""), fields.get("address_line2", "")]
+            ).strip()
+            items_val = fields.get("items") or []
+            item_type_text = (
+                ", ".join(items_val) if isinstance(items_val, list) else str(items_val)
+            )
+            sheet_meta = sheet_append_order_row(
+                user_id="",  # single-user mode; Phase 4 will inject real ID
+                order_id=fields.get("order_id", "") or "",
+                name=fields.get("customer_name", "") or "",
+                phone=fields.get("customer_phone", "") or "",
+                address=addr,
+                city=fields.get("city", "") or "",
+                state=fields.get("state", "") or "",
+                pincode=fields.get("pincode", "") or "",
+                item_type=item_type_text,
+                amount=fields.get("amount", "") or "",
+                payment_mode=fields.get("payment_mode", "") or "",
+                status="Pending",
+                notice="via Smart Paste",
+            )
+            logger.info(f"Sheet append OK: {sheet_meta.get('updated_range')}")
+        except Exception as e:
+            logger.exception("Google Sheet write failed")
+            raise HTTPException(
+                status_code=502,
+                detail=f"Google Sheet save failed — order not saved. Reason: {e}",
+            )
+    else:
+        # Library missing — fail loudly so the user knows (Sheet is source of truth)
+        raise HTTPException(
+            status_code=503,
+            detail="Google Sheets integration not configured on server.",
+        )
+
+    # ---- 2) Now save locally (Mongo) so the app can show the queue fast ----
     po = PendingOrder(
         source="paste",
         raw_text=(payload.text or "")[:2000],
@@ -983,8 +1039,19 @@ async def smart_paste_create(payload: SmartPasteRequest):
         warnings=parsed["warnings"],
         **{k: v for k, v in fields.items() if k in PendingOrder.model_fields},
     )
-    await db.pending_orders.insert_one(po.model_dump())
+    # Stash sheet-write metadata on the model's raw_text for debugging if needed
+    doc = po.model_dump()
+    doc["_sheet_meta"] = sheet_meta
+    await db.pending_orders.insert_one(doc)
     return po
+
+
+@api_router.get("/sheets/probe")
+async def sheets_probe():
+    """Quick debug endpoint — verifies Service Account can read the Master Sheet."""
+    if sheet_probe_connection is None:
+        return {"ok": False, "error": "gspread not installed"}
+    return sheet_probe_connection()
 
 
 @api_router.get("/orders/pending", response_model=List[PendingOrder])
