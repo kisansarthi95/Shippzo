@@ -396,15 +396,17 @@ export function buildLabelHtml(
   const gridCss =
     perPage === 4
       ? `.sheet { display: block; page-break-after: always; width: 100%; }
-         .label { height: 138mm; width: 100%; }`
+         /* A6 per label: occupies at least one full A6 page but grows onto
+            the next page if content overflows (long address / many notes). */
+         .label { min-height: 138mm; height: auto; width: 100%; }`
       : perPage === 2
       ? `.sheet { display: grid; grid-template-columns: 1fr; grid-template-rows: 1fr 1fr; page-break-after: always; gap: 2mm; width: 100%; }
-         .label { height: 140mm; }`
+         .label { min-height: 140mm; height: 140mm; }`
       : perPage === 1
       ? `.sheet { display: block; page-break-after: always; width: 100%; }
-         .label { height: 260mm; }`
+         .label { min-height: 260mm; height: auto; }`
       : `.sheet { display: block; page-break-after: always; width: 100mm; }
-         .label { height: 145mm; width: 100mm; }`;
+         .label { min-height: 145mm; height: auto; width: 100mm; }`;
 
   const pageCss =
     perPage === "thermal"
@@ -440,22 +442,45 @@ export function buildLabelHtml(
   ${gridCss}
   /* Label is a 3-row grid: fixed header, flexible middle, fixed footer */
   .label { border: 2px solid #0A0A0A; padding: 5mm;
-    break-inside: avoid; background: #fff; border-radius: 3mm;
-    display: grid; grid-template-rows: auto 1fr auto; gap: 3mm; overflow: hidden;
-    width: 100%; max-width: 100%; box-sizing: border-box; }
+    background: #fff; border-radius: 3mm;
+    display: grid; grid-template-rows: auto 1fr auto; gap: 3mm;
+    width: 100%; max-width: 100%; box-sizing: border-box;
+    /* Multi-page overflow:
+       - Normal (content fits): label occupies exactly min-height on one page.
+       - Overflow (long address + many custom fields): label grows, content
+         automatically continues onto the next PDF page.
+       We avoid breaking INSIDE tight blocks (brand header, barcode strip)
+       via break-inside:avoid on the label (whole label block) AND
+       on footer-col / hdr-col / recv-block. */
+    min-height: 138mm;
+    break-inside: auto;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+    color-adjust: exact; }
   /* Optional stacking wrappers for header/footer so custom fields can layer above/below */
-  .hdr-col { display: flex; flex-direction: column; gap: 1.5mm; min-width: 0; }
-  .footer-col { display: flex; flex-direction: column; gap: 1.5mm; min-width: 0; }
+  .hdr-col { display: flex; flex-direction: column; gap: 1.5mm; min-width: 0;
+    break-inside: avoid; }
+  .footer-col { display: flex; flex-direction: column; gap: 1.5mm; min-width: 0;
+    break-inside: avoid; }
 
   /* ---- TOP (fixed, identical regardless of perPage) ---- */
   .hdr { display: flex; justify-content: space-between; align-items: flex-start;
     border-bottom: 2px solid #0A0A0A; padding-bottom: 3mm; gap: 4mm; }
   .brand-wrap { display: flex; flex-direction: column; align-items: flex-start; gap: 1.5mm;
-    flex: 1 1 auto; min-width: 0; overflow: hidden; }
-  .brand-logo-square { width: 14mm; height: 14mm; max-width: 14mm; max-height: 14mm;
-    object-fit: contain; display: block; flex-shrink: 0; }
-  .brand-logo-wide   { width: 100%; max-width: 100%; height: auto; max-height: 12mm;
-    object-fit: contain; display: block; flex-shrink: 0; }
+    flex: 1 1 auto; min-width: 0; }
+  /* Logo rendering — optimize for crisp PDF print:
+     - Larger native box so any image ≥100×100 renders sharp on A6 (148mm tall)
+     - image-rendering: crisp-edges keeps tiny details crisp instead of blurry
+     - No width/height stretching — we use max-* and let object-fit preserve
+       the native aspect ratio without upscaling pixels */
+  .brand-logo-square { width: 20mm; height: 20mm; max-width: 20mm; max-height: 20mm;
+    object-fit: contain; display: block; flex-shrink: 0;
+    image-rendering: -webkit-optimize-contrast;
+    image-rendering: crisp-edges; }
+  .brand-logo-wide   { width: 100%; max-width: 100%; height: auto; max-height: 16mm;
+    object-fit: contain; display: block; flex-shrink: 0;
+    image-rendering: -webkit-optimize-contrast;
+    image-rendering: crisp-edges; }
   .brand-meta { display: flex; flex-direction: row; justify-content: flex-start;
     align-items: center; gap: 1mm 3mm; font-size: 7.5pt; color: #1F2937;
     flex-wrap: nowrap; width: 100%; overflow: hidden; line-height: 1.15;
@@ -514,9 +539,14 @@ export function buildLabelHtml(
   .cf-notes-wrap .cf-row { font-size: 9pt; }
 
   /* ---- MIDDLE (flex) ---- */
-  .mid { display: flex; flex-direction: column; gap: 3mm; overflow: hidden; min-height: 0; }
+  /* .mid gets a *minimum* height (so small labels still look fine on A6)
+     but removes overflow:hidden — content that exceeds the A6 page will
+     naturally flow onto the next PDF page thanks to the browser built-in
+     pagination, keeping the label fully readable across multiple pages. */
+  .mid { display: flex; flex-direction: column; gap: 3mm; min-height: 0; }
   .recv-block { border: 1.5px solid #0A0A0A; border-radius: 3mm;
-    padding: 3mm 3.5mm; background: #F4F5F7; flex: 1; overflow: hidden; }
+    padding: 3mm 3.5mm; background: #F4F5F7;
+    break-inside: avoid; }
   .blk-title { font-size: 8pt; font-weight: 800; color: #4B5563;
     letter-spacing: 2px; margin-bottom: 2mm; }
   .blk-name { font-size: 14pt; font-weight: 900; margin-bottom: 2mm; line-height: 1.15; }
