@@ -157,6 +157,12 @@ export default function AddShipment() {
     }, [])
   );
 
+  // Raw sheet row captured from prefill — used to auto-fill per-shipment
+  // custom fields once both the prefill AND the customFields definitions
+  // from Settings are available. Stored in state to handle the race where
+  // customFields may load AFTER params.prefill arrives.
+  const [prefillRaw, setPrefillRaw] = useState<Record<string, string> | null>(null);
+
   useEffect(() => {
     if (params.prefill) {
       try {
@@ -193,11 +199,41 @@ export default function AddShipment() {
           }
         }
         if (o.pending_order_id) setPendingOrderId(String(o.pending_order_id));
+        // Stash raw row for per-shipment custom field auto-fill (runs in
+        // separate effect once customFields load from Settings).
+        if (o.raw && typeof o.raw === "object") {
+          setPrefillRaw(o.raw as Record<string, string>);
+        }
       } catch {
         // ignore
       }
     }
   }, [params.prefill]);
+
+  // Auto-fill per-shipment custom fields from sheet row — runs when either
+  // the prefillRaw (from orders.tsx ship-now) OR customFields (from Settings)
+  // becomes available, so the two-way race is handled cleanly.
+  useEffect(() => {
+    if (!prefillRaw || !customFields || customFields.length === 0) return;
+    // Normalise raw headers once for forgiving match.
+    const rawNorm: Record<string, string> = {};
+    for (const k of Object.keys(prefillRaw)) {
+      const norm = k.trim().toLowerCase().replace(/[\s_\-]+/g, " ");
+      rawNorm[norm] = String((prefillRaw as any)[k] ?? "");
+    }
+    const add: Record<string, string> = {};
+    for (const cf of customFields) {
+      if (!cf?.enabled || cf.source !== "shipment") continue;
+      const col = String(cf.sheet_column || "").trim();
+      if (!col) continue;
+      const norm = col.toLowerCase().replace(/[\s_\-]+/g, " ");
+      const v = (rawNorm[norm] || "").trim();
+      if (v) add[cf.id] = v;
+    }
+    if (Object.keys(add).length > 0) {
+      setCustomValues((prev) => ({ ...prev, ...add }));
+    }
+  }, [prefillRaw, customFields]);
 
   const openImport = useCallback(async () => {
     if (!sheetConnected) {
@@ -244,6 +280,36 @@ export default function AddShipment() {
       .filter(Boolean);
     setItemsText(items.join("\n"));
     setSheetRowKey(o.row_key);
+
+    // ---- Auto-fill per-shipment custom fields from Google Sheet columns ----
+    // Each custom field with source="shipment" and a non-empty sheet_column
+    // will look up the value from o.raw using a forgiving match (trim +
+    // case-insensitive on both header name and underscore/space variants).
+    const raw = o.raw || {};
+    // Pre-normalise raw keys once for O(1) lookup.
+    const rawNorm: Record<string, string> = {};
+    for (const k of Object.keys(raw)) {
+      const norm = k.trim().toLowerCase().replace(/[\s_\-]+/g, " ");
+      rawNorm[norm] = String(raw[k] ?? "");
+    }
+    const nextCv: Record<string, string> = {};
+    let filledCount = 0;
+    for (const cf of customFields) {
+      if (!cf?.enabled) continue;
+      if (cf.source !== "shipment") continue;
+      const col = String(cf.sheet_column || "").trim();
+      if (!col) continue;
+      const norm = col.toLowerCase().replace(/[\s_\-]+/g, " ");
+      const val = (rawNorm[norm] || "").trim();
+      if (val) {
+        nextCv[cf.id] = val;
+        filledCount += 1;
+      }
+    }
+    if (filledCount > 0) {
+      setCustomValues((prev) => ({ ...prev, ...nextCv }));
+    }
+
     setShowImport(false);
   };
 

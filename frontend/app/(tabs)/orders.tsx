@@ -140,7 +140,9 @@ export default function OrdersFromSheet() {
   const pendingCount = orders.filter((o) => !o.already_shipped).length;
 
   const shipNow = (o: SheetOrder) => {
-    // Navigate to Add with prefilled fields via URL params (stringified)
+    // Navigate to Add with prefilled fields via URL params (stringified).
+    // Include the full `raw` row so Add can auto-fill any per-shipment
+    // custom fields that are mapped to Google Sheet columns.
     router.push({
       pathname: "/(tabs)/add",
       params: {
@@ -155,6 +157,7 @@ export default function OrdersFromSheet() {
           item: o.item,
           amount: o.amount,
           row_key: o.row_key,
+          raw: o.raw || {},
         }),
       },
     });
