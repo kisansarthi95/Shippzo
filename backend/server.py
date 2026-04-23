@@ -21,11 +21,13 @@ try:
     from sheet_writer import probe_connection as sheet_probe_connection
     from sheet_writer import mark_row_deleted as sheet_mark_row_deleted
     from sheet_writer import parse_row_from_updated_range as sheet_parse_row_from_updated_range
+    from sheet_writer import update_row_status as sheet_update_row_status
 except Exception as _sheet_import_err:  # pragma: no cover
     sheet_append_order_row = None  # type: ignore
     sheet_probe_connection = None  # type: ignore
     sheet_mark_row_deleted = None  # type: ignore
     sheet_parse_row_from_updated_range = None  # type: ignore
+    sheet_update_row_status = None  # type: ignore
 
 
 ROOT_DIR = Path(__file__).parent
@@ -858,11 +860,43 @@ async def update_shipment(shipment_id: str, payload: ShipmentUpdate):
         update["cod_amount"] = float(update["amount"]) if update.get("payment_mode", "") == "COD" else 0.0
     if not update:
         raise HTTPException(status_code=400, detail="No fields to update")
+
+    # ---- Two-Way Status Sync: detect status transitions BEFORE mutation
+    # so we can write the new value to the Master Sheet row if linked.
+    new_status = update.get("status")
+    prev_doc = None
+    if new_status is not None:
+        prev_doc = await db.shipments.find_one({"id": shipment_id}, {"_id": 0})
+
     res = await db.shipments.find_one_and_update(
         {"id": shipment_id}, {"$set": update}, return_document=True
     )
     if not res:
         raise HTTPException(status_code=404, detail="Shipment not found")
+
+    # Best-effort write-back to Google Sheets. Never blocks the local
+    # update — logs and moves on so the app stays fast/available.
+    if (
+        new_status is not None
+        and prev_doc is not None
+        and (prev_doc.get("status") or "") != new_status
+        and prev_doc.get("sheet_row_num")
+        and sheet_update_row_status is not None
+    ):
+        try:
+            tracking = prev_doc.get("tracking_id") or res.get("tracking_id") or ""
+            extra = f"Tracking: {tracking}" if tracking else None
+            sheet_update_row_status(
+                int(prev_doc["sheet_row_num"]),
+                new_status,
+                extra_notice=extra,
+            )
+            logger.info(
+                f"Sheet status sync OK: row={prev_doc['sheet_row_num']} → {new_status}"
+            )
+        except Exception:
+            logger.exception("Sheet status sync failed (non-fatal)")
+
     return Shipment(**strip_id(res))
 
 
@@ -1315,6 +1349,24 @@ async def ship_pending_order(order_id: str, payload: ShipOrderRequest):
             "tracking_id": tracking_id,
         }},
     )
+
+    # ---- Two-Way Status Sync: bump the Master Sheet row from
+    # "Pending" to "Dispatched" and stamp the tracking ID into Notice.
+    # Best-effort: sheet failures are logged but never block the flow.
+    sheet_row = order.get("sheet_row_num")
+    if sheet_row and sheet_update_row_status is not None:
+        try:
+            sheet_update_row_status(
+                int(sheet_row),
+                "Dispatched",
+                extra_notice=f"Tracking: {tracking_id} · {courier.get('name','')}",
+            )
+            logger.info(
+                f"Sheet status sync OK: row={sheet_row} Pending → Dispatched ({tracking_id})"
+            )
+        except Exception:
+            logger.exception("Sheet status sync failed on ship (non-fatal)")
+
     ship_doc.pop("_id", None)
     return ship_doc
 

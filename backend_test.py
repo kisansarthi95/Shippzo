@@ -1,387 +1,258 @@
 """
-Backend test — Google Sheets Soft-Delete (Tombstone) feature
-===========================================================
+Backend test for Two-Way Status Sync feature.
 
-Scope (per /app/test_result.md, 2026-04-23 iteration):
-  1. POST /api/smart-paste → PendingOrder.sheet_row_num is a positive int
-     captured from the Google Sheets updatedRange.
-  2. DELETE /api/orders/pending/{id} returns
-     {"ok": true, "sheet": {"attempted": true, "ok": true, ...}}.
-  3. After POST /api/orders/pending/{id}/ship, the returned Shipment
-     carries the same sheet_row_num as the pending order.
-  4. DELETE /api/shipments/{id} on that shipment → soft-delete attempted+ok.
-  5. DELETE /api/shipments/{id} on a legacy shipment without sheet_row_num
-     returns {"ok": true, "sheet": {"attempted": false}} and deletes locally.
-  6. GET /api/sheets/probe still succeeds afterwards (no regression).
+Scenarios:
+1. POST /api/smart-paste → verify sheet_row_num is a positive int > 1
+2. POST /api/orders/pending/{id}/ship → verify Shipment has same sheet_row_num,
+   non-empty tracking_id, status="Pending"
+3. PUT /api/shipments/{id} {"status":"Delivered"} → 200, status=Delivered,
+   delivered_at non-empty ISO timestamp
+4. PUT /api/shipments/{id} {"status":"Delivered"} AGAIN → 200, no-op for sheet
+5. Audit backend logs for expected sync messages
+6. DELETE /api/shipments/{id} → {"ok":true,"sheet":{"attempted":true,"ok":true,...}}
+7. Regression: create a legacy shipment (no sheet_row_num) → DELETE returns
+   {"ok":true,"sheet":{"attempted":false}}
 """
 
-from __future__ import annotations
-
 import json
+import os
 import sys
 import time
 from pathlib import Path
 
 import requests
+from dotenv import load_dotenv
 
-# --- Resolve public base URL from frontend/.env ------------------------------
-ENV_PATH = Path("/app/frontend/.env")
-BASE_URL = None
-if ENV_PATH.exists():
-    for line in ENV_PATH.read_text().splitlines():
-        line = line.strip()
-        if line.startswith("EXPO_PUBLIC_BACKEND_URL"):
-            _, v = line.split("=", 1)
-            BASE_URL = v.strip().strip('"').strip("'")
-            break
+load_dotenv(Path(__file__).parent / "frontend" / ".env")
 
-if not BASE_URL:
-    print("FATAL: EXPO_PUBLIC_BACKEND_URL not found in /app/frontend/.env",
-          file=sys.stderr)
-    sys.exit(2)
+BASE = (
+    os.getenv("REACT_APP_BACKEND_URL")
+    or os.getenv("EXPO_PUBLIC_BACKEND_URL")
+    or "https://logistics-hub-740.preview.emergentagent.com"
+).rstrip("/")
+API = f"{BASE}/api"
 
-API = BASE_URL.rstrip("/") + "/api"
-print(f"Testing against: {API}")
-print("=" * 72)
-
-PASS: list[str] = []
-FAIL: list[tuple[str, str]] = []
-created_pending_ids: list[str] = []
-created_shipment_ids: list[str] = []
-created_legacy_shipment_id: str | None = None
+PASS = 0
+FAIL = 0
+FAILURES = []
 
 
-def ok(name: str, detail: str = "") -> None:
-    PASS.append(name)
-    print(f"  PASS  {name}" + (f" — {detail}" if detail else ""))
-
-
-def fail(name: str, detail: str) -> None:
-    FAIL.append((name, detail))
-    print(f"  FAIL  {name} — {detail}")
-
-
-def pretty(obj) -> str:
-    try:
-        return json.dumps(obj, indent=2, ensure_ascii=False, default=str)
-    except Exception:
-        return repr(obj)
-
-
-# --- Step 0 — probe ----------------------------------------------------------
-print("\n[Step 0] GET /api/sheets/probe (baseline)")
-try:
-    r = requests.get(f"{API}/sheets/probe", timeout=30)
-    probe_baseline = r.json()
-    print("  response:", pretty(probe_baseline))
-    if r.status_code == 200 and probe_baseline.get("ok") is True:
-        ok("baseline sheets/probe", f"tab={probe_baseline.get('tab')}")
+def assert_true(cond, msg, detail=None):
+    global PASS, FAIL
+    if cond:
+        PASS += 1
+        print(f"  PASS: {msg}")
     else:
-        fail("baseline sheets/probe",
-             f"status={r.status_code} body={probe_baseline}")
-except Exception as e:
-    fail("baseline sheets/probe", f"exception: {e}")
-    sys.exit(1)
+        FAIL += 1
+        FAILURES.append(f"{msg} | detail={detail}")
+        print(f"  FAIL: {msg} | detail={detail}")
 
-# --- Step 1 — create a pending order via smart-paste -------------------------
-print("\n[Step 1] POST /api/smart-paste (Soft Delete Test #1)")
-payload_1 = {
-    "text": (
-        "Name: Soft Delete Test\n"
-        "Phone: 9998887770\n"
-        "Address: 5 MG Road\n"
-        "City: Surat\n"
-        "State: Gujarat\n"
-        "Pincode: 395001\n"
-        "Item: TestItem\n"
-        "Amount: 100\n"
-        "Payment: COD"
-    )
-}
-pending_id_1 = None
-pending_row_1 = None
-try:
-    r = requests.post(f"{API}/smart-paste", json=payload_1, timeout=45)
-    print(f"  status: {r.status_code}")
-    body = r.json()
-    print("  body:", pretty(body))
-    if r.status_code != 200:
-        fail("smart-paste #1 create", f"status={r.status_code}")
-    else:
-        pending_id_1 = body.get("id")
-        pending_row_1 = body.get("sheet_row_num")
-        if not pending_id_1:
-            fail("smart-paste #1 create", "missing id")
-        else:
-            created_pending_ids.append(pending_id_1)
-            ok("smart-paste #1 returns PendingOrder", f"id={pending_id_1}")
-        if isinstance(pending_row_1, int) and pending_row_1 > 1:
-            ok("smart-paste #1 sheet_row_num", f"row={pending_row_1}")
-        else:
-            fail("smart-paste #1 sheet_row_num",
-                 f"expected positive int > 1, got {pending_row_1!r}")
-        if body.get("customer_name", "").lower().startswith("soft delete"):
-            ok("smart-paste #1 parsed name", body.get("customer_name"))
-        else:
-            fail("smart-paste #1 parsed name",
-                 f"got {body.get('customer_name')!r}")
-        if body.get("customer_phone") == "9998887770":
-            ok("smart-paste #1 parsed phone")
-        else:
-            fail("smart-paste #1 parsed phone",
-                 f"got {body.get('customer_phone')!r}")
-except Exception as e:
-    fail("smart-paste #1 create", f"exception: {e}")
 
-# --- Step 2 — DELETE pending order -------------------------------------------
-print("\n[Step 2] DELETE /api/orders/pending/{id}")
-if not pending_id_1:
-    fail("pending DELETE", "no pending id from step 1")
-else:
+def req(method, path, **kwargs):
+    url = f"{API}{path}"
+    r = requests.request(method, url, timeout=30, **kwargs)
+    return r
+
+
+def main():
+    print(f"Testing against: {API}")
+    print("=" * 70)
+
+    print("\n[0] Sheet probe (pre-flight)")
+    r = req("GET", "/sheets/probe")
+    print(f"  GET /sheets/probe -> {r.status_code}")
     try:
-        r = requests.delete(f"{API}/orders/pending/{pending_id_1}", timeout=60)
-        print(f"  status: {r.status_code}")
-        body = r.json()
-        print("  body:", pretty(body))
-        if r.status_code != 200:
-            fail("pending DELETE status", f"status={r.status_code}")
-        else:
-            ok("pending DELETE 200")
-        if body.get("ok") is True:
-            ok("pending DELETE ok=true")
-        else:
-            fail("pending DELETE ok", f"ok={body.get('ok')!r}")
-        sheet = body.get("sheet") or {}
-        if sheet.get("attempted") is True and sheet.get("ok") is True:
-            ok("pending DELETE sheet.attempted+ok",
-               f"row={sheet.get('row')} tab={sheet.get('tab')}")
-            if pending_id_1 in created_pending_ids:
-                created_pending_ids.remove(pending_id_1)
-        else:
-            fail("pending DELETE sheet",
-                 f"attempted/ok mismatch: sheet={pretty(sheet)}")
-        g = requests.get(f"{API}/orders/pending/{pending_id_1}", timeout=15)
-        if g.status_code == 404:
-            ok("pending DELETE local purge (404)")
-        else:
-            fail("pending DELETE local purge",
-                 f"expected 404, got {g.status_code}")
+        probe = r.json()
+        print(f"  probe: {probe}")
+        assert_true(r.status_code == 200 and probe.get("ok"),
+                    "Sheet probe ok", probe)
     except Exception as e:
-        fail("pending DELETE", f"exception: {e}")
+        assert_true(False, "Sheet probe parse", str(e))
+        return
 
-# --- Step 3 — smart-paste again, ship, delete shipment -----------------------
-print("\n[Step 3] Smart-paste #2 → ship → delete shipment")
-payload_2 = {
-    "text": (
-        "Name: Soft Delete Ship Flow\n"
-        "Phone: 9112233445\n"
-        "Address: 27 Laxmi Nagar\n"
-        "City: Ahmedabad\n"
-        "State: Gujarat\n"
-        "Pincode: 380015\n"
-        "Item: Cotton Kurta\n"
-        "Amount: 550\n"
-        "Payment: Prepaid"
-    )
-}
-pending_id_2 = None
-pending_row_2 = None
-try:
-    r = requests.post(f"{API}/smart-paste", json=payload_2, timeout=45)
-    print(f"  smart-paste#2 status: {r.status_code}")
-    body = r.json()
-    if r.status_code == 200 and body.get("id"):
-        pending_id_2 = body["id"]
-        pending_row_2 = body.get("sheet_row_num")
-        created_pending_ids.append(pending_id_2)
-        print(f"  pending_id_2={pending_id_2} sheet_row_num={pending_row_2}")
-        if isinstance(pending_row_2, int) and pending_row_2 > 1:
-            ok("smart-paste #2 sheet_row_num", f"row={pending_row_2}")
-        else:
-            fail("smart-paste #2 sheet_row_num", f"got {pending_row_2!r}")
-    else:
-        fail("smart-paste #2 create", f"status={r.status_code} body={body}")
-except Exception as e:
-    fail("smart-paste #2 create", f"exception: {e}")
-
-courier_id = None
-try:
-    r = requests.get(f"{API}/couriers", timeout=30)
-    if r.status_code == 200:
-        couriers = r.json()
-        if couriers:
-            courier_id = couriers[0]["id"]
-            print(f"  using courier_id={courier_id} ({couriers[0].get('name')})")
-        else:
-            fail("ship flow — couriers list", "empty list")
-    else:
-        fail("ship flow — couriers list", f"status={r.status_code}")
-except Exception as e:
-    fail("ship flow — couriers list", f"exception: {e}")
-
-ship_id = None
-ship_row = None
-if pending_id_2 and courier_id:
-    try:
-        r = requests.post(
-            f"{API}/orders/pending/{pending_id_2}/ship",
-            json={"courier_id": courier_id},
-            timeout=45,
+    # ----- Step 1: Smart Paste -----
+    print("\n[1] POST /smart-paste")
+    payload = {
+        "text": (
+            "Name: Sync Test\n"
+            "Phone: 9112223344\n"
+            "Address: 11 Test Blvd\n"
+            "City: Ahmedabad\n"
+            "State: Gujarat\n"
+            "Pincode: 380001\n"
+            "Item: Widget\n"
+            "Amount: 299\n"
+            "Payment: COD"
         )
-        print(f"  ship status: {r.status_code}")
-        body = r.json()
-        print("  ship body:", pretty(body))
-        if r.status_code == 200:
-            ship_id = body.get("id")
-            ship_row = body.get("sheet_row_num")
-            if ship_id:
-                created_shipment_ids.append(ship_id)
-            if isinstance(ship_row, int) and ship_row == pending_row_2:
-                ok("ship forwards sheet_row_num",
-                   f"pending={pending_row_2} shipment={ship_row}")
-            else:
-                fail("ship forwards sheet_row_num",
-                     f"pending={pending_row_2!r} shipment={ship_row!r}")
-        else:
-            fail("ship POST", f"status={r.status_code} body={body}")
-    except Exception as e:
-        fail("ship POST", f"exception: {e}")
+    }
+    r = req("POST", "/smart-paste", json=payload)
+    print(f"  -> {r.status_code}")
+    assert_true(r.status_code == 200, "smart-paste 200", r.text[:300])
+    if r.status_code != 200:
+        return
+    po = r.json()
+    print(f"  body: {json.dumps(po, indent=2)[:900]}")
+    pending_id = po.get("id")
+    sheet_row_num = po.get("sheet_row_num")
+    assert_true(isinstance(sheet_row_num, int) and sheet_row_num > 1,
+                "sheet_row_num is positive int > 1",
+                f"got={sheet_row_num}")
+    assert_true(po.get("customer_name") == "Sync Test", "customer_name parsed")
+    assert_true(po.get("customer_phone") == "9112223344", "phone parsed")
+    assert_true(po.get("pincode") == "380001", "pincode parsed")
+    assert_true(po.get("payment_mode") == "COD", "payment_mode parsed")
 
-if ship_id:
-    try:
-        r = requests.delete(f"{API}/shipments/{ship_id}", timeout=60)
-        print(f"  shipment DELETE status: {r.status_code}")
+    # ----- Step 2: Ship pending order -----
+    print("\n[2] POST /orders/pending/{id}/ship")
+    r = req("GET", "/couriers")
+    couriers = r.json() if r.status_code == 200 else []
+    assert_true(len(couriers) > 0, "have couriers", f"count={len(couriers)}")
+    courier_id = couriers[0]["id"]
+    courier_name = couriers[0]["name"]
+    print(f"  using courier: {courier_name} ({courier_id})")
+
+    r = req("POST", f"/orders/pending/{pending_id}/ship",
+            json={"courier_id": courier_id, "overrides": {}})
+    print(f"  -> {r.status_code}")
+    assert_true(r.status_code == 200, "ship 200", r.text[:300])
+    if r.status_code != 200:
+        return
+    ship = r.json()
+    print(f"  body: {json.dumps(ship, indent=2)[:900]}")
+    ship_id = ship.get("id")
+    assert_true(ship.get("sheet_row_num") == sheet_row_num,
+                "Shipment.sheet_row_num == PendingOrder.sheet_row_num",
+                f"ship={ship.get('sheet_row_num')} po={sheet_row_num}")
+    assert_true(bool(ship.get("tracking_id")), "tracking_id non-empty",
+                ship.get("tracking_id"))
+    assert_true(ship.get("status") == "Pending", "status=Pending",
+                ship.get("status"))
+
+    time.sleep(1.0)
+
+    # ----- Step 3: PUT to Delivered -----
+    print("\n[3] PUT /shipments/{id} status=Delivered")
+    r = req("PUT", f"/shipments/{ship_id}", json={"status": "Delivered"})
+    print(f"  -> {r.status_code}")
+    assert_true(r.status_code == 200, "PUT Delivered 200", r.text[:300])
+    delivered_at_1 = None
+    if r.status_code == 200:
         body = r.json()
-        print("  shipment DELETE body:", pretty(body))
-        if r.status_code != 200:
-            fail("shipment DELETE status", f"status={r.status_code}")
-        else:
-            ok("shipment DELETE 200")
-        if body.get("ok") is True:
-            ok("shipment DELETE ok=true")
-        else:
-            fail("shipment DELETE ok", f"ok={body.get('ok')!r}")
+        print(f"  body: {json.dumps(body, indent=2)[:700]}")
+        assert_true(body.get("status") == "Delivered",
+                    "returned status==Delivered", body.get("status"))
+        delivered_at_1 = body.get("delivered_at") or ""
+        assert_true(
+            isinstance(delivered_at_1, str)
+            and len(delivered_at_1) > 10
+            and ("T" in delivered_at_1),
+            "delivered_at non-empty ISO",
+            delivered_at_1,
+        )
+
+    time.sleep(1.0)
+
+    # ----- Step 4: PUT to Delivered AGAIN (no-op) -----
+    print("\n[4] PUT /shipments/{id} status=Delivered AGAIN (no-op)")
+    r = req("PUT", f"/shipments/{ship_id}", json={"status": "Delivered"})
+    print(f"  -> {r.status_code}")
+    assert_true(r.status_code == 200, "PUT Delivered (repeat) 200", r.text[:300])
+    if r.status_code == 200:
+        body2 = r.json()
+        assert_true(body2.get("status") == "Delivered",
+                    "status still Delivered", body2.get("status"))
+
+    # ----- Step 5: Backend log audit (best-effort) -----
+    print("\n[5] Backend log audit")
+    log_paths = [
+        "/var/log/supervisor/backend.err.log",
+        "/var/log/supervisor/backend.out.log",
+    ]
+    combined_log = ""
+    for p in log_paths:
+        try:
+            if os.path.exists(p):
+                with open(p, "r") as f:
+                    data = f.read()
+                combined_log += data[-200000:]
+        except Exception:
+            pass
+    markers = {
+        "append": "Sheet append OK:",
+        "dispatched": f"Sheet status sync OK: row={sheet_row_num} Pending → Dispatched",
+        "delivered": f"Sheet status sync OK: row={sheet_row_num} → Delivered",
+    }
+    for name, substr in markers.items():
+        found = substr in combined_log
+        print(f"  log marker [{name}] present: {found}  ({substr!r})")
+        assert_true(found, f"log marker [{name}] found",
+                    "not found in backend logs")
+
+    # ----- Step 6: DELETE shipment (soft-delete path) -----
+    print("\n[6] DELETE /shipments/{id}")
+    r = req("DELETE", f"/shipments/{ship_id}")
+    print(f"  -> {r.status_code}")
+    assert_true(r.status_code == 200, "DELETE shipment 200", r.text[:300])
+    if r.status_code == 200:
+        body = r.json()
+        print(f"  body: {json.dumps(body, indent=2)}")
+        assert_true(body.get("ok") is True, "ok=true", body)
         sheet = body.get("sheet") or {}
-        if sheet.get("attempted") is True and sheet.get("ok") is True:
-            ok("shipment DELETE sheet.attempted+ok", f"row={sheet.get('row')}")
-            if ship_id in created_shipment_ids:
-                created_shipment_ids.remove(ship_id)
-        else:
-            fail("shipment DELETE sheet",
-                 f"attempted/ok mismatch: sheet={pretty(sheet)}")
-        g = requests.get(f"{API}/shipments/{ship_id}", timeout=15)
-        if g.status_code == 404:
-            ok("shipment DELETE local purge (404)")
-        else:
-            fail("shipment DELETE local purge",
-                 f"expected 404, got {g.status_code}")
-    except Exception as e:
-        fail("shipment DELETE", f"exception: {e}")
+        assert_true(sheet.get("attempted") is True,
+                    "sheet.attempted=true", sheet)
+        assert_true(sheet.get("ok") is True, "sheet.ok=true", sheet)
+        assert_true(sheet.get("row") == sheet_row_num,
+                    f"sheet.row=={sheet_row_num}", sheet)
 
-# --- Step 4 — legacy shipment (no sheet_row_num) -----------------------------
-print("\n[Step 4] DELETE legacy shipment (no sheet_row_num) → attempted=false")
-try:
-    payload_legacy = {
-        "tracking_id": f"LEGACY-TEST-{int(time.time())}",
-        "customer_name": "Legacy Soft Delete",
-        "customer_phone": "9000011122",
-        "address_line1": "1 Legacy Street",
+    r = req("GET", f"/shipments/{ship_id}")
+    assert_true(r.status_code == 404, "shipment 404 post-delete",
+                f"status={r.status_code}")
+
+    # ----- Step 7: Regression — legacy shipment (no sheet_row_num) -----
+    print("\n[7] Regression: legacy shipment (no sheet_row_num) DELETE")
+    legacy_payload = {
+        "tracking_id": f"LEG-TEST-{int(time.time())}",
+        "courier_id": courier_id,
+        "customer_name": "Legacy Regression Test",
+        "customer_phone": "9000000001",
+        "address_line1": "1 Legacy Lane",
         "city": "Mumbai",
         "state": "Maharashtra",
         "pincode": "400001",
         "payment_mode": "Prepaid",
-        "amount": 1.0,
-        "item_description": "legacy test",
+        "amount": 10.0,
     }
-    r = requests.post(f"{API}/shipments", json=payload_legacy, timeout=30)
-    print(f"  create legacy status: {r.status_code}")
-    body = r.json()
-    if r.status_code == 200 and body.get("id"):
-        created_legacy_shipment_id = body["id"]
-        created_shipment_ids.append(created_legacy_shipment_id)
-        row = body.get("sheet_row_num")
-        if row in (None, 0):
-            ok("legacy shipment created (no sheet_row_num)")
-        else:
-            fail("legacy shipment created",
-                 f"unexpectedly has sheet_row_num={row}")
-    else:
-        fail("legacy shipment create", f"status={r.status_code} body={body}")
-except Exception as e:
-    fail("legacy shipment create", f"exception: {e}")
+    r = req("POST", "/shipments", json=legacy_payload)
+    print(f"  POST /shipments -> {r.status_code}")
+    assert_true(r.status_code == 200, "create legacy shipment 200",
+                r.text[:300])
+    if r.status_code != 200:
+        return
+    legacy = r.json()
+    legacy_id = legacy.get("id")
+    assert_true(legacy.get("sheet_row_num") in (None, 0, ""),
+                "legacy sheet_row_num missing/null",
+                legacy.get("sheet_row_num"))
 
-if created_legacy_shipment_id:
-    try:
-        r = requests.delete(
-            f"{API}/shipments/{created_legacy_shipment_id}", timeout=30
-        )
-        print(f"  legacy DELETE status: {r.status_code}")
+    r = req("DELETE", f"/shipments/{legacy_id}")
+    print(f"  DELETE /shipments/{legacy_id} -> {r.status_code}")
+    assert_true(r.status_code == 200, "DELETE legacy 200", r.text[:300])
+    if r.status_code == 200:
         body = r.json()
-        print("  legacy DELETE body:", pretty(body))
-        if r.status_code != 200:
-            fail("legacy shipment DELETE status",
-                 f"status={r.status_code}")
-        else:
-            ok("legacy shipment DELETE 200")
-        if body.get("ok") is True:
-            ok("legacy shipment DELETE ok=true")
-        else:
-            fail("legacy shipment DELETE ok", f"ok={body.get('ok')!r}")
-        sheet = body.get("sheet") or {}
-        if sheet.get("attempted") is False:
-            ok("legacy shipment DELETE sheet.attempted=false")
-            if created_legacy_shipment_id in created_shipment_ids:
-                created_shipment_ids.remove(created_legacy_shipment_id)
-        else:
-            fail("legacy shipment DELETE sheet.attempted",
-                 f"sheet={pretty(sheet)}")
-        g = requests.get(
-            f"{API}/shipments/{created_legacy_shipment_id}", timeout=15
-        )
-        if g.status_code == 404:
-            ok("legacy shipment DELETE local purge (404)")
-        else:
-            fail("legacy shipment DELETE local purge",
-                 f"expected 404, got {g.status_code}")
-    except Exception as e:
-        fail("legacy shipment DELETE", f"exception: {e}")
+        print(f"  body: {json.dumps(body, indent=2)}")
+        assert_true(body.get("ok") is True, "legacy ok=true")
+        assert_true(body.get("sheet", {}).get("attempted") is False,
+                    "legacy sheet.attempted=false", body.get("sheet"))
 
-# --- Step 5 — probe still healthy -------------------------------------------
-print("\n[Step 5] GET /api/sheets/probe (post-delete)")
-try:
-    r = requests.get(f"{API}/sheets/probe", timeout=30)
-    body = r.json()
-    print("  response:", pretty(body))
-    if r.status_code == 200 and body.get("ok") is True:
-        ok("post-test sheets/probe")
-    else:
-        fail("post-test sheets/probe",
-             f"status={r.status_code} body={body}")
-except Exception as e:
-    fail("post-test sheets/probe", f"exception: {e}")
+    print("\n" + "=" * 70)
+    print(f"RESULT: {PASS} passed, {FAIL} failed")
+    if FAILURES:
+        print("\nFAILURES:")
+        for f in FAILURES:
+            print(f"  - {f}")
+    return FAIL == 0
 
-# --- Cleanup -----------------------------------------------------------------
-print("\n[Cleanup] Removing any leftover test artifacts")
-for pid in list(created_pending_ids):
-    try:
-        r = requests.delete(f"{API}/orders/pending/{pid}", timeout=30)
-        print(f"  cleanup pending {pid}: {r.status_code}")
-    except Exception as e:
-        print(f"  cleanup pending {pid}: error {e}")
-for sid in list(created_shipment_ids):
-    try:
-        r = requests.delete(f"{API}/shipments/{sid}", timeout=30)
-        print(f"  cleanup shipment {sid}: {r.status_code}")
-    except Exception as e:
-        print(f"  cleanup shipment {sid}: error {e}")
 
-# --- Summary -----------------------------------------------------------------
-print("\n" + "=" * 72)
-print(f"PASS: {len(PASS)}")
-print(f"FAIL: {len(FAIL)}")
-for t in PASS:
-    print(f"  ✓ {t}")
-for name, detail in FAIL:
-    print(f"  ✗ {name} — {detail}")
-
-sys.exit(0 if not FAIL else 1)
+if __name__ == "__main__":
+    ok = main()
+    sys.exit(0 if ok else 1)

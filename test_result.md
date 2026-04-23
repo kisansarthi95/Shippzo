@@ -452,20 +452,109 @@ backend:
             response — not mocked). Cleanup removed all test artifacts
             (1 stray pending order was cleaned up; no other data touched).
 
+  - task: "Two-Way Status Sync (app status → Master Sheet)"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py, /app/backend/sheet_writer.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: |
+            New: sheet_writer.update_row_status(row_num, status,
+            extra_notice) writes the Status column + appends a
+            timestamped note to the Notice column. Wired into:
+            (a) POST /api/orders/pending/{id}/ship bumps sheet row
+                Pending → "Dispatched" and records
+                "Tracking: <id> · <courier>" in Notice.
+            (b) PUT /api/shipments/{id}: when status changes and the
+                shipment has sheet_row_num, writes the new status +
+                "Tracking: <id>" to Notice.
+            Both are best-effort; sheet failures are logged and never
+            block the Mongo mutation.
+            Verified manually via /tmp/test_twoway_sync.py against row
+            11 — Pending → Dispatched → Delivered → DELETED all landed
+            on the Sheet (backend logs show 3 sync messages).
+        -working: true
+        -agent: "testing"
+        -comment: |
+            All 31 assertions passed via /app/backend_test.py against
+            https://logistics-hub-740.preview.emergentagent.com/api.
+            End-to-end Two-Way Status Sync verified on row 12 of the
+            live 'All Master Data' tab (Service Account write path, NOT
+            mocked):
+
+            1. GET /sheets/probe baseline: ok=true, tab="All Master Data",
+               row_count=101, headers intact.
+            2. POST /smart-paste with the specified payload: returned a
+               PendingOrder with sheet_row_num=12 (positive int > 1),
+               customer_name="Sync Test", phone="9112223344",
+               pincode="380001", payment_mode="COD", amount=299.0.
+               Backend log line: "Sheet append OK: 'All Master Data'!A12:N12".
+            3. POST /orders/pending/{id}/ship with Nandan Courier
+               (courier_id=f48dc9c4-19cb-4014-a05b-1f3de3002796,
+               overrides={}) → returned Shipment with:
+                 sheet_row_num=12 (== PendingOrder.sheet_row_num, forwarded)
+                 tracking_id="ND00029" (non-empty, sequence advanced)
+                 status="Pending"
+               Backend log line:
+                 "Sheet status sync OK: row=12 Pending → Dispatched (ND00029)"
+            4. PUT /shipments/{ship_id} {"status":"Delivered"} → HTTP 200.
+               Response status="Delivered", delivered_at=
+               "2026-04-23T14:49:0x.xxxxx+00:00" (non-empty ISO w/ T).
+               Backend log line: "Sheet status sync OK: row=12 → Delivered".
+            5. Repeat PUT {"status":"Delivered"} (no transition) → HTTP 200,
+               response status still "Delivered", delivered_at unchanged.
+               No additional sync log emitted (no-op as designed —
+               new_status != prev_doc.status guard holds).
+            6. DELETE /shipments/{ship_id} → returned EXACTLY:
+                 {"ok": true,
+                  "sheet": {"attempted": true, "ok": true, "row": 12,
+                            "tab": "All Master Data",
+                            "status_cell": "M12", "notice_cell": "N12"}}
+               Subsequent GET /shipments/{ship_id} → 404 (purged).
+            7. Regression on legacy shipment (POST /shipments without a
+               sheet link): created shipment with sheet_row_num=null;
+               DELETE returned exactly {"ok": true,
+               "sheet": {"attempted": false}} — legacy path intact.
+
+            All three expected backend log markers were observed during
+            the run (append + dispatched + delivered). Soft-delete
+            response shape matches the prior contract (no regression).
+            Sheet rows are real — row numbers, cell addresses (M12/N12),
+            and tab name come straight from Google's Sheets API response.
+
 metadata:
   created_by: "main_agent"
-  version: "2.0"
-  test_sequence: 2
+  version: "2.1"
+  test_sequence: 3
   run_ui: false
 
 test_plan:
   current_focus:
-    - "Google Sheets Soft-Delete (sheet_row_num + tombstone)"
+    - "Two-Way Status Sync (app status → Master Sheet)"
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
 
 agent_communication:
+    -agent: "testing"
+    -message: |
+        Two-Way Status Sync end-to-end: PASS (31/31 assertions).
+        Used a single test row (row 12 in 'All Master Data'). Verified:
+        smart-paste → sheet_row_num=12; ship → Dispatched sync w/
+        tracking ND00029; PUT Delivered → delivered_at ISO set + sheet
+        sync to Delivered; PUT Delivered (repeat) is a no-op on the
+        sheet (guard prev!=new); soft-delete shape identical to prior
+        contract; legacy (no sheet_row_num) DELETE returns
+        {"ok":true,"sheet":{"attempted":false}}. All three expected
+        log markers observed:
+          Sheet append OK: 'All Master Data'!A12:N12
+          Sheet status sync OK: row=12 Pending → Dispatched (ND00029)
+          Sheet status sync OK: row=12 → Delivered
+        No regressions against the earlier soft-delete suite.
     -agent: "main"
     -message: |
         Edge-case follow-up fix (2026-04-23, same day):

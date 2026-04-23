@@ -249,3 +249,75 @@ def mark_row_deleted(
         "status_cell": status_a1,
         "notice_cell": notice_a1,
     }
+
+
+def update_row_status(
+    row_num: int,
+    status: str,
+    extra_notice: Optional[str] = None,
+    append_to_notice: bool = True,
+) -> Dict[str, Any]:
+    """Write back a new Status value to a Master Sheet row.
+
+    Used by the Two-Way Status Sync: when the app changes a shipment's
+    status (Pending → Dispatched → Delivered → Returned), this keeps the
+    Master Sheet's Status column in perfect sync. Existing Notice content
+    is preserved; `extra_notice` is appended with a leading separator.
+
+    Args:
+      row_num:        1-based sheet row (>= 2, row 1 is the header).
+      status:         New value for the Status column. Stored verbatim.
+      extra_notice:   Optional short text (e.g. "Tracking: ND00042") to
+                      append to the Notice column. Ignored if empty.
+      append_to_notice:
+                      If True (default), prepend the current Notice cell
+                      value before writing (so history is kept). If False,
+                      Notice is overwritten with just the new value.
+
+    Returns {"ok": True, "row": n, "tab": ..., "status_cell": ...,
+             "notice_cell": ..., "status_written": status} on success.
+    Raises on sheet-level failure so the caller can decide whether to
+    abort the local update or log and continue.
+    """
+    if not isinstance(row_num, int) or row_num < 2:
+        raise ValueError(f"Invalid row_num for status update: {row_num!r}")
+    if status is None:
+        raise ValueError("status cannot be None")
+
+    ws = _get_worksheet()
+    try:
+        status_col = COLUMNS.index("status") + 1
+        notice_col = COLUMNS.index("notice") + 1
+    except ValueError as e:
+        raise RuntimeError(f"COLUMNS layout missing status/notice: {e}")
+
+    status_a1 = f"{_col_letter(status_col)}{row_num}"
+    notice_a1 = f"{_col_letter(notice_col)}{row_num}"
+
+    writes: List[Dict[str, Any]] = [
+        {"range": status_a1, "values": [[str(status)]]},
+    ]
+    if extra_notice:
+        ts = datetime.now(timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M:%S")
+        suffix = f"[{ts}] {status}: {extra_notice}"
+        if append_to_notice:
+            # Read current cell so we don't clobber previous audit entries.
+            try:
+                existing = ws.cell(row_num, notice_col).value or ""
+            except Exception:
+                existing = ""
+            new_notice = f"{existing}\n{suffix}" if existing.strip() else suffix
+        else:
+            new_notice = suffix
+        writes.append({"range": notice_a1, "values": [[new_notice]]})
+
+    ws.batch_update(writes, value_input_option="USER_ENTERED")
+
+    return {
+        "ok": True,
+        "row": row_num,
+        "tab": ws.title,
+        "status_cell": status_a1,
+        "notice_cell": notice_a1 if extra_notice else None,
+        "status_written": str(status),
+    }
