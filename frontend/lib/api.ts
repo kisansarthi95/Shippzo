@@ -276,6 +276,7 @@ export type WalletQuote = {
   trial_expired: boolean;
   daily_blocked: boolean;
   ai_complexity: "simple" | "medium" | "complex";
+  ai_reason?: string;
   ai_credits: number;
   ai_applies: boolean;
   shipment_credits: number;

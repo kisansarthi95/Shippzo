@@ -216,11 +216,14 @@ def compute_label_cost(
     user: Dict[str, Any],
     address_text: str,
     plan_has_room: bool,
+    complexity_override: Optional[ComplexityLiteral] = None,
 ) -> LabelCostBreakdown:
     plan = (user.get("plan") or "free_trial").lower()
     # Free trial is exempt from AI (see module docstring — product decision).
     ai_applies = plan != "free_trial"
-    complexity = detect_complexity(address_text)
+    complexity: ComplexityLiteral = (
+        complexity_override if complexity_override in AI_COST else detect_complexity(address_text)
+    )
     ai_c = ai_cost_for(complexity) if ai_applies else 0.0
     ship_c = 0.0 if plan_has_room else overage_cost_for(plan)
     return LabelCostBreakdown(
@@ -233,11 +236,31 @@ def compute_label_cost(
     )
 
 
+async def classify_and_cost(
+    user: Dict[str, Any],
+    address_text: str,
+    plan_has_room: bool,
+) -> Tuple[LabelCostBreakdown, str]:
+    """Phase-4b entry point — awaits the LLM classifier and returns the
+    priced breakdown together with the LLM's reason string. Free-trial
+    users skip the LLM entirely (AI charges are waived for them anyway).
+    """
+    plan = (user.get("plan") or "free_trial").lower()
+    if plan == "free_trial":
+        return (compute_label_cost(user, address_text, plan_has_room), "free-trial (AI waived)")
+    # Deferred import to keep the wallet module a leaf dependency.
+    from address_ai import classify_address
+    complexity, reason = await classify_address(address_text)
+    bd = compute_label_cost(user, address_text, plan_has_room, complexity_override=complexity)
+    return (bd, reason)
+
+
 async def require_balance(
     db,
     user: Dict[str, Any],
     address_text: str,
     plan_has_room: bool,
+    complexity_override: Optional[ComplexityLiteral] = None,
 ) -> LabelCostBreakdown:
     """Preflight: raise 402 if wallet cannot cover this label.
 
@@ -245,7 +268,7 @@ async def require_balance(
         wallet == 0 AND plan exhausted → refuse outright (even if
         plan-has-room logic somehow matched, we double-check).
     """
-    breakdown = compute_label_cost(user, address_text, plan_has_room)
+    breakdown = compute_label_cost(user, address_text, plan_has_room, complexity_override)
     if breakdown.total <= 0:
         return breakdown  # free trial, plan has room → nothing to charge
     bal = await get_balance(db, user["id"])

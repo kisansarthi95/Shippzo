@@ -30,6 +30,7 @@ from wallet import (
     charge_for_label as wallet_charge,
     add_credits as wallet_add_credits,
     compute_label_cost,
+    classify_and_cost as wallet_classify_and_cost,
 )
 from fastapi import Depends as _AuthDepends  # noqa: F401
 import os
@@ -1146,8 +1147,15 @@ async def create_shipment(
         data.get("address_line1", ""), data.get("address_line2", ""),
         data.get("city", ""), data.get("state", ""), str(data.get("pincode", "")),
     ])).strip()
-    # Wallet preflight (may raise 402)
-    breakdown = await wallet_require(db, current_user, addr_text, plan_has_room)
+    # Phase-4b: LLM-backed complexity classification with safe heuristic
+    # fallback baked into wallet.classify_and_cost.
+    breakdown, ai_reason = await wallet_classify_and_cost(current_user, addr_text, plan_has_room)
+    # Re-use the classified complexity for the wallet pre-flight so we
+    # don't double-classify.
+    breakdown = await wallet_require(
+        db, current_user, addr_text, plan_has_room,
+        complexity_override=breakdown.ai_complexity,
+    )
 
     if data.get("courier_id") and not data.get("courier_name"):
         c = await db.couriers.find_one(
@@ -1894,7 +1902,8 @@ async def ship_pending_order(
         ship_doc.get("address_line1",""), ship_doc.get("address_line2",""),
         ship_doc.get("city",""), ship_doc.get("state",""), str(ship_doc.get("pincode","")),
     ]))
-    breakdown = compute_label_cost(current_user, addr_text, plan_has_room)
+    # Phase-4b LLM-backed complexity detection (cached & heuristic-safe).
+    breakdown, _reason = await wallet_classify_and_cost(current_user, addr_text, plan_has_room)
     # Wallet may not have been checked above (old-path) — make sure they can pay.
     bal = await wallet_balance(db, current_user["id"])
     if breakdown.total > bal + 1e-6:
@@ -2054,10 +2063,15 @@ async def wallet_quote(
     address: str = "",
     current_user: Dict[str, Any] = Depends(get_current_user),
 ):
-    """Dry-run: show the user what ONE more label will cost right now."""
+    """Dry-run: show the user what ONE more label will cost right now.
+
+    Phase-4b: complexity is classified by the LLM (cached + heuristic
+    fallback); the reason string is surfaced so the UI can explain
+    *why* an address was tagged simple/medium/complex.
+    """
     room = await plan_room_status(db, current_user)
     plan_has_room = bool(room["plan_has_room"]) and not room["trial_expired"] and not room["daily_blocked"]
-    bd = compute_label_cost(current_user, address, plan_has_room)
+    bd, reason = await wallet_classify_and_cost(current_user, address, plan_has_room)
     bal = await wallet_balance(db, current_user["id"])
     return {
         "plan": room["plan"],
@@ -2065,6 +2079,7 @@ async def wallet_quote(
         "trial_expired": room["trial_expired"],
         "daily_blocked": room["daily_blocked"],
         "ai_complexity": bd.ai_complexity,
+        "ai_reason": reason,
         "ai_credits": bd.ai_credits,
         "ai_applies": bd.ai_applies,
         "shipment_credits": bd.shipment_credits,

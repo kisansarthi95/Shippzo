@@ -151,9 +151,16 @@ export default function WalletScreen() {
 
         {/* Rate card */}
         <View style={styles.rateCard}>
-          <Text style={styles.rateTitle}>Pricing</Text>
+          <View style={styles.rateTitleRow}>
+            <Text style={styles.rateTitle}>Pricing</Text>
+            <View style={styles.aiBadge}>
+              <Ionicons name="sparkles" size={11} color="#fff" />
+              <Text style={styles.aiBadgeTxt}>AI powered</Text>
+            </View>
+          </View>
           <Text style={styles.rateLine}>• ₹100 = 100 credits (1:1)</Text>
           <Text style={styles.rateLine}>• AI address check: 0.5 – 2 credits per order (max 2)</Text>
+          <Text style={styles.rateLine}>   · simple → 0.5  ·  medium → 1  ·  complex → 2</Text>
           <Text style={styles.rateLine}>• Shipment overage (after plan): Silver 4 · Gold 2 · Platinum 1</Text>
           <Text style={styles.rateLine}>• Free Trial: AI charges are waived</Text>
         </View>
@@ -342,7 +349,13 @@ const styles = StyleSheet.create({
     backgroundColor: "#fff", borderRadius: 12, padding: 14,
     borderWidth: 1, borderColor: "#E5E7EB", marginBottom: 16,
   },
-  rateTitle: { fontSize: 11, fontWeight: "800", color: "#64748B", letterSpacing: 0.5, marginBottom: 6 },
+  rateTitleRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 6 },
+  rateTitle: { fontSize: 11, fontWeight: "800", color: "#64748B", letterSpacing: 0.5 },
+  aiBadge: {
+    flexDirection: "row", alignItems: "center", gap: 4,
+    backgroundColor: "#7C3AED", paddingHorizontal: 8, paddingVertical: 2, borderRadius: 999,
+  },
+  aiBadgeTxt: { color: "#fff", fontSize: 10, fontWeight: "800", letterSpacing: 0.4 },
   rateLine: { fontSize: 12.5, color: "#334155", lineHeight: 20 },
 
   historyHeader: {
