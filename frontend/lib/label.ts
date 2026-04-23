@@ -15,6 +15,34 @@ export type LabelOptions = {
   customFields?: CustomLabelField[]; // user-defined custom fields to inject
 };
 
+/**
+ * Return explicit page dimensions (in PDF points) for a given perPage mode.
+ *
+ * expo-print IGNORES `@page { size: ... }` CSS and silently falls back to A4.
+ * To get an accurate PDF size (A6, thermal, etc.) we MUST pass width/height
+ * options to `Print.printToFileAsync` / `Print.printAsync`.
+ *
+ * 1 mm ≈ 2.83465 PDF points (72 pts / 25.4 mm).
+ */
+export function pageDimensionsFor(
+  perPage: LabelOptions["perPage"]
+): { width: number; height: number } | undefined {
+  if (perPage === "thermal") {
+    // 100mm × 150mm thermal roll
+    return { width: Math.round(100 * 2.83465), height: Math.round(150 * 2.83465) };
+  }
+  if (perPage === 4) {
+    // A6 portrait: 105mm × 148mm (1/4 of A4)
+    return { width: Math.round(105 * 2.83465), height: Math.round(148 * 2.83465) };
+  }
+  if (perPage === "barcode") {
+    // Barcode sticker 50mm × 25mm
+    return { width: Math.round(50 * 2.83465), height: Math.round(25 * 2.83465) };
+  }
+  // perPage 1 or 2 → A4 default, let expo-print use its default.
+  return undefined;
+}
+
 const escape = (s: string) =>
   (s || "")
     .replace(/&/g, "&amp;")

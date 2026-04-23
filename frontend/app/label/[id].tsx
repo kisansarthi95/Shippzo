@@ -16,7 +16,7 @@ import { useLocalSearchParams, useRouter } from "expo-router";
 import * as Print from "expo-print";
 import * as Sharing from "expo-sharing";
 import { Api, SenderAddress, Shipment, Courier } from "../../lib/api";
-import { buildLabelHtml, LabelOptions } from "../../lib/label";
+import { buildLabelHtml, LabelOptions, pageDimensionsFor } from "../../lib/label";
 import { barcodeBars } from "../../lib/barcode";
 import { colors } from "../../lib/theme";
 
@@ -237,7 +237,8 @@ export default function LabelScreen() {
     const html = getHtml();
     if (!html) return;
     try {
-      await Print.printAsync({ html });
+      const dims = pageDimensionsFor(perPage);
+      await Print.printAsync({ html, ...(dims || {}) });
     } catch (e: any) {
       Alert.alert("Print error", e?.message || "Failed to print");
     }
@@ -247,7 +248,8 @@ export default function LabelScreen() {
     const html = getHtml();
     if (!html) return;
     try {
-      const { uri } = await Print.printToFileAsync({ html });
+      const dims = pageDimensionsFor(perPage);
+      const { uri } = await Print.printToFileAsync({ html, ...(dims || {}) });
       if (Platform.OS === "web") {
         if (typeof window !== "undefined") window.open(uri, "_blank");
         return;

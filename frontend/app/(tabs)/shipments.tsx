@@ -12,7 +12,7 @@ import { useFocusEffect, useRouter, useLocalSearchParams } from "expo-router";
 import DateTimePicker from "@react-native-community/datetimepicker";
 import { Api, Shipment, Settings, Courier } from "../../lib/api";
 import { buildCopyText, buildWhatsAppText, cleanPhone } from "../../lib/format";
-import { buildLabelHtml } from "../../lib/label";
+import { buildLabelHtml, pageDimensionsFor } from "../../lib/label";
 import { colors } from "../../lib/theme";
 
 type StatusFilter = "All" | "Pending" | "Delivered" | "Cancelled";
@@ -132,7 +132,8 @@ export default function Shipments() {
         shipmentTagline: (settings as any).shipment_tagline,
         customFields: (settings as any).custom_fields,
       });
-      await Print.printAsync({ html });
+      const dims = pageDimensionsFor(bulkPerPage);
+      await Print.printAsync({ html, ...(dims || {}) });
     } catch (e: any) {
       Alert.alert("Error", e?.message || "Failed");
     }
@@ -156,7 +157,8 @@ export default function Shipments() {
         shipmentTagline: (settings as any).shipment_tagline,
         customFields: (settings as any).custom_fields,
       });
-      const { uri } = await Print.printToFileAsync({ html });
+      const dims2 = pageDimensionsFor(bulkPerPage);
+      const { uri } = await Print.printToFileAsync({ html, ...(dims2 || {}) });
       if (Platform.OS === "web" && typeof window !== "undefined") {
         window.open(uri, "_blank");
       } else if (await Sharing.isAvailableAsync()) {
