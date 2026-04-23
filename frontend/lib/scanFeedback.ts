@@ -1,38 +1,71 @@
-import { Platform } from "react-native";
+import { Platform, Vibration } from "react-native";
 import * as Haptics from "expo-haptics";
-import { createAudioPlayer, setAudioModeAsync, AudioPlayer } from "expo-audio";
 
-// A short scanner-style "beep" sound (1200Hz → 1600Hz, ~120ms). Bundled locally.
-// Keep a single long-lived player instance — cheaper than re-creating each scan.
-let beepPlayer: AudioPlayer | null = null;
+// -----------------------------------------------------------------------------
+// Audio beep — LAZY + DEFENSIVE require.
+//
+// expo-audio is a native module.  If it's missing from the runtime (e.g. old
+// Expo Go build, Metro bundle issue, version mismatch, web platform) we
+// MUST NOT let the import crash the JS bundle — otherwise haptic feedback
+// also breaks (single import = whole module fails).
+//
+// Strategy:
+//   1. Try to require expo-audio lazily inside initScanFeedback().
+//   2. If it throws at any point, set `audioAvailable = false` and fall back
+//      to a 30-40ms Vibration burst so the user still feels a "scan confirmed"
+//      signal.
+// -----------------------------------------------------------------------------
+
+let audioAvailable = true;
+let beepPlayer: any = null;
 let modeConfigured = false;
+let initPromise: Promise<void> | null = null;
 
-/**
- * Initialize the audio player once (idempotent). Safe to call on every mount.
- * Returns quickly if already initialised. Silent no-op on web (we rely on
- * Haptics fallback there, which itself is a no-op on web).
- */
-export async function initScanFeedback(): Promise<void> {
-  if (Platform.OS === "web") return;
+async function initAudioInternal(): Promise<void> {
+  if (Platform.OS === "web") {
+    audioAvailable = false;
+    return;
+  }
   try {
-    if (!modeConfigured) {
-      // Play even if device is on silent (iOS-like UX for scanner apps).
-      await setAudioModeAsync({
+    // Dynamic require — never crashes bundle if native module is absent.
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const ExpoAudio = require("expo-audio");
+    if (!modeConfigured && ExpoAudio.setAudioModeAsync) {
+      await ExpoAudio.setAudioModeAsync({
         playsInSilentMode: true,
         allowsRecording: false,
         shouldPlayInBackground: false,
       });
       modeConfigured = true;
     }
-    if (!beepPlayer) {
+    if (!beepPlayer && ExpoAudio.createAudioPlayer) {
       // eslint-disable-next-line @typescript-eslint/no-var-requires
       const src = require("../assets/sounds/beep.wav");
-      beepPlayer = createAudioPlayer(src);
-      beepPlayer.volume = 1.0;
+      beepPlayer = ExpoAudio.createAudioPlayer(src);
+      try {
+        beepPlayer.volume = 1.0;
+      } catch {
+        /* some builds treat volume as readonly before load */
+      }
     }
-  } catch {
-    // Silent — we still give haptic feedback below.
+  } catch (e) {
+    // Native module not available — mark unavailable so we fall back to
+    // Vibration + Haptics. Log once for debugging.
+    audioAvailable = false;
+    // eslint-disable-next-line no-console
+    console.warn("[scanFeedback] audio unavailable:", (e as any)?.message || e);
   }
+}
+
+/**
+ * Initialize the audio player once (idempotent). Safe to call on every mount.
+ * Returns the same promise on parallel calls to avoid race conditions.
+ */
+export function initScanFeedback(): Promise<void> {
+  if (!initPromise) {
+    initPromise = initAudioInternal();
+  }
+  return initPromise;
 }
 
 /**
@@ -40,21 +73,40 @@ export async function initScanFeedback(): Promise<void> {
  * Never throws — best-effort UX feedback only.
  */
 export async function playScanSuccess(): Promise<void> {
-  // Haptic first (instant, works offline / on mute)
+  // 1) Haptic (most important — works even if audio native module missing).
   try {
     if (Platform.OS !== "web") {
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     }
   } catch {
-    /* ignore */
+    // Fallback to the core Vibration API — always present in RN.
+    try {
+      Vibration.vibrate(40);
+    } catch {
+      /* ignore */
+    }
   }
-  // Audio beep
+
+  // 2) Audio beep (best-effort).
+  if (!audioAvailable) {
+    // No audio → add a second short vibration tick so the double-beat feels
+    // distinctly like a "scan accepted" confirmation instead of just haptic.
+    try {
+      Vibration.vibrate([0, 30, 60, 30]);
+    } catch {
+      /* ignore */
+    }
+    return;
+  }
   try {
     if (!beepPlayer) await initScanFeedback();
     if (beepPlayer) {
-      // Rewind to start so repeated scans always beep.
-      await beepPlayer.seekTo(0);
-      beepPlayer.play();
+      try {
+        await beepPlayer.seekTo?.(0);
+      } catch {
+        /* first play has nothing to seek */
+      }
+      beepPlayer.play?.();
     }
   } catch {
     /* ignore */
@@ -62,8 +114,7 @@ export async function playScanSuccess(): Promise<void> {
 }
 
 /**
- * Play an error pattern: heavy impact haptic (no sound).
- * Used when a scan is rejected (e.g. invalid / duplicate tracking id).
+ * Play an error pattern: heavy impact haptic + short double-vibration.
  */
 export async function playScanError(): Promise<void> {
   try {
@@ -71,21 +122,11 @@ export async function playScanError(): Promise<void> {
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
     }
   } catch {
-    /* ignore */
-  }
-}
-
-/**
- * Light tick haptic — used when camera focuses or detects a barcode edge,
- * but before the value is confirmed. Subtle "something happened" signal.
- */
-export async function playScanTick(): Promise<void> {
-  try {
-    if (Platform.OS !== "web") {
-      await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    try {
+      Vibration.vibrate([0, 80, 80, 80]);
+    } catch {
+      /* ignore */
     }
-  } catch {
-    /* ignore */
   }
 }
 
@@ -99,4 +140,5 @@ export function disposeScanFeedback(): void {
     /* ignore */
   }
   beepPlayer = null;
+  initPromise = null;
 }
