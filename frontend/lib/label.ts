@@ -314,11 +314,13 @@ function singleLabel(s: Shipment, sender: SenderAddress, opts: LabelOptions) {
         ${lf.item ? `<span><b class="lbl">Item:</b> ${escape(itemsText)}</span>` : ""}
         ${cfMetaRow}
       </div>
-      ${tokenFooterBlock}
     </div>
 
-    <!-- BOTTOM (fixed height) — footer + optional bottom custom fields -->
+    <!-- BOTTOM (fixed height) — token-box (if any) + footer + optional bottom custom fields.
+         Token box is placed INSIDE footer-col so it can never overlap the
+         "From:" sender block or barcode, even when content above is dense. -->
     <div class="footer-col">
+      ${tokenFooterBlock}
       <div class="footer">
         <div class="sender-block">
           ${senderFooterBlock}
@@ -453,12 +455,15 @@ export function buildLabelHtml(
   ${gridCss}
   /* Label is a 3-row grid: fixed header, flexible middle, fixed footer.
      STRICT ONE-LABEL-PER-PAGE: container is hard-bounded so one label
-     always fits on its allocated page slot. Content never overflows;
-     long text auto-shrinks via clamp() inside blocks. Dimensions come
-     from gridCss per perPage. Page breaks are handled by .sheet only. */
+     always fits on its allocated page slot. minmax(0, 1fr) on the middle
+     row is CRITICAL — without it, grid renderers let dense content push
+     through the footer row and overlap. Dimensions come from gridCss
+     per perPage. */
   .label { border: 2px solid #0A0A0A; padding: 4mm;
     background: #fff; border-radius: 3mm;
-    display: grid; grid-template-rows: auto 1fr auto; gap: 2.5mm;
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr) auto;
+    gap: 2.5mm;
     max-width: 100% !important; box-sizing: border-box;
     max-height: 100% !important;
     overflow: hidden !important;
@@ -551,10 +556,13 @@ export function buildLabelHtml(
   .cf-notes-wrap .cf-row { font-size: 9pt; }
 
   /* ---- MIDDLE (flex) ---- */
-  /* .mid fills remaining vertical space. Long content auto-shrinks font
-     via clamp(); extra overflow is clipped inside blocks. */
+  /* .mid fills remaining vertical space. All direct children have
+     min-height: 0 so they can shrink below intrinsic size when content
+     is dense (combined with overflow: hidden this prevents overlap into
+     the footer region). */
   .mid { display: flex; flex-direction: column; gap: 2.5mm; min-height: 0;
     overflow: hidden; }
+  .mid > * { min-width: 0; min-height: 0; }
   /* DELIVER-TO box — auto-shrinks via clamp(). Container is flex-shrinkable
      and clips residual overflow so the footer/barcode always stays on page. */
   .recv-block { border: 1.5px solid #0A0A0A; border-radius: 3mm;

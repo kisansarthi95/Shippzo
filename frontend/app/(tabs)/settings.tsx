@@ -22,6 +22,30 @@ import { useRouter, useFocusEffect } from "expo-router";
 import { Api, Courier, Settings as SettingsT, SenderAddress, SheetPreview, SHEET_FIELDS } from "../../lib/api";
 import { colors } from "../../lib/theme";
 
+/**
+ * CONTENT BUDGET SYSTEM
+ *
+ * Prevents label overflow/overlap by capping how many "space-hungry"
+ * elements can be enabled simultaneously. Each of these counts as 1 point:
+ *   • Brand Tagline (non-empty text)
+ *   • "Shipment Notes" toggle ON
+ *   • Each ENABLED custom label field
+ * Max budget = 3. If user tries to push it above 3, we block and alert.
+ */
+const CONTENT_BUDGET_CAP = 3;
+
+function computeBudgetUsed(params: {
+  tagline: string;
+  shipmentNotesOn: boolean;
+  customFields: Array<{ enabled: boolean }>;
+}): number {
+  let n = 0;
+  if ((params.tagline || "").trim().length > 0) n += 1;
+  if (params.shipmentNotesOn) n += 1;
+  n += params.customFields.filter((c) => c.enabled).length;
+  return n;
+}
+
 // Professional templates with blank lines for breathing room
 const PRESETS = {
   wa_gujarati: (
@@ -633,9 +657,24 @@ export default function SettingsScreen() {
                 <Switch
                   testID={`label-toggle-${f.key}`}
                   value={!!(labelFields as any)[f.key]}
-                  onValueChange={(v) =>
-                    setLabelFields({ ...labelFields, [f.key]: v })
-                  }
+                  onValueChange={(v) => {
+                    // Budget-gated: enabling "shipment_notes" must not exceed cap.
+                    if (f.key === "shipment_notes" && v) {
+                      const used = computeBudgetUsed({
+                        tagline: shipmentTagline,
+                        shipmentNotesOn: false, // turning ON now
+                        customFields,
+                      });
+                      if (used + 1 > CONTENT_BUDGET_CAP) {
+                        Alert.alert(
+                          "Label budget full",
+                          `You can have at most ${CONTENT_BUDGET_CAP} content extras on a label (Tagline + Notes + enabled Custom Fields) to prevent overlap. Disable one of them first, then try again.`
+                        );
+                        return;
+                      }
+                    }
+                    setLabelFields({ ...labelFields, [f.key]: v });
+                  }}
                   trackColor={{ false: "#E5E7EB", true: colors.primary }}
                   thumbColor="#fff"
                 />
@@ -650,6 +689,73 @@ export default function SettingsScreen() {
               special offer line, an alternate contact, or any business-specific info.
               Pick exactly where each field appears on the label. Up to 6 custom fields.
             </Text>
+
+            {/* -------- Content Budget indicator --------
+                Shows how much label space is currently "used" by:
+                tagline + shipment-notes toggle + enabled custom fields.
+                Hard cap = CONTENT_BUDGET_CAP (prevents print overlap). */}
+            {(() => {
+              const used = computeBudgetUsed({
+                tagline: shipmentTagline,
+                shipmentNotesOn: !!labelFields.shipment_notes,
+                customFields,
+              });
+              const full = used >= CONTENT_BUDGET_CAP;
+              const parts: string[] = [];
+              if (shipmentTagline.trim()) parts.push("Tagline");
+              if (labelFields.shipment_notes) parts.push("Notes");
+              const cfOn = customFields.filter((c) => c.enabled).length;
+              if (cfOn > 0) parts.push(`${cfOn} custom`);
+              return (
+                <View
+                  style={[
+                    styles.budgetBox,
+                    full ? styles.budgetBoxFull : styles.budgetBoxOk,
+                  ]}
+                  testID="content-budget-indicator"
+                >
+                  <View style={styles.budgetHeader}>
+                    <Ionicons
+                      name={full ? "warning-outline" : "checkmark-circle-outline"}
+                      size={16}
+                      color={full ? "#B45309" : "#047857"}
+                    />
+                    <Text
+                      style={[
+                        styles.budgetTitle,
+                        { color: full ? "#B45309" : "#047857" },
+                      ]}
+                    >
+                      Label Content Budget · {used}/{CONTENT_BUDGET_CAP}
+                    </Text>
+                  </View>
+                  <View style={styles.budgetDots}>
+                    {Array.from({ length: CONTENT_BUDGET_CAP }).map((_, i) => (
+                      <View
+                        key={i}
+                        style={[
+                          styles.budgetDot,
+                          i < used
+                            ? full
+                              ? styles.budgetDotFull
+                              : styles.budgetDotOn
+                            : styles.budgetDotOff,
+                        ]}
+                      />
+                    ))}
+                  </View>
+                  <Text style={styles.budgetHelp}>
+                    {parts.length > 0
+                      ? `Active: ${parts.join(" · ")}`
+                      : "Nothing extra enabled yet."}
+                    {"\n"}
+                    Max {CONTENT_BUDGET_CAP} of {`{Tagline, Notes, Custom Fields}`} can be
+                    active at once — prevents print overlap on labels with long
+                    addresses.
+                  </Text>
+                </View>
+              );
+            })()}
 
             {customFields.length === 0 && (
               <View style={styles.emptyCf}>
@@ -669,6 +775,25 @@ export default function SettingsScreen() {
                     testID={`cf-enabled-${idx}`}
                     value={cf.enabled}
                     onValueChange={(v) => {
+                      // Budget-gated: can't enable if it would exceed cap.
+                      if (v) {
+                        // Budget WITHOUT this field (since we're flipping it ON).
+                        const others = customFields.map((x, i) =>
+                          i === idx ? { ...x, enabled: false } : x
+                        );
+                        const used = computeBudgetUsed({
+                          tagline: shipmentTagline,
+                          shipmentNotesOn: !!labelFields.shipment_notes,
+                          customFields: others,
+                        });
+                        if (used + 1 > CONTENT_BUDGET_CAP) {
+                          Alert.alert(
+                            "Label budget full",
+                            `You can have at most ${CONTENT_BUDGET_CAP} content extras on a label (Tagline + Notes + enabled Custom Fields). Disable something else first, then enable this.`
+                          );
+                          return;
+                        }
+                      }
                       const next = [...customFields];
                       next[idx] = { ...cf, enabled: v };
                       setCustomFields(next);
@@ -878,7 +1003,15 @@ export default function SettingsScreen() {
               <TouchableOpacity
                 testID="add-custom-field-btn"
                 style={styles.addCfBtn}
-                onPress={() =>
+                onPress={() => {
+                  // If budget is already maxed, add the new field as DISABLED
+                  // so we don't silently push the label into overlap territory.
+                  const usedNow = computeBudgetUsed({
+                    tagline: shipmentTagline,
+                    shipmentNotesOn: !!labelFields.shipment_notes,
+                    customFields,
+                  });
+                  const autoEnabled = usedNow < CONTENT_BUDGET_CAP;
                   setCustomFields([
                     ...customFields,
                     {
@@ -886,12 +1019,18 @@ export default function SettingsScreen() {
                       label: "",
                       value: "",
                       position: "footer_bottom",
-                      enabled: true,
+                      enabled: autoEnabled,
                       bold: true,
                       size: "sm",
                     },
-                  ])
-                }
+                  ]);
+                  if (!autoEnabled) {
+                    Alert.alert(
+                      "Field added (disabled)",
+                      `You've reached the ${CONTENT_BUDGET_CAP}-item label budget. The new field was added but left OFF. Disable Tagline, Notes, or another Custom Field to turn it on.`
+                    );
+                  }
+                }}
               >
                 <Ionicons name="add-circle" size={18} color={colors.primary} />
                 <Text style={styles.addCfBtnText}>
@@ -1221,6 +1360,53 @@ const styles = StyleSheet.create({
   },
   emptyCfText: { fontWeight: "800", color: "#4B5563", marginTop: 6 },
   emptyCfSub: { fontSize: 12, color: "#9CA3AF", marginTop: 2 },
+  /* ---- Content Budget indicator ---- */
+  budgetBox: {
+    borderRadius: 12,
+    borderWidth: 1.5,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    marginTop: 10,
+    marginBottom: 4,
+    gap: 6,
+  },
+  budgetBoxOk: {
+    backgroundColor: "#ECFDF5",
+    borderColor: "#A7F3D0",
+  },
+  budgetBoxFull: {
+    backgroundColor: "#FFFBEB",
+    borderColor: "#FCD34D",
+  },
+  budgetHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+  },
+  budgetTitle: {
+    fontSize: 13,
+    fontWeight: "800",
+    letterSpacing: 0.3,
+  },
+  budgetDots: {
+    flexDirection: "row",
+    gap: 6,
+    marginTop: 2,
+  },
+  budgetDot: {
+    flex: 1,
+    height: 6,
+    borderRadius: 3,
+  },
+  budgetDotOn: { backgroundColor: "#10B981" },
+  budgetDotFull: { backgroundColor: "#F59E0B" },
+  budgetDotOff: { backgroundColor: "#E5E7EB" },
+  budgetHelp: {
+    fontSize: 11.5,
+    color: "#334155",
+    lineHeight: 16,
+    marginTop: 2,
+  },
   cfCard: {
     backgroundColor: "#F9FAFB",
     borderRadius: 12,

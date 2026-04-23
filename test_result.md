@@ -266,3 +266,47 @@ All three produce exactly ONE page at A6 size. Rule #1 is now guaranteed.
 ### Testing Required
 - User to verify on-device printing (expo-print on iOS/Android) produces same single-page output per shipment (bulk + single).
 - User to verify A4 1/page and 2/page modes still work as intended.
+
+---
+
+## Iteration: No-Overlap Guarantee + Smart Content Budget (2026-04-23)
+
+### User Reported
+PDF still showed overlapping text when a shipment had Notes + GST + Alt Phone + Token + Tagline all at once (Anjali Desai case). Text "Item: ..." was overlapping "From: Mahek Creations", and address was overlapping "Paid Advance ₹50" box. User proposed a rule-based limit: e.g., max 1 custom field allowed unless tagline is removed.
+
+### Fix — Layer 1 (CSS Grid + Token relocation)
+1. `/app/frontend/lib/label.ts`
+   - Changed `.label` grid template from `auto 1fr auto` to **`auto minmax(0, 1fr) auto`** — the `minmax(0, 1fr)` forces the middle row to actually shrink when dense, fixing the PDF-renderer overlap bug.
+   - Added `.mid > * { min-width: 0; min-height: 0; }` so flex children can shrink.
+   - Moved `tokenFooterBlock` (Paid Advance / Token Info box) from `.mid` into `.footer-col` (just above `.footer`). This logically groups all payment/sender content and prevents the token box from pushing middle content into overlap territory.
+
+### Fix — Layer 2 (Smart Content Budget)
+2. `/app/frontend/app/(tabs)/settings.tsx`
+   - Added constant `CONTENT_BUDGET_CAP = 3` and helper `computeBudgetUsed({ tagline, shipmentNotesOn, customFields })`.
+   - Each of these counts as 1 budget point: non-empty Brand Tagline, Shipment Notes toggle, each enabled Custom Field.
+   - Added a live **Content Budget indicator** at the top of the "Custom Label Fields" section showing `● ● ● Used: N/3`, active items list ("Tagline · Notes · 2 custom"), and a short explanation. Green when within budget; amber + warning icon when user has exceeded.
+   - Intercepted the Shipment Notes toggle: if enabling would push budget above 3, show alert and revert.
+   - Intercepted every custom field's `enabled` switch: same guardrail with a helpful alert.
+   - "Add Custom Field" button: if budget is already at cap when user clicks add, the new field is created with `enabled=false` by default (plus a friendly alert explaining why).
+
+### Verification
+Re-ran `/tmp/test_pages.py` against 4 cases (including the worst-case dense `rahul_dense` shipment with Notes + token + box-dim + all-enabled custom fields). All produced exactly **1 page at 105.2 × 148.2 mm (A6)**:
+```
+  OK: short_addr:  pages=1, size=105.2x148.2mm
+  OK: long_addr:   pages=1, size=105.2x148.2mm
+  OK: long_name:   pages=1, size=105.2x148.2mm
+  OK: rahul_dense: pages=1, size=105.2x148.2mm
+  ALL PASS
+```
+Visual check on device viewport confirms no overlap between `.mid` content and the `.footer` sender block; token box now sits cleanly above the "From:" sender line.
+
+Budget indicator verified visually in the Settings screen — renders amber "Label Content Budget · 4/3" state with a warning icon when the saved settings are over cap, and green "N/3" state otherwise. Alerts fire correctly when trying to enable items past the cap.
+
+### Files Changed
+- `/app/frontend/lib/label.ts`
+- `/app/frontend/app/(tabs)/settings.tsx`
+
+### Not Changed (intentional, to avoid regressions)
+- Backend API surface (settings CRUD, custom_fields schema) — unchanged.
+- `/app/frontend/app/(tabs)/add.tsx` (Per-Shipment custom field input) — unchanged.
+- Bulk print pipeline in `/app/frontend/app/(tabs)/shipments.tsx` — unchanged; inherits the new strict CSS automatically.
