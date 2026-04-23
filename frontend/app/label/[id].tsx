@@ -64,6 +64,7 @@ export default function LabelScreen() {
   const [logoRatio, setLogoRatio] = useState<number | null>(null); // naturalW/naturalH
   const [labelFields, setLabelFields] = useState<any>(null);
   const [shipmentTagline, setShipmentTagline] = useState<string>("");
+  const [customFields, setCustomFields] = useState<any[]>([]);
 
   const load = useCallback(async () => {
     try {
@@ -80,6 +81,7 @@ export default function LabelScreen() {
       setPreferLogo((settings as any).prefer_logo !== false);
       setLogoShape((settings as any).logo_shape === "wide" ? "wide" : "square");
       setLabelFields((settings as any).label_fields || null);
+      setCustomFields((settings as any).custom_fields || []);
       setShipmentTagline(String((settings as any).shipment_tagline || ""));
     } catch (e: any) {
       Alert.alert("Error", e?.message || "Failed to load");
@@ -107,6 +109,7 @@ export default function LabelScreen() {
       couriers,
       labelFields: labelFields || undefined,
       shipmentTagline: shipmentTagline || undefined,
+      customFields: customFields,
     };
     return buildLabelHtml(shipments, { ...sender, show_contact: showContact }, opts);
   };

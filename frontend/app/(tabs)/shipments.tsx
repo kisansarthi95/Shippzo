@@ -130,6 +130,7 @@ export default function Shipments() {
         couriers,
         labelFields: (settings as any).label_fields,
         shipmentTagline: (settings as any).shipment_tagline,
+        customFields: (settings as any).custom_fields,
       });
       await Print.printAsync({ html });
     } catch (e: any) {
@@ -153,6 +154,7 @@ export default function Shipments() {
         couriers,
         labelFields: (settings as any).label_fields,
         shipmentTagline: (settings as any).shipment_tagline,
+        customFields: (settings as any).custom_fields,
       });
       const { uri } = await Print.printToFileAsync({ html });
       if (Platform.OS === "web" && typeof window !== "undefined") {

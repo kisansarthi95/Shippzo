@@ -1,4 +1,4 @@
-import type { Shipment, SenderAddress, Courier, LabelFields } from "./api";
+import type { Shipment, SenderAddress, Courier, LabelFields, CustomLabelField } from "./api";
 import { barcodeSvg } from "./barcode";
 
 export type Brand = { name?: string; logo_base64?: string };
@@ -12,6 +12,7 @@ export type LabelOptions = {
   couriers?: Courier[]; // used to pull per-courier customer_id onto the label
   labelFields?: Partial<LabelFields>; // user-chosen field visibility toggles
   shipmentTagline?: string; // fallback tagline when shipment.shipment_notes is empty
+  customFields?: CustomLabelField[]; // user-defined custom fields to inject
 };
 
 const escape = (s: string) =>
@@ -52,6 +53,51 @@ function senderBlock(sender: SenderAddress, show: boolean) {
       ${contact ? `<div class="blk-contact">${contact}</div>` : ""}
     </div>
   `;
+}
+
+/**
+ * Render any user-defined custom fields targeted at a given label position.
+ * Returns empty string if no fields match (so the caller can safely inline it).
+ *
+ * We deliberately use compact inline markup so each slot stays within its
+ * existing layout budget (the 4-per-page A4 geometry is tight on height).
+ */
+function renderCustomAt(
+  fields: CustomLabelField[] | undefined,
+  position: CustomLabelField["position"]
+): string {
+  if (!fields || fields.length === 0) return "";
+  const rows = fields.filter(
+    (f) => f.enabled && f.position === position && (f.label || f.value)
+  );
+  if (rows.length === 0) return "";
+  // Map size → CSS class token
+  const sizeCls = (s?: string) =>
+    s === "md" ? "cf-md" : s === "xs" ? "cf-xs" : "cf-sm";
+  // Special inline markup for `meta_row` — it's rendered inside an existing
+  // flex row of <span> items, so we match that shape.
+  if (position === "meta_row") {
+    return rows
+      .map((f) => {
+        const val = f.bold
+          ? `<b>${escape(f.value)}</b>`
+          : escape(f.value);
+        return `<span class="cf-meta ${sizeCls(f.size)}">${
+          f.label ? `<b class="lbl">${escape(f.label)}</b> ` : ""
+        }${val}</span>`;
+      })
+      .join("");
+  }
+  // All other positions use a tiny stacked row block.
+  const wrapClass =
+    position === "notes_area" ? "cf-notes-wrap" : "cf-rows";
+  return `<div class="${wrapClass}">${rows
+    .map(
+      (f) => `<div class="cf-row ${sizeCls(f.size)}">${
+        f.label ? `<b class="cf-lbl">${escape(f.label)}</b> ` : ""
+      }${f.bold ? `<b>${escape(f.value)}</b>` : escape(f.value)}</div>`
+    )
+    .join("")}</div>`;
 }
 
 function receiverBlock(s: Shipment) {
@@ -104,6 +150,16 @@ function singleLabel(s: Shipment, sender: SenderAddress, opts: LabelOptions) {
     customer_id: true, token_info: false, box_dimensions: false, shipment_notes: false,
     ...(opts.labelFields || {}),
   };
+
+  // ---- Custom user-defined fields (Phase B) ----
+  // Pre-render each position slot once so the template below stays readable.
+  const cf = opts.customFields || [];
+  const cfHeaderTop    = renderCustomAt(cf, "header_top");
+  const cfFromBlock    = renderCustomAt(cf, "from_block");
+  const cfToBlock      = renderCustomAt(cf, "to_block");
+  const cfMetaRow      = renderCustomAt(cf, "meta_row");
+  const cfNotesArea    = renderCustomAt(cf, "notes_area");
+  const cfFooterBottom = renderCustomAt(cf, "footer_bottom");
 
   // Look up courier's printable customer_id (if provided in options)
   const courier = (opts.couriers || []).find(
@@ -166,6 +222,7 @@ function singleLabel(s: Shipment, sender: SenderAddress, opts: LabelOptions) {
   return `
   <div class="label">
     <!-- TOP (fixed height) -->
+    ${cfHeaderTop}
     <div class="hdr">
       <div class="brand-wrap">
         ${brandHeader}
@@ -192,6 +249,7 @@ function singleLabel(s: Shipment, sender: SenderAddress, opts: LabelOptions) {
             .map((l) => `<div class="blk-line">${escape(l)}</div>`).join("");
         })()}
         ${(lf.phone && s.customer_phone) ? `<div class="blk-contact">📞 <b>${escape(s.customer_phone)}</b></div>` : ""}
+        ${cfToBlock}
       </div>
 
       ${(() => {
@@ -204,23 +262,29 @@ function singleLabel(s: Shipment, sender: SenderAddress, opts: LabelOptions) {
         if (!perOrder) return "";
         return `<div class="shipment-notes"><b class="lbl">Notes:</b> ${escape(perOrder)}</div>`;
       })()}
+      ${cfNotesArea}
 
       <div class="meta-row">
         ${(lf.weight && s.weight) ? `<span><b class="lbl">Wt:</b> ${escape(s.weight)}</span>` : ""}
         ${(lf.box_dimensions && (s as any).box_dimensions) ? `<span><b class="lbl">Box:</b> ${escape((s as any).box_dimensions)}</span>` : ""}
         ${lf.item ? `<span><b class="lbl">Item:</b> ${escape(itemsText)}</span>` : ""}
+        ${cfMetaRow}
       </div>
       ${tokenFooterBlock}
     </div>
 
     <!-- BOTTOM (fixed height, barcode never cut) -->
     <div class="footer">
-      <div class="sender-block">${senderFooterBlock}</div>
+      <div class="sender-block">
+        ${senderFooterBlock}
+        ${cfFromBlock}
+      </div>
       <div class="track-wrap">
         <div class="track-id">${escape(s.tracking_id)}</div>
         <div class="barcode-wrap">${bcSvg}</div>
       </div>
     </div>
+    ${cfFooterBottom}
   </div>
   `;
 }
@@ -360,6 +424,26 @@ export function buildLabelHtml(
     color: #1F2937; background: #FFFBEB; border-left: 2mm solid #F59E0B;
     border-radius: 1mm; line-height: 1.35; word-break: break-word; }
   .shipment-notes .lbl { color: #B45309; font-size: 8.5pt; }
+
+  /* ---- Custom Label Fields (Phase B) ---- */
+  .cf-rows { display: flex; flex-direction: column; gap: 0.8mm; margin-top: 1mm; }
+  .cf-row { font-size: 9pt; color: #1F2937; line-height: 1.25;
+    word-break: break-word; }
+  .cf-row.cf-xs { font-size: 7.5pt; }
+  .cf-row.cf-sm { font-size: 9pt; }
+  .cf-row.cf-md { font-size: 10.5pt; }
+  .cf-row .cf-lbl { color: #6B7280; font-weight: 700; }
+  .cf-meta { display: inline-flex; align-items: center; gap: 0.5mm;
+    white-space: nowrap; }
+  .cf-meta.cf-xs { font-size: 7.5pt; }
+  .cf-meta.cf-sm { font-size: 9.5pt; }
+  .cf-meta.cf-md { font-size: 10.5pt; }
+  /* notes-area position = styled like shipment notes for visual consistency */
+  .cf-notes-wrap { margin-top: 2mm; padding: 1.5mm 2mm; font-size: 9pt;
+    color: #1F2937; background: #EFF6FF; border-left: 2mm solid #3B82F6;
+    border-radius: 1mm; display: flex; flex-direction: column; gap: 0.8mm; }
+  .cf-notes-wrap .cf-lbl { color: #1E40AF; }
+  .cf-notes-wrap .cf-row { font-size: 9pt; }
 
   /* ---- MIDDLE (flex) ---- */
   .mid { display: flex; flex-direction: column; gap: 3mm; overflow: hidden; min-height: 0; }

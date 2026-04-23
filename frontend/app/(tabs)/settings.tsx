@@ -111,6 +111,22 @@ export default function SettingsScreen() {
     oid: true, dispatch_date: true, weight: true, item: true, phone: true,
     customer_id: true, token_info: false, box_dimensions: false, shipment_notes: false,
   });
+  // Phase B — user-defined custom label fields (max 6)
+  const [customFields, setCustomFields] = useState<Array<{
+    id?: string;
+    label: string;
+    value: string;
+    position:
+      | "header_top"
+      | "from_block"
+      | "to_block"
+      | "meta_row"
+      | "notes_area"
+      | "footer_bottom";
+    enabled: boolean;
+    bold?: boolean;
+    size?: "xs" | "sm" | "md";
+  }>>([]);
 
   // Sheet
   const [sheetUrl, setSheetUrl] = useState("");
@@ -135,6 +151,7 @@ export default function SettingsScreen() {
     if ((s as any).label_fields) {
       setLabelFields((prev) => ({ ...prev, ...(s as any).label_fields }));
     }
+    setCustomFields(((s as any).custom_fields || []) as any);
     setShipmentTagline(String((s as any).shipment_tagline || ""));
     if (s.sheet?.sheet_id) {
       setSheetStatus("connected");
@@ -163,6 +180,7 @@ export default function SettingsScreen() {
         logo_shape: logoShape,
         shipment_tagline: shipmentTagline,
         label_fields: labelFields,
+        custom_fields: customFields,
       } as Partial<SettingsT>);
       Alert.alert("Saved", "Settings saved successfully.");
     } catch (e: any) {
@@ -622,6 +640,201 @@ export default function SettingsScreen() {
             ))}
           </Section>
 
+          {/* ==================== Custom Label Fields (Phase B) ==================== */}
+          <Section title="Custom Label Fields (Advanced)" icon="add-circle-outline">
+            <Text style={styles.hint}>
+              Add your own fields that will print on every label — e.g. GST No., FSSAI, a
+              special offer line, an alternate contact, or any business-specific info.
+              Pick exactly where each field appears on the label. Up to 6 custom fields.
+            </Text>
+
+            {customFields.length === 0 && (
+              <View style={styles.emptyCf}>
+                <Ionicons name="layers-outline" size={28} color="#9CA3AF" />
+                <Text style={styles.emptyCfText}>No custom fields yet</Text>
+                <Text style={styles.emptyCfSub}>
+                  Tap "+ Add Custom Field" below to create one.
+                </Text>
+              </View>
+            )}
+
+            {customFields.map((cf, idx) => (
+              <View key={cf.id || `cf-${idx}`} style={styles.cfCard} testID={`cf-card-${idx}`}>
+                <View style={styles.cfHeader}>
+                  <Text style={styles.cfIndex}>#{idx + 1}</Text>
+                  <Switch
+                    testID={`cf-enabled-${idx}`}
+                    value={cf.enabled}
+                    onValueChange={(v) => {
+                      const next = [...customFields];
+                      next[idx] = { ...cf, enabled: v };
+                      setCustomFields(next);
+                    }}
+                    trackColor={{ false: "#E5E7EB", true: colors.primary }}
+                    thumbColor="#fff"
+                  />
+                  <View style={{ flex: 1 }} />
+                  <TouchableOpacity
+                    testID={`cf-delete-${idx}`}
+                    onPress={() =>
+                      Alert.alert(
+                        "Delete custom field?",
+                        `"${cf.label || cf.value || "Untitled"}" will be removed from all labels.`,
+                        [
+                          { text: "Keep", style: "cancel" },
+                          {
+                            text: "Delete",
+                            style: "destructive",
+                            onPress: () =>
+                              setCustomFields(customFields.filter((_, i) => i !== idx)),
+                          },
+                        ]
+                      )
+                    }
+                    style={styles.cfDeleteBtn}
+                    hitSlop={8}
+                  >
+                    <Ionicons name="trash-outline" size={18} color="#B91C1C" />
+                  </TouchableOpacity>
+                </View>
+
+                <View style={styles.cfRow2}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.cfLabel}>Label (prefix)</Text>
+                    <TextInput
+                      testID={`cf-label-input-${idx}`}
+                      value={cf.label}
+                      onChangeText={(t) => {
+                        const next = [...customFields];
+                        next[idx] = { ...cf, label: t };
+                        setCustomFields(next);
+                      }}
+                      placeholder="e.g. GST:"
+                      placeholderTextColor="#9CA3AF"
+                      style={styles.input}
+                    />
+                  </View>
+                  <View style={{ flex: 1.3 }}>
+                    <Text style={styles.cfLabel}>Value</Text>
+                    <TextInput
+                      testID={`cf-value-input-${idx}`}
+                      value={cf.value}
+                      onChangeText={(t) => {
+                        const next = [...customFields];
+                        next[idx] = { ...cf, value: t };
+                        setCustomFields(next);
+                      }}
+                      placeholder="e.g. 24ABCDE1234F1Z5"
+                      placeholderTextColor="#9CA3AF"
+                      style={styles.input}
+                    />
+                  </View>
+                </View>
+
+                <Text style={styles.cfLabel}>Position on label</Text>
+                <ScrollView
+                  horizontal
+                  showsHorizontalScrollIndicator={false}
+                  contentContainerStyle={{ gap: 6, paddingRight: 16 }}
+                >
+                  {([
+                    { k: "header_top",    t: "Top (above brand)" },
+                    { k: "to_block",      t: "In DELIVER TO" },
+                    { k: "notes_area",    t: "Notes area" },
+                    { k: "meta_row",      t: "Wt / Box row" },
+                    { k: "from_block",    t: "In FROM footer" },
+                    { k: "footer_bottom", t: "Very bottom" },
+                  ] as const).map((p) => {
+                    const active = cf.position === p.k;
+                    return (
+                      <TouchableOpacity
+                        key={p.k}
+                        testID={`cf-pos-${idx}-${p.k}`}
+                        onPress={() => {
+                          const next = [...customFields];
+                          next[idx] = { ...cf, position: p.k };
+                          setCustomFields(next);
+                        }}
+                        style={[styles.cfPosPill, active && styles.cfPosPillActive]}
+                      >
+                        <Text style={[styles.cfPosPillText, active && { color: "#fff" }]}>
+                          {p.t}
+                        </Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </ScrollView>
+
+                <View style={styles.cfRow2}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.cfLabel}>Size</Text>
+                    <View style={{ flexDirection: "row", gap: 6 }}>
+                      {(["xs", "sm", "md"] as const).map((sz) => {
+                        const active = (cf.size || "sm") === sz;
+                        return (
+                          <TouchableOpacity
+                            key={sz}
+                            testID={`cf-size-${idx}-${sz}`}
+                            onPress={() => {
+                              const next = [...customFields];
+                              next[idx] = { ...cf, size: sz };
+                              setCustomFields(next);
+                            }}
+                            style={[styles.cfSizePill, active && styles.cfPosPillActive]}
+                          >
+                            <Text style={[styles.cfPosPillText, active && { color: "#fff" }]}>
+                              {sz.toUpperCase()}
+                            </Text>
+                          </TouchableOpacity>
+                        );
+                      })}
+                    </View>
+                  </View>
+                  <View style={[styles.cfBoldRow, { flex: 1 }]}>
+                    <Text style={styles.cfLabel}>Bold value</Text>
+                    <Switch
+                      testID={`cf-bold-${idx}`}
+                      value={cf.bold !== false}
+                      onValueChange={(v) => {
+                        const next = [...customFields];
+                        next[idx] = { ...cf, bold: v };
+                        setCustomFields(next);
+                      }}
+                      trackColor={{ false: "#E5E7EB", true: colors.primary }}
+                      thumbColor="#fff"
+                    />
+                  </View>
+                </View>
+              </View>
+            ))}
+
+            {customFields.length < 6 && (
+              <TouchableOpacity
+                testID="add-custom-field-btn"
+                style={styles.addCfBtn}
+                onPress={() =>
+                  setCustomFields([
+                    ...customFields,
+                    {
+                      id: `cf_${Date.now().toString(36)}`,
+                      label: "",
+                      value: "",
+                      position: "footer_bottom",
+                      enabled: true,
+                      bold: true,
+                      size: "sm",
+                    },
+                  ])
+                }
+              >
+                <Ionicons name="add-circle" size={18} color={colors.primary} />
+                <Text style={styles.addCfBtnText}>
+                  Add Custom Field ({customFields.length}/6)
+                </Text>
+              </TouchableOpacity>
+            )}
+          </Section>
+
           {/* Sender */}
           <Section title="Sender / From Address" icon="business-outline">
             <Field label="Business / Sender Name">
@@ -927,6 +1140,112 @@ const styles = StyleSheet.create({
   },
   switchLabel: { fontWeight: "700", color: colors.text },
   switchHint: { fontSize: 12, color: colors.textMuted, marginTop: 2 },
+
+  /* ---- Custom Label Fields (Phase B) ---- */
+  emptyCf: {
+    alignItems: "center",
+    paddingVertical: 18,
+    paddingHorizontal: 12,
+    backgroundColor: "#F9FAFB",
+    borderRadius: 12,
+    borderWidth: 1,
+    borderStyle: "dashed",
+    borderColor: "#E5E7EB",
+    marginVertical: 8,
+  },
+  emptyCfText: { fontWeight: "800", color: "#4B5563", marginTop: 6 },
+  emptyCfSub: { fontSize: 12, color: "#9CA3AF", marginTop: 2 },
+  cfCard: {
+    backgroundColor: "#F9FAFB",
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#E5E7EB",
+    padding: 12,
+    marginTop: 10,
+    gap: 8,
+  },
+  cfHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  cfIndex: {
+    fontSize: 13,
+    fontWeight: "800",
+    color: "#6B7280",
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    backgroundColor: "#E5E7EB",
+    borderRadius: 8,
+  },
+  cfDeleteBtn: {
+    padding: 6,
+    borderRadius: 8,
+    backgroundColor: "#FEF2F2",
+    borderWidth: 1,
+    borderColor: "#FECACA",
+  },
+  cfRow2: { flexDirection: "row", gap: 8 },
+  cfLabel: {
+    fontSize: 11.5,
+    fontWeight: "700",
+    color: "#6B7280",
+    textTransform: "uppercase",
+    letterSpacing: 0.4,
+    marginBottom: 4,
+    marginTop: 2,
+  },
+  cfPosPill: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "#E5E7EB",
+    backgroundColor: "#fff",
+  },
+  cfPosPillActive: {
+    backgroundColor: colors.primary,
+    borderColor: colors.primary,
+  },
+  cfPosPillText: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: colors.text,
+  },
+  cfSizePill: {
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: "#E5E7EB",
+    backgroundColor: "#fff",
+    alignItems: "center",
+    minWidth: 50,
+  },
+  cfBoldRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingTop: 4,
+  },
+  addCfBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    marginTop: 12,
+    paddingVertical: 12,
+    borderRadius: 12,
+    borderWidth: 2,
+    borderStyle: "dashed",
+    borderColor: colors.primary,
+    backgroundColor: "#FFF7ED",
+  },
+  addCfBtnText: {
+    color: colors.primary,
+    fontWeight: "800",
+    fontSize: 14,
+  },
   saveBtn: {
     flexDirection: "row",
     alignItems: "center",
