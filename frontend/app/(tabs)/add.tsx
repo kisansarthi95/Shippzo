@@ -329,6 +329,27 @@ export default function AddShipment() {
         );
         return;
       }
+      // Hard block: Prepaid + token is a data-entry mistake (full amount
+      // already paid — token makes no sense). User must either clear token
+      // or switch to COD.
+      if (paymentMode === "Prepaid" && Number(tokenAmount) > 0) {
+        Alert.alert(
+          "Token not valid for Prepaid",
+          "This order is Prepaid (full amount already paid). A Token/Advance only makes sense for COD. Please clear the token amount OR switch payment mode to COD.",
+          [
+            { text: "Keep editing", style: "cancel" },
+            {
+              text: "Clear token",
+              onPress: () => setTokenAmount(""),
+            },
+            {
+              text: "Switch to COD",
+              onPress: () => setPaymentMode("COD"),
+            },
+          ]
+        );
+        return;
+      }
       if (!customerName.trim()) {
         Alert.alert("Validation", "Customer name is required");
         return;
@@ -831,7 +852,9 @@ export default function AddShipment() {
                 </View>
               </View>
             </Field>
-            {/* Token / Advance (shown for COD especially, but useful for all) */}
+            {/* Token / Advance — only meaningful for COD.
+                If user fills this while Prepaid is selected → we block Save
+                and show inline error (common typing-habit mistake). */}
             <Field label="Token / Advance Paid (optional)">
               <View style={{ flexDirection: "row", gap: 8, alignItems: "center" }}>
                 <View style={{ flex: 1 }}>
@@ -839,16 +862,28 @@ export default function AddShipment() {
                     testID="token-amount-input"
                     value={tokenAmount}
                     onChangeText={setTokenAmount}
-                    placeholder="e.g. 50"
+                    placeholder={paymentMode === "Prepaid" ? "Not needed for Prepaid" : "e.g. 50"}
                     placeholderTextColor="#9CA3AF"
                     keyboardType="decimal-pad"
-                    style={styles.input}
+                    style={[
+                      styles.input,
+                      paymentMode === "Prepaid" && Number(tokenAmount) > 0 && styles.inputError,
+                    ]}
                   />
                 </View>
                 <View style={{ flex: 1 }}>
                   {(() => {
                     const total = Number(amount) || 0;
                     const tok = Number(tokenAmount) || 0;
+                    if (paymentMode === "Prepaid") {
+                      return (
+                        <View style={[styles.input, { justifyContent: "center", backgroundColor: "#ECFDF5", borderColor: "#A7F3D0" }]}>
+                          <Text style={{ color: "#047857", fontWeight: "800" }}>
+                            Already paid ✓
+                          </Text>
+                        </View>
+                      );
+                    }
                     const cod = Math.max(0, total - tok);
                     return (
                       <View style={[styles.input, { justifyContent: "center", backgroundColor: "#F9FAFB" }]}>
@@ -860,9 +895,33 @@ export default function AddShipment() {
                   })()}
                 </View>
               </View>
-              <Text style={styles.hint}>
-                Prepaid portion already collected. Remaining shown on label.
-              </Text>
+
+              {/* Inline error: Prepaid + token > 0 is invalid */}
+              {paymentMode === "Prepaid" && Number(tokenAmount) > 0 ? (
+                <View style={styles.tokenErrorBox} testID="token-prepaid-error">
+                  <Ionicons name="alert-circle" size={16} color="#B91C1C" />
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.tokenErrorTitle}>
+                      Token is not valid for Prepaid
+                    </Text>
+                    <Text style={styles.tokenErrorSub}>
+                      Prepaid orders are already fully paid. Remove the token or switch to COD.
+                    </Text>
+                  </View>
+                  <TouchableOpacity
+                    testID="clear-token-btn"
+                    onPress={() => setTokenAmount("")}
+                    style={styles.tokenErrorClearBtn}
+                    hitSlop={8}
+                  >
+                    <Text style={styles.tokenErrorClearText}>Clear</Text>
+                  </TouchableOpacity>
+                </View>
+              ) : paymentMode === "COD" ? (
+                <Text style={styles.hint}>
+                  Advance already collected is deducted from COD to collect.
+                </Text>
+              ) : null}
             </Field>
             <Field label="Box Dimensions (optional)">
               <TextInput
@@ -1249,6 +1308,46 @@ const styles = StyleSheet.create({
     borderRadius: 12,
   },
   cancelBtnText: { fontWeight: "800", color: "#B91C1C" },
+
+  /* Inline validation: token + Prepaid mismatch */
+  inputError: {
+    borderColor: "#DC2626",
+    backgroundColor: "#FEF2F2",
+  },
+  tokenErrorBox: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    marginTop: 8,
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+    backgroundColor: "#FEF2F2",
+    borderColor: "#FECACA",
+    borderWidth: 1,
+    borderRadius: 10,
+  },
+  tokenErrorTitle: {
+    fontSize: 13,
+    fontWeight: "800",
+    color: "#B91C1C",
+  },
+  tokenErrorSub: {
+    fontSize: 11.5,
+    color: "#7F1D1D",
+    marginTop: 1,
+    lineHeight: 15,
+  },
+  tokenErrorClearBtn: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    backgroundColor: "#B91C1C",
+    borderRadius: 8,
+  },
+  tokenErrorClearText: {
+    color: "#fff",
+    fontWeight: "800",
+    fontSize: 12,
+  },
   secondaryBtn: {
     flex: 1,
     flexDirection: "row",
