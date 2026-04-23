@@ -134,6 +134,97 @@ async def auth_logout():
     return {"ok": True}
 
 
+# --- Google OAuth (Emergent hosted) -----------------------------------
+#
+# Flow (web-only via Emergent Auth):
+#   1. Frontend redirects to https://auth.emergentagent.com/?redirect=<origin>/
+#   2. After Google consent user is sent back to <origin>/#session_id=XXXX
+#   3. Frontend extracts session_id and POSTs it here.
+#   4. We exchange it server-side against Emergent's /session-data endpoint
+#      (NEVER call that from the browser — it leaks the session_token).
+#   5. If the email is new → we create a user, seed demo data (or claim legacy
+#      rows if they're the very first signup). If it exists → we log them in.
+#   6. We respond with the same JWT shape as /auth/login so the client can
+#      stash it identically.
+#
+# REMINDER: DO NOT HARDCODE THE URL, OR ADD ANY FALLBACKS OR REDIRECT URLS,
+# THIS BREAKS THE AUTH — the redirect origin is derived from window.location
+# on the client (see login.tsx).
+class GoogleSessionRequest(BaseModel):
+    session_id: str
+
+
+@auth_router.post("/google/session")
+async def auth_google_session(payload: GoogleSessionRequest):
+    if not payload.session_id or len(payload.session_id) < 8:
+        raise HTTPException(status_code=400, detail="Missing session_id")
+    # 1. Exchange session_id → user profile via Emergent Auth.
+    async with httpx.AsyncClient(timeout=15) as cli:
+        try:
+            r = await cli.get(
+                "https://demobackend.emergentagent.com/auth/v1/env/oauth/session-data",
+                headers={"X-Session-ID": payload.session_id},
+            )
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"Emergent Auth unreachable: {e}")
+    if r.status_code != 200:
+        raise HTTPException(
+            status_code=401,
+            detail=f"Google session rejected (status {r.status_code})",
+        )
+    try:
+        prof = r.json()
+    except Exception:
+        raise HTTPException(status_code=502, detail="Invalid response from Emergent Auth")
+    email = (prof.get("email") or "").strip().lower()
+    if not email:
+        raise HTTPException(status_code=400, detail="Google profile missing email")
+
+    # 2. Find-or-create the user. Email is the unique key.
+    user = await db.users.find_one({"email": email})
+    now = auth_utcnow_iso()
+    if user is None:
+        is_first = (await db.users.count_documents({})) == 0
+        uid = str(uuid.uuid4())
+        user_doc = {
+            "id": uid,
+            "email": email,
+            # Social users have no password; the email/password login endpoint
+            # will reject this account (empty hash → verify_password = False).
+            "password_hash": "",
+            "name": prof.get("name") or email.split("@")[0],
+            "shop_name": "",
+            "picture": prof.get("picture") or "",
+            "auth_provider": "google",
+            "is_admin": is_first,
+            "plan": "free_trial",
+            "created_at": now,
+        }
+        await db.users.insert_one(user_doc)
+        if is_first:
+            claimed = await claim_legacy_data_for_admin(db, uid)
+            logger.info(f"Google-admin {email} claimed legacy rows: {claimed}")
+        else:
+            cid = await seed_default_courier(db, uid)
+            await seed_demo_shipments(db, uid, cid)
+        user = user_doc
+    else:
+        # Ensure the existing user is marked as Google-linked (useful later).
+        update: Dict[str, Any] = {}
+        if not user.get("auth_provider"):
+            update["auth_provider"] = "google"
+        if prof.get("picture") and prof.get("picture") != user.get("picture"):
+            update["picture"] = prof["picture"]
+        if prof.get("name") and not user.get("name"):
+            update["name"] = prof["name"]
+        if update:
+            await db.users.update_one({"id": user["id"]}, {"$set": update})
+            user.update(update)
+
+    token = make_token(user["id"], email)
+    return {**user_public(user), "token": token}
+
+
 # --- Demo data clear (per-user) ---------------------------------------
 
 @api_router.post("/demo/clear")

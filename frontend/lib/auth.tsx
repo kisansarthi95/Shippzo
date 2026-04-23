@@ -32,6 +32,7 @@ type AuthState = {
   loading: boolean;
   signIn: (email: string, password: string) => Promise<void>;
   signUp: (email: string, password: string, name: string, shop_name: string) => Promise<void>;
+  signInWithGoogleSession: (sessionId: string) => Promise<void>;
   signOut: () => Promise<void>;
   refresh: () => Promise<void>;
 };
@@ -103,6 +104,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     await persist(tok, userFields as User);
   }, [persist]);
 
+  /**
+   * Exchange an Emergent Google OAuth session_id for our own JWT. The
+   * session_id is the one-time token the Emergent Auth page drops into
+   * `window.location.hash#session_id=...` after a successful Google login.
+   */
+  const signInWithGoogleSession = useCallback(async (sessionId: string) => {
+    const r = await api.post<{ token: string } & User>("/auth/google/session", {
+      session_id: sessionId,
+    });
+    const { token: tok, ...userFields } = r.data;
+    await persist(tok, userFields as User);
+  }, [persist]);
+
   const signOut = useCallback(async () => {
     try { await api.post("/auth/logout"); } catch {}
     applyTokenToAxios(null);
@@ -123,7 +137,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [token, signOut]);
 
   return (
-    <AuthCtx.Provider value={{ user, token, loading, signIn, signUp, signOut, refresh }}>
+    <AuthCtx.Provider
+      value={{
+        user, token, loading,
+        signIn, signUp, signInWithGoogleSession, signOut, refresh,
+      }}
+    >
       {children}
     </AuthCtx.Provider>
   );

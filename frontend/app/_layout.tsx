@@ -1,8 +1,8 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Stack, useRouter, useSegments } from "expo-router";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { StatusBar } from "expo-status-bar";
-import { Platform, View, ActivityIndicator } from "react-native";
+import { Platform, View, ActivityIndicator, Text } from "react-native";
 import * as SplashScreen from "expo-splash-screen";
 import { Ionicons } from "@expo/vector-icons";
 import { AuthProvider, useAuth } from "../lib/auth";
@@ -99,24 +99,70 @@ export default function RootLayout() {
 
 /** Redirect between (auth) and (tabs) based on login state. */
 function AuthGate({ children }: { children: React.ReactNode }) {
-  const { user, loading } = useAuth();
+  const { user, loading, signInWithGoogleSession } = useAuth();
   const segments = useSegments();
   const router = useRouter();
 
+  // --------- Emergent Google OAuth callback handling (web only) ----------
+  // After successful Google consent the user is bounced to:
+  //   <origin>/#session_id=XXXXXXX
+  // We exchange it against our backend for a JWT exactly once.
+  // REMINDER: DO NOT HARDCODE THE URL, OR ADD ANY FALLBACKS OR REDIRECT URLS,
+  // THIS BREAKS THE AUTH — the redirect is resolved from window.location.
+  const [oauthBusy, setOauthBusy] = useState(false);
+  const oauthConsumed = useRef(false);
+
   useEffect(() => {
-    if (loading) return;
+    if (Platform.OS !== "web") return;
+    if (oauthConsumed.current) return;
+    try {
+      const hash = (typeof window !== "undefined" && window.location?.hash) || "";
+      const m = hash.match(/session_id=([^&]+)/);
+      if (!m) return;
+      oauthConsumed.current = true;
+      setOauthBusy(true);
+      const sid = decodeURIComponent(m[1]);
+      // Wipe the fragment so a reload doesn't replay it.
+      try {
+        const clean = window.location.pathname + window.location.search;
+        window.history.replaceState({}, document.title, clean);
+      } catch {
+        /* ignore */
+      }
+      (async () => {
+        try {
+          await signInWithGoogleSession(sid);
+        } catch {
+          // AuthCtx surfaces errors via the login screen; we just clear the
+          // flag so the user can retry.
+        } finally {
+          setOauthBusy(false);
+        }
+      })();
+    } catch {
+      /* no window in server render */
+    }
+  }, [signInWithGoogleSession]);
+
+  useEffect(() => {
+    if (loading || oauthBusy) return;
     const inAuthGroup = segments[0] === "(auth)";
     if (!user && !inAuthGroup) {
       router.replace("/(auth)/login");
     } else if (user && inAuthGroup) {
       router.replace("/(tabs)");
     }
-  }, [user, loading, segments, router]);
+  }, [user, loading, oauthBusy, segments, router]);
 
-  if (loading) {
+  if (loading || oauthBusy) {
     return (
       <View style={{ flex: 1, justifyContent: "center", alignItems: "center", backgroundColor: "#F4F5F7" }}>
         <ActivityIndicator color="#111" />
+        {oauthBusy ? (
+          <Text style={{ marginTop: 12, color: "#64748B", fontSize: 13 }}>
+            Signing you in…
+          </Text>
+        ) : null}
       </View>
     );
   }

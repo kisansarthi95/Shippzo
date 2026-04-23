@@ -8,6 +8,7 @@ import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useAuth } from "../../lib/auth";
 import { colors } from "../../lib/theme";
+import GoogleSignInButton from "../../components/GoogleSignInButton";
 
 export default function SignupScreen() {
   const { signUp } = useAuth();
@@ -116,6 +117,14 @@ export default function SignupScreen() {
                 : <Text style={styles.primaryBtnText}>Create account</Text>}
             </TouchableOpacity>
 
+            <View style={styles.divider}>
+              <View style={styles.dividerLine} />
+              <Text style={styles.dividerText}>OR</Text>
+              <View style={styles.dividerLine} />
+            </View>
+
+            <GoogleSignInButton label="Sign up with Google" />
+
             <View style={styles.footerRow}>
               <Text style={styles.footerText}>Already have an account?</Text>
               <TouchableOpacity onPress={() => router.push("/(auth)/login")}>
@@ -161,6 +170,14 @@ const styles = StyleSheet.create({
     justifyContent: "center", alignItems: "center",
   },
   primaryBtnText: { color: "#fff", fontWeight: "800", fontSize: 15 },
+  divider: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    marginVertical: 16,
+  },
+  dividerLine: { flex: 1, height: 1, backgroundColor: "#E5E7EB" },
+  dividerText: { fontSize: 11, fontWeight: "700", color: "#94A3B8", letterSpacing: 1 },
   footerRow: {
     flexDirection: "row", gap: 6,
     justifyContent: "center", alignItems: "center", marginTop: 18,

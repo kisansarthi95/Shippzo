@@ -8,6 +8,7 @@ import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useAuth } from "../../lib/auth";
 import { colors } from "../../lib/theme";
+import GoogleSignInButton from "../../components/GoogleSignInButton";
 
 export default function LoginScreen() {
   const { signIn } = useAuth();
@@ -89,6 +90,14 @@ export default function LoginScreen() {
                 ? <ActivityIndicator color="#fff" />
                 : <Text style={styles.primaryBtnText}>Log in</Text>}
             </TouchableOpacity>
+
+            <View style={styles.divider}>
+              <View style={styles.dividerLine} />
+              <Text style={styles.dividerText}>OR</Text>
+              <View style={styles.dividerLine} />
+            </View>
+
+            <GoogleSignInButton label="Continue with Google" />
 
             <View style={styles.footerRow}>
               <Text style={styles.footerText}>New here?</Text>
