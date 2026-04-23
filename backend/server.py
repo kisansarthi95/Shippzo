@@ -1,8 +1,17 @@
-from fastapi import FastAPI, APIRouter, HTTPException
+from fastapi import FastAPI, APIRouter, HTTPException, Depends
 from fastapi.responses import PlainTextResponse
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
+
+# Phase-1 auth (email+password, JWT, per-user data isolation)
+from auth import (
+    SignupRequest, LoginRequest, UserPublic,
+    hash_password, verify_password, make_token, user_public,
+    get_current_user_factory, utcnow_iso as auth_utcnow_iso,
+    seed_demo_shipments, seed_default_courier, claim_legacy_data_for_admin,
+)
+from fastapi import Depends as _AuthDepends  # noqa: F401
 import os
 import io
 import csv
@@ -33,12 +42,113 @@ except Exception as _sheet_import_err:  # pragma: no cover
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
+# FastAPI app + routers must be declared BEFORE endpoint decorators
+# (auth_router is referenced by the @auth_router.post decorators below).
+app = FastAPI()
+api_router = APIRouter(prefix="/api")
+auth_router = APIRouter(prefix="/api/auth", tags=["auth"])
+
+
+def _user_q(user: Dict[str, Any], extra: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Return a Mongo filter scoped to this user's data. Prevents users
+    from reading/writing each other's shipments/couriers/settings."""
+    q = {"user_id": user["id"]}
+    if extra:
+        q.update(extra)
+    return q
+
+
 mongo_url = os.environ['MONGO_URL']
 client = AsyncIOMotorClient(mongo_url)
 db = client[os.environ['DB_NAME']]
 
-app = FastAPI()
-api_router = APIRouter(prefix="/api")
+# Bind the auth dependency now that `db` exists.
+get_current_user = get_current_user_factory(db)
+
+
+# --- Auth endpoints ---------------------------------------------------
+
+@auth_router.post("/signup")
+async def auth_signup(payload: SignupRequest):
+    """Create a new account + seed per-user data.
+
+    The very first signup becomes the `admin` and inherits any existing
+    pre-multi-tenant data (shipments/couriers/settings that have no
+    user_id yet). All subsequent signups get a fresh workspace with 15
+    demo shipments + 1 starter courier.
+    """
+    email = payload.email.lower().strip()
+    if await db.users.find_one({"email": email}):
+        raise HTTPException(status_code=400, detail="Email already registered")
+
+    now = auth_utcnow_iso()
+    is_first = (await db.users.count_documents({})) == 0
+    uid = str(uuid.uuid4())
+    user_doc = {
+        "id": uid,
+        "email": email,
+        "password_hash": hash_password(payload.password),
+        "name": payload.name.strip(),
+        "shop_name": payload.shop_name.strip(),
+        "is_admin": is_first,
+        "plan": "free_trial",
+        "created_at": now,
+    }
+    await db.users.insert_one(user_doc)
+
+    if is_first:
+        # Developer/admin account — inherits the legacy rows so nothing is orphaned.
+        claimed = await claim_legacy_data_for_admin(db, uid)
+        logger.info(f"Admin {email} claimed legacy rows: {claimed}")
+    else:
+        # Fresh user — seed starter courier + 15 demo shipments.
+        cid = await seed_default_courier(db, uid)
+        await seed_demo_shipments(db, uid, cid)
+
+    token = make_token(uid, email)
+    out = user_public(user_doc)
+    out["_token"] = token  # stashed for the /signup response
+    return {**user_public(user_doc), **{"token": token}}  # type: ignore
+
+
+@auth_router.post("/login")
+async def auth_login(payload: LoginRequest):
+    email = payload.email.lower().strip()
+    user = await db.users.find_one({"email": email})
+    if not user or not verify_password(payload.password, user.get("password_hash", "")):
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+    token = make_token(user["id"], email)
+    return {**user_public(user), "token": token}
+
+
+@auth_router.get("/me", response_model=UserPublic)
+async def auth_me(current_user: Dict[str, Any] = Depends(get_current_user)):
+    return user_public(current_user)
+
+
+@auth_router.post("/logout")
+async def auth_logout():
+    # JWT is stateless; the client just drops the token. This endpoint
+    # exists so the frontend has something consistent to call (e.g. for
+    # analytics or future server-side revocation lists).
+    return {"ok": True}
+
+
+# --- Demo data clear (per-user) ---------------------------------------
+
+@api_router.post("/demo/clear")
+async def clear_demo_data(current_user: Dict[str, Any] = Depends(get_current_user)):
+    """Removes every row still flagged `is_demo: True` for this user.
+    Non-demo (real) shipments are never touched, so running this after
+    a user has added real orders is safe. Demo rows have no Sheet row,
+    so no tombstone write is needed."""
+    res = await db.shipments.delete_many({"user_id": current_user["id"], "is_demo": True})
+    return {"ok": True, "deleted": res.deleted_count}
+
+
+# --------------------------------------------------------------------
+# (app + router setup moved to top of file for decorator availability)
+# --------------------------------------------------------------------
 
 
 def utcnow_iso() -> str:
@@ -371,25 +481,33 @@ async def root():
 # -------- Couriers --------
 
 @api_router.get("/couriers", response_model=List[Courier])
-async def list_couriers():
-    docs = await db.couriers.find({}, {"_id": 0}).sort("created_at", 1).to_list(200)
+async def list_couriers(current_user: Dict[str, Any] = Depends(get_current_user)):
+    docs = await db.couriers.find({"user_id": current_user["id"]}, {"_id": 0}).sort("created_at", 1).to_list(200)
     return [Courier(**d) for d in docs]
 
 
 @api_router.post("/couriers", response_model=Courier)
-async def create_courier(payload: CourierCreate):
+async def create_courier(
+    payload: CourierCreate,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
     courier = Courier(**payload.model_dump())
-    await db.couriers.insert_one(courier.model_dump())
+    doc = courier.model_dump()
+    doc["user_id"] = current_user["id"]
+    await db.couriers.insert_one(doc)
     return courier
 
 
 @api_router.put("/couriers/{courier_id}", response_model=Courier)
-async def update_courier(courier_id: str, payload: CourierUpdate):
+async def update_courier(
+    courier_id: str, payload: CourierUpdate,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
     update = {k: v for k, v in payload.model_dump().items() if v is not None}
     if not update:
         raise HTTPException(status_code=400, detail="No fields to update")
     res = await db.couriers.find_one_and_update(
-        {"id": courier_id}, {"$set": update}, return_document=True
+        {"id": courier_id, "user_id": current_user["id"]}, {"$set": update}, return_document=True
     )
     if not res:
         raise HTTPException(status_code=404, detail="Courier not found")
@@ -397,24 +515,33 @@ async def update_courier(courier_id: str, payload: CourierUpdate):
 
 
 @api_router.delete("/couriers/{courier_id}")
-async def delete_courier(courier_id: str):
-    res = await db.couriers.delete_one({"id": courier_id})
+async def delete_courier(
+    courier_id: str,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    res = await db.couriers.delete_one({"id": courier_id, "user_id": current_user["id"]})
     if res.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Courier not found")
     return {"ok": True}
 
 
 @api_router.get("/couriers/{courier_id}", response_model=Courier)
-async def get_courier(courier_id: str):
-    doc = await db.couriers.find_one({"id": courier_id}, {"_id": 0})
+async def get_courier(
+    courier_id: str,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    doc = await db.couriers.find_one({"id": courier_id, "user_id": current_user["id"]}, {"_id": 0})
     if not doc:
         raise HTTPException(status_code=404, detail="Courier not found")
     return Courier(**doc)
 
 
 @api_router.get("/couriers/{courier_id}/next-tracking")
-async def peek_next_tracking(courier_id: str):
-    doc = await db.couriers.find_one({"id": courier_id}, {"_id": 0})
+async def peek_next_tracking(
+    courier_id: str,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    doc = await db.couriers.find_one({"id": courier_id, "user_id": current_user["id"]}, {"_id": 0})
     if not doc:
         raise HTTPException(status_code=404, detail="Courier not found")
     c = Courier(**doc)
@@ -423,30 +550,41 @@ async def peek_next_tracking(courier_id: str):
 
 
 @api_router.post("/couriers/{courier_id}/consume-tracking")
-async def consume_tracking(courier_id: str):
-    doc = await db.couriers.find_one({"id": courier_id}, {"_id": 0})
+async def consume_tracking(
+    courier_id: str,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    doc = await db.couriers.find_one({"id": courier_id, "user_id": current_user["id"]}, {"_id": 0})
     if not doc:
         raise HTTPException(status_code=404, detail="Courier not found")
     c = Courier(**doc)
     tid = f"{c.series_prefix}{str(c.next_number).zfill(c.number_padding)}"
-    await db.couriers.update_one({"id": courier_id}, {"$inc": {"next_number": 1}})
+    await db.couriers.update_one({"id": courier_id, "user_id": current_user["id"]}, {"$inc": {"next_number": 1}})
     return {"tracking_id": tid}
 
 
 # -------- Settings --------
 
 @api_router.get("/settings", response_model=Settings)
-async def get_settings():
-    doc = await db.settings.find_one({"id": "default"}, {"_id": 0})
+async def get_settings(current_user: Dict[str, Any] = Depends(get_current_user)):
+    # Each user has their own settings doc. If missing, create a fresh one
+    # tagged with this user's id so future reads/writes find it.
+    doc = await db.settings.find_one({"user_id": current_user["id"]}, {"_id": 0})
     if not doc:
         s = Settings()
-        await db.settings.insert_one(s.model_dump())
+        d = s.model_dump()
+        d["user_id"] = current_user["id"]
+        d["id"] = f"settings_{current_user['id'][:8]}"
+        await db.settings.insert_one(d)
         return s
     return Settings(**doc)
 
 
 @api_router.put("/settings", response_model=Settings)
-async def update_settings(payload: SettingsUpdate):
+async def update_settings(
+    payload: SettingsUpdate,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
     update: Dict[str, Any] = {}
     if payload.sender is not None:
         update["sender"] = payload.sender.model_dump()
@@ -681,8 +819,10 @@ async def list_shipments(
     courier_id: Optional[str] = None,
     search: Optional[str] = None,
     limit: int = 500,
+    current_user: Dict[str, Any] = Depends(get_current_user),
 ):
-    q: dict = {}
+    # Always scope to the logged-in user so one tenant never sees another's data.
+    q: dict = {"user_id": current_user["id"]}
     if status:
         q["status"] = status
     if courier_id:
@@ -700,9 +840,10 @@ async def list_shipments(
 
 
 @api_router.get("/shipments/stats")
-async def shipments_stats():
-    total = await db.shipments.count_documents({})
-    delivered = await db.shipments.count_documents({"status": "Delivered"})
+async def shipments_stats(current_user: Dict[str, Any] = Depends(get_current_user)):
+    base = {"user_id": current_user["id"]}
+    total = await db.shipments.count_documents(base)
+    delivered = await db.shipments.count_documents({**base, "status": "Delivered"})
     pending = await db.shipments.count_documents({"status": "Pending"})
     cod_cursor = db.shipments.aggregate([
         {"$match": {"payment_mode": "COD", "status": {"$ne": "Cancelled"}}},
@@ -1272,7 +1413,10 @@ async def smart_paste_check_duplicate(payload: SmartPasteRequest):
 
 
 @api_router.post("/smart-paste", response_model=PendingOrder)
-async def smart_paste_create(payload: SmartPasteRequest):
+async def smart_paste_create(
+    payload: SmartPasteRequest,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
     """
     Parse text → write to Google Sheet (Master) → save PendingOrder to Mongo.
 
@@ -1347,6 +1491,7 @@ async def smart_paste_create(payload: SmartPasteRequest):
     # Stash sheet-write metadata on the model's raw_text for debugging if needed
     doc = po.model_dump()
     doc["_sheet_meta"] = sheet_meta
+    doc["user_id"] = current_user["id"]
     await db.pending_orders.insert_one(doc)
     return po
 
@@ -1522,6 +1667,49 @@ async def pending_orders_count():
 # ---------------------- App setup ----------------------
 
 app.include_router(api_router)
+app.include_router(auth_router)
+
+
+# --------------------------------------------------------------------
+# Auth middleware — requires a valid bearer token on every /api/*
+# route except /api/auth/* (signup/login/me/logout are public/self-auth).
+# This is the Phase-1a lock that prevents unauthenticated API access.
+# Per-route user_id filtering (data isolation) comes in Phase-1b.
+# --------------------------------------------------------------------
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import JSONResponse
+from auth import decode_token as _decode_token
+
+# Endpoints that are intentionally reachable without a token.
+_AUTH_EXEMPT_PREFIXES = ("/api/auth/",)
+# Admin-only endpoints. For Phase-1a we keep this small; Phase-1b will
+# expand as we harden multi-tenancy.
+_ADMIN_ONLY_PATHS: set = set()
+
+
+@app.middleware("http")
+async def auth_gate(request, call_next):
+    path = request.url.path or ""
+    if not path.startswith("/api/"):
+        return await call_next(request)
+    if any(path.startswith(p) for p in _AUTH_EXEMPT_PREFIXES):
+        return await call_next(request)
+    auth_hdr = request.headers.get("authorization") or request.headers.get("Authorization") or ""
+    if not auth_hdr.lower().startswith("bearer "):
+        return JSONResponse(
+            status_code=401,
+            content={"detail": "Authentication required"},
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    token = auth_hdr.split(" ", 1)[1].strip()
+    try:
+        payload = _decode_token(token)
+    except HTTPException as e:
+        return JSONResponse(status_code=e.status_code, content={"detail": e.detail})
+    # Stash for any handler that wants it (Phase-1b will filter queries here).
+    request.state.user_id = payload.get("sub")
+    request.state.user_email = payload.get("email")
+    return await call_next(request)
 
 app.add_middleware(
     CORSMiddleware,
