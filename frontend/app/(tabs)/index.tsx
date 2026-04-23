@@ -95,17 +95,72 @@ export default function Dashboard() {
         setPasting(false);
         return;
       }
-      // Happy path: parse + save directly
+      // Happy path: check duplicates → confirm → save.
+      await runWithDuplicateGuard(text);
+    } catch (e: any) {
+      setPasting(false);
+      Alert.alert("Paste failed", e?.response?.data?.detail || e?.message || "Try again");
+    }
+  };
+
+  /**
+   * Run Smart Paste WITH duplicate detection. If the backend finds matches
+   * on phone or order_id, show a confirmation dialog listing them. The
+   * user can cancel, or proceed anyway (e.g., same customer ordering a
+   * new item).
+   */
+  const runWithDuplicateGuard = async (text: string) => {
+    try {
+      const dup = await Api.smartPasteCheckDuplicate(text);
+      if (dup.duplicates && dup.duplicates.length > 0) {
+        setPasting(false);
+        const lines = dup.duplicates
+          .map((d, i) => {
+            const id = d.kind === "shipment" ? d.tracking_id : `PEND ${String(d.id).slice(0, 6)}`;
+            const why = (d.match_on || []).join(" + ") || "match";
+            const oid = d.order_id ? ` · #${d.order_id}` : "";
+            return `${i + 1}. ${id} — ${d.customer_name}${oid}  (${why})`;
+          })
+          .join("\n");
+        Alert.alert(
+          "Possible duplicate",
+          `Found ${dup.duplicates.length} existing order${
+            dup.duplicates.length > 1 ? "s" : ""
+          } with the same phone/order ID:\n\n${lines}\n\nCreate this order anyway?`,
+          [
+            { text: "Cancel", style: "cancel" },
+            {
+              text: "Create anyway",
+              style: "destructive",
+              onPress: async () => {
+                setPasting(true);
+                try {
+                  await Api.smartPasteCreate(text);
+                  Alert.alert("Added", "Order queued in Orders tab.", [
+                    { text: "OK", style: "cancel" },
+                    { text: "View Orders →", onPress: () => router.push("/orders") },
+                  ]);
+                } catch (err: any) {
+                  Alert.alert(
+                    "Paste failed",
+                    err?.response?.data?.detail || err?.message || "Try again"
+                  );
+                } finally {
+                  setPasting(false);
+                }
+              },
+            },
+          ]
+        );
+        return;
+      }
+      // No duplicates → create directly.
       await Api.smartPasteCreate(text);
       setPasting(false);
-      Alert.alert(
-        "✅ Order added",
-        "Order queued in Orders tab. Ready to ship.",
-        [
-          { text: "OK", style: "cancel" },
-          { text: "View Orders →", onPress: () => router.push("/orders") },
-        ]
-      );
+      Alert.alert("✅ Order added", "Order queued in Orders tab. Ready to ship.", [
+        { text: "OK", style: "cancel" },
+        { text: "View Orders →", onPress: () => router.push("/orders") },
+      ]);
     } catch (e: any) {
       setPasting(false);
       Alert.alert("Paste failed", e?.response?.data?.detail || e?.message || "Try again");
@@ -119,6 +174,51 @@ export default function Dashboard() {
     }
     try {
       setPasting(true);
+      const dup = await Api.smartPasteCheckDuplicate(pasteText);
+      if (dup.duplicates && dup.duplicates.length > 0) {
+        setPasting(false);
+        const lines = dup.duplicates
+          .map((d, i) => {
+            const id = d.kind === "shipment" ? d.tracking_id : `PEND ${String(d.id).slice(0, 6)}`;
+            const why = (d.match_on || []).join(" + ") || "match";
+            const oid = d.order_id ? ` · #${d.order_id}` : "";
+            return `${i + 1}. ${id} — ${d.customer_name}${oid}  (${why})`;
+          })
+          .join("\n");
+        Alert.alert(
+          "Possible duplicate",
+          `Found ${dup.duplicates.length} existing order${
+            dup.duplicates.length > 1 ? "s" : ""
+          } with the same phone/order ID:\n\n${lines}\n\nCreate this order anyway?`,
+          [
+            { text: "Cancel", style: "cancel" },
+            {
+              text: "Create anyway",
+              style: "destructive",
+              onPress: async () => {
+                setPasting(true);
+                try {
+                  await Api.smartPasteCreate(pasteText);
+                  setPasteModalOpen(false);
+                  setPasteText("");
+                  Alert.alert("Added", "Order queued in Orders tab.", [
+                    { text: "OK", style: "cancel" },
+                    { text: "View Orders →", onPress: () => router.push("/orders") },
+                  ]);
+                } catch (err: any) {
+                  Alert.alert(
+                    "Paste failed",
+                    err?.response?.data?.detail || err?.message || "Try again"
+                  );
+                } finally {
+                  setPasting(false);
+                }
+              },
+            },
+          ]
+        );
+        return;
+      }
       await Api.smartPasteCreate(pasteText);
       setPasting(false);
       setPasteModalOpen(false);

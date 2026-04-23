@@ -223,6 +223,23 @@ export const Api = {
   smartPasteParse: (text: string) =>
     api.post<{ fields: any; confidence: any; warnings: string[] }>("/smart-paste/parse", { text })
       .then((r) => r.data),
+  smartPasteCheckDuplicate: (text: string) =>
+    api.post<{
+      fields: any;
+      confidence: any;
+      warnings: string[];
+      duplicates: Array<{
+        kind: "pending" | "shipment";
+        id: string;
+        tracking_id?: string;
+        customer_name: string;
+        customer_phone: string;
+        order_id: string;
+        status: string;
+        created_at: string;
+        match_on: string[];
+      }>;
+    }>("/smart-paste/check-duplicate", { text }).then((r) => r.data),
   smartPasteCreate: (text: string) =>
     api.post<PendingOrder>("/smart-paste", { text }).then((r) => r.data),
   listPendingOrders: (params?: { source?: string; status?: string }) =>

@@ -1129,6 +1129,138 @@ async def smart_paste_parse(payload: SmartPasteRequest):
     return parse_structured_paste(payload.text or "")
 
 
+# ----------------------------------------------------------------------
+# Duplicate detection — Smart Paste MVP Phase 2
+# ----------------------------------------------------------------------
+
+def _clean_phone(p: str) -> str:
+    """Normalise a phone string to last 10 digits for robust matching."""
+    if not p:
+        return ""
+    digits = "".join(c for c in str(p) if c.isdigit())
+    return digits[-10:] if len(digits) >= 10 else digits
+
+
+async def find_duplicate_matches(
+    phone: Optional[str],
+    order_id: Optional[str],
+    limit: int = 5,
+) -> List[Dict[str, Any]]:
+    """Return a list of duplicate candidates across pending orders and
+    shipments. Matches are keyed on (a) last-10-digits of phone, and
+    (b) exact order_id (case-insensitive trimmed).
+
+    Each returned dict has:
+      {kind: "pending"|"shipment", id, tracking_id?, customer_name,
+       customer_phone, order_id, match_on: ["phone"|"order_id"|both],
+       status, created_at}
+
+    Results are deduped by id + sorted newest-first, capped at `limit`.
+    """
+    phone_norm = _clean_phone(phone or "")
+    oid_norm = (order_id or "").strip()
+
+    if not phone_norm and not oid_norm:
+        return []
+
+    # Build OR query across both keys.
+    or_clauses: List[Dict[str, Any]] = []
+    if phone_norm:
+        # Stored phone may have +91 or spaces; match on ending substring.
+        or_clauses.append({"customer_phone": {"$regex": f"{phone_norm}$"}})
+    if oid_norm:
+        # Case-insensitive exact match on order_id / order_id_hint.
+        safe = re.escape(oid_norm)
+        or_clauses.append({"order_id": {"$regex": f"^{safe}$", "$options": "i"}})
+        or_clauses.append({"order_id_hint": {"$regex": f"^{safe}$", "$options": "i"}})
+
+    query: Dict[str, Any] = {"$or": or_clauses} if or_clauses else {}
+
+    # Pending orders (not yet shipped).
+    pending_q = {**query, "status": {"$ne": "shipped"}}
+    pending_cursor = (
+        db.pending_orders.find(pending_q, {"_id": 0}).sort("created_at", -1).limit(limit)
+    )
+    pending_docs = await pending_cursor.to_list(limit)
+
+    # Recent shipments (any status; UI can decide what to show).
+    shipments_cursor = (
+        db.shipments.find(query, {"_id": 0}).sort("created_at", -1).limit(limit)
+    )
+    shipment_docs = await shipments_cursor.to_list(limit)
+
+    def _why(doc: Dict[str, Any]) -> List[str]:
+        matched: List[str] = []
+        if phone_norm:
+            dp = _clean_phone(doc.get("customer_phone") or "")
+            if dp and dp == phone_norm:
+                matched.append("phone")
+        if oid_norm:
+            doid = (doc.get("order_id") or doc.get("order_id_hint") or "").strip().lower()
+            if doid and doid == oid_norm.lower():
+                matched.append("order_id")
+        return matched
+
+    results: List[Dict[str, Any]] = []
+    for d in pending_docs:
+        results.append({
+            "kind": "pending",
+            "id": d.get("id"),
+            "customer_name": d.get("customer_name", ""),
+            "customer_phone": d.get("customer_phone", ""),
+            "order_id": d.get("order_id") or d.get("order_id_hint") or "",
+            "status": d.get("status") or "pending",
+            "created_at": d.get("created_at", ""),
+            "match_on": _why(d),
+        })
+    for d in shipment_docs:
+        results.append({
+            "kind": "shipment",
+            "id": d.get("id"),
+            "tracking_id": d.get("tracking_id", ""),
+            "customer_name": d.get("customer_name", ""),
+            "customer_phone": d.get("customer_phone", ""),
+            "order_id": d.get("order_id", ""),
+            "status": d.get("status") or "",
+            "created_at": d.get("created_at", ""),
+            "match_on": _why(d),
+        })
+    # Sort newest first, cap at `limit` overall.
+    results.sort(key=lambda r: r.get("created_at") or "", reverse=True)
+    return results[:limit]
+
+
+@api_router.post("/smart-paste/check-duplicate")
+async def smart_paste_check_duplicate(payload: SmartPasteRequest):
+    """Inspect pasted text for duplicates WITHOUT saving.
+
+    Returns:
+      {
+        "fields": {...},              # parsed fields (so the frontend can
+                                      # show a preview without a 2nd round-trip)
+        "confidence": {...},
+        "warnings": [...],
+        "duplicates": [
+          {kind, id, customer_name, customer_phone, order_id,
+           status, created_at, match_on: ["phone","order_id"]},
+          ...
+        ]
+      }
+    """
+    parsed = parse_structured_paste(payload.text or "")
+    fields = parsed.get("fields", {}) or {}
+    duplicates = await find_duplicate_matches(
+        phone=fields.get("customer_phone", ""),
+        order_id=fields.get("order_id", "") or fields.get("order_id_hint", ""),
+    )
+    return {
+        "fields": fields,
+        "confidence": parsed.get("confidence", {}),
+        "warnings": parsed.get("warnings", []),
+        "duplicates": duplicates,
+    }
+
+
 @api_router.post("/smart-paste", response_model=PendingOrder)
 async def smart_paste_create(payload: SmartPasteRequest):
     """

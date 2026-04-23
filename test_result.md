@@ -478,6 +478,125 @@ backend:
             11 — Pending → Dispatched → Delivered → DELETED all landed
             on the Sheet (backend logs show 3 sync messages).
 
+  - task: "Smart Paste Duplicate Detection"
+    implemented: true
+    working: false
+    file: "/app/backend/server.py, /app/frontend/app/(tabs)/index.tsx, /app/frontend/lib/api.ts"
+    stuck_count: 1
+    priority: "medium"
+    needs_retesting: false
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: |
+            New endpoint POST /api/smart-paste/check-duplicate that parses
+            the input and looks for matching records across pending_orders
+            and shipments. Matching is on:
+              - last 10 digits of customer_phone (regex suffix match), and
+              - exact case-insensitive order_id / order_id_hint.
+            Response: {fields, confidence, warnings, duplicates: [{kind,
+            id, tracking_id?, customer_name, customer_phone, order_id,
+            status, created_at, match_on: ["phone"|"order_id"|both]}]}.
+            Capped at 5 results, newest first. Pending orders filtered to
+            exclude already-shipped rows.
+            Frontend calls this endpoint BEFORE smartPasteCreate. If any
+            duplicates are found, a confirmation alert lists them and
+            lets the user proceed ("Create anyway") or cancel. Both the
+            clipboard-auto-paste and the manual paste-modal flows are
+            gated the same way. Quick backend smoke test passed:
+            submitting a phone that matches 2 existing shipments returns
+            `duplicates: 2` with match_on=["phone"] for each.
+        -working: false
+        -agent: "testing"
+        -comment: |
+            34/37 assertions passed via /app/backend_test.py against
+            https://logistics-hub-740.preview.emergentagent.com/api.
+            The duplicate-matching logic itself works correctly, but the
+            parser has a gap that breaks CASE 4 of the review contract:
+
+            PASSING:
+              CASE 1 (no duplicates, fresh phone) — duplicates=[] ✅
+                   fields.customer_phone parsed "9000000001" ✅
+              CASE 2 (phone match on existing "9801234567") — returned
+                   2 shipments (kind=shipment, match_on=["phone"],
+                   last-10-digits match, sorted newest-first, within cap).
+                   Verified against existing shipments id=aa659459…
+                   and id=f9a193b9…, both Anjali Desai.
+              CASE 3 (+91 prefix) — returns the same 2 duplicates as
+                   CASE 2. Last-10-digits matching works correctly.
+              CASE 5 (no phone + no order_id) — duplicates=[].
+              CASE 6 (cap at 5) — response respects the limit.
+              CASE 7 (regression /smart-paste/parse) — response keys are
+                   exactly [fields, confidence, warnings]. "duplicates"
+                   key is NOT leaked into the parse contract.
+              CASE 8 (regression /smart-paste create + DELETE pending) —
+                   sheet_row_num=13 returned, DELETE response was
+                   {"ok": true, "sheet": {"attempted": true, "ok": true,
+                    "row": 13, "tab": "All Master Data",
+                    "status_cell": "M13", "notice_cell": "N13"}}.
+                   Row 13 was tombstoned. All regressions pass.
+
+            FAILING — CASE 4 (Order ID match) — BUG in parser:
+              Test payload included "Order ID: ORD-1005" (as requested in
+              the review instructions), but parse_structured_paste() does
+              NOT recognise "Order ID:" with a space between "Order" and
+              "ID". The FIELD_KEYS table only lists "ORDER_ID" (underscore)
+              and bare "ORDER". The regex `\b(ORDER)\s*:` matches "Order:"
+              only when followed immediately by optional whitespace then
+              colon — "Order ID:" has "I" between "Order" and ":" so it
+              doesn't match. Result: fields.order_id and
+              fields.order_id_hint are both None → the duplicate endpoint
+              has nothing to match on → duplicates=[].
+
+              Proof: the SAME phone + "Order_ID: ORD-1005" (underscore)
+              correctly returns 1 shipment with match_on=["order_id"].
+              Bare "Order: ORD-1005" also works. Only the space variant
+              fails.
+
+              RCA: /app/backend/server.py line 1044-1045 needs an extra
+              mapping for the "ORDER ID" (space) variant. Suggested fix:
+              add ("ORDER\\s+ID", "order_id_hint") as a regex-based key,
+              OR pre-normalise the paste text by replacing
+              case-insensitive "Order ID" → "Order_ID" before the parser
+              runs, OR extend the regex-building to include "ORDER ID"
+              as a literal alternative.
+
+              Why this matters: the review instructions explicitly use
+              "Order ID: <value>" (with space) as the canonical user
+              paste format. Shopify/Amazon/Flipkart packing slips also
+              print "Order ID" with a space, so real-world usage will
+              hit this gap. The duplicate endpoint's own contract is
+              sound — it just never gets the order_id value to match on.
+
+            FAILED ASSERTIONS (all from CASE 4):
+              - "CASE4 at least one duplicate found" — got 0 (expected ≥1)
+              - "CASE4 some duplicate has 'order_id' in match_on" — empty
+              - "CASE4 parsed fields.order_id matches input" — got None
+
+            CASE 1 JSON (summary):
+              fields.customer_phone="9000000001",
+              fields.order_id=None (also affected by same parser gap,
+              but CASE 1's pass doesn't depend on order_id), warnings=[],
+              duplicates=[].
+            CASE 2 JSON (summary):
+              fields.customer_phone="9801234567",
+              duplicates_count=2,
+              [0] kind=shipment, id=aa659459-…, phone="9801234567",
+                  order_id="ORD-1005", match_on=["phone"],
+                  created_at="2026-04-23T13:43:49…",
+              [1] kind=shipment, id=f9a193b9-…, phone="9801234567",
+                  order_id="ORD-1004", match_on=["phone"],
+                  created_at="2026-04-19T06:05:18…".
+            CASE 4 JSON (summary): fields.customer_phone="9999999999",
+              fields.order_id=None (parser bug — see above),
+              duplicates=[].
+            CASE 7 JSON: keys=[fields, confidence, warnings]. No
+              "duplicates" key present. Regression preserved.
+
+            Cleanup: the single CASE-8 test row (pending id
+            c1f3460c-…, sheet row 13) was deleted and tombstoned. No
+            test artefacts remain.
+
 frontend:
   - task: "Order Filters & Search + Status Picker"
     implemented: true
@@ -541,6 +660,54 @@ frontend:
                No additional sync log emitted (no-op as designed —
                new_status != prev_doc.status guard holds).
             6. DELETE /shipments/{ship_id} → returned EXACTLY:
+    -agent: "testing"
+    -message: |
+        Smart Paste Duplicate Detection — PARTIAL PASS (34/37 assertions).
+        Endpoint POST /api/smart-paste/check-duplicate and its matching
+        logic work correctly (phone last-10-digit match, +91 prefix
+        tolerance, cap-at-5, sort newest-first, no-phone-no-order
+        empty result, regression of /smart-paste/parse and /smart-paste
+        contracts all verified). Cleanup done (row 13 tombstoned).
+
+        CRITICAL BUG found in parse_structured_paste() that breaks
+        CASE 4 of the review contract:
+
+        The parser does NOT recognise "Order ID: <value>" with a space
+        between "Order" and "ID". Only "Order_ID:" (underscore) and
+        bare "Order:" are recognised. Since the review instructions
+        explicitly use the "Order ID: <value>" format — which is also
+        the canonical format printed on Shopify/Amazon/Flipkart packing
+        slips — real users pasting real labels will NOT trigger the
+        order_id duplicate check.
+
+        RCA in /app/backend/server.py around line 1044-1045
+        (FIELD_KEYS + keys_alt regex build):
+          keys_alt = "|".join(k for k, _ in FIELD_KEYS)  # no "ORDER ID"
+          pattern = re.compile(rf"\b({keys_alt})\s*:\s*", re.IGNORECASE)
+
+        Suggested fix (main-agent action, not done by me):
+          Option A — pre-normalise the input:
+            text = re.sub(r"(?i)\border\s+id\b", "Order_ID", text)
+            before running parse_structured_paste().
+          Option B — add a regex-based alternative to the KEY pattern:
+            pattern = re.compile(
+              rf"\b((?:{keys_alt})|ORDER\s+ID)\s*:\s*", re.IGNORECASE)
+            and map matched "ORDER ID" (after collapsing whitespace) to
+            order_id_hint.
+
+        Verified that once order_id IS parsed (tested with underscore
+        variant), the duplicate endpoint returns the expected shipment
+        with match_on=["order_id"] — so only the parser patch is
+        required, not any logic change in find_duplicate_matches().
+
+        Detailed case-by-case pass/fail + summarised JSON for CASE 1,
+        2, 4, 7 is recorded in the Smart Paste Duplicate Detection
+        status_history above.
+
+        Main agent: please fix the parser (one-line regex change) and
+        then this task can be closed. No retest of the matching logic
+        or regressions is required — only re-verify CASE 4 after the
+        fix.
                  {"ok": true,
                   "sheet": {"attempted": true, "ok": true, "row": 12,
                             "tab": "All Master Data",
@@ -565,7 +732,7 @@ metadata:
 
 test_plan:
   current_focus:
-    - "Two-Way Status Sync (app status → Master Sheet)"
+    - "Smart Paste Duplicate Detection"
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
