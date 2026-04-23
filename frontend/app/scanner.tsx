@@ -70,9 +70,23 @@ export default function ScannerModal() {
       // 404 means new — proceed
     }
     if (params.returnTo === "add") {
-      // Preserve Add form state — stash value in bridge and dismiss modal
-      scannerBridge.push(v);
-      router.back();
+      // New tracking ID + user wants to create a shipment.
+      //
+      // We can't rely on router.back() because:
+      //   • If user opened scanner from Dashboard, back() returns to Dashboard
+      //     and the New Shipment form never opens (silent value loss).
+      //   • If user opened scanner from Add form itself, back() correctly
+      //     returns to Add form; useFocusEffect there will read the bridge.
+      //
+      // Easiest fix: ALWAYS navigate forward to the Add tab and pass the
+      // scanned value as a route param.  Add screen already handles
+      // `params.scanned` in a useEffect and populates the tracking field.
+      // router.replace keeps the back-stack clean (no scanner duplicate).
+      scannerBridge.push(v); // keep for focus-fallback (Add form)
+      router.replace({
+        pathname: "/(tabs)/add",
+        params: { scanned: v },
+      });
     } else {
       router.back();
     }
