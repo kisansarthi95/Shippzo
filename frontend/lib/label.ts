@@ -221,19 +221,21 @@ function singleLabel(s: Shipment, sender: SenderAddress, opts: LabelOptions) {
 
   return `
   <div class="label">
-    <!-- TOP (fixed height) -->
-    ${cfHeaderTop}
-    <div class="hdr">
-      <div class="brand-wrap">
-        ${brandHeader}
-        <div class="brand-meta">
-          ${(lf.dispatch_date && dispatchDate) ? `<span class="dd-span"><b class="lbl">DD:</b> <b>${escape(dispatchDate)}</b></span>` : ""}
-          ${(lf.oid && s.order_id) ? `<span class="oid-span"><b class="lbl">OID:</b> <b class="meta-val">${escape(s.order_id)}</b></span>` : ""}
+    <!-- TOP (fixed height) — hdr + optional top custom fields -->
+    <div class="hdr-col">
+      ${cfHeaderTop}
+      <div class="hdr">
+        <div class="brand-wrap">
+          ${brandHeader}
+          <div class="brand-meta">
+            ${(lf.dispatch_date && dispatchDate) ? `<span class="dd-span"><b class="lbl">DD:</b> <b>${escape(dispatchDate)}</b></span>` : ""}
+            ${(lf.oid && s.order_id) ? `<span class="oid-span"><b class="lbl">OID:</b> <b class="meta-val">${escape(s.order_id)}</b></span>` : ""}
+          </div>
         </div>
-      </div>
-      <div class="pay-wrap">
-        <div class="${payPillClass}">${payPillText}</div>
-        ${courierLine}
+        <div class="pay-wrap">
+          <div class="${payPillClass}">${payPillText}</div>
+          ${courierLine}
+        </div>
       </div>
     </div>
 
@@ -273,18 +275,20 @@ function singleLabel(s: Shipment, sender: SenderAddress, opts: LabelOptions) {
       ${tokenFooterBlock}
     </div>
 
-    <!-- BOTTOM (fixed height, barcode never cut) -->
-    <div class="footer">
-      <div class="sender-block">
-        ${senderFooterBlock}
-        ${cfFromBlock}
+    <!-- BOTTOM (fixed height) — footer + optional bottom custom fields -->
+    <div class="footer-col">
+      <div class="footer">
+        <div class="sender-block">
+          ${senderFooterBlock}
+          ${cfFromBlock}
+        </div>
+        <div class="track-wrap">
+          <div class="track-id">${escape(s.tracking_id)}</div>
+          <div class="barcode-wrap">${bcSvg}</div>
+        </div>
       </div>
-      <div class="track-wrap">
-        <div class="track-id">${escape(s.tracking_id)}</div>
-        <div class="barcode-wrap">${bcSvg}</div>
-      </div>
+      ${cfFooterBottom}
     </div>
-    ${cfFooterBottom}
   </div>
   `;
 }
@@ -378,6 +382,9 @@ export function buildLabelHtml(
     break-inside: avoid; background: #fff; border-radius: 3mm;
     display: grid; grid-template-rows: auto 1fr auto; gap: 3mm; overflow: hidden;
     width: 100%; max-width: 100%; box-sizing: border-box; }
+  /* Optional stacking wrappers for header/footer so custom fields can layer above/below */
+  .hdr-col { display: flex; flex-direction: column; gap: 1.5mm; min-width: 0; }
+  .footer-col { display: flex; flex-direction: column; gap: 1.5mm; min-width: 0; }
 
   /* ---- TOP (fixed, identical regardless of perPage) ---- */
   .hdr { display: flex; justify-content: space-between; align-items: flex-start;

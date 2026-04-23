@@ -42,6 +42,125 @@ function BarcodePreview({ value, height = 40 }: { value: string; height?: number
   );
 }
 
+/**
+ * Render user-defined custom label fields that target a given slot.
+ * Used in the in-app preview (this file only) — the PDF side has its own
+ * HTML-based renderer in lib/label.ts. Both must stay visually in sync.
+ */
+function CfSlot({
+  fields,
+  position,
+  shipment,
+}: {
+  fields: any[];
+  position:
+    | "header_top"
+    | "from_block"
+    | "to_block"
+    | "meta_row"
+    | "notes_area"
+    | "footer_bottom";
+  shipment?: any;
+}) {
+  if (!fields || fields.length === 0) return null;
+  const matched = fields.filter(
+    (f) =>
+      f &&
+      f.enabled &&
+      f.position === position &&
+      (f.label || f.value || (shipment?.custom_values?.[f.id]))
+  );
+  if (matched.length === 0) return null;
+
+  const fontFor = (sz?: string) => (sz === "md" ? 12 : sz === "xs" ? 9 : 10.5);
+
+  if (position === "meta_row") {
+    // Same row as Wt / Box / Item — compact inline chips.
+    return (
+      <>
+        {matched.map((f, i) => {
+          const v = shipment?.custom_values?.[f.id] ?? f.value;
+          return (
+            <Text
+              key={f.id || i}
+              style={{
+                fontSize: fontFor(f.size),
+                color: "#1F2937",
+              }}
+              numberOfLines={1}
+            >
+              {f.label ? <Text style={{ color: "#6B7280", fontWeight: "700" }}>{f.label} </Text> : null}
+              <Text style={{ fontWeight: f.bold !== false ? "800" : "400" }}>{v}</Text>
+            </Text>
+          );
+        })}
+      </>
+    );
+  }
+
+  if (position === "notes_area") {
+    // Notes-area style: blue left-border box similar to shipment notes.
+    return (
+      <View
+        style={{
+          marginTop: 8,
+          paddingVertical: 6,
+          paddingHorizontal: 8,
+          backgroundColor: "#EFF6FF",
+          borderLeftWidth: 4,
+          borderLeftColor: "#3B82F6",
+          borderRadius: 3,
+        }}
+      >
+        {matched.map((f, i) => {
+          const v = shipment?.custom_values?.[f.id] ?? f.value;
+          return (
+            <Text
+              key={f.id || i}
+              style={{
+                fontSize: fontFor(f.size),
+                color: "#1F2937",
+                lineHeight: 16,
+              }}
+              numberOfLines={2}
+            >
+              {f.label ? (
+                <Text style={{ fontWeight: "800", color: "#1E40AF" }}>{f.label} </Text>
+              ) : null}
+              <Text style={{ fontWeight: f.bold !== false ? "700" : "400" }}>{v}</Text>
+            </Text>
+          );
+        })}
+      </View>
+    );
+  }
+
+  // Default: vertical stack of tiny lines (header_top, to_block, from_block, footer_bottom)
+  return (
+    <View style={{ marginTop: position === "header_top" ? 0 : 4, marginBottom: 4 }}>
+      {matched.map((f, i) => {
+        const v = shipment?.custom_values?.[f.id] ?? f.value;
+        return (
+          <Text
+            key={f.id || i}
+            style={{
+              fontSize: fontFor(f.size),
+              color: "#1F2937",
+              lineHeight: 16,
+            }}
+            numberOfLines={2}
+          >
+            {f.label ? (
+              <Text style={{ color: "#6B7280", fontWeight: "700" }}>{f.label} </Text>
+            ) : null}
+            <Text style={{ fontWeight: f.bold !== false ? "800" : "400" }}>{v}</Text>
+          </Text>
+        );
+      })}
+    </View>
+  );
+}
+
 
 export default function LabelScreen() {
   const router = useRouter();
@@ -197,6 +316,8 @@ export default function LabelScreen() {
       >
         {/* Preview Card — NEW 3-row layout: fixed header, flexible middle, fixed footer with barcode */}
         <View style={styles.preview} testID="label-preview">
+          {/* Custom field slot: header_top (above brand line) */}
+          <CfSlot fields={customFields} position="header_top" shipment={shipment} />
           {/* TOP (fixed) */}
           <View style={styles.previewHdr}>
             <View style={{ flex: 1, minWidth: 0 }}>
@@ -297,6 +418,8 @@ export default function LabelScreen() {
                 📞 {shipment.customer_phone}
               </Text>
             )}
+            {/* Custom: to_block (inside DELIVER TO box) */}
+            <CfSlot fields={customFields} position="to_block" shipment={shipment} />
           </View>
 
           {/* Shipment Notes — OUTSIDE Deliver-To block, ABOVE meta-row */}
@@ -308,6 +431,8 @@ export default function LabelScreen() {
               </Text>
             </View>
           )}
+          {/* Custom: notes_area (blue-bordered box) */}
+          <CfSlot fields={customFields} position="notes_area" shipment={shipment} />
 
           {/* META one-line */}
           <View style={styles.metaRow}>
@@ -324,6 +449,8 @@ export default function LabelScreen() {
                   : shipment.item_description || "—"}
               </Text>
             )}
+            {/* Custom: meta_row (inline chips) */}
+            <CfSlot fields={customFields} position="meta_row" shipment={shipment} />
           </View>
 
           {/* Token / advance box — only if toggle ON, token > 0, AND payment is COD */}
@@ -362,11 +489,15 @@ export default function LabelScreen() {
                 ].filter(Boolean).join(", ")}
                 {showContact && sender.phone ? ` · 📞 ${sender.phone}` : ""}
               </Text>
+              {/* Custom: from_block (inside FROM sender area) */}
+              <CfSlot fields={customFields} position="from_block" shipment={shipment} />
             </View>
             <Text style={styles.trackId}>{shipment.tracking_id}</Text>
             <View style={{ width: "100%", paddingHorizontal: 8, alignSelf: "center" }}>
               <BarcodePreview value={shipment.tracking_id} height={46} />
             </View>
+            {/* Custom: footer_bottom (very bottom, below barcode) */}
+            <CfSlot fields={customFields} position="footer_bottom" shipment={shipment} />
           </View>
         </View>
 
