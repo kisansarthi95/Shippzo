@@ -418,6 +418,11 @@ class Settings(BaseModel):
     # we fall back to the bundled DEFAULT_SHIPBOT_PROMPT.
     smart_paste_instructions: str = ""
     smart_paste_ai_enabled: bool = True
+    # Phase-4b+ tunable AI address-processing charges per complexity
+    # bucket. Spec default: simple 0.5 · medium 1 · complex 2 (max cap 2).
+    ai_cost_simple: float = 0.5
+    ai_cost_medium: float = 1.0
+    ai_cost_complex: float = 2.0
 
 
 class SettingsUpdate(BaseModel):
@@ -434,6 +439,9 @@ class SettingsUpdate(BaseModel):
     custom_fields: Optional[List[CustomLabelField]] = None
     smart_paste_instructions: Optional[str] = None
     smart_paste_ai_enabled: Optional[bool] = None
+    ai_cost_simple: Optional[float] = None
+    ai_cost_medium: Optional[float] = None
+    ai_cost_complex: Optional[float] = None
 
 
 class Shipment(BaseModel):
@@ -748,6 +756,14 @@ async def update_settings(
         update["smart_paste_instructions"] = (payload.smart_paste_instructions or "")[:8000]
     if payload.smart_paste_ai_enabled is not None:
         update["smart_paste_ai_enabled"] = bool(payload.smart_paste_ai_enabled)
+    # Phase-4b+: AI credit rate card — clamp 0 ≤ x ≤ 2 (spec cap).
+    for _f in ("ai_cost_simple", "ai_cost_medium", "ai_cost_complex"):
+        _v = getattr(payload, _f)
+        if _v is not None:
+            try:
+                update[_f] = max(0.0, min(2.0, round(float(_v), 2)))
+            except (TypeError, ValueError):
+                pass
     if not update:
         raise HTTPException(status_code=400, detail="No fields to update")
     # Per-user settings doc. Ensures tenants don't overwrite each other.
@@ -1165,14 +1181,26 @@ async def create_shipment(
         data.get("address_line1", ""), data.get("address_line2", ""),
         data.get("city", ""), data.get("state", ""), str(data.get("pincode", "")),
     ])).strip()
+    # Fetch per-user AI rate card so Settings → AI Processing Charges
+    # takes effect immediately. Defaults 0.5/1/2 used when not set.
+    _s = await db.settings.find_one(
+        {"user_id": current_user["id"]},
+        {"_id": 0, "ai_cost_simple": 1, "ai_cost_medium": 1, "ai_cost_complex": 1},
+    ) or {}
+    ai_costs = {
+        "simple":  float(_s.get("ai_cost_simple", 0.5)),
+        "medium":  float(_s.get("ai_cost_medium", 1.0)),
+        "complex": float(_s.get("ai_cost_complex", 2.0)),
+    }
     # Phase-4b: LLM-backed complexity classification with safe heuristic
     # fallback baked into wallet.classify_and_cost.
-    breakdown, ai_reason = await wallet_classify_and_cost(current_user, addr_text, plan_has_room)
+    breakdown, ai_reason = await wallet_classify_and_cost(current_user, addr_text, plan_has_room, ai_costs=ai_costs)
     # Re-use the classified complexity for the wallet pre-flight so we
     # don't double-classify.
     breakdown = await wallet_require(
         db, current_user, addr_text, plan_has_room,
         complexity_override=breakdown.ai_complexity,
+        ai_costs=ai_costs,
     )
 
     if data.get("courier_id") and not data.get("courier_name"):
@@ -1499,6 +1527,23 @@ def parse_structured_paste(text: str) -> Dict[str, Any]:
             confidence[field] = "missing"
 
     return {"fields": result, "confidence": confidence, "warnings": warnings}
+
+
+@api_router.get("/smart-paste/default-prompt")
+async def smart_paste_default_prompt(
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    """Expose the bundled ShipBot system prompt + the user's current override
+    so the Settings screen can pre-fill the textarea."""
+    s = await db.settings.find_one(
+        {"user_id": current_user["id"]},
+        {"_id": 0, "smart_paste_instructions": 1, "smart_paste_ai_enabled": 1},
+    ) or {}
+    return {
+        "default_prompt": DEFAULT_SHIPBOT_PROMPT,
+        "user_instructions": s.get("smart_paste_instructions") or "",
+        "ai_enabled": s.get("smart_paste_ai_enabled", True),
+    }
 
 
 @api_router.post("/smart-paste/parse")
@@ -1983,8 +2028,17 @@ async def ship_pending_order(
         ship_doc.get("address_line1",""), ship_doc.get("address_line2",""),
         ship_doc.get("city",""), ship_doc.get("state",""), str(ship_doc.get("pincode","")),
     ]))
+    _s2 = await db.settings.find_one(
+        {"user_id": current_user["id"]},
+        {"_id": 0, "ai_cost_simple": 1, "ai_cost_medium": 1, "ai_cost_complex": 1},
+    ) or {}
+    ai_costs2 = {
+        "simple":  float(_s2.get("ai_cost_simple", 0.5)),
+        "medium":  float(_s2.get("ai_cost_medium", 1.0)),
+        "complex": float(_s2.get("ai_cost_complex", 2.0)),
+    }
     # Phase-4b LLM-backed complexity detection (cached & heuristic-safe).
-    breakdown, _reason = await wallet_classify_and_cost(current_user, addr_text, plan_has_room)
+    breakdown, _reason = await wallet_classify_and_cost(current_user, addr_text, plan_has_room, ai_costs=ai_costs2)
     # Wallet may not have been checked above (old-path) — make sure they can pay.
     bal = await wallet_balance(db, current_user["id"])
     if breakdown.total > bal + 1e-6:
@@ -2152,7 +2206,16 @@ async def wallet_quote(
     """
     room = await plan_room_status(db, current_user)
     plan_has_room = bool(room["plan_has_room"]) and not room["trial_expired"] and not room["daily_blocked"]
-    bd, reason = await wallet_classify_and_cost(current_user, address, plan_has_room)
+    _s3 = await db.settings.find_one(
+        {"user_id": current_user["id"]},
+        {"_id": 0, "ai_cost_simple": 1, "ai_cost_medium": 1, "ai_cost_complex": 1},
+    ) or {}
+    ai_costs3 = {
+        "simple":  float(_s3.get("ai_cost_simple", 0.5)),
+        "medium":  float(_s3.get("ai_cost_medium", 1.0)),
+        "complex": float(_s3.get("ai_cost_complex", 2.0)),
+    }
+    bd, reason = await wallet_classify_and_cost(current_user, address, plan_has_room, ai_costs=ai_costs3)
     bal = await wallet_balance(db, current_user["id"])
     return {
         "plan": room["plan"],
@@ -2167,6 +2230,7 @@ async def wallet_quote(
         "total": bd.total,
         "wallet_balance": round(bal, 2),
         "can_afford": (bd.total <= bal + 1e-6),
+        "ai_rates": ai_costs3,
     }
 
 

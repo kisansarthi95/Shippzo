@@ -109,8 +109,18 @@ def detect_complexity(address_text: str) -> ComplexityLiteral:
     return "simple"
 
 
-def ai_cost_for(complexity: ComplexityLiteral) -> float:
-    return min(AI_COST[complexity], 2.0)  # hard cap 2 credits (per spec)
+def ai_cost_for(complexity: ComplexityLiteral, overrides: Optional[Dict[str, float]] = None) -> float:
+    """Per-spec AI charge with an optional per-user override.
+
+    overrides dict keys: "simple" | "medium" | "complex".
+    All values are clamped into [0, 2] (spec cap "max 2 credits per order").
+    """
+    if overrides and complexity in overrides:
+        try:
+            return min(max(float(overrides[complexity]), 0.0), 2.0)
+        except (TypeError, ValueError):
+            pass
+    return min(AI_COST[complexity], 2.0)
 
 
 def overage_cost_for(plan_key: str) -> float:
@@ -217,6 +227,7 @@ def compute_label_cost(
     address_text: str,
     plan_has_room: bool,
     complexity_override: Optional[ComplexityLiteral] = None,
+    ai_costs: Optional[Dict[str, float]] = None,
 ) -> LabelCostBreakdown:
     plan = (user.get("plan") or "free_trial").lower()
     # Free trial is exempt from AI (see module docstring — product decision).
@@ -224,7 +235,7 @@ def compute_label_cost(
     complexity: ComplexityLiteral = (
         complexity_override if complexity_override in AI_COST else detect_complexity(address_text)
     )
-    ai_c = ai_cost_for(complexity) if ai_applies else 0.0
+    ai_c = ai_cost_for(complexity, ai_costs) if ai_applies else 0.0
     ship_c = 0.0 if plan_has_room else overage_cost_for(plan)
     return LabelCostBreakdown(
         ai_credits=ai_c,
@@ -240,6 +251,7 @@ async def classify_and_cost(
     user: Dict[str, Any],
     address_text: str,
     plan_has_room: bool,
+    ai_costs: Optional[Dict[str, float]] = None,
 ) -> Tuple[LabelCostBreakdown, str]:
     """Phase-4b entry point — awaits the LLM classifier and returns the
     priced breakdown together with the LLM's reason string. Free-trial
@@ -247,11 +259,11 @@ async def classify_and_cost(
     """
     plan = (user.get("plan") or "free_trial").lower()
     if plan == "free_trial":
-        return (compute_label_cost(user, address_text, plan_has_room), "free-trial (AI waived)")
+        return (compute_label_cost(user, address_text, plan_has_room, ai_costs=ai_costs), "free-trial (AI waived)")
     # Deferred import to keep the wallet module a leaf dependency.
     from address_ai import classify_address
     complexity, reason = await classify_address(address_text)
-    bd = compute_label_cost(user, address_text, plan_has_room, complexity_override=complexity)
+    bd = compute_label_cost(user, address_text, plan_has_room, complexity_override=complexity, ai_costs=ai_costs)
     return (bd, reason)
 
 
@@ -261,6 +273,7 @@ async def require_balance(
     address_text: str,
     plan_has_room: bool,
     complexity_override: Optional[ComplexityLiteral] = None,
+    ai_costs: Optional[Dict[str, float]] = None,
 ) -> LabelCostBreakdown:
     """Preflight: raise 402 if wallet cannot cover this label.
 
@@ -268,7 +281,7 @@ async def require_balance(
         wallet == 0 AND plan exhausted → refuse outright (even if
         plan-has-room logic somehow matched, we double-check).
     """
-    breakdown = compute_label_cost(user, address_text, plan_has_room, complexity_override)
+    breakdown = compute_label_cost(user, address_text, plan_has_room, complexity_override, ai_costs)
     if breakdown.total <= 0:
         return breakdown  # free trial, plan has room → nothing to charge
     bal = await get_balance(db, user["id"])

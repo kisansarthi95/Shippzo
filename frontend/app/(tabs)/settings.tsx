@@ -173,6 +173,12 @@ export default function SettingsScreen() {
   const [spaiShowDefault, setSpaiShowDefault] = useState(false);
   const [spaiSaving, setSpaiSaving] = useState(false);
 
+  // Phase-4b+ AI credit rate card (per-user tunable; max 2.0 per spec cap)
+  const [aiCostSimple, setAiCostSimple] = useState("0.5");
+  const [aiCostMedium, setAiCostMedium] = useState("1.0");
+  const [aiCostComplex, setAiCostComplex] = useState("2.0");
+  const [rateCardSaving, setRateCardSaving] = useState(false);
+
   const load = useCallback(async () => {
     const [s, cs] = await Promise.all([Api.getSettings(), Api.listCouriers()]);
     setSender(s.sender);
@@ -192,6 +198,22 @@ export default function SettingsScreen() {
     // Phase-4b+ smart paste AI fields
     setSpaiEnabled((s as any).smart_paste_ai_enabled !== false);
     setSpaiInstructions(String((s as any).smart_paste_instructions || ""));
+    // Phase-4b+ AI rate card (fall back to spec defaults)
+    setAiCostSimple(
+      String(
+        (s as any).ai_cost_simple != null ? (s as any).ai_cost_simple : 0.5,
+      ),
+    );
+    setAiCostMedium(
+      String(
+        (s as any).ai_cost_medium != null ? (s as any).ai_cost_medium : 1.0,
+      ),
+    );
+    setAiCostComplex(
+      String(
+        (s as any).ai_cost_complex != null ? (s as any).ai_cost_complex : 2.0,
+      ),
+    );
     if (s.sheet?.sheet_id) {
       setSheetStatus("connected");
       setSheetUrl(s.sheet.url);
@@ -247,6 +269,46 @@ export default function SettingsScreen() {
         },
       ],
     );
+  };
+
+  // --- AI rate card save/reset ---
+  const clamp02 = (raw: string, fallback: number): number => {
+    const n = Number((raw || "").replace(/[^\d.]/g, ""));
+    if (!Number.isFinite(n)) return fallback;
+    return Math.max(0, Math.min(2, Math.round(n * 100) / 100));
+  };
+
+  const saveRateCard = async () => {
+    try {
+      setRateCardSaving(true);
+      const simple = clamp02(aiCostSimple, 0.5);
+      const medium = clamp02(aiCostMedium, 1.0);
+      const complex = clamp02(aiCostComplex, 2.0);
+      const r = await api.put("/settings", {
+        ai_cost_simple: simple,
+        ai_cost_medium: medium,
+        ai_cost_complex: complex,
+      });
+      const d = r.data as any;
+      // Snap UI back to server-clamped values so the user sees what was saved.
+      setAiCostSimple(String(d.ai_cost_simple ?? simple));
+      setAiCostMedium(String(d.ai_cost_medium ?? medium));
+      setAiCostComplex(String(d.ai_cost_complex ?? complex));
+      Alert.alert(
+        "Rate card saved",
+        `Simple ${d.ai_cost_simple ?? simple} · Medium ${d.ai_cost_medium ?? medium} · Complex ${d.ai_cost_complex ?? complex} credits per order.`,
+      );
+    } catch (e: any) {
+      Alert.alert("Save failed", e?.response?.data?.detail || e?.message || "Please try again");
+    } finally {
+      setRateCardSaving(false);
+    }
+  };
+
+  const resetRateCard = () => {
+    setAiCostSimple("0.5");
+    setAiCostMedium("1.0");
+    setAiCostComplex("2.0");
   };
 
   const saveSender = async () => {
@@ -528,6 +590,100 @@ export default function SettingsScreen() {
                 <Text style={styles.spaiDefaultText}>{spaiDefaultPrompt}</Text>
               </View>
             ) : null}
+          </Section>
+
+          {/* AI Processing Charges — per-user rate card */}
+          <Section title="AI Processing Charges" icon="pricetags-outline">
+            <Text style={styles.spaiHint}>
+              દરેક shipment પર AI એડ્રેસ check માટે જે credits કાપવા છે તે અહીં સેટ કરો. Max cap 2.0 credits/order (spec).
+            </Text>
+            <View style={styles.rateGrid}>
+              <View style={[styles.rateCell, { borderColor: "#04785755" }]}>
+                <View style={styles.rateCellHead}>
+                  <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: "#047857" }} />
+                  <Text style={[styles.rateCellLabel, { color: "#047857" }]}>Simple</Text>
+                </View>
+                <Text style={styles.rateCellHint}>short & clean</Text>
+                <View style={styles.rateCellInputRow}>
+                  <TextInput
+                    testID="rate-simple"
+                    style={styles.rateCellInput}
+                    value={aiCostSimple}
+                    onChangeText={(t) => setAiCostSimple(t.replace(/[^\d.]/g, ""))}
+                    keyboardType="decimal-pad"
+                    placeholder="0.5"
+                    maxLength={4}
+                  />
+                  <Text style={styles.rateCellUnit}>cr</Text>
+                </View>
+              </View>
+              <View style={[styles.rateCell, { borderColor: "#B4530955" }]}>
+                <View style={styles.rateCellHead}>
+                  <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: "#B45309" }} />
+                  <Text style={[styles.rateCellLabel, { color: "#B45309" }]}>Medium</Text>
+                </View>
+                <Text style={styles.rateCellHint}>some extra text</Text>
+                <View style={styles.rateCellInputRow}>
+                  <TextInput
+                    testID="rate-medium"
+                    style={styles.rateCellInput}
+                    value={aiCostMedium}
+                    onChangeText={(t) => setAiCostMedium(t.replace(/[^\d.]/g, ""))}
+                    keyboardType="decimal-pad"
+                    placeholder="1.0"
+                    maxLength={4}
+                  />
+                  <Text style={styles.rateCellUnit}>cr</Text>
+                </View>
+              </View>
+              <View style={[styles.rateCell, { borderColor: "#B91C1C55" }]}>
+                <View style={styles.rateCellHead}>
+                  <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: "#B91C1C" }} />
+                  <Text style={[styles.rateCellLabel, { color: "#B91C1C" }]}>Complex</Text>
+                </View>
+                <Text style={styles.rateCellHint}>long, messy</Text>
+                <View style={styles.rateCellInputRow}>
+                  <TextInput
+                    testID="rate-complex"
+                    style={styles.rateCellInput}
+                    value={aiCostComplex}
+                    onChangeText={(t) => setAiCostComplex(t.replace(/[^\d.]/g, ""))}
+                    keyboardType="decimal-pad"
+                    placeholder="2.0"
+                    maxLength={4}
+                  />
+                  <Text style={styles.rateCellUnit}>cr</Text>
+                </View>
+              </View>
+            </View>
+            <Text style={styles.rateNote}>
+              ⚠️ Max per-order cap 2.0 — values above 2.0 server-side clamp થશે.
+            </Text>
+            <View style={styles.spaiActions}>
+              <TouchableOpacity
+                testID="rate-save-btn"
+                disabled={rateCardSaving}
+                onPress={saveRateCard}
+                style={[styles.primaryBtn, rateCardSaving && { opacity: 0.6 }]}
+              >
+                {rateCardSaving ? (
+                  <ActivityIndicator color="#fff" />
+                ) : (
+                  <>
+                    <Ionicons name="checkmark-circle" size={16} color="#fff" />
+                    <Text style={styles.primaryBtnTxt}>Save rates</Text>
+                  </>
+                )}
+              </TouchableOpacity>
+              <TouchableOpacity
+                testID="rate-reset-btn"
+                style={styles.secondaryBtn}
+                onPress={resetRateCard}
+              >
+                <Ionicons name="refresh" size={16} color={colors.primary} />
+                <Text style={styles.secondaryBtnTxt}>Defaults</Text>
+              </TouchableOpacity>
+            </View>
           </Section>
 
           {/* Google Sheet */}
@@ -1527,7 +1683,6 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 }
 
 const styles = StyleSheet.create({
-  safe: { flex: 1, backgroundColor: colors.background },
   header: { paddingHorizontal: 20, paddingTop: 10, paddingBottom: 8 },
   title: { fontSize: 24, fontWeight: "800", color: colors.text },
   // -- Account block ----
@@ -1638,6 +1793,34 @@ const styles = StyleSheet.create({
     fontSize: 11, color: "#334155", lineHeight: 17,
     fontFamily: Platform.select({ ios: "Menlo", android: "monospace", default: "monospace" }) as any,
   },
+  rateGrid: {
+    flexDirection: "row", gap: 8, marginTop: 12,
+  },
+  rateNote: {
+    fontSize: 11, color: "#64748B", marginTop: 8, fontStyle: "italic",
+  },
+  rateCell: {
+    flex: 1,
+    borderWidth: 1.5, borderColor: "#E5E7EB", borderRadius: 10,
+    padding: 10, backgroundColor: "#F8FAFC",
+  },
+  rateCellHead: {
+    flexDirection: "row", alignItems: "center", gap: 4, marginBottom: 4,
+  },
+  rateCellLabel: { fontSize: 12, fontWeight: "900", letterSpacing: 0.4 },
+  rateCellHint: { fontSize: 10, color: "#94A3B8", marginBottom: 6 },
+  rateCellInputRow: {
+    flexDirection: "row", alignItems: "center", gap: 4,
+  },
+  rateCellInput: {
+    flex: 1,
+    borderWidth: 1, borderColor: "#CBD5E1", borderRadius: 8,
+    paddingHorizontal: 8, paddingVertical: Platform.OS === "ios" ? 8 : 4,
+    fontSize: 15, fontWeight: "800", color: "#0F172A",
+    backgroundColor: "#fff",
+    textAlign: "center",
+  },
+  rateCellUnit: { fontSize: 10, color: "#64748B", fontWeight: "700" },
   section: {
     backgroundColor: colors.surface,
     borderWidth: 2,
@@ -2113,4 +2296,57 @@ const styles = StyleSheet.create({
     color: "#064E3B",
     lineHeight: 20,
   },
+  rateGrid: { flexDirection: "row", gap: 8, marginTop: 12 },
+  rateNote: { fontSize: 11, color: "#64748B", marginTop: 8, fontStyle: "italic" },
+  rateCell: {
+    flex: 1,
+    borderWidth: 1.5, borderColor: "#E5E7EB", borderRadius: 10,
+    padding: 10, backgroundColor: "#F8FAFC",
+  },
+  rateCellHead: { flexDirection: "row", alignItems: "center", gap: 4, marginBottom: 4 },
+  rateCellLabel: { fontSize: 12, fontWeight: "900", letterSpacing: 0.4 },
+  rateCellHint: { fontSize: 10, color: "#94A3B8", marginBottom: 6 },
+  rateCellInputRow: { flexDirection: "row", alignItems: "center", gap: 4 },
+  rateCellInput: {
+    flex: 1,
+    borderWidth: 1, borderColor: "#CBD5E1", borderRadius: 8,
+    paddingHorizontal: 8, paddingVertical: Platform.OS === "ios" ? 8 : 4,
+    fontSize: 15, fontWeight: "800", color: "#0F172A",
+    backgroundColor: "#fff", textAlign: "center",
+  },
+  rateCellUnit: { fontSize: 10, color: "#64748B", fontWeight: "700" },
 });
+
+// Tiny reusable rate-card cell used for Simple / Medium / Complex pricing.
+function RateInput({
+  label, hint, testID, value, onChange, accent,
+}: {
+  label: string; hint: string; testID: string;
+  value: string; onChange: (v: string) => void; accent: string;
+}) {
+  return (
+    <View style={[styles.rateCell, { borderColor: accent + "55" }]}>
+      <View style={styles.rateCellHead}>
+        <View
+          style={{
+            width: 8, height: 8, borderRadius: 4, backgroundColor: accent,
+          }}
+        />
+        <Text style={[styles.rateCellLabel, { color: accent }]}>{label}</Text>
+      </View>
+      <Text style={styles.rateCellHint}>{hint}</Text>
+      <View style={styles.rateCellInputRow}>
+        <TextInput
+          testID={testID}
+          style={styles.rateCellInput}
+          value={value}
+          onChangeText={(t) => onChange(t.replace(/[^\d.]/g, ""))}
+          keyboardType="decimal-pad"
+          placeholder="0.5"
+          maxLength={4}
+        />
+        <Text style={styles.rateCellUnit}>cr</Text>
+      </View>
+    </View>
+  );
+}
