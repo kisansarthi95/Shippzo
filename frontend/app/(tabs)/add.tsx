@@ -16,9 +16,15 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useLocalSearchParams, useRouter, useFocusEffect } from "expo-router";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Api, Courier, SheetOrder } from "../../lib/api";
 import { scannerBridge } from "../../lib/scannerBridge";
 import { colors } from "../../lib/theme";
+
+// AsyncStorage keys for "last used" memory — shown as hints (not defaults).
+const LS_LAST_COURIER = "@csm/lastCourierId";
+const LS_LAST_PAYMENT = "@csm/lastPaymentMode";
+const LS_LAST_TRACK_MODE = "@csm/lastTrackMode";
 
 function splitAddress(full: string): {
   line1: string;
@@ -50,8 +56,13 @@ export default function AddShipment() {
 
   const [couriers, setCouriers] = useState<Courier[]>([]);
   const [selectedCourier, setSelectedCourier] = useState<Courier | null>(null);
-  const [autoTracking, setAutoTracking] = useState(true);
+  // null = user hasn't chosen yet. true = auto series. false = manual/scan.
+  const [autoTracking, setAutoTracking] = useState<boolean | null>(null);
   const [nextPreview, setNextPreview] = useState<string>("");
+  // Last-used hints (suggested only; not pre-selected).
+  const [lastCourierId, setLastCourierId] = useState<string | null>(null);
+  const [lastPaymentMode, setLastPaymentMode] = useState<"COD" | "Prepaid" | null>(null);
+  const [lastTrackMode, setLastTrackMode] = useState<"auto" | "manual" | null>(null);
 
   const [trackingId, setTrackingId] = useState("");
   const [orderId, setOrderId] = useState("");
@@ -62,7 +73,8 @@ export default function AddShipment() {
   const [city, setCity] = useState("");
   const [state, setState] = useState("");
   const [pincode, setPincode] = useState("");
-  const [paymentMode, setPaymentMode] = useState<"COD" | "Prepaid">("Prepaid");
+  // null = not chosen yet (user MUST explicitly pick COD or Prepaid).
+  const [paymentMode, setPaymentMode] = useState<"COD" | "Prepaid" | null>(null);
   const [amount, setAmount] = useState("");
   const [tokenAmount, setTokenAmount] = useState("");
   const [boxDimensions, setBoxDimensions] = useState("");
@@ -83,25 +95,40 @@ export default function AddShipment() {
 
   useEffect(() => {
     (async () => {
-      const [cs, settings] = await Promise.all([
+      const [cs, settings, lc, lp, lt] = await Promise.all([
         Api.listCouriers(),
         Api.getSettings(),
+        AsyncStorage.getItem(LS_LAST_COURIER).catch(() => null),
+        AsyncStorage.getItem(LS_LAST_PAYMENT).catch(() => null),
+        AsyncStorage.getItem(LS_LAST_TRACK_MODE).catch(() => null),
       ]);
       setCouriers(cs);
-      if (cs.length > 0) setSelectedCourier(cs[0]);
+      // Intentionally DO NOT auto-select a default courier. User must pick.
       setSheetConnected(Boolean(settings.sheet?.sheet_id));
+      setLastCourierId(lc || null);
+      if (lp === "COD" || lp === "Prepaid") setLastPaymentMode(lp);
+      if (lt === "auto" || lt === "manual") setLastTrackMode(lt);
     })();
   }, []);
 
+  // Peek next tracking preview — ONLY for display/hint.
+  // We never consume it until user explicitly chose "Auto" AND clicks Save.
   useEffect(() => {
-    if (!selectedCourier) return;
+    if (!selectedCourier) {
+      setNextPreview("");
+      return;
+    }
     Api.peekNextTracking(selectedCourier.id)
       .then((r) => setNextPreview(r.tracking_id))
       .catch(() => setNextPreview(""));
   }, [selectedCourier]);
 
+  // Fill tracking input with preview ONLY when user has explicitly chosen Auto
+  // (autoTracking === true, not null). Previously this auto-populated on mount
+  // which caused the user to accidentally consume tracking numbers even when
+  // they hadn't chosen a mode yet.
   useEffect(() => {
-    if (autoTracking && nextPreview && !params.scanned) {
+    if (autoTracking === true && nextPreview && !params.scanned) {
       setTrackingId(nextPreview);
     }
   }, [autoTracking, nextPreview, params.scanned]);
@@ -224,7 +251,7 @@ export default function AddShipment() {
     setCity("");
     setState("");
     setPincode("");
-    setPaymentMode("Prepaid");
+    setPaymentMode(null);
     setAmount("");
     setItemsText("");
     setWeight("");
@@ -232,22 +259,95 @@ export default function AddShipment() {
     setBoxDimensions("");
     setShipmentNotes("");
     setSheetRowKey("");
+    setSelectedCourier(null);
+    setAutoTracking(null);
+    setTrackingId("");
+  };
+
+  // Does form have unsaved content? Used by Cancel confirmation.
+  const hasFormContent = (): boolean => {
+    return Boolean(
+      customerName.trim() ||
+      customerPhone.trim() ||
+      orderId.trim() ||
+      addr1.trim() ||
+      city.trim() ||
+      amount.trim() ||
+      itemsText.trim() ||
+      trackingId.trim() ||
+      selectedCourier ||
+      paymentMode
+    );
+  };
+
+  const onCancel = () => {
+    if (!hasFormContent()) {
+      router.replace("/(tabs)");
+      return;
+    }
+    Alert.alert(
+      "Discard this shipment?",
+      "All entered details will be lost. No tracking number will be consumed.",
+      [
+        { text: "Keep editing", style: "cancel" },
+        {
+          text: "Discard",
+          style: "destructive",
+          onPress: () => {
+            resetForm();
+            router.replace("/(tabs)");
+          },
+        },
+      ]
+    );
   };
 
   const save = useCallback(
     async (thenPrint: boolean) => {
+      // --- Explicit-choice validation (no silent defaults) ---
+      if (!selectedCourier) {
+        Alert.alert(
+          "Select Courier",
+          "Please pick a courier partner before saving.",
+          [{ text: "OK" }]
+        );
+        return;
+      }
+      if (autoTracking === null) {
+        Alert.alert(
+          "Tracking ID mode required",
+          'Please choose either "Auto Series" or "Manual / Scan" for the tracking ID.',
+          [{ text: "OK" }]
+        );
+        return;
+      }
+      if (!paymentMode) {
+        Alert.alert(
+          "Select Payment Mode",
+          "Please pick either COD or Prepaid before saving.",
+          [{ text: "OK" }]
+        );
+        return;
+      }
       if (!customerName.trim()) {
         Alert.alert("Validation", "Customer name is required");
         return;
       }
-      if (!trackingId.trim()) {
-        Alert.alert("Validation", "Tracking ID is required");
+      if (!autoTracking && !trackingId.trim()) {
+        Alert.alert(
+          "Tracking ID required",
+          "Enter a tracking ID or switch to Auto Series.",
+          [{ text: "OK" }]
+        );
         return;
       }
+
       setSaving(true);
       try {
         let finalTracking = trackingId.trim();
         if (autoTracking && selectedCourier) {
+          // NOTE: This CONSUMES the next tracking number in the courier's
+          // series. Only happens after explicit user confirmation via Save.
           const r = await Api.consumeTracking(selectedCourier.id);
           finalTracking = r.tracking_id;
         }
@@ -280,6 +380,14 @@ export default function AddShipment() {
           weight: weight.trim() ? `${weight.trim()} ${weightUnit}` : "",
           sheet_row_key: sheetRowKey,
         });
+        // Persist last-used choices (hints for next entry, never defaults).
+        try {
+          await Promise.all([
+            AsyncStorage.setItem(LS_LAST_COURIER, selectedCourier.id),
+            AsyncStorage.setItem(LS_LAST_PAYMENT, paymentMode),
+            AsyncStorage.setItem(LS_LAST_TRACK_MODE, autoTracking ? "auto" : "manual"),
+          ]);
+        } catch {/* non-critical */}
         // If shipment came from a pending order (Smart Paste queue), mark it shipped
         if (pendingOrderId) {
           try {
@@ -385,7 +493,12 @@ export default function AddShipment() {
           </TouchableOpacity>
 
           {/* Courier */}
-          <Section title="Courier Partner">
+          <Section title="Courier Partner *">
+            {!selectedCourier && (
+              <Text style={styles.requiredHint}>
+                Please pick a courier below
+              </Text>
+            )}
             <ScrollView
               horizontal
               showsHorizontalScrollIndicator={false}
@@ -393,6 +506,7 @@ export default function AddShipment() {
             >
               {couriers.map((c) => {
                 const active = selectedCourier?.id === c.id;
+                const isLastUsed = !active && c.id === lastCourierId;
                 return (
                   <TouchableOpacity
                     key={c.id}
@@ -400,6 +514,11 @@ export default function AddShipment() {
                     style={[styles.pill, active && styles.pillActive]}
                     onPress={() => setSelectedCourier(c)}
                   >
+                    {isLastUsed && (
+                      <View style={styles.lastBadge}>
+                        <Text style={styles.lastBadgeText}>Last used</Text>
+                      </View>
+                    )}
                     <Text style={[styles.pillText, active && { color: "#fff" }]}>
                       {c.name}
                     </Text>
@@ -410,36 +529,55 @@ export default function AddShipment() {
           </Section>
 
           {/* Tracking */}
-          <Section title="Tracking ID">
+          <Section title="Tracking ID *">
+            {autoTracking === null && (
+              <Text style={styles.requiredHint}>
+                Choose how you want to assign the tracking ID
+              </Text>
+            )}
             <View style={styles.toggleRow}>
               <TouchableOpacity
                 testID="auto-tracking-toggle"
-                style={[styles.toggleBtn, autoTracking && styles.toggleBtnActive]}
+                style={[styles.toggleBtn, autoTracking === true && styles.toggleBtnActive]}
                 onPress={() => {
                   setAutoTracking(true);
                   if (nextPreview) setTrackingId(nextPreview);
                 }}
               >
+                {autoTracking !== true && lastTrackMode === "auto" && (
+                  <View style={styles.lastBadgeSm}>
+                    <Text style={styles.lastBadgeSmText}>Last</Text>
+                  </View>
+                )}
                 <Ionicons
                   name="repeat"
                   size={14}
-                  color={autoTracking ? "#fff" : colors.text}
+                  color={autoTracking === true ? "#fff" : colors.text}
                 />
-                <Text style={[styles.toggleText, autoTracking && { color: "#fff" }]}>
+                <Text style={[styles.toggleText, autoTracking === true && { color: "#fff" }]}>
                   Auto Series
                 </Text>
               </TouchableOpacity>
               <TouchableOpacity
                 testID="manual-tracking-toggle"
-                style={[styles.toggleBtn, !autoTracking && styles.toggleBtnActive]}
-                onPress={() => setAutoTracking(false)}
+                style={[styles.toggleBtn, autoTracking === false && styles.toggleBtnActive]}
+                onPress={() => {
+                  setAutoTracking(false);
+                  // Clear any preview value so user types fresh
+                  if (trackingId === nextPreview) setTrackingId("");
+                }}
               >
+                {autoTracking !== false && lastTrackMode === "manual" && (
+                  <View style={styles.lastBadgeSm}>
+                    <Text style={styles.lastBadgeSmText}>Last</Text>
+                  </View>
+                )}
                 <Ionicons
                   name="create-outline"
                   size={14}
-                  color={!autoTracking ? "#fff" : colors.text}
+                  color={autoTracking === false ? "#fff" : colors.text}
                 />
-                <Text style={[styles.toggleText, !autoTracking && { color: "#fff" }]}>
+                <Text style={[styles.toggleText, autoTracking === false && { color: "#fff" }]}>
                   Manual / Scan
                 </Text>
               </TouchableOpacity>
@@ -448,18 +586,25 @@ export default function AddShipment() {
               <TextInput
                 testID="tracking-id-input"
                 value={trackingId}
-                editable={!autoTracking}
+                editable={autoTracking === false}
                 onChangeText={setTrackingId}
-                placeholder={autoTracking ? nextPreview : "Enter tracking ID"}
+                placeholder={
+                  autoTracking === null
+                    ? "Pick a mode above first"
+                    : autoTracking
+                    ? nextPreview
+                    : "Enter tracking ID"
+                }
                 placeholderTextColor="#9CA3AF"
                 style={[
                   styles.input,
                   styles.trackingInput,
-                  !autoTracking && { paddingRight: 48 },
+                  autoTracking === false && { paddingRight: 48 },
+                  autoTracking === null && { opacity: 0.6 },
                 ]}
                 autoCapitalize="characters"
               />
-              {!autoTracking && (
+              {autoTracking === false && (
                 <TouchableOpacity
                   testID="tracking-inline-scan"
                   onPress={() => router.push("/scanner?returnTo=add")}
@@ -470,7 +615,7 @@ export default function AddShipment() {
                 </TouchableOpacity>
               )}
             </View>
-            {autoTracking && nextPreview ? (
+            {autoTracking === true && nextPreview ? (
               <Text style={styles.hint}>Next auto: {nextPreview}</Text>
             ) : null}
           </Section>
@@ -588,7 +733,12 @@ export default function AddShipment() {
           </Section>
 
           {/* Payment & Parcel */}
-          <Section title="Payment & Parcel">
+          <Section title="Payment & Parcel *">
+            {!paymentMode && (
+              <Text style={styles.requiredHint}>
+                Pick COD or Prepaid below
+              </Text>
+            )}
             <View style={styles.toggleRow}>
               <TouchableOpacity
                 testID="prepaid-toggle"
@@ -598,6 +748,11 @@ export default function AddShipment() {
                 ]}
                 onPress={() => setPaymentMode("Prepaid")}
               >
+                {paymentMode !== "Prepaid" && lastPaymentMode === "Prepaid" && (
+                  <View style={styles.lastBadgeSm}>
+                    <Text style={styles.lastBadgeSmText}>Last</Text>
+                  </View>
+                )}
                 <Ionicons
                   name="card"
                   size={14}
@@ -615,6 +770,11 @@ export default function AddShipment() {
                 ]}
                 onPress={() => setPaymentMode("COD")}
               >
+                {paymentMode !== "COD" && lastPaymentMode === "COD" && (
+                  <View style={styles.lastBadgeSm}>
+                    <Text style={styles.lastBadgeSmText}>Last</Text>
+                  </View>
+                )}
                 <Ionicons
                   name="cash"
                   size={14}
@@ -729,6 +889,16 @@ export default function AddShipment() {
           </Section>
 
           <View style={styles.ctaRow}>
+            <TouchableOpacity
+              testID="cancel-shipment-btn"
+              style={styles.cancelBtn}
+              disabled={saving}
+              onPress={onCancel}
+              hitSlop={8}
+            >
+              <Ionicons name="close" size={18} color="#B91C1C" />
+              <Text style={styles.cancelBtnText}>Cancel</Text>
+            </TouchableOpacity>
             <TouchableOpacity
               testID="save-shipment-btn"
               style={styles.secondaryBtn}
@@ -1017,8 +1187,68 @@ const styles = StyleSheet.create({
   toggleBtnActive: { backgroundColor: colors.primary, borderColor: colors.primary },
   toggleText: { fontWeight: "700", color: colors.text, fontSize: 13 },
   hint: { fontSize: 12, color: colors.textMuted, marginTop: 6 },
+  requiredHint: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: "#B45309",
+    backgroundColor: "#FFFBEB",
+    borderColor: "#FDE68A",
+    borderWidth: 1,
+    borderRadius: 8,
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    marginBottom: 8,
+    overflow: "hidden",
+  },
+  lastBadge: {
+    position: "absolute",
+    top: -6,
+    right: -6,
+    backgroundColor: "#7C3AED",
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 10,
+    zIndex: 2,
+  },
+  lastBadgeText: {
+    color: "#fff",
+    fontSize: 9,
+    fontWeight: "800",
+    includeFontPadding: false,
+    letterSpacing: 0.3,
+  },
+  lastBadgeSm: {
+    position: "absolute",
+    top: -5,
+    right: -5,
+    backgroundColor: "#7C3AED",
+    paddingHorizontal: 5,
+    paddingVertical: 1.5,
+    borderRadius: 8,
+    zIndex: 2,
+  },
+  lastBadgeSmText: {
+    color: "#fff",
+    fontSize: 8.5,
+    fontWeight: "800",
+    includeFontPadding: false,
+    letterSpacing: 0.3,
+  },
   grid2: { flexDirection: "row" },
-  ctaRow: { flexDirection: "row", gap: 10, marginTop: 6 },
+  ctaRow: { flexDirection: "row", gap: 8, marginTop: 6 },
+  cancelBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    height: 52,
+    paddingHorizontal: 14,
+    backgroundColor: "#FEF2F2",
+    borderWidth: 2,
+    borderColor: "#FECACA",
+    borderRadius: 12,
+  },
+  cancelBtnText: { fontWeight: "800", color: "#B91C1C" },
   secondaryBtn: {
     flex: 1,
     flexDirection: "row",
