@@ -20,6 +20,7 @@ import { useFocusEffect, useRouter } from "expo-router";
 import * as Clipboard from "expo-clipboard";
 import { Api, Shipment } from "../../lib/api";
 import { colors } from "../../lib/theme";
+import UsageMeter from "../../components/UsageMeter";
 
 type Stats = {
   total: number;
@@ -413,6 +414,9 @@ export default function Dashboard() {
           <ActivityIndicator style={{ marginTop: 40 }} color={colors.primary} />
         ) : (
           <>
+            {/* Plan + usage meter (Phase 3b) */}
+            <UsageMeter />
+
             <View style={styles.statsGrid}>
               <StatCard
                 testID="stat-total"

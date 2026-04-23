@@ -317,11 +317,16 @@ export default function SettingsScreen() {
                       <Text style={styles.badgeTxt}>Admin</Text>
                     </View>
                   ) : null}
-                  <View style={styles.badgePlan}>
-                    <Text style={styles.badgeTxt}>
+                  <TouchableOpacity
+                    testID="plan-badge-link"
+                    onPress={() => router.push("/plans")}
+                    style={styles.badgePlan}
+                  >
+                    <Text style={[styles.badgeTxt, { color: "#92400E" }]}>
                       {(user?.plan || "free_trial").replace("_", " ").toUpperCase()}
                     </Text>
-                  </View>
+                    <Ionicons name="chevron-forward" size={11} color="#92400E" />
+                  </TouchableOpacity>
                 </View>
               </View>
             </View>
@@ -1402,6 +1407,9 @@ const styles = StyleSheet.create({
     borderRadius: 6,
   },
   badgePlan: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 2,
     backgroundColor: "#FEF3C7",
     paddingHorizontal: 7,
     paddingVertical: 2,
