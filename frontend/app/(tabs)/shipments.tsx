@@ -15,8 +15,49 @@ import { buildCopyText, buildWhatsAppText, cleanPhone } from "../../lib/format";
 import { buildLabelHtml, pageDimensionsFor } from "../../lib/label";
 import { colors } from "../../lib/theme";
 
-type StatusFilter = "All" | "Pending" | "Delivered" | "Cancelled";
+type StatusFilter =
+  | "All"
+  | "Dispatch"
+  | "Shipped"
+  | "Delivered"
+  | "Modified"
+  | "Cancel by buyer"
+  | "Cancelled"
+  | "Returned";
 type DateFilter = "all" | "today" | "week" | "month" | "custom";
+
+// Status meta (label, backend value, color). `value` is the string stored
+// in `shipment.status` in Mongo and sent to the PUT /shipments/{id} endpoint.
+// The Two-Way Sync propagates every change to the Master Sheet automatically.
+const STATUS_META: Record<
+  Exclude<StatusFilter, "All">,
+  { value: string; bg: string; fg: string; aliases?: string[] }
+> = {
+  // "Dispatch" is what the user calls a freshly-created shipment (backend
+  // currently stores "Pending" by default — we treat both as synonyms for
+  // this tab so legacy data keeps working).
+  "Dispatch":        { value: "Dispatched",     bg: "#FEF3C7", fg: "#92400E", aliases: ["Pending"] },
+  "Shipped":         { value: "Shipped",        bg: "#E0E7FF", fg: "#3730A3" },
+  "Delivered":       { value: "Delivered",      bg: "#D1FAE5", fg: "#047857" },
+  "Modified":        { value: "Modified",       bg: "#FEF9C3", fg: "#854D0E" },
+  "Cancel by buyer": { value: "Cancel by buyer", bg: "#FCE7F3", fg: "#9D174D" },
+  "Cancelled":       { value: "Cancelled",      bg: "#FEE2E2", fg: "#991B1B" },
+  "Returned":        { value: "Returned",       bg: "#FFEDD5", fg: "#9A3412" },
+};
+const STATUS_FILTER_ORDER: StatusFilter[] = [
+  "All", "Dispatch", "Shipped", "Delivered",
+  "Modified", "Cancel by buyer", "Cancelled", "Returned",
+];
+
+// Return true when a shipment's stored status matches the selected filter.
+function matchesStatusFilter(shipStatus: string, filter: StatusFilter): boolean {
+  if (filter === "All") return true;
+  const meta = STATUS_META[filter];
+  if (!meta) return false;
+  if (shipStatus === meta.value) return true;
+  if (meta.aliases && meta.aliases.includes(shipStatus)) return true;
+  return false;
+}
 
 export default function Shipments() {
   const router = useRouter();
@@ -35,10 +76,19 @@ export default function Shipments() {
   const [bulkPerPage, setBulkPerPage] = useState<1 | 2 | 4>(4);
   const [refreshing, setRefreshing] = useState(false);
   const [settings, setSettings] = useState<Settings | null>(null);
+  // Status picker state: when non-null, a bottom-sheet modal is shown for
+  // changing this shipment's status to one of 7 values. The change is
+  // written via PUT /shipments/:id → which propagates to the Master
+  // Sheet via the Two-Way Status Sync we built.
+  const [statusPickerShipment, setStatusPickerShipment] = useState<Shipment | null>(null);
+  const [statusUpdating, setStatusUpdating] = useState(false);
 
   const load = useCallback(async () => {
+    // We fetch the FULL list (server-side text search still applies) and do
+    // status + date filtering on the client so the 8-way filter — including
+    // compound buckets like "Dispatch" that unify Pending+Dispatched —
+    // works consistently without extra backend round-trips.
     const q: any = { search: search || undefined };
-    if (status !== "All") q.status = status;
     try {
       const [list, s, cs] = await Promise.all([
         Api.listShipments(q), Api.getSettings(), Api.listCouriers(),
@@ -52,15 +102,18 @@ export default function Shipments() {
     } finally {
       setRefreshing(false);
     }
-  }, [search, status]);
+  }, [search]);
 
   useFocusEffect(useCallback(() => { load().catch(() => {}); }, [load]));
 
   // Handle deep-link params from Dashboard quick actions.
   React.useEffect(() => {
     const st = String(params.status || "");
-    if (st === "Pending" || st === "Delivered" || st === "Cancelled" || st === "All") {
+    if (STATUS_FILTER_ORDER.includes(st as StatusFilter)) {
       setStatus(st as StatusFilter);
+    } else if (st === "Pending") {
+      // Legacy deep-link (Dashboard "Pending" chip) → new "Dispatch" tab.
+      setStatus("Dispatch");
     }
     if (params.select === "1") {
       setSelectMode(true);
@@ -72,12 +125,16 @@ export default function Shipments() {
     couriers.find((c) => c.id === s.courier_id) || null;
 
   const dateFilteredItems = useMemo(() => {
-    if (dateFilter === "all") return items;
+    // Client-side compound filter: status (8 tabs) + date range.
+    const byStatus = status === "All"
+      ? items
+      : items.filter((s) => matchesStatusFilter(s.status || "", status));
+    if (dateFilter === "all") return byStatus;
     if (dateFilter === "custom") {
-      if (!customFrom && !customTo) return items;
+      if (!customFrom && !customTo) return byStatus;
       const from = customFrom ? new Date(customFrom.getFullYear(), customFrom.getMonth(), customFrom.getDate()).getTime() : 0;
       const to = customTo ? new Date(customTo.getFullYear(), customTo.getMonth(), customTo.getDate(), 23, 59, 59, 999).getTime() : Number.MAX_SAFE_INTEGER;
-      return items.filter((s) => {
+      return byStatus.filter((s) => {
         const t = Date.parse(s.created_at || "");
         return !isNaN(t) && t >= from && t <= to;
       });
@@ -89,11 +146,11 @@ export default function Shipments() {
         : dateFilter === "week"
         ? now - 7 * 24 * 60 * 60 * 1000
         : now - 30 * 24 * 60 * 60 * 1000;
-    return items.filter((s) => {
+    return byStatus.filter((s) => {
       const t = Date.parse(s.created_at || "");
       return !isNaN(t) && t >= cutoff;
     });
-  }, [items, dateFilter, customFrom, customTo]);
+  }, [items, dateFilter, customFrom, customTo, status]);
 
   const toggleSelect = (id: string) => {
     setSelectedIds((prev) => {
@@ -170,10 +227,51 @@ export default function Shipments() {
   };
 
   const toggleDelivered = async (s: Shipment) => {
-    const newStatus = s.status === "Delivered" ? "Pending" : "Delivered";
+    // Keeps legacy "quick mark" behaviour — toggle Delivered ↔ previous.
+    // Users can get the full 8-status picker via the "⋮" chip tap.
+    const prev = s.status || "Pending";
+    const newStatus = prev === "Delivered" ? "Dispatched" : "Delivered";
     await Api.updateShipment(s.id, { status: newStatus });
     load();
   };
+
+  // Open the full 8-status picker for a single shipment.
+  const openStatusPicker = (s: Shipment) => {
+    setStatusPickerShipment(s);
+  };
+
+  // Apply a new status, close the sheet, and refresh the list.
+  const changeStatus = async (newStatus: string) => {
+    if (!statusPickerShipment) return;
+    setStatusUpdating(true);
+    try {
+      await Api.updateShipment(statusPickerShipment.id, { status: newStatus });
+      setStatusPickerShipment(null);
+      await load();
+    } catch (e: any) {
+      Alert.alert("Couldn't update status", e?.message || "Network error");
+    } finally {
+      setStatusUpdating(false);
+    }
+  };
+
+  // Live count per status filter — powers badge numbers on each tab.
+  // Uses the already-loaded `items` so badges never lag the list.
+  const statusCounts = useMemo(() => {
+    const counts: Record<StatusFilter, number> = {
+      "All": items.length,
+      "Dispatch": 0, "Shipped": 0, "Delivered": 0, "Modified": 0,
+      "Cancel by buyer": 0, "Cancelled": 0, "Returned": 0,
+    };
+    for (const s of items) {
+      const st = s.status || "";
+      for (const f of STATUS_FILTER_ORDER) {
+        if (f === "All") continue;
+        if (matchesStatusFilter(st, f)) counts[f] += 1;
+      }
+    }
+    return counts;
+  }, [items]);
 
   const remove = (s: Shipment) => {
     // Explicit warning: sheet row is kept as an audit trail, not fully deleted.
@@ -265,19 +363,48 @@ export default function Shipments() {
       <View style={styles.filterRowWrap}>
         <ScrollView horizontal showsHorizontalScrollIndicator={false}
           contentContainerStyle={styles.filterRow}>
-          {(["All", "Pending", "Delivered", "Cancelled"] as StatusFilter[]).map((f) => {
+          {STATUS_FILTER_ORDER.map((f) => {
             const active = status === f;
+            const count = statusCounts[f] || 0;
+            const meta = f === "All" ? null : STATUS_META[f];
             return (
               <TouchableOpacity
-                key={f} testID={`filter-${f.toLowerCase()}`}
-                style={[styles.filterPill, active && styles.filterPillActive]}
+                key={f}
+                testID={`filter-${f.toLowerCase().replace(/\s/g, "-")}`}
+                style={[
+                  styles.filterPill,
+                  active && styles.filterPillActive,
+                  // Tinted border when the bucket has a dedicated color.
+                  meta && !active && { borderColor: meta.fg + "55" },
+                ]}
                 onPress={() => setStatus(f)}
               >
                 <Text
                   numberOfLines={1}
                   allowFontScaling={false}
-                  style={[styles.filterText, { color: active ? "#fff" : colors.text }]}
+                  style={[
+                    styles.filterText,
+                    { color: active ? "#fff" : (meta ? meta.fg : colors.text) },
+                  ]}
                 >{f}</Text>
+                <View
+                  style={[
+                    styles.filterCount,
+                    {
+                      backgroundColor: active ? "rgba(255,255,255,0.25)" : "#F3F4F6",
+                    },
+                  ]}
+                >
+                  <Text
+                    allowFontScaling={false}
+                    style={[
+                      styles.filterCountText,
+                      { color: active ? "#fff" : colors.text },
+                    ]}
+                  >
+                    {count}
+                  </Text>
+                </View>
               </TouchableOpacity>
             );
           })}
@@ -446,7 +573,10 @@ export default function Shipments() {
                   )}
                   <Text style={styles.track}>{item.tracking_id}</Text>
                 </View>
-                <StatusChip status={item.status} />
+                <StatusChip
+                  status={item.status}
+                  onPress={!selectMode ? () => openStatusPicker(item) : undefined}
+                />
               </View>
               <Text style={styles.name}>{item.customer_name}</Text>
               {!!item.order_id && (
@@ -585,6 +715,88 @@ export default function Shipments() {
           </View>
         </View>
       </Modal>
+
+      {/* ============================================================
+          Status Picker — bottom sheet with the 7 status options.
+          Triggered by tapping the status chip on any shipment card.
+          Each selection fires PUT /shipments/{id} which auto-syncs
+          to the Master Sheet via the Two-Way Status Sync.
+          ============================================================ */}
+      <Modal
+        visible={!!statusPickerShipment}
+        transparent
+        animationType="fade"
+        onRequestClose={() => !statusUpdating && setStatusPickerShipment(null)}
+      >
+        <TouchableOpacity
+          activeOpacity={1}
+          onPress={() => !statusUpdating && setStatusPickerShipment(null)}
+          style={styles.statusSheetBackdrop}
+        >
+          <TouchableOpacity activeOpacity={1} style={styles.statusSheet} onPress={() => {}}>
+            <View style={styles.statusSheetHandle} />
+            <Text style={styles.statusSheetTitle}>Change status</Text>
+            {statusPickerShipment && (
+              <Text style={styles.statusSheetSub} numberOfLines={1}>
+                {statusPickerShipment.tracking_id} · {statusPickerShipment.customer_name}
+              </Text>
+            )}
+            <ScrollView style={{ marginTop: 4 }}>
+              {STATUS_FILTER_ORDER.filter((f) => f !== "All").map((f) => {
+                const meta = STATUS_META[f as Exclude<StatusFilter, "All">];
+                const current = statusPickerShipment?.status || "";
+                const selected =
+                  current === meta.value ||
+                  (meta.aliases && meta.aliases.includes(current));
+                return (
+                  <TouchableOpacity
+                    key={f}
+                    testID={`status-option-${f.toLowerCase().replace(/\s/g, "-")}`}
+                    disabled={statusUpdating}
+                    onPress={() => changeStatus(meta.value)}
+                    style={[
+                      styles.statusOptionRow,
+                      selected && { borderColor: meta.fg, backgroundColor: meta.bg },
+                    ]}
+                  >
+                    <View
+                      style={[
+                        styles.statusDot,
+                        { backgroundColor: meta.fg },
+                      ]}
+                    />
+                    <View style={{ flex: 1 }}>
+                      <Text
+                        style={[styles.statusOptionLabel, { color: meta.fg }]}
+                      >
+                        {f}
+                      </Text>
+                      <Text style={styles.statusOptionHint} numberOfLines={1}>
+                        Stored as "{meta.value}"
+                        {meta.aliases && meta.aliases.length
+                          ? ` · also matches ${meta.aliases.join(", ")}`
+                          : ""}
+                      </Text>
+                    </View>
+                    {selected && (
+                      <Ionicons name="checkmark-circle" size={22} color={meta.fg} />
+                    )}
+                  </TouchableOpacity>
+                );
+              })}
+            </ScrollView>
+            <TouchableOpacity
+              onPress={() => !statusUpdating && setStatusPickerShipment(null)}
+              style={styles.statusSheetCancel}
+              testID="status-picker-cancel"
+            >
+              <Text style={styles.statusSheetCancelText}>
+                {statusUpdating ? "Saving…" : "Cancel"}
+              </Text>
+            </TouchableOpacity>
+          </TouchableOpacity>
+        </TouchableOpacity>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -604,17 +816,42 @@ function ActionBtn({
   );
 }
 
-function StatusChip({ status }: { status: string }) {
-  const map: Record<string, { bg: string; fg: string }> = {
-    Delivered: { bg: colors.successBg, fg: colors.successText },
-    Pending: { bg: colors.warningBg, fg: colors.warningText },
-    Cancelled: { bg: colors.dangerBg, fg: colors.dangerText },
-  };
-  const m = map[status] || map.Pending;
-  return (
-    <View style={[styles.chip, { backgroundColor: m.bg }]}>
-      <Text style={[styles.chipText, { color: m.fg }]}>{status.toUpperCase()}</Text>
+function StatusChip({
+  status,
+  onPress,
+}: {
+  status: string;
+  onPress?: () => void;
+}) {
+  // Walk STATUS_META to find a match (exact value OR one of its aliases).
+  let bg = colors.warningBg;
+  let fg = colors.warningText;
+  let label = status || "Pending";
+  for (const [, meta] of Object.entries(STATUS_META)) {
+    if (meta.value === status || (meta.aliases && meta.aliases.includes(status))) {
+      bg = meta.bg;
+      fg = meta.fg;
+      break;
+    }
+  }
+  const content = (
+    <View style={[styles.chip, { backgroundColor: bg }]}>
+      <Text style={[styles.chipText, { color: fg }]}>{label.toUpperCase()}</Text>
+      {onPress && (
+        <Ionicons
+          name="chevron-down"
+          size={11}
+          color={fg}
+          style={{ marginLeft: 2 }}
+        />
+      )}
     </View>
+  );
+  if (!onPress) return content;
+  return (
+    <TouchableOpacity onPress={onPress} activeOpacity={0.7} hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}>
+      {content}
+    </TouchableOpacity>
   );
 }
 
@@ -640,19 +877,111 @@ const styles = StyleSheet.create({
   filterRowWrap: { flexGrow: 0, flexShrink: 0 },
   filterRow: { paddingHorizontal: 16, paddingVertical: 12 },
   filterPill: {
-    paddingHorizontal: 14,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 12,
     paddingVertical: 8,
     borderWidth: 2,
     borderColor: "#E5E7EB",
     borderRadius: 999,
     backgroundColor: "#fff",
     marginRight: 8,
-    minWidth: 80,
-    alignItems: "center",
+    minWidth: 64,
     justifyContent: "center",
   },
   filterPillActive: { backgroundColor: colors.secondary, borderColor: colors.secondary },
   filterText: { fontWeight: "700", fontSize: 13, color: colors.text },
+  filterCount: {
+    minWidth: 22,
+    paddingHorizontal: 6,
+    height: 18,
+    borderRadius: 9,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  filterCountText: { fontSize: 11, fontWeight: "800" },
+  chip: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 4,
+  },
+  chipText: { fontSize: 10, fontWeight: "800", letterSpacing: 0.5 },
+  /* -------- Status picker bottom sheet -------- */
+  statusSheetBackdrop: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.45)",
+    justifyContent: "flex-end",
+  },
+  statusSheet: {
+    backgroundColor: "#fff",
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    paddingTop: 8,
+    paddingHorizontal: 16,
+    paddingBottom: 18,
+    maxHeight: "85%",
+  },
+  statusSheetHandle: {
+    alignSelf: "center",
+    width: 44,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: "#E5E7EB",
+    marginBottom: 10,
+  },
+  statusSheetTitle: {
+    fontSize: 17,
+    fontWeight: "800",
+    color: colors.text,
+  },
+  statusSheetSub: {
+    marginTop: 2,
+    fontSize: 12,
+    color: colors.textMuted,
+    marginBottom: 8,
+  },
+  statusOptionRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderRadius: 12,
+    borderWidth: 1.5,
+    borderColor: "#E5E7EB",
+    backgroundColor: "#fff",
+    marginVertical: 4,
+  },
+  statusDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+  },
+  statusOptionLabel: {
+    fontSize: 14.5,
+    fontWeight: "800",
+  },
+  statusOptionHint: {
+    marginTop: 1,
+    fontSize: 11,
+    color: colors.textMuted,
+  },
+  statusSheetCancel: {
+    marginTop: 10,
+    height: 46,
+    borderRadius: 12,
+    backgroundColor: "#F3F4F6",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  statusSheetCancelText: {
+    fontWeight: "800",
+    color: colors.text,
+    fontSize: 14.5,
+  },
   card: {
     backgroundColor: colors.surface, borderWidth: 2, borderColor: "#E5E7EB",
     borderRadius: 12, padding: 14, marginBottom: 10,

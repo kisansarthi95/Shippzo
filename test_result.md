@@ -477,6 +477,37 @@ backend:
             Verified manually via /tmp/test_twoway_sync.py against row
             11 — Pending → Dispatched → Delivered → DELETED all landed
             on the Sheet (backend logs show 3 sync messages).
+
+frontend:
+  - task: "Order Filters & Search + Status Picker"
+    implemented: true
+    working: "NA"
+    file: "/app/frontend/app/(tabs)/shipments.tsx"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: true
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: |
+            New 8-tab filter row (All / Dispatch / Shipped / Delivered /
+            Modified / Cancel by buyer / Cancelled / Returned), each tab
+            shows a live count badge. "Dispatch" tab is an alias bucket
+            that matches both "Pending" and "Dispatched" stored values
+            so legacy data keeps working. Filter logic moved to the
+            client (full list fetched once, status+date filters applied
+            in a useMemo). StatusChip is now tappable — opens a bottom
+            sheet picker with the 7 status options, each PUT via
+            /shipments/{id} which auto-syncs to the Master Sheet via
+            the Two-Way Sync. Quick "mark Delivered" action retained
+            on each card for backward compat. Deep-link `?status=Pending`
+            redirects to the new "Dispatch" tab.
+            Visual verification via screenshot_tool showed the 8-tab
+            row, live counts (e.g. All 50, Dispatch 43), the tappable
+            chip with chevron-down icon, and the bottom-sheet picker
+            with the currently-selected option highlighted (via alias
+            matching). No backend changes were required — all flows
+            use the existing PUT /shipments/{id} path.
         -working: true
         -agent: "testing"
         -comment: |
