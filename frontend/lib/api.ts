@@ -249,6 +249,41 @@ export type UsageSummary = {
   daily_key?: string;
 };
 
+// Phase-4a Credit Wallet ----------------------------------------------------
+
+export type Wallet = {
+  total_credits: number;
+  used_credits: number;
+  remaining_credits: number;
+  updated_at?: string;
+};
+
+export type CreditHistoryEntry = {
+  id: string;
+  user_id: string;
+  created_at: string;
+  order_id: string;
+  credits: number;                       // signed: negative = debit, positive = credit
+  type: "ai_processing" | "shipment_charge" | "purchase" | "bonus" | "refund";
+  address_type: "" | "simple" | "medium" | "complex";
+  description: string;
+  balance_after: number;
+};
+
+export type WalletQuote = {
+  plan: PlanKey;
+  plan_has_room: boolean;
+  trial_expired: boolean;
+  daily_blocked: boolean;
+  ai_complexity: "simple" | "medium" | "complex";
+  ai_credits: number;
+  ai_applies: boolean;
+  shipment_credits: number;
+  total: number;
+  wallet_balance: number;
+  can_afford: boolean;
+};
+
 export const Api = {
   listCouriers: () => api.get<Courier[]>("/couriers").then((r) => r.data),
   getCourier: (id: string) => api.get<Courier>(`/couriers/${id}`).then((r) => r.data),
@@ -283,6 +318,31 @@ export const Api = {
         plan_started_at: string;
         plan_expires_at: string | null;
       }>("/plans/upgrade", { plan })
+      .then((r) => r.data),
+
+  // --- Phase-4a Wallet ---
+  getWallet: () => api.get<Wallet>("/wallet").then((r) => r.data),
+  getWalletHistory: (limit: number = 100) =>
+    api
+      .get<{ entries: CreditHistoryEntry[]; count: number }>(
+        "/wallet/history",
+        { params: { limit } },
+      )
+      .then((r) => r.data),
+  purchaseCredits: (amount_inr: number) =>
+    api
+      .post<{
+        ok: boolean;
+        mocked: boolean;
+        amount_inr: number;
+        credits_added: number;
+        balance: number;
+        history_id: string;
+      }>("/wallet/purchase", { amount_inr })
+      .then((r) => r.data),
+  quoteLabel: (address: string = "") =>
+    api
+      .get<WalletQuote>("/wallet/quote", { params: { address } })
       .then((r) => r.data),
 
   getSettings: () => api.get<Settings>("/settings").then((r) => r.data),

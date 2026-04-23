@@ -94,6 +94,10 @@ export default function RootLayout() {
               name="plans"
               options={{ headerShown: true, title: "Plans & Billing" }}
             />
+            <Stack.Screen
+              name="wallet"
+              options={{ headerShown: true, title: "Wallet & Credits" }}
+            />
           </Stack>
         </AuthGate>
       </SafeAreaProvider>

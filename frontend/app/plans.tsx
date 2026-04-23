@@ -32,7 +32,7 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Stack, useRouter, useFocusEffect } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
-import { Api, PlanKey, PlanSpec, UsageSummary } from "../lib/api";
+import { Api, PlanKey, PlanSpec, UsageSummary, Wallet } from "../lib/api";
 import { colors } from "../lib/theme";
 import { useAuth } from "../lib/auth";
 
@@ -50,15 +50,21 @@ export default function PlansScreen() {
   const [plans, setPlans] = useState<PlanSpec[]>([]);
   const [current, setCurrent] = useState<PlanKey>("free_trial");
   const [usage, setUsage] = useState<UsageSummary | null>(null);
+  const [wallet, setWallet] = useState<Wallet | null>(null);
   const [loading, setLoading] = useState(true);
   const [busyKey, setBusyKey] = useState<PlanKey | null>(null);
 
   const load = useCallback(async () => {
     try {
-      const [pl, u] = await Promise.all([Api.listPlans(), Api.myUsage()]);
+      const [pl, u, w] = await Promise.all([
+        Api.listPlans(),
+        Api.myUsage(),
+        Api.getWallet().catch(() => null),
+      ]);
       setPlans(pl.plans);
       setCurrent(pl.current);
       setUsage(u);
+      setWallet(w);
     } catch (e: any) {
       Alert.alert("Could not load plans", e?.message || "Please try again");
     } finally {
@@ -140,6 +146,26 @@ export default function PlansScreen() {
             Payments coming soon. All plan switches are free for now.
           </Text>
         </View>
+
+        {/* Wallet card — tap to manage credits (Phase-4a) */}
+        <TouchableOpacity
+          testID="wallet-card"
+          activeOpacity={0.85}
+          onPress={() => router.push("/wallet")}
+          style={styles.walletCard}
+        >
+          <View style={styles.walletIconBox}>
+            <Ionicons name="wallet" size={22} color="#fff" />
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.walletLbl}>Wallet balance</Text>
+            <Text style={styles.walletVal}>
+              {(wallet?.remaining_credits ?? 0).toFixed(2)}
+              <Text style={styles.walletUnit}> credits</Text>
+            </Text>
+          </View>
+          <Ionicons name="chevron-forward" size={20} color="#CBD5E1" />
+        </TouchableOpacity>
 
         {/* Usage summary */}
         {usage ? (
@@ -431,4 +457,16 @@ const styles = StyleSheet.create({
     fontSize: 12,
     marginTop: 8,
   },
+  walletCard: {
+    flexDirection: "row", alignItems: "center", gap: 12,
+    backgroundColor: "#0F172A",
+    borderRadius: 14, padding: 14, marginBottom: 14,
+  },
+  walletIconBox: {
+    width: 42, height: 42, borderRadius: 21,
+    backgroundColor: "#1E293B", alignItems: "center", justifyContent: "center",
+  },
+  walletLbl: { color: "#94A3B8", fontSize: 11, fontWeight: "700", letterSpacing: 0.6 },
+  walletVal: { color: "#fff", fontSize: 22, fontWeight: "900", marginTop: 2 },
+  walletUnit: { color: "#94A3B8", fontSize: 13, fontWeight: "700" },
 });

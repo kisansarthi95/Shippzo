@@ -146,6 +146,47 @@ async def _incr(db, user_id: str, period: str) -> int:
 
 # --- Core guard called from the shipment-create paths -------------------
 
+async def plan_room_status(db, user: Dict[str, Any]) -> Dict[str, Any]:
+    """Non-raising introspection: does the user have room for another label
+    under their CURRENT PLAN only? (Ignores wallet.)
+
+    Returns a small dict the caller can reason about — used by Phase-4a
+    when the wallet engine may still allow overage on paid plans.
+    """
+    plan = plan_for(user)
+    uid = user["id"]
+    now = _now()
+    out = {
+        "plan": plan.key,
+        "plan_name": plan.name,
+        "trial_expired": False,
+        "plan_has_room": True,  # default optimistic
+        "daily_blocked": False,
+        "period": plan.period,
+    }
+    if plan.period == "trial":
+        exp_iso = user.get("plan_expires_at")
+        if exp_iso:
+            try:
+                exp = datetime.fromisoformat(exp_iso)
+                if exp.tzinfo is None:
+                    exp = exp.replace(tzinfo=timezone.utc)
+                out["trial_expired"] = now > exp
+            except Exception:
+                pass
+        used = await _get_count(db, uid, "trial")
+        out["plan_has_room"] = (not out["trial_expired"]) and (used < plan.label_cap)
+        return out
+
+    # Monthly
+    used_month = await _get_count(db, uid, _month_key(now))
+    out["plan_has_room"] = used_month < plan.label_cap
+    if plan.daily_cap is not None:
+        used_day = await _get_count(db, uid, _day_key(now))
+        out["daily_blocked"] = used_day >= plan.daily_cap
+    return out
+
+
 async def ensure_can_create_label(db, user: Dict[str, Any]) -> PlanSpec:
     """Raise 402 Payment Required if the user's plan cannot fit one more
     label. Returns the PlanSpec on success.

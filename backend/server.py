@@ -19,6 +19,17 @@ from plans import (
     ensure_can_create_label,
     bump_label_usage,
     usage_summary,
+    plan_room_status,
+)
+# Phase-4a credit wallet
+from wallet import (
+    ensure_wallet as wallet_ensure,
+    get_balance as wallet_balance,
+    list_history as wallet_list_history,
+    require_balance as wallet_require,
+    charge_for_label as wallet_charge,
+    add_credits as wallet_add_credits,
+    compute_label_cost,
 )
 from fastapi import Depends as _AuthDepends  # noqa: F401
 import os
@@ -1103,11 +1114,41 @@ async def create_shipment(
     payload: ShipmentCreate,
     current_user: Dict[str, Any] = Depends(get_current_user),
 ):
-    # Phase-3a plan enforcement — raises 402 if the user has hit their cap
-    # or if a free trial has expired.
-    await ensure_can_create_label(db, current_user)
+    # Phase-3a/4a combined gate:
+    #   • If plan has room  → consume a plan slot + AI credit.
+    #   • If plan exhausted → rely on wallet overage (paid plans only);
+    #     free-trial users must upgrade (no overage).
+    #   • Free-trial expired → refuse outright.
+    room = await plan_room_status(db, current_user)
+    if room["trial_expired"]:
+        raise HTTPException(
+            status_code=402,
+            detail="Your 7-day free trial has expired. Upgrade to continue.",
+        )
+    if room["daily_blocked"]:
+        raise HTTPException(
+            status_code=402,
+            detail="Daily limit reached (100/day on Platinum). Please try again tomorrow.",
+        )
+    plan_key = room["plan"]
+    plan_has_room = bool(room["plan_has_room"])
+    if (not plan_has_room) and plan_key == "free_trial":
+        raise HTTPException(
+            status_code=402,
+            detail=(
+                "Free trial limit reached (10 labels). Upgrade to "
+                "Silver or higher to keep shipping."
+            ),
+        )
 
     data = payload.model_dump()
+    addr_text = " ".join(filter(None, [
+        data.get("address_line1", ""), data.get("address_line2", ""),
+        data.get("city", ""), data.get("state", ""), str(data.get("pincode", "")),
+    ])).strip()
+    # Wallet preflight (may raise 402)
+    breakdown = await wallet_require(db, current_user, addr_text, plan_has_room)
+
     if data.get("courier_id") and not data.get("courier_name"):
         c = await db.couriers.find_one(
             {"id": data["courier_id"], "user_id": current_user["id"]}, {"_id": 0}
@@ -1128,7 +1169,11 @@ async def create_shipment(
     doc = shipment.model_dump()
     doc["user_id"] = current_user["id"]
     await db.shipments.insert_one(doc)
-    await bump_label_usage(db, current_user)
+    # Only bump plan counter when the plan actually covered this label.
+    if plan_has_room:
+        await bump_label_usage(db, current_user)
+    # Debit wallet (safe no-op for free-trial + trial-room combo).
+    await wallet_charge(db, current_user, doc["id"], breakdown)
     return shipment
 
 
@@ -1762,8 +1807,15 @@ async def ship_pending_order(
     current_user: Dict[str, Any] = Depends(get_current_user),
 ):
     """Promote a pending order to a real shipment — allocates tracking ID."""
-    # Phase-3a plan enforcement
-    await ensure_can_create_label(db, current_user)
+    # Phase-3a/4a combined gate
+    room = await plan_room_status(db, current_user)
+    if room["trial_expired"]:
+        raise HTTPException(status_code=402, detail="Your 7-day free trial has expired. Upgrade to continue.")
+    if room["daily_blocked"]:
+        raise HTTPException(status_code=402, detail="Daily limit reached. Please try again tomorrow.")
+    plan_has_room = bool(room["plan_has_room"])
+    if (not plan_has_room) and room["plan"] == "free_trial":
+        raise HTTPException(status_code=402, detail="Free trial limit reached (10 labels). Upgrade to Silver or higher.")
 
     order = await db.pending_orders.find_one(
         {"id": order_id, "user_id": current_user["id"]}, {"_id": 0}
@@ -1837,7 +1889,20 @@ async def ship_pending_order(
             "tracking_id": tracking_id,
         }},
     )
-    await bump_label_usage(db, current_user)
+    # Charge wallet + bump plan counter.
+    addr_text = " ".join(filter(None, [
+        ship_doc.get("address_line1",""), ship_doc.get("address_line2",""),
+        ship_doc.get("city",""), ship_doc.get("state",""), str(ship_doc.get("pincode","")),
+    ]))
+    breakdown = compute_label_cost(current_user, addr_text, plan_has_room)
+    # Wallet may not have been checked above (old-path) — make sure they can pay.
+    bal = await wallet_balance(db, current_user["id"])
+    if breakdown.total > bal + 1e-6:
+        # Shouldn't happen (we already gated), but be safe.
+        logger.warning(f"Ship path: wallet underfunded for user {current_user['id']}")
+    if plan_has_room:
+        await bump_label_usage(db, current_user)
+    await wallet_charge(db, current_user, ship_doc["id"], breakdown)
 
     # ---- Two-Way Status Sync: bump the Master Sheet row from
     # "Pending" to "Dispatched" and stamp the tracking ID into Notice.
@@ -1920,6 +1985,92 @@ async def upgrade_plan(
         "plan_started_at": set_payload["plan_started_at"],
         "plan_expires_at": set_payload.get("plan_expires_at"),
         "user": user_public(fresh or {}),
+    }
+
+
+# ---------------------- Phase-4a Credit Wallet ----------------------
+
+
+@api_router.get("/wallet")
+async def get_wallet(current_user: Dict[str, Any] = Depends(get_current_user)):
+    w = await wallet_ensure(db, current_user["id"])
+    return {
+        "total_credits": round(float(w.get("total_credits", 0.0)), 2),
+        "used_credits": round(float(w.get("used_credits", 0.0)), 2),
+        "remaining_credits": round(float(w.get("remaining_credits", 0.0)), 2),
+        "updated_at": w.get("updated_at"),
+    }
+
+
+@api_router.get("/wallet/history")
+async def get_wallet_history(
+    limit: int = 100,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    entries = await wallet_list_history(db, current_user["id"], limit=max(1, min(500, limit)))
+    return {"entries": entries, "count": len(entries)}
+
+
+class PurchaseCreditsRequest(BaseModel):
+    amount_inr: float  # 100 INR = 100 credits (1:1 per spec)
+
+
+@api_router.post("/wallet/purchase")
+async def purchase_credits(
+    payload: PurchaseCreditsRequest,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    """MOCK credit top-up for Phase-4a.
+
+    Razorpay wiring arrives in Phase-4c. For now this endpoint simply
+    credits the wallet at the ₹1 = 1 credit rate and stamps the history
+    entry with `type=purchase`. Returned receipt doubles as an audit
+    record until real payment webhooks start landing.
+    """
+    inr = float(payload.amount_inr or 0)
+    if inr <= 0:
+        raise HTTPException(status_code=400, detail="amount_inr must be > 0")
+    if inr < 10 or inr > 100000:
+        raise HTTPException(status_code=400, detail="Top-up must be between ₹10 and ₹1,00,000")
+    credits = round(inr, 2)  # 1:1 for the spec
+    res = await wallet_add_credits(
+        db, current_user["id"], credits,
+        ctype="purchase",
+        description=f"Top-up ₹{int(inr)} → {credits} credits (mocked)",
+    )
+    wallet = res["wallet"]
+    return {
+        "ok": True,
+        "mocked": True,
+        "amount_inr": inr,
+        "credits_added": credits,
+        "balance": round(float(wallet.get("remaining_credits", 0.0)), 2),
+        "history_id": res["history"]["id"],
+    }
+
+
+@api_router.get("/wallet/quote")
+async def wallet_quote(
+    address: str = "",
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    """Dry-run: show the user what ONE more label will cost right now."""
+    room = await plan_room_status(db, current_user)
+    plan_has_room = bool(room["plan_has_room"]) and not room["trial_expired"] and not room["daily_blocked"]
+    bd = compute_label_cost(current_user, address, plan_has_room)
+    bal = await wallet_balance(db, current_user["id"])
+    return {
+        "plan": room["plan"],
+        "plan_has_room": plan_has_room,
+        "trial_expired": room["trial_expired"],
+        "daily_blocked": room["daily_blocked"],
+        "ai_complexity": bd.ai_complexity,
+        "ai_credits": bd.ai_credits,
+        "ai_applies": bd.ai_applies,
+        "shipment_credits": bd.shipment_credits,
+        "total": bd.total,
+        "wallet_balance": round(bal, 2),
+        "can_afford": (bd.total <= bal + 1e-6),
     }
 
 
