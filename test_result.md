@@ -506,6 +506,21 @@ backend:
             gated the same way. Quick backend smoke test passed:
             submitting a phone that matches 2 existing shipments returns
             `duplicates: 2` with match_on=["phone"] for each.
+        -working: true
+        -agent: "testing"
+        -comment: |
+            34/37 assertions passed on first run. Only failure was
+            CASE 4 (parser did not recognise "Order ID:" with a space).
+            Matching logic (find_duplicate_matches) was correct all
+            along. Main applied a one-line pre-normalise fix in
+            parse_structured_paste:
+              text = re.sub(r"(?i)\border[\s\-]+id(?=\s*:)", "ORDER_ID", text)
+            (plus the same for PAYMENT_MODE, CUSTOMER_NAME, ADDRESS_N).
+            Re-verified locally: POST /smart-paste/parse with
+            "Order ID: ORD-1005" now emits fields.order_id_hint=
+            "ORD-1005"; POST /smart-paste/check-duplicate with the
+            same Order ID returns 1 duplicate (ND00026) with
+            match_on=["order_id"]. All other cases remain green.
         -working: false
         -agent: "testing"
         -comment: |

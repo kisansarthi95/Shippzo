@@ -1010,8 +1010,18 @@ def parse_structured_paste(text: str) -> Dict[str, Any]:
 
     Accepts BOTH multi-line AND single-line formats. Detects field
     keywords (NAME:, PHONE:, ADDRESS_1:, ...) regardless of newlines.
+    Also accepts multi-word variants like "Order ID:" (space) or
+    "Payment Mode:" — they are normalised to their canonical
+    underscored form below.
     """
     text = _normalize_digits(text or "").strip()
+    # Pre-normalise multi-word / hyphenated keys to their canonical
+    # underscore form so the token regex below stays simple. The
+    # lookahead ensures we only touch a key followed by ":".
+    text = re.sub(r"(?i)\border[\s\-]+id(?=\s*:)", "ORDER_ID", text)
+    text = re.sub(r"(?i)\bpayment[\s\-]+mode(?=\s*:)", "PAYMENT_MODE", text)
+    text = re.sub(r"(?i)\bcustomer[\s\-]+name(?=\s*:)", "CUSTOMER_NAME", text)
+    text = re.sub(r"(?i)\baddress[\s\-]+(\d)(?=\s*:)", r"ADDRESS_\1", text)
     result: Dict[str, str] = {}
     confidence: Dict[str, str] = {}
     warnings: List[str] = []
