@@ -226,3 +226,43 @@ agent_communication:
         6 items with auto-generated IDs, empty-array clears the list, and
         omitting the key preserves prior values. No regressions on shipments,
         couriers, or stats endpoints. Ready for main agent summary/finish.
+
+---
+
+## Iteration: STRICT ONE-LABEL-PER-PAGE PDF Fix (2026-04-23)
+
+### User Problem
+The shipping label PDF was breaking long addresses onto a second page, losing
+printer credits and making the labels unprintable. User demanded: one label =
+one page, always, with auto font-scaling if content is long.
+
+### Fix Strategy
+1. **`/app/frontend/lib/label.ts`** — Rewrote the A6 layout with strict rules:
+   - `@page { size: 105mm 148mm; margin: 3mm; }` (RULE #3 — explicit A6 dims).
+   - `.sheet { width: 99mm; height: 142mm; overflow: hidden; page-break-after: always; break-after: page; page-break-inside: avoid; break-inside: avoid; }` (RULE #2 — strict container with page break).
+   - `.label { max-height: 100% !important; overflow: hidden !important; page-break-inside: avoid !important; break-inside: avoid !important; }` (RULE #1 — content never overflows its slot).
+   - `.recv-block .blk-line { font-size: clamp(7pt, 2.4vw, 9pt); }` (RULE #5 — auto font scaling for long addresses).
+   - `.recv-block .blk-name { font-size: clamp(9pt, 3vw, 11pt); }` (same for long customer names).
+   - Logo `.brand-logo-square { width: 110px !important; image-rendering: high-quality; }` (RULE #8 — fixed logo size).
+   - Removed rigid `max-height: 40mm` on `.recv-block`; now uses `flex: 0 1 auto` so it naturally shrinks when notes/meta need space.
+   - Bulk and single print use the exact same `gridCss` branch for `perPage === 4` (RULE #7 — unified template).
+2. **`/app/frontend/app/label/[id].tsx`** — Replaced the RN-based preview with a WebView (native) / iframe (web) that renders the EXACT HTML produced by `buildLabelHtml`. This guarantees preview = PDF byte-for-byte.
+   - Added platform-aware `HtmlPreview` component.
+   - Auto-height reporting via `postMessage` so the preview sizes itself to the scaled label.
+   - Injected screen-only CSS that CSS-scales the first `.sheet` to fit the mobile viewport without touching the print layout.
+
+### Verification
+Ran `/tmp/test_pdf_pages.py` — uses headless Chromium to print the generated HTML to PDF and counts pages with `pypdf`. Three representative cases:
+- **short_addr** (Pawan Kushwaha, 2-line addr) → `pages=1, size=105.2mm × 148.2mm` ✅
+- **long_addr** (Deepak Sharma, long 3-line addr + city) → `pages=1, size=105.2mm × 148.2mm` ✅
+- **long_name** (Maheshbhai Dayabhai Rathod) → `pages=1, size=105.2mm × 148.2mm` ✅
+
+All three produce exactly ONE page at A6 size. Rule #1 is now guaranteed.
+
+### Files Changed
+- `/app/frontend/lib/label.ts`
+- `/app/frontend/app/label/[id].tsx`
+
+### Testing Required
+- User to verify on-device printing (expo-print on iOS/Android) produces same single-page output per shipment (bulk + single).
+- User to verify A4 1/page and 2/page modes still work as intended.

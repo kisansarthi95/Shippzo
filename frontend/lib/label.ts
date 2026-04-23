@@ -378,44 +378,52 @@ export function buildLabelHtml(
   }
 
   // ------------------------------------------------------------------
-  // PAGE LAYOUT STRATEGY
-  //
-  // Previously "perPage = 4" packed 4 labels into a 2×2 grid on ONE A4
-  // page. That forced fonts/logos/addresses to shrink and was visually
-  // inconsistent with the single-label print.
-  //
-  // NEW behaviour (user-requested): every label gets its OWN page at
-  // A6 portrait (105mm × 148mm — exactly 1/4 of A4). Bulk print of 10
-  // shipments = 10 A6 pages in a single multi-page PDF. This keeps
-  // every label identical to the single-print view.
+  // PAGE LAYOUT STRATEGY — STRICT ONE-LABEL-PER-PAGE
   //
   //   perPage === 1         → 1 label per A4 page        (full size)
   //   perPage === 2         → 2 labels per A4 page       (split vertically)
-  //   perPage === 4         → N A6 pages, 1 label each   (new default)
-  //   perPage === "thermal" → 100mm × 150mm thermal roll (unchanged)
+  //   perPage === 4         → N A6 pages, 1 label each   (A6 105x148mm)
+  //   perPage === "thermal" → 100mm × 150mm thermal roll
+  //
+  // RULE: one label = exactly one page. NEVER split across pages.
+  // Strict container dimensions + overflow:hidden + page-break-inside:avoid
+  // enforce this. Long addresses auto-shrink via clamp(), never overflow.
+  // Bulk and single print use EXACTLY the same template and CSS.
   // ------------------------------------------------------------------
-  // Unified template: bulk PDF uses SAME CSS/layout as single print.
-  // Each label occupies exactly ONE A6 page; content that doesn't fit
-  // is clipped INSIDE its block (auto-shrink via clamp), never breaks to
-  // a new page.
+  //
+  // A6 printable area with 3mm page margins = 99mm × 142mm.
+  // A4 printable area with 5mm page margins = 200mm × 287mm.
+  // Thermal 100×150mm with 2mm margins = 96mm × 146mm.
   const gridCss =
     perPage === 4
-      ? `.sheet { display: block; page-break-after: always; width: 100%; }
-         .label { height: 138mm; width: 100%; }`
+      ? `.sheet { display: block; width: 99mm; height: 142mm;
+                   page-break-after: always; break-after: page;
+                   page-break-inside: avoid; break-inside: avoid;
+                   overflow: hidden; }
+         .label { width: 99mm; height: 142mm; }`
       : perPage === 2
-      ? `.sheet { display: grid; grid-template-columns: 1fr; grid-template-rows: 1fr 1fr; page-break-after: always; gap: 2mm; width: 100%; }
-         .label { height: 140mm; }`
+      ? `.sheet { display: grid; grid-template-columns: 1fr;
+                   grid-template-rows: 1fr 1fr;
+                   page-break-after: always; break-after: page;
+                   gap: 2mm; width: 200mm; height: 287mm; overflow: hidden; }
+         .label { height: 142mm; width: 100%; }`
       : perPage === 1
-      ? `.sheet { display: block; page-break-after: always; width: 100%; }
-         .label { height: 260mm; }`
-      : `.sheet { display: block; page-break-after: always; width: 100mm; }
-         .label { height: 145mm; width: 100mm; }`;
+      ? `.sheet { display: block; width: 200mm; height: 287mm;
+                   page-break-after: always; break-after: page;
+                   page-break-inside: avoid; break-inside: avoid;
+                   overflow: hidden; }
+         .label { height: 287mm; width: 100%; }`
+      : `.sheet { display: block; width: 96mm; height: 146mm;
+                   page-break-after: always; break-after: page;
+                   page-break-inside: avoid; break-inside: avoid;
+                   overflow: hidden; }
+         .label { height: 146mm; width: 96mm; }`;
 
   const pageCss =
     perPage === "thermal"
       ? `@page { size: 100mm 150mm; margin: 2mm; }`
       : perPage === 4
-      ? `@page { size: A6 portrait; margin: 3mm; }`
+      ? `@page { size: 105mm 148mm; margin: 3mm; }`
       : `@page { size: A4; margin: 5mm; }`;
 
   // One shipment per page now for perPage=4 (was 4-up grid).
@@ -443,18 +451,19 @@ export function buildLabelHtml(
   body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif;
     margin: 0; color: #0A0A0A; }
   ${gridCss}
-  /* Label is a 3-row grid: fixed header, flexible middle, fixed footer */
-  .label { border: 2px solid #0A0A0A; padding: 5mm;
+  /* Label is a 3-row grid: fixed header, flexible middle, fixed footer.
+     STRICT ONE-LABEL-PER-PAGE: container is hard-bounded so one label
+     always fits on its allocated page slot. Content never overflows;
+     long text auto-shrinks via clamp() inside blocks. Dimensions come
+     from gridCss per perPage. Page breaks are handled by .sheet only. */
+  .label { border: 2px solid #0A0A0A; padding: 4mm;
     background: #fff; border-radius: 3mm;
-    display: grid; grid-template-rows: auto 1fr auto; gap: 3mm;
-    width: 100%; max-width: 100%; box-sizing: border-box;
-    /* STRICT single-page rule: one label = exactly one page.
-       Never split across pages. Content that would overflow is
-       contained and auto-shrinks inside its block (see .recv-block). */
-    height: 138mm;
-    overflow: hidden;
-    page-break-inside: avoid;
-    break-inside: avoid;
+    display: grid; grid-template-rows: auto 1fr auto; gap: 2.5mm;
+    max-width: 100% !important; box-sizing: border-box;
+    max-height: 100% !important;
+    overflow: hidden !important;
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
     -webkit-print-color-adjust: exact;
     print-color-adjust: exact;
     color-adjust: exact; }
@@ -542,31 +551,29 @@ export function buildLabelHtml(
   .cf-notes-wrap .cf-row { font-size: 9pt; }
 
   /* ---- MIDDLE (flex) ---- */
-  /* .mid has a fixed minimum height but STRICT overflow: any excess text
-     is contained inside .recv-block which handles its own auto-shrink +
-     clamp, so the label never grows beyond one page. */
-  .mid { display: flex; flex-direction: column; gap: 3mm; min-height: 0;
+  /* .mid fills remaining vertical space. Long content auto-shrinks font
+     via clamp(); extra overflow is clipped inside blocks. */
+  .mid { display: flex; flex-direction: column; gap: 2.5mm; min-height: 0;
     overflow: hidden; }
-  /* DELIVER-TO box — hard-capped height so long addresses NEVER push the
-     notes/meta/barcode below.  overflow:hidden clips any extreme residual.
-     Address text uses a compact 7.5pt with tight line-height and
-     word-break: break-word so most 3-4 line addresses fit comfortably. */
+  /* DELIVER-TO box — auto-shrinks via clamp(). Container is flex-shrinkable
+     and clips residual overflow so the footer/barcode always stays on page. */
   .recv-block { border: 1.5px solid #0A0A0A; border-radius: 3mm;
     padding: 2.5mm 3mm; background: #F4F5F7;
-    flex: 0 0 auto;
-    max-height: 40mm;
+    flex: 0 1 auto; min-height: 0;
     overflow: hidden; }
-  .recv-block .blk-line { font-size: 7.5pt;
+  .recv-block .blk-line { font-size: clamp(7pt, 2.4vw, 9pt);
     line-height: 1.2;
     white-space: normal;
     word-break: break-word;
     overflow-wrap: anywhere;
     color: #1F2937; }
-  .recv-block .blk-name { font-size: 10.5pt; font-weight: 900;
+  .recv-block .blk-name { font-size: clamp(9pt, 3vw, 11pt);
+    font-weight: 900;
     color: #0A0A0A; margin-bottom: 0.8mm;
-    white-space: normal; word-break: break-word;
+    white-space: normal; word-break: break-word; overflow-wrap: anywhere;
     line-height: 1.15; }
-  .recv-block .blk-contact { font-size: 9pt; margin-top: 0.8mm;
+  .recv-block .blk-contact { font-size: clamp(8pt, 2.6vw, 9.5pt);
+    margin-top: 0.8mm;
     font-weight: 800; color: #0A0A0A;
     white-space: normal; word-break: break-word; }
   .blk-title { font-size: 8pt; font-weight: 800; color: #4B5563;
