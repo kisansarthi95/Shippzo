@@ -32,6 +32,12 @@ from wallet import (
     compute_label_cost,
     classify_and_cost as wallet_classify_and_cost,
 )
+# Phase-4b+ Smart Paste AI
+from smart_paste_ai import (
+    parse_paste_via_llm,
+    to_legacy_fields as sm_to_legacy_fields,
+    DEFAULT_SHIPBOT_PROMPT,
+)
 from fastapi import Depends as _AuthDepends  # noqa: F401
 import os
 import io
@@ -407,6 +413,11 @@ class Settings(BaseModel):
     sheet: SheetConfig = Field(default_factory=SheetConfig)
     label_fields: LabelFields = Field(default_factory=LabelFields)
     custom_fields: List[CustomLabelField] = Field(default_factory=list)
+    # Phase-4b+: per-user customisation of the Smart Paste AI parser.
+    # Kept OPTIONAL so existing users aren't forced to set it — if empty,
+    # we fall back to the bundled DEFAULT_SHIPBOT_PROMPT.
+    smart_paste_instructions: str = ""
+    smart_paste_ai_enabled: bool = True
 
 
 class SettingsUpdate(BaseModel):
@@ -421,6 +432,8 @@ class SettingsUpdate(BaseModel):
     sheet: Optional[SheetConfig] = None
     label_fields: Optional[LabelFields] = None
     custom_fields: Optional[List[CustomLabelField]] = None
+    smart_paste_instructions: Optional[str] = None
+    smart_paste_ai_enabled: Optional[bool] = None
 
 
 class Shipment(BaseModel):
@@ -730,6 +743,11 @@ async def update_settings(
         update["custom_fields"] = [
             f.model_dump() for f in payload.custom_fields[:6]
         ]
+    if payload.smart_paste_instructions is not None:
+        # Cap to 8 KB so an overly long prompt can't crash the LLM round-trip.
+        update["smart_paste_instructions"] = (payload.smart_paste_instructions or "")[:8000]
+    if payload.smart_paste_ai_enabled is not None:
+        update["smart_paste_ai_enabled"] = bool(payload.smart_paste_ai_enabled)
     if not update:
         raise HTTPException(status_code=400, detail="No fields to update")
     # Per-user settings doc. Ensures tenants don't overwrite each other.
@@ -1329,6 +1347,7 @@ class PendingOrder(BaseModel):
 
 class SmartPasteRequest(BaseModel):
     text: str
+    use_ai: Optional[bool] = True   # Phase-4b+: LLM-driven parse by default
 
 
 class ShipOrderRequest(BaseModel):
@@ -1483,9 +1502,71 @@ def parse_structured_paste(text: str) -> Dict[str, Any]:
 
 
 @api_router.post("/smart-paste/parse")
-async def smart_paste_parse(payload: SmartPasteRequest):
-    """Parse pasted text only (no save) — for preview/dry-run."""
-    return parse_structured_paste(payload.text or "")
+async def smart_paste_parse(
+    payload: SmartPasteRequest,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    """Parse pasted text only (no save) — for preview/dry-run.
+
+    Phase-4b+: we now try the LLM (ShipBot-style 14-line schema) first,
+    then fall back to the deterministic regex parser on any failure so
+    the UI never has a blank state. The LLM result also carries:
+        missing[]  — fields the user still needs to provide
+        complexity — simple/medium/complex classification
+        ai_reason  — one-line rationale surfaced in the dialog
+    NO wallet charge here — that happens at the final create step.
+    """
+    text = (payload.text or "").strip()
+    legacy = parse_structured_paste(text)
+
+    ai_block: Dict[str, Any] = {
+        "used": False, "missing": [], "complexity": "", "reason": "",
+        "source": "regex",
+    }
+    if payload.use_ai is not False:
+        # Pick up the user's customisation from Settings (per-tenant).
+        s = await db.settings.find_one(
+            {"user_id": current_user["id"]}, {"_id": 0, "smart_paste_instructions": 1}
+        ) or {}
+        custom = (s.get("smart_paste_instructions") or "").strip()
+        ai = await parse_paste_via_llm(text, custom_instructions=custom)
+        if ai["source"] == "llm":
+            mapped = sm_to_legacy_fields(ai["fields"])
+            # Merge: LLM fields WIN over regex where they have a non-empty value.
+            merged_fields: Dict[str, Any] = dict(legacy.get("fields", {}))
+            for k, v in mapped.items():
+                if v:
+                    merged_fields[k] = v
+            # Post-normalise amount into a float so the UI's numeric field works
+            if isinstance(merged_fields.get("amount"), str):
+                m = re.search(r"(\d+(?:\.\d+)?)", merged_fields["amount"].replace(",", ""))
+                if m:
+                    try:
+                        merged_fields["amount"] = float(m.group(1))
+                    except Exception:
+                        pass
+            legacy["fields"] = merged_fields
+            # Recompute missing_fields AFTER the merge so the UI banner is fresh.
+            still_missing = []
+            for (schema_key, legacy_key) in [
+                ("NAME", "customer_name"), ("PHONE", "customer_phone"),
+                ("ADDRESS_1", "address_line1"), ("CITY", "city"),
+                ("STATE", "state"), ("PINCODE", "pincode"),
+                ("ITEMS", "items"), ("AMOUNT", "amount"),
+            ]:
+                v = merged_fields.get(legacy_key)
+                if not v and (isinstance(v, str) or v in (None, 0)):
+                    still_missing.append(schema_key)
+            ai_block = {
+                "used": True,
+                "missing": still_missing,
+                "complexity": ai["complexity"],
+                "reason": ai["ai_reason"],
+                "source": "llm",
+            }
+
+    legacy["ai"] = ai_block
+    return legacy
 
 
 # ----------------------------------------------------------------------

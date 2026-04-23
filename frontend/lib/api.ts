@@ -396,13 +396,31 @@ export const Api = {
 
   // Smart Paste & Pending Orders
   smartPasteParse: (text: string) =>
-    api.post<{ fields: any; confidence: any; warnings: string[] }>("/smart-paste/parse", { text })
+    api.post<{
+      fields: any;
+      confidence: any;
+      warnings: string[];
+      ai?: {
+        used: boolean;
+        missing: string[];
+        complexity: "simple" | "medium" | "complex" | "";
+        reason: string;
+        source: "llm" | "regex" | "fallback";
+      };
+    }>("/smart-paste/parse", { text })
       .then((r) => r.data),
   smartPasteCheckDuplicate: (text: string) =>
     api.post<{
       fields: any;
       confidence: any;
       warnings: string[];
+      ai?: {
+        used: boolean;
+        missing: string[];
+        complexity: "simple" | "medium" | "complex" | "";
+        reason: string;
+        source: "llm" | "regex" | "fallback";
+      };
       duplicates: Array<{
         kind: "pending" | "shipment";
         id: string;
@@ -417,6 +435,14 @@ export const Api = {
     }>("/smart-paste/check-duplicate", { text }).then((r) => r.data),
   smartPasteCreate: (text: string) =>
     api.post<PendingOrder>("/smart-paste", { text }).then((r) => r.data),
+
+  // Phase-4b+ Smart Paste AI helpers
+  smartPasteDefaultPrompt: () =>
+    api.get<{
+      default_prompt: string;
+      user_instructions: string;
+      ai_enabled: boolean;
+    }>("/smart-paste/default-prompt").then((r) => r.data),
   listPendingOrders: (params?: { source?: string; status?: string }) =>
     api.get<PendingOrder[]>("/orders/pending", { params }).then((r) => r.data),
   getPendingOrder: (id: string) =>
