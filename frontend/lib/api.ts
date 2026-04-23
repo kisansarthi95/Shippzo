@@ -206,6 +206,49 @@ export type SheetOrder = {
   raw: Record<string, string>;
 };
 
+// Phase-3a Plans & Usage ----------------------------------------------------
+
+export type PlanKey = "free_trial" | "silver" | "gold" | "platinum";
+
+export type PlanSpec = {
+  key: PlanKey;
+  name: string;
+  feel: string;
+  purpose: string;
+  price_inr: number;
+  label_cap: number;
+  period: "trial" | "month";
+  trial_days: number | null;
+  bulk_max: number;
+  daily_cap: number | null;
+  badge: "Most Popular" | "🚀" | null;
+  cta: string;
+};
+
+export type UsageSummary = {
+  plan: PlanKey;
+  plan_name: string;
+  price_inr: number;
+  bulk_max: number;
+  can_bulk: boolean;
+  daily_cap: number | null;
+  period: "trial" | "month";
+  label_cap: number;
+  labels_used: number;
+  labels_remaining: number;
+  can_create_label: boolean;
+  // trial-only
+  trial_expires_at?: string | null;
+  trial_days_left?: number | null;
+  trial_expired?: boolean;
+  // monthly-only
+  period_key?: string;
+  // Platinum-only
+  today_used?: number;
+  today_remaining?: number;
+  daily_key?: string;
+};
+
 export const Api = {
   listCouriers: () => api.get<Courier[]>("/couriers").then((r) => r.data),
   getCourier: (id: string) => api.get<Courier>(`/couriers/${id}`).then((r) => r.data),
@@ -223,6 +266,23 @@ export const Api = {
   consumeTracking: (id: string) =>
     api
       .post<{ tracking_id: string }>(`/couriers/${id}/consume-tracking`)
+      .then((r) => r.data),
+
+  // --- Phase-3a Plans & Usage ---
+  listPlans: () =>
+    api
+      .get<{ plans: PlanSpec[]; current: PlanKey }>("/plans")
+      .then((r) => r.data),
+  myUsage: () => api.get<UsageSummary>("/me/usage").then((r) => r.data),
+  upgradePlan: (plan: PlanKey) =>
+    api
+      .post<{
+        ok: boolean;
+        mocked: boolean;
+        plan: PlanKey;
+        plan_started_at: string;
+        plan_expires_at: string | null;
+      }>("/plans/upgrade", { plan })
       .then((r) => r.data),
 
   getSettings: () => api.get<Settings>("/settings").then((r) => r.data),

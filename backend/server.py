@@ -11,6 +11,15 @@ from auth import (
     get_current_user_factory, utcnow_iso as auth_utcnow_iso,
     seed_demo_shipments, seed_default_courier, claim_legacy_data_for_admin,
 )
+# Phase-3a subscription plans + usage enforcement
+from plans import (
+    PLANS as PLAN_TABLE,
+    public_plan_list,
+    plan_start_payload,
+    ensure_can_create_label,
+    bump_label_usage,
+    usage_summary,
+)
 from fastapi import Depends as _AuthDepends  # noqa: F401
 import os
 import io
@@ -84,6 +93,8 @@ async def auth_signup(payload: SignupRequest):
     now = auth_utcnow_iso()
     is_first = (await db.users.count_documents({})) == 0
     uid = str(uuid.uuid4())
+    # New users start on the 7-day Free Trial (10 labels one-time).
+    trial_spec = plan_start_payload("free_trial")
     user_doc = {
         "id": uid,
         "email": email,
@@ -91,7 +102,9 @@ async def auth_signup(payload: SignupRequest):
         "name": payload.name.strip(),
         "shop_name": payload.shop_name.strip(),
         "is_admin": is_first,
-        "plan": "free_trial",
+        "plan": trial_spec["plan"],
+        "plan_started_at": trial_spec["plan_started_at"],
+        "plan_expires_at": trial_spec["plan_expires_at"],
         "created_at": now,
     }
     await db.users.insert_one(user_doc)
@@ -186,6 +199,7 @@ async def auth_google_session(payload: GoogleSessionRequest):
     if user is None:
         is_first = (await db.users.count_documents({})) == 0
         uid = str(uuid.uuid4())
+        trial_spec = plan_start_payload("free_trial")
         user_doc = {
             "id": uid,
             "email": email,
@@ -197,7 +211,9 @@ async def auth_google_session(payload: GoogleSessionRequest):
             "picture": prof.get("picture") or "",
             "auth_provider": "google",
             "is_admin": is_first,
-            "plan": "free_trial",
+            "plan": trial_spec["plan"],
+            "plan_started_at": trial_spec["plan_started_at"],
+            "plan_expires_at": trial_spec["plan_expires_at"],
             "created_at": now,
         }
         await db.users.insert_one(user_doc)
@@ -1087,6 +1103,10 @@ async def create_shipment(
     payload: ShipmentCreate,
     current_user: Dict[str, Any] = Depends(get_current_user),
 ):
+    # Phase-3a plan enforcement — raises 402 if the user has hit their cap
+    # or if a free trial has expired.
+    await ensure_can_create_label(db, current_user)
+
     data = payload.model_dump()
     if data.get("courier_id") and not data.get("courier_name"):
         c = await db.couriers.find_one(
@@ -1108,6 +1128,7 @@ async def create_shipment(
     doc = shipment.model_dump()
     doc["user_id"] = current_user["id"]
     await db.shipments.insert_one(doc)
+    await bump_label_usage(db, current_user)
     return shipment
 
 
@@ -1741,6 +1762,9 @@ async def ship_pending_order(
     current_user: Dict[str, Any] = Depends(get_current_user),
 ):
     """Promote a pending order to a real shipment — allocates tracking ID."""
+    # Phase-3a plan enforcement
+    await ensure_can_create_label(db, current_user)
+
     order = await db.pending_orders.find_one(
         {"id": order_id, "user_id": current_user["id"]}, {"_id": 0}
     )
@@ -1813,6 +1837,7 @@ async def ship_pending_order(
             "tracking_id": tracking_id,
         }},
     )
+    await bump_label_usage(db, current_user)
 
     # ---- Two-Way Status Sync: bump the Master Sheet row from
     # "Pending" to "Dispatched" and stamp the tracking ID into Notice.
@@ -1841,6 +1866,61 @@ async def pending_orders_count(current_user: Dict[str, Any] = Depends(get_curren
         {"user_id": current_user["id"], "status": "pending"}
     )
     return {"count": n}
+
+
+# ---------------------- Phase-3a Plans & Usage ----------------------
+
+
+@api_router.get("/plans")
+async def list_plans(current_user: Dict[str, Any] = Depends(get_current_user)):
+    """Return the 4-tier plan catalogue plus a hint about which plan the
+    caller is currently on (so the Plans screen can badge it)."""
+    return {
+        "plans": public_plan_list(),
+        "current": current_user.get("plan") or "free_trial",
+    }
+
+
+@api_router.get("/me/usage")
+async def my_usage(current_user: Dict[str, Any] = Depends(get_current_user)):
+    """Current plan + live usage counters. Safe to poll on screen focus."""
+    return await usage_summary(db, current_user)
+
+
+class UpgradePlanRequest(BaseModel):
+    plan: str  # one of free_trial | silver | gold | platinum
+
+
+@api_router.post("/plans/upgrade")
+async def upgrade_plan(
+    payload: UpgradePlanRequest,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    """MOCK upgrade flow for Phase-3a. Razorpay payment will be added in
+    Phase-4. For now this simply switches the user's plan record and
+    restarts the relevant validity window (trial_expires_at for
+    free_trial, open-ended for paid tiers). No money changes hands.
+
+    SECURITY: Downgrading to free_trial after it's been consumed does
+    NOT reset the lifetime trial counter — the user will still hit the
+    10-label cap immediately. This prevents "reset-abuse".
+    """
+    key = (payload.plan or "").strip().lower()
+    if key not in PLAN_TABLE:
+        raise HTTPException(status_code=400, detail=f"Unknown plan '{payload.plan}'")
+    set_payload = plan_start_payload(key)
+    # Stamp a flag so the UI can display "Upgrade mocked — Razorpay in Phase 4".
+    set_payload["plan_mocked"] = True
+    await db.users.update_one({"id": current_user["id"]}, {"$set": set_payload})
+    fresh = await db.users.find_one({"id": current_user["id"]}, {"_id": 0})
+    return {
+        "ok": True,
+        "mocked": True,
+        "plan": key,
+        "plan_started_at": set_payload["plan_started_at"],
+        "plan_expires_at": set_payload.get("plan_expires_at"),
+        "user": user_public(fresh or {}),
+    }
 
 
 # ---------------------- App setup ----------------------
