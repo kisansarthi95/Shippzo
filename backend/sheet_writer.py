@@ -10,6 +10,7 @@ Env vars (read via dotenv in server.py):
 from __future__ import annotations
 
 import os
+import re
 import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
@@ -114,3 +115,91 @@ def probe_connection() -> Dict[str, Any]:
     except Exception as e:
         log.exception("Google Sheet probe failed")
         return {"ok": False, "error": str(e)}
+
+
+# ----------------------------------------------------------------------
+# Soft-Delete / Tombstone support
+# ----------------------------------------------------------------------
+
+_RANGE_ROW_RE = re.compile(r"[A-Z]+(\d+)(?::[A-Z]+(\d+))?$")
+
+
+def parse_row_from_updated_range(updated_range: Optional[str]) -> Optional[int]:
+    """Extract the numeric row index from a Google Sheets update range.
+
+    Examples:
+      "All Master Data!A123:N123"           -> 123
+      "'All Master Data'!A8:N8"             -> 8
+      "Sheet1!B42"                          -> 42
+
+    Returns None if the range is missing/malformed.
+    """
+    if not updated_range:
+        return None
+    try:
+        # Strip the tab-name prefix before `!`
+        tail = updated_range.split("!", 1)[-1]
+        m = _RANGE_ROW_RE.search(tail.replace("$", ""))
+        if not m:
+            return None
+        # Use the first group (start-row).
+        return int(m.group(1))
+    except Exception:
+        return None
+
+
+def _col_letter(col_index_1based: int) -> str:
+    """Convert 1-based column index (1 -> A, 27 -> AA) to spreadsheet letter."""
+    s = ""
+    n = col_index_1based
+    while n > 0:
+        n, rem = divmod(n - 1, 26)
+        s = chr(65 + rem) + s
+    return s
+
+
+def mark_row_deleted(
+    row_num: int,
+    reason: str = "deleted by user",
+) -> Dict[str, Any]:
+    """Mark a Master Sheet row as DELETED without removing it.
+
+    Writes "DELETED" into the Status column and appends a timestamp + reason
+    to the Notice column. The underlying row and data remain untouched —
+    this is a tombstone, so re-imports can skip it and nothing is lost
+    even if an app user hits Delete by accident.
+
+    Returns {"ok": True, "row": <n>, "tab": <name>} on success.
+    Raises gspread/RuntimeError on failure so the caller can decide whether
+    to abort the local delete or log and proceed.
+    """
+    if not isinstance(row_num, int) or row_num < 2:
+        raise ValueError(f"Invalid row_num for soft-delete: {row_num!r}")
+
+    ws = _get_worksheet()
+    # Column positions in COLUMNS list (0-based); Google Sheets columns are 1-based.
+    try:
+        status_col = COLUMNS.index("status") + 1   # e.g. 13 -> "M"
+        notice_col = COLUMNS.index("notice") + 1   # e.g. 14 -> "N"
+    except ValueError as e:
+        raise RuntimeError(f"COLUMNS layout missing status/notice: {e}")
+
+    ts = datetime.now(timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M:%S")
+    notice_text = f"DELETED {ts} — {reason}"
+
+    status_a1 = f"{_col_letter(status_col)}{row_num}"
+    notice_a1 = f"{_col_letter(notice_col)}{row_num}"
+
+    # Batch update so Status + Notice land atomically.
+    ws.batch_update([
+        {"range": status_a1, "values": [["DELETED"]]},
+        {"range": notice_a1, "values": [[notice_text]]},
+    ], value_input_option="USER_ENTERED")
+
+    return {
+        "ok": True,
+        "row": row_num,
+        "tab": ws.title,
+        "status_cell": status_a1,
+        "notice_cell": notice_a1,
+    }

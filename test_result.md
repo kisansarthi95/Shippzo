@@ -310,3 +310,179 @@ Budget indicator verified visually in the Settings screen — renders amber "Lab
 - Backend API surface (settings CRUD, custom_fields schema) — unchanged.
 - `/app/frontend/app/(tabs)/add.tsx` (Per-Shipment custom field input) — unchanged.
 - Bulk print pipeline in `/app/frontend/app/(tabs)/shipments.tsx` — unchanged; inherits the new strict CSS automatically.
+
+---
+
+## Iteration: Google Sheets Soft-Delete (Tombstone) — 2026-04-23
+
+### User Problem
+Once the app is on Play Store and used by many shops, an accidental delete
+inside the app would corrupt the shared Master Sheet history. User asked
+for: on delete, don't drop the row — write "DELETED" into the Status column
+of the sheet instead, keeping the row as an audit trail.
+
+### Implementation
+1. `/app/backend/sheet_writer.py`
+   - New helper `parse_row_from_updated_range(range_str)` — extracts the
+     numeric row from Google Sheets' `updatedRange` like
+     `"'All Master Data'!A8:N8"` → `8`.
+   - New helper `mark_row_deleted(row_num, reason)` — uses
+     `worksheet.batch_update` to write `"DELETED"` to the Status column and
+     `"DELETED <timestamp> — <reason>"` to the Notice column. The rest of
+     the row is untouched, providing a permanent audit trail.
+   - `_col_letter(n)` converts 1-based column index → spreadsheet letter.
+
+2. `/app/backend/server.py`
+   - Import and guard the two new sheet_writer functions.
+   - Added `sheet_row_num: Optional[int] = None` to the `Shipment` model.
+   - In Smart Paste flow: after `sheet_append_order_row` succeeds, call
+     `parse_row_from_updated_range(...)` and store the result on the
+     `PendingOrder.sheet_row_num` field.
+   - In `ship_pending_order`: the new shipment doc carries the
+     `sheet_row_num` forward from the pending order so later deletion can
+     still identify the tombstone row.
+   - `DELETE /api/shipments/{id}`: fetches the shipment first; if
+     `sheet_row_num` is set, calls `mark_row_deleted(row_num, reason)`. Any
+     sheet failure is logged and returned in the response as
+     `{sheet:{ok:false,error:…}}` but the local delete proceeds so users
+     are never stuck. Returns `{ok:true, sheet: {...}}`.
+   - `DELETE /api/orders/pending/{id}`: same soft-delete path for pending
+     (Smart Paste) orders that haven't been shipped yet. Returns the same
+     `{ok, sheet}` shape.
+
+3. Frontend glue:
+   - `/app/frontend/lib/api.ts`: Added optional `sheet_row_num?: number | null`
+     to the Shipment type.
+   - `/app/frontend/app/(tabs)/shipments.tsx`: Confirmation dialog now
+     explains the audit-trail behaviour when the shipment has a
+     `sheet_row_num`. If the backend returns `sheet.ok === false`, a
+     secondary alert tells the user the local record was removed but the
+     sheet mark failed with the error message.
+
+### Not Changed (to avoid regressions)
+- All other DELETE endpoints (couriers, settings resets) — unchanged.
+- Sheet read path (`/api/sheets/orders`) — unchanged (still CSV-based).
+- No retroactive back-fill of `sheet_row_num` on already-existing
+  shipments; they simply delete locally (no sheet mark). This is the
+  safe behaviour for legacy data.
+
+### Backend Test Plan
+1. POST `/api/smart-paste` with a small structured block — expect the
+   response `PendingOrder` to include `sheet_row_num` as a positive int
+   (extracted from the sheet `updatedRange`).
+2. DELETE `/api/orders/pending/{id}` on that pending order — response
+   `sheet.attempted = true` and `sheet.ok = true`; then check the Master
+   Sheet manually (or via `/api/sheets/probe`) to confirm the Status
+   column for that row reads "DELETED" and the Notice column carries a
+   timestamped reason.
+3. POST `/api/smart-paste` + POST `/api/orders/pending/{id}/ship` + DELETE
+   `/api/shipments/{id}` — end-to-end: the soft-delete should still work
+   after conversion to Shipment.
+4. DELETE `/api/shipments/{id}` on a pre-existing shipment without
+   `sheet_row_num` — response `sheet.attempted = false`, `ok = true`,
+   local record removed.
+
+backend:
+  - task: "Google Sheets Soft-Delete (sheet_row_num + tombstone)"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py, /app/backend/sheet_writer.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: |
+            Added tombstone-style soft-delete: DELETE /api/shipments/{id}
+            and DELETE /api/orders/pending/{id} now mark the Master Sheet
+            row's Status = "DELETED" + Notice = timestamp+reason via
+            sheet_writer.mark_row_deleted() before removing the local
+            Mongo record. sheet_row_num is captured from the Smart Paste
+            append response and propagated through the pending-order ->
+            shipment conversion. Legacy shipments without sheet_row_num
+            still delete locally but do not touch the sheet. Response
+            shape is {"ok": true, "sheet": {...}}.
+        -working: true
+        -agent: "testing"
+        -comment: |
+            All 21 assertions passed via /app/backend_test.py against
+            https://logistics-hub-740.preview.emergentagent.com/api.
+            Verified end-to-end:
+
+            1. GET /api/sheets/probe (baseline): ok=true,
+               tab="All Master Data".
+            2. POST /api/smart-paste (Soft Delete Test payload):
+               returns 200 with PendingOrder. Response includes
+               sheet_row_num=8 (positive int > 1, extracted from
+               Google Sheets updatedRange "All Master Data!A8:N8").
+               Fields parsed correctly: customer_name="Soft Delete Test",
+               customer_phone="9998887770", pincode=395001, amount=100.0,
+               payment_mode="COD".
+            3. DELETE /api/orders/pending/{id} on that pending order
+               returned exactly:
+                 {"ok": true,
+                  "sheet": {"attempted": true, "ok": true,
+                            "row": 8, "tab": "All Master Data",
+                            "status_cell": "M8", "notice_cell": "N8"}}
+               Subsequent GET confirmed local 404 — record purged.
+            4. Second POST /api/smart-paste → POST /api/orders/pending/
+               {id}/ship with seeded courier (Nandan Courier). Returned
+               Shipment carried sheet_row_num=8 forwarded from the
+               pending order (identical to PendingOrder.sheet_row_num),
+               and tracking_id was allocated ("ND00027").
+            5. DELETE /api/shipments/{id} on that shipment returned:
+                 {"ok": true,
+                  "sheet": {"attempted": true, "ok": true,
+                            "row": 8, "tab": "All Master Data",
+                            "status_cell": "M8", "notice_cell": "N8"}}
+               Local GET returned 404 — record purged.
+            6. Legacy shipment test: POST /api/shipments with a payload
+               that has no sheet link — creation returned
+               sheet_row_num=null. Subsequent DELETE returned exactly:
+                 {"ok": true, "sheet": {"attempted": false}}
+               Local GET returned 404 — record purged.
+            7. GET /api/sheets/probe (post-test): ok=true, integration
+               still healthy after all the batch_update calls.
+
+            Response shapes for DELETE endpoints exactly match the
+            contract promised in the user review request. Sheet writes
+            are actually happening (verified via the Google-returned
+            updated_range, tab name, and cell addresses surfaced in the
+            response — not mocked). Cleanup removed all test artifacts
+            (1 stray pending order was cleaned up; no other data touched).
+
+metadata:
+  created_by: "main_agent"
+  version: "2.0"
+  test_sequence: 2
+  run_ui: false
+
+test_plan:
+  current_focus:
+    - "Google Sheets Soft-Delete (sheet_row_num + tombstone)"
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"
+
+agent_communication:
+    -agent: "main"
+    -message: |
+        Please test the new soft-delete behaviour end-to-end against the
+        backend at /api:
+        1. POST /api/smart-paste with payload {"text": "Name: Test Soft Delete\nPhone: 9998887770\nAddress: 5 MG Road\nCity: Surat\nState: Gujarat\nPincode: 395001\nItem: Test\nAmount: 100\nPayment: COD"}. Save the returned id and sheet_row_num (must be int > 1).
+        2. DELETE /api/orders/pending/{id}. Response must be
+           {"ok": true, "sheet": {"attempted": true, "ok": true, ...}}.
+        3. Repeat step 1 to create a new pending order. Then POST
+           /api/orders/pending/{id}/ship with a valid courier_id (list via
+           GET /api/couriers). The returned Shipment must carry
+           sheet_row_num identical to the pending order. DELETE
+           /api/shipments/{ship_id}: sheet.attempted=true and ok=true.
+        4. Pick any legacy shipment (sheet_row_num missing/null) and
+           DELETE /api/shipments/{id}: response must be {"ok": true,
+           "sheet": {"attempted": false}}.
+        5. GET /api/sheets/probe to verify integration is still alive at
+           the end.
+        Focus areas: sheet_row_num propagation, soft-delete response
+        shape, and graceful handling when sheet_row_num is absent. Do NOT
+        bulk-delete shipments — only create 1–2 test rows and delete them.

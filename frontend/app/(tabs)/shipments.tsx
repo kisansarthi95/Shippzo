@@ -176,12 +176,29 @@ export default function Shipments() {
   };
 
   const remove = (s: Shipment) => {
-    Alert.alert("Delete", `Delete ${s.tracking_id}?`, [
+    // Explicit warning: sheet row is kept as an audit trail, not fully deleted.
+    // Helps users understand that "Delete" is safe in a multi-user setup.
+    const hasSheet = (s as any).sheet_row_num != null;
+    const msg = hasSheet
+      ? `Delete ${s.tracking_id} from the app?\n\nThe Master Sheet row will be marked "DELETED" (audit trail) — original data is never lost.`
+      : `Delete ${s.tracking_id} from the app?`;
+    Alert.alert("Delete shipment", msg, [
       { text: "Cancel", style: "cancel" },
       {
         text: "Delete", style: "destructive",
         onPress: async () => {
-          await Api.deleteShipment(s.id);
+          try {
+            const res: any = await Api.deleteShipment(s.id);
+            if (res?.sheet?.attempted && res.sheet.ok === false) {
+              // Local delete succeeded but sheet mark failed; let user know.
+              Alert.alert(
+                "Deleted (sheet mark failed)",
+                `Local record removed. Could not mark Master Sheet row as DELETED:\n${res.sheet.error || "unknown error"}`
+              );
+            }
+          } catch (e: any) {
+            Alert.alert("Delete error", e?.message || "Failed to delete");
+          }
           load();
         },
       },

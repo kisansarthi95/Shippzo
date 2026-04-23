@@ -123,6 +123,7 @@ export type Shipment = {
   created_at: string;
   delivered_at?: string | null;
   sheet_row_key?: string;
+  sheet_row_num?: number | null;   // Master Sheet row this shipment was appended to (for soft-delete)
 };
 
 export type SheetPreview = {

@@ -19,9 +19,13 @@ from datetime import datetime, timezone
 try:
     from sheet_writer import append_order_row as sheet_append_order_row
     from sheet_writer import probe_connection as sheet_probe_connection
+    from sheet_writer import mark_row_deleted as sheet_mark_row_deleted
+    from sheet_writer import parse_row_from_updated_range as sheet_parse_row_from_updated_range
 except Exception as _sheet_import_err:  # pragma: no cover
     sheet_append_order_row = None  # type: ignore
     sheet_probe_connection = None  # type: ignore
+    sheet_mark_row_deleted = None  # type: ignore
+    sheet_parse_row_from_updated_range = None  # type: ignore
 
 
 ROOT_DIR = Path(__file__).parent
@@ -218,6 +222,10 @@ class Shipment(BaseModel):
     created_at: str = Field(default_factory=utcnow_iso)
     delivered_at: Optional[str] = None
     sheet_row_key: str = ""     # used to dedupe/reference imported rows
+    # Soft-delete audit: if this shipment was appended to the Master Sheet
+    # (via Smart Paste), we remember the exact row number so deletion can
+    # mark it as "DELETED" instead of actually removing the row.
+    sheet_row_num: Optional[int] = None
 
 
 class ShipmentCreate(BaseModel):
@@ -860,10 +868,39 @@ async def update_shipment(shipment_id: str, payload: ShipmentUpdate):
 
 @api_router.delete("/shipments/{shipment_id}")
 async def delete_shipment(shipment_id: str):
+    """Soft-delete: if the shipment is linked to a Master Sheet row, mark
+    that row's Status="DELETED" before removing the local record. The
+    Sheet row itself is preserved as an audit trail so that data never
+    disappears from the source-of-truth even when the app-level record
+    is removed. Sheet failures do NOT block the local delete — we log
+    and proceed so users are never stuck.
+    """
+    doc = await db.shipments.find_one({"id": shipment_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Shipment not found")
+
+    sheet_result: Dict[str, Any] = {"attempted": False}
+    row_num = doc.get("sheet_row_num")
+    if row_num and sheet_mark_row_deleted is not None:
+        sheet_result["attempted"] = True
+        try:
+            reason = (
+                f"shipment {doc.get('tracking_id') or doc.get('id')} "
+                f"({doc.get('customer_name','')[:40]}) removed from app"
+            )
+            sheet_result.update(sheet_mark_row_deleted(int(row_num), reason=reason))
+        except Exception as e:
+            # Don't block local delete — but surface the error to the client
+            # so they know the sheet was not marked. Local record still goes.
+            logger.exception("Soft-delete sheet mark failed")
+            sheet_result["ok"] = False
+            sheet_result["error"] = str(e)
+
     res = await db.shipments.delete_one({"id": shipment_id})
     if res.deleted_count == 0:
+        # Race condition — someone else deleted. Still return 404.
         raise HTTPException(status_code=404, detail="Shipment not found")
-    return {"ok": True}
+    return {"ok": True, "sheet": sheet_result}
 
 
 # ---------------------- Pending Orders (Smart Paste + Sheet queue) ----------------------
@@ -1111,12 +1148,25 @@ async def smart_paste_create(payload: SmartPasteRequest):
         )
 
     # ---- 2) Now save locally (Mongo) so the app can show the queue fast ----
+    # Extract the row number from the append response so we can later
+    # soft-delete that exact row if the user deletes from the app.
+    sheet_row_num: Optional[int] = None
+    if sheet_parse_row_from_updated_range is not None:
+        try:
+            sheet_row_num = sheet_parse_row_from_updated_range(
+                sheet_meta.get("updated_range")
+            )
+        except Exception:
+            sheet_row_num = None
+
     po = PendingOrder(
         source="paste",
         raw_text=(payload.text or "")[:2000],
         confidence=parsed["confidence"],
         warnings=parsed["warnings"],
-        **{k: v for k, v in fields.items() if k in PendingOrder.model_fields},
+        sheet_row_num=sheet_row_num,
+        **{k: v for k, v in fields.items() if k in PendingOrder.model_fields
+           and k not in ("sheet_row_num",)},
     )
     # Stash sheet-write metadata on the model's raw_text for debugging if needed
     doc = po.model_dump()
@@ -1170,10 +1220,32 @@ async def update_pending_order(order_id: str, payload: Dict[str, Any]):
 
 @api_router.delete("/orders/pending/{order_id}")
 async def delete_pending_order(order_id: str):
+    """Soft-delete pending (Smart-Paste) orders: tombstone the Master Sheet
+    row if linked, then remove the local record. Sheet failures are logged
+    but do not block local deletion."""
+    doc = await db.pending_orders.find_one({"id": order_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Order not found")
+
+    sheet_result: Dict[str, Any] = {"attempted": False}
+    row_num = doc.get("sheet_row_num")
+    if row_num and sheet_mark_row_deleted is not None:
+        sheet_result["attempted"] = True
+        try:
+            reason = (
+                f"pending order {doc.get('order_id_hint') or order_id[:8]} "
+                f"({(doc.get('customer_name') or '')[:40]}) removed from app"
+            )
+            sheet_result.update(sheet_mark_row_deleted(int(row_num), reason=reason))
+        except Exception as e:
+            logger.exception("Soft-delete sheet mark failed (pending)")
+            sheet_result["ok"] = False
+            sheet_result["error"] = str(e)
+
     res = await db.pending_orders.delete_one({"id": order_id})
     if res.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Order not found")
-    return {"ok": True}
+    return {"ok": True, "sheet": sheet_result}
 
 
 @api_router.post("/orders/pending/{order_id}/ship", response_model=Shipment)
@@ -1227,6 +1299,9 @@ async def ship_pending_order(order_id: str, payload: ShipOrderRequest):
         "status": "Pending",
         "created_at": utcnow_iso(),
         "updated_at": utcnow_iso(),
+        # Carry the Master Sheet row number so a future delete can soft-delete
+        # the exact tombstone row (preserves audit trail across app users).
+        "sheet_row_num": order.get("sheet_row_num"),
     }
     await db.shipments.insert_one(ship_doc)
 
