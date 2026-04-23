@@ -13,6 +13,7 @@ export type LabelOptions = {
   labelFields?: Partial<LabelFields>; // user-chosen field visibility toggles
   shipmentTagline?: string; // fallback tagline when shipment.shipment_notes is empty
   customFields?: CustomLabelField[]; // user-defined custom fields to inject
+  textScale?: "compact" | "normal" | "large"; // user text-size preference
 };
 
 /**
