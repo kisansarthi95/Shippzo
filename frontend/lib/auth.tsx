@@ -134,13 +134,3 @@ export function useAuth(): AuthState {
   if (!ctx) throw new Error("useAuth() must be inside <AuthProvider>");
   return ctx;
 }
-{children}
-    </AuthCtx.Provider>
-  );
-}
-
-export function useAuth(): AuthState {
-  const ctx = useContext(AuthCtx);
-  if (!ctx) throw new Error("useAuth() must be inside <AuthProvider>");
-  return ctx;
-}
