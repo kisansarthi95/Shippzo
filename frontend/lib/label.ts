@@ -348,10 +348,27 @@ export function buildLabelHtml(
 </head><body>${pages}</body></html>`;
   }
 
+  // ------------------------------------------------------------------
+  // PAGE LAYOUT STRATEGY
+  //
+  // Previously "perPage = 4" packed 4 labels into a 2×2 grid on ONE A4
+  // page. That forced fonts/logos/addresses to shrink and was visually
+  // inconsistent with the single-label print.
+  //
+  // NEW behaviour (user-requested): every label gets its OWN page at
+  // A6 portrait (105mm × 148mm — exactly 1/4 of A4). Bulk print of 10
+  // shipments = 10 A6 pages in a single multi-page PDF. This keeps
+  // every label identical to the single-print view.
+  //
+  //   perPage === 1         → 1 label per A4 page        (full size)
+  //   perPage === 2         → 2 labels per A4 page       (split vertically)
+  //   perPage === 4         → N A6 pages, 1 label each   (new default)
+  //   perPage === "thermal" → 100mm × 150mm thermal roll (unchanged)
+  // ------------------------------------------------------------------
   const gridCss =
     perPage === 4
-      ? `.sheet { display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; page-break-after: always; gap: 2mm; width: 100%; }
-         .label { height: 140mm; }`
+      ? `.sheet { display: block; page-break-after: always; width: 100%; }
+         .label { height: 138mm; width: 100%; }`
       : perPage === 2
       ? `.sheet { display: grid; grid-template-columns: 1fr; grid-template-rows: 1fr 1fr; page-break-after: always; gap: 2mm; width: 100%; }
          .label { height: 140mm; }`
@@ -364,9 +381,12 @@ export function buildLabelHtml(
   const pageCss =
     perPage === "thermal"
       ? `@page { size: 100mm 150mm; margin: 2mm; }`
+      : perPage === 4
+      ? `@page { size: A6 portrait; margin: 3mm; }`
       : `@page { size: A4; margin: 5mm; }`;
 
-  const chunkSize = perPage === "thermal" ? 1 : (perPage as number);
+  // One shipment per page now for perPage=4 (was 4-up grid).
+  const chunkSize = perPage === "thermal" ? 1 : perPage === 4 ? 1 : (perPage as number);
   const pages: string[] = [];
   const sheets = shipments;
   for (let i = 0; i < sheets.length; i += chunkSize) {

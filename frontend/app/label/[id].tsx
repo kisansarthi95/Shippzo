@@ -508,7 +508,7 @@ export default function LabelScreen() {
             {[
               { k: 1 as PerPage, label: "A4 · 1/page" },
               { k: 2 as PerPage, label: "A4 · 2/page" },
-              { k: 4 as PerPage, label: "A4 · 4/page" },
+              { k: 4 as PerPage, label: "A6 · 1/page" },
               { k: "thermal" as PerPage, label: "Thermal 4x6" },
               { k: "barcode" as PerPage, label: "Barcode Sticker 50x25mm" },
             ].map((opt) => {

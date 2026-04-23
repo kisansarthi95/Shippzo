@@ -346,7 +346,11 @@ export default function Shipments() {
           </TouchableOpacity>
           <View style={{ flex: 1 }} />
           <View style={{ flexDirection: "row", gap: 4 }}>
-            {[1, 2, 4].map((n) => (
+            {([
+              { n: 1, t: "A4" },
+              { n: 2, t: "½A4" },
+              { n: 4, t: "A6" },
+            ] as const).map(({ n, t }) => (
               <TouchableOpacity
                 key={n}
                 testID={`bulk-layout-${n}`}
@@ -359,7 +363,7 @@ export default function Shipments() {
                 <Text style={[
                   styles.bulkLayoutText,
                   bulkPerPage === n && { color: "#fff" },
-                ]}>{n}/pg</Text>
+                ]}>{t}</Text>
               </TouchableOpacity>
             ))}
           </View>
