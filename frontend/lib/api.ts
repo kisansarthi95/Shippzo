@@ -60,6 +60,24 @@ export type LabelFields = {
   shipment_notes: boolean;
 };
 
+export type CustomFieldPosition =
+  | "header_top"
+  | "from_block"
+  | "to_block"
+  | "meta_row"
+  | "notes_area"
+  | "footer_bottom";
+
+export type CustomLabelField = {
+  id: string;
+  label: string;
+  value: string;
+  position: CustomFieldPosition;
+  enabled: boolean;
+  bold?: boolean;
+  size?: "xs" | "sm" | "md";
+};
+
 export type Settings = {
   id: string;
   sender: SenderAddress;
@@ -72,6 +90,7 @@ export type Settings = {
   logo_shape?: "square" | "wide";
   shipment_tagline?: string;
   label_fields?: LabelFields;
+  custom_fields?: CustomLabelField[];
 };
 
 export type Shipment = {

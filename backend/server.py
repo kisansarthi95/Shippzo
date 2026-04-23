@@ -121,6 +121,28 @@ class LabelFields(BaseModel):
     shipment_notes: bool = False
 
 
+# ---------------------------------------------------------------------------
+# Custom user-defined fields printed on the label.
+#
+# Positions available on the label canvas:
+#   "header_top"     → tiny row above the brand block (e.g. GST No, FSSAI)
+#   "from_block"     → inside the sender (from) footer block
+#   "to_block"       → inside the receiver (deliver-to) block, bottom
+#   "meta_row"       → next to Wt / Box / Item line
+#   "notes_area"     → below the deliver-to block, styled like shipment notes
+#   "footer_bottom"  → last line, above the barcode strip
+# ---------------------------------------------------------------------------
+class CustomLabelField(BaseModel):
+    id: str = Field(default_factory=lambda: str(uuid.uuid4())[:8])
+    label: str = ""             # e.g. "GST:"  (printed as bold prefix)
+    value: str = ""             # static value to print (e.g. "24ABCDE1234F1Z5")
+    position: str = "meta_row"  # one of the positions above
+    enabled: bool = True
+    bold: bool = True           # value in bold?
+    size: str = "sm"            # "xs" | "sm" | "md"
+
+
+
 class Settings(BaseModel):
     id: str = "default"
     sender: SenderAddress = Field(default_factory=SenderAddress)
@@ -140,6 +162,7 @@ class Settings(BaseModel):
     shipment_tagline: str = ""  # Default tagline/notice for all shipments (e.g. "Har Pal Prakruti ke Sang"). Used if per-order shipment_notes is empty.
     sheet: SheetConfig = Field(default_factory=SheetConfig)
     label_fields: LabelFields = Field(default_factory=LabelFields)
+    custom_fields: List[CustomLabelField] = Field(default_factory=list)
 
 
 class SettingsUpdate(BaseModel):
@@ -153,6 +176,7 @@ class SettingsUpdate(BaseModel):
     shipment_tagline: Optional[str] = None
     sheet: Optional[SheetConfig] = None
     label_fields: Optional[LabelFields] = None
+    custom_fields: Optional[List[CustomLabelField]] = None
 
 
 class Shipment(BaseModel):
@@ -421,6 +445,11 @@ async def update_settings(payload: SettingsUpdate):
         update["shipment_tagline"] = payload.shipment_tagline
     if payload.label_fields is not None:
         update["label_fields"] = payload.label_fields.model_dump()
+    if payload.custom_fields is not None:
+        # Replace entire list; cap at 6 to avoid label clutter / abuse.
+        update["custom_fields"] = [
+            f.model_dump() for f in payload.custom_fields[:6]
+        ]
     if not update:
         raise HTTPException(status_code=400, detail="No fields to update")
     res = await db.settings.find_one_and_update(

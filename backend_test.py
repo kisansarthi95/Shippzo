@@ -1,266 +1,216 @@
-"""Backend API tests for Courier CRUD endpoints with customer_id field."""
+"""
+Backend test: Settings custom_fields capability
+Tests PUT/GET /api/settings with the new custom_fields list
+plus smoke checks on /api/shipments, /api/couriers, /api/shipments/stats.
+"""
 import os
 import sys
+import json
 import requests
 from pathlib import Path
 
-# Load backend URL from frontend .env
-ENV_PATH = Path(__file__).parent / "frontend" / ".env"
-BASE_URL = None
-if ENV_PATH.exists():
-    for line in ENV_PATH.read_text().splitlines():
-        if line.startswith("EXPO_PUBLIC_BACKEND_URL="):
-            BASE_URL = line.split("=", 1)[1].strip().strip('"')
-            break
+# Read backend URL from frontend/.env
+env_path = Path("/app/frontend/.env")
+BASE = None
+for line in env_path.read_text().splitlines():
+    if line.startswith("EXPO_PUBLIC_BACKEND_URL="):
+        BASE = line.split("=", 1)[1].strip().strip('"') + "/api"
+        break
+assert BASE, "Could not find EXPO_PUBLIC_BACKEND_URL"
+print(f"Using BASE URL: {BASE}")
 
-if not BASE_URL:
-    BASE_URL = "http://localhost:8001"
-
-API = f"{BASE_URL}/api"
-print(f"Using API base URL: {API}\n")
-
-results = []
-created_courier_id = None
+passed = 0
+failed = 0
+failures = []
 
 
-def record(name, ok, detail=""):
-    status = "PASS" if ok else "FAIL"
-    print(f"[{status}] {name}{': ' + detail if detail else ''}")
-    results.append((name, ok, detail))
-
-
-def _req(method, path, **kwargs):
-    url = f"{API}{path}"
-    return requests.request(method, url, timeout=30, **kwargs)
-
-
-# -----------------------------------------------------------------------------
-# TEST 1: GET /api/couriers includes customer_id field
-# -----------------------------------------------------------------------------
-try:
-    r = _req("GET", "/couriers")
-    if r.status_code != 200:
-        record("GET /couriers returns 200", False, f"status={r.status_code}, body={r.text[:300]}")
+def check(name, cond, detail=""):
+    global passed, failed
+    if cond:
+        passed += 1
+        print(f"  PASS: {name}")
     else:
-        data = r.json()
-        if not isinstance(data, list):
-            record("GET /couriers returns list", False, f"type={type(data)}")
-        else:
-            record("GET /couriers returns 200 list", True, f"{len(data)} couriers")
-            # Every courier must have customer_id field (empty string default)
-            missing = [c.get("name") for c in data if "customer_id" not in c]
-            if missing:
-                record("All couriers include customer_id", False, f"Missing in: {missing}")
-            else:
-                record("All couriers include customer_id", True, "field present on all")
-            # Default value should be string (empty "" for ones that never had it)
-            non_string = [c.get("name") for c in data if not isinstance(c.get("customer_id"), str)]
-            if non_string:
-                record("customer_id is string type", False, f"non-string in: {non_string}")
-            else:
-                record("customer_id is string type (empty string default ok)", True)
-except Exception as e:
-    record("GET /couriers", False, f"exception: {e}")
+        failed += 1
+        failures.append(f"{name} :: {detail}")
+        print(f"  FAIL: {name} :: {detail}")
 
 
-# -----------------------------------------------------------------------------
-# TEST 2: POST /api/couriers with name + customer_id creates courier
-# -----------------------------------------------------------------------------
-try:
-    payload = {
-        "name": "India Post (Test)",
-        "customer_id": "1000057527",
-        "series_prefix": "IPT",
-        "next_number": 101,
-        "number_padding": 5,
-        "contact_phone": "1800-266-6868",
-        "tracking_url_template": "https://www.indiapost.gov.in/track/{tracking_id}",
+# ------------------------------------------------------------------
+# 1) GET /api/settings baseline
+# ------------------------------------------------------------------
+print("\n[1] GET /api/settings — baseline structure")
+r = requests.get(f"{BASE}/settings", timeout=20)
+check("GET /settings status 200", r.status_code == 200, f"status={r.status_code}, body={r.text[:300]}")
+if r.status_code == 200:
+    s = r.json()
+    check("Has 'sender' key", "sender" in s)
+    check("Has 'brand' key", "brand" in s)
+    check("Has 'label_fields' key", "label_fields" in s)
+    check("Has 'custom_fields' key", "custom_fields" in s)
+    check("'custom_fields' is a list", isinstance(s.get("custom_fields"), list))
+    print(f"     (current custom_fields length: {len(s.get('custom_fields', []))})")
+
+# ------------------------------------------------------------------
+# 2) PUT /api/settings with 2 custom_fields
+# ------------------------------------------------------------------
+print("\n[2] PUT /api/settings with 2 custom_fields")
+body = {
+    "custom_fields": [
+        {"label": "GST:", "value": "24ABCDE1234F1Z5", "position": "footer_bottom", "enabled": True, "bold": True, "size": "sm"},
+        {"label": "FSSAI:", "value": "10020099999999", "position": "header_top", "enabled": True, "bold": False, "size": "xs"},
+    ]
+}
+r = requests.put(f"{BASE}/settings", json=body, timeout=20)
+check("PUT /settings 2 items status 200", r.status_code == 200, f"status={r.status_code}, body={r.text[:300]}")
+if r.status_code == 200:
+    s = r.json()
+    cf = s.get("custom_fields", [])
+    check("custom_fields length == 2", len(cf) == 2, f"got {len(cf)}")
+    if len(cf) == 2:
+        gst = cf[0]
+        fssai = cf[1]
+        check("Item 0 label == 'GST:'", gst.get("label") == "GST:")
+        check("Item 0 value == '24ABCDE1234F1Z5'", gst.get("value") == "24ABCDE1234F1Z5")
+        check("Item 0 position == 'footer_bottom'", gst.get("position") == "footer_bottom")
+        check("Item 0 enabled True", gst.get("enabled") is True)
+        check("Item 0 bold True", gst.get("bold") is True)
+        check("Item 0 size == 'sm'", gst.get("size") == "sm")
+        check("Item 0 has generated id", bool(gst.get("id")) and isinstance(gst.get("id"), str))
+
+        check("Item 1 label == 'FSSAI:'", fssai.get("label") == "FSSAI:")
+        check("Item 1 value == '10020099999999'", fssai.get("value") == "10020099999999")
+        check("Item 1 position == 'header_top'", fssai.get("position") == "header_top")
+        check("Item 1 enabled True", fssai.get("enabled") is True)
+        check("Item 1 bold False", fssai.get("bold") is False)
+        check("Item 1 size == 'xs'", fssai.get("size") == "xs")
+        check("Item 1 has generated id", bool(fssai.get("id")) and isinstance(fssai.get("id"), str))
+        check("IDs are unique", gst.get("id") != fssai.get("id"))
+
+# ------------------------------------------------------------------
+# 3) PUT with 8 items — verify only 6 persisted
+# ------------------------------------------------------------------
+print("\n[3] PUT /api/settings with 8 custom_fields — expect cap at 6")
+big = {
+    "custom_fields": [
+        {"label": f"F{i}:", "value": f"V{i}", "position": "meta_row", "enabled": True, "bold": False, "size": "sm"}
+        for i in range(8)
+    ]
+}
+r = requests.put(f"{BASE}/settings", json=big, timeout=20)
+check("PUT /settings 8 items status 200", r.status_code == 200, f"status={r.status_code}")
+if r.status_code == 200:
+    cf = r.json().get("custom_fields", [])
+    check("custom_fields capped at 6", len(cf) == 6, f"got {len(cf)}")
+    if len(cf) == 6:
+        labels = [c.get("label") for c in cf]
+        check("First 6 items retained (F0..F5)", labels == [f"F{i}:" for i in range(6)], f"got {labels}")
+
+r = requests.get(f"{BASE}/settings", timeout=20)
+if r.status_code == 200:
+    cf = r.json().get("custom_fields", [])
+    check("GET after 8-item PUT still has 6 items", len(cf) == 6, f"got {len(cf)}")
+
+# ------------------------------------------------------------------
+# 4) PUT with empty list — verify list cleared
+# ------------------------------------------------------------------
+print("\n[4] PUT /api/settings with custom_fields=[] — clear")
+r = requests.put(f"{BASE}/settings", json={"custom_fields": []}, timeout=20)
+check("PUT /settings empty list status 200", r.status_code == 200, f"status={r.status_code}, body={r.text[:300]}")
+if r.status_code == 200:
+    cf = r.json().get("custom_fields", None)
+    check("custom_fields cleared (empty list)", cf == [], f"got {cf!r}")
+
+r = requests.get(f"{BASE}/settings", timeout=20)
+if r.status_code == 200:
+    check("GET after empty PUT returns []", r.json().get("custom_fields") == [])
+
+# ------------------------------------------------------------------
+# 5) Re-populate custom_fields, then PUT without the key — verify preserved
+# ------------------------------------------------------------------
+print("\n[5] PUT updating only sender must preserve custom_fields")
+seed_body = {
+    "custom_fields": [
+        {"label": "PAN:", "value": "ABCDE1234F", "position": "from_block", "enabled": True, "bold": True, "size": "md"},
+    ]
+}
+r = requests.put(f"{BASE}/settings", json=seed_body, timeout=20)
+check("Seed custom_fields PUT 200", r.status_code == 200)
+seeded_id = None
+if r.status_code == 200:
+    cf = r.json().get("custom_fields", [])
+    check("Seed length == 1", len(cf) == 1)
+    if cf:
+        seeded_id = cf[0].get("id")
+
+sender_body = {
+    "sender": {
+        "name": "Mahek Creations",
+        "phone": "9876543210",
+        "address_line1": "Shop 5, Market Road",
+        "address_line2": "Opp Post Office",
+        "city": "Ahmedabad",
+        "state": "Gujarat",
+        "pincode": "380001",
+        "show_contact": True,
     }
-    r = _req("POST", "/couriers", json=payload)
-    if r.status_code != 200:
-        record("POST /couriers creates courier", False, f"status={r.status_code}, body={r.text[:300]}")
-    else:
-        data = r.json()
-        created_courier_id = data.get("id")
-        if not created_courier_id:
-            record("POST /couriers returns id", False, f"body={data}")
-        else:
-            record("POST /couriers creates courier", True, f"id={created_courier_id}")
-            if data.get("customer_id") != "1000057527":
-                record("POST persists customer_id", False, f"got customer_id={data.get('customer_id')!r}")
-            else:
-                record("POST persists customer_id", True, "customer_id=1000057527")
-            # Verify other fields
-            for k, v in payload.items():
-                if data.get(k) != v:
-                    record(f"POST persists {k}", False, f"expected={v!r}, got={data.get(k)!r}")
-                    break
-            else:
-                record("POST persists all other fields", True)
-except Exception as e:
-    record("POST /couriers", False, f"exception: {e}")
+}
+r = requests.put(f"{BASE}/settings", json=sender_body, timeout=20)
+check("PUT /settings sender-only 200", r.status_code == 200, f"status={r.status_code}, body={r.text[:300]}")
+if r.status_code == 200:
+    s = r.json()
+    check("Sender name updated", s.get("sender", {}).get("name") == "Mahek Creations")
+    cf = s.get("custom_fields", [])
+    check("custom_fields preserved after sender-only PUT (length 1)", len(cf) == 1, f"got {len(cf)}")
+    if cf:
+        check("Preserved item label == 'PAN:'", cf[0].get("label") == "PAN:")
+        check("Preserved item id unchanged", cf[0].get("id") == seeded_id, f"got {cf[0].get('id')} vs {seeded_id}")
 
+# ------------------------------------------------------------------
+# 6) Final GET reflects latest persisted state
+# ------------------------------------------------------------------
+print("\n[6] Final GET /api/settings")
+r = requests.get(f"{BASE}/settings", timeout=20)
+check("Final GET 200", r.status_code == 200)
+if r.status_code == 200:
+    s = r.json()
+    cf = s.get("custom_fields", [])
+    check("Final custom_fields length 1", len(cf) == 1)
+    if cf:
+        check("Final item is PAN entry", cf[0].get("label") == "PAN:" and cf[0].get("value") == "ABCDE1234F")
+    check("Sender preserved in final GET", s.get("sender", {}).get("name") == "Mahek Creations")
 
-# -----------------------------------------------------------------------------
-# TEST 3: PUT /api/couriers/{id} with only customer_id preserves other fields
-# -----------------------------------------------------------------------------
-if created_courier_id:
-    try:
-        # First: capture current courier snapshot
-        r_get = _req("GET", f"/couriers/{created_courier_id}")
-        before = r_get.json() if r_get.status_code == 200 else {}
+# ------------------------------------------------------------------
+# 7) Smoke check existing endpoints (regression)
+# ------------------------------------------------------------------
+print("\n[7] Regression smoke: /shipments, /couriers, /shipments/stats")
+r = requests.get(f"{BASE}/shipments", timeout=20)
+check("GET /shipments 200", r.status_code == 200, f"status={r.status_code}")
+if r.status_code == 200:
+    check("/shipments returns list", isinstance(r.json(), list))
 
-        r = _req("PUT", f"/couriers/{created_courier_id}", json={"customer_id": "1000057527"})
-        if r.status_code != 200:
-            record("PUT customer_id only", False, f"status={r.status_code}, body={r.text[:300]}")
-        else:
-            data = r.json()
-            if data.get("customer_id") != "1000057527":
-                record("PUT updates customer_id", False, f"got={data.get('customer_id')!r}")
-            else:
-                record("PUT updates customer_id", True)
-            # Verify ALL other fields preserved
-            preserved_keys = [
-                "name", "series_prefix", "next_number", "number_padding",
-                "contact_phone", "contact_email", "website_url",
-                "tracking_url_template", "notes", "created_at",
-            ]
-            mismatches = []
-            for k in preserved_keys:
-                if before.get(k) != data.get(k):
-                    mismatches.append(f"{k}: before={before.get(k)!r}, after={data.get(k)!r}")
-            if mismatches:
-                record("PUT preserves all other fields", False, "; ".join(mismatches))
-            else:
-                record("PUT preserves all other fields", True)
-    except Exception as e:
-        record("PUT customer_id only", False, f"exception: {e}")
+r = requests.get(f"{BASE}/couriers", timeout=20)
+check("GET /couriers 200", r.status_code == 200, f"status={r.status_code}")
+if r.status_code == 200:
+    body = r.json()
+    check("/couriers returns non-empty list", isinstance(body, list) and len(body) > 0)
+    if body:
+        c = body[0]
+        check("Courier has id+name", "id" in c and "name" in c)
+        check("Courier has customer_id field", "customer_id" in c)
 
+r = requests.get(f"{BASE}/shipments/stats", timeout=20)
+check("GET /shipments/stats 200", r.status_code == 200, f"status={r.status_code}")
+if r.status_code == 200:
+    st = r.json()
+    for k in ("total", "delivered", "pending", "cod_total", "prepaid_total", "revenue_total"):
+        check(f"stats has '{k}'", k in st)
 
-# -----------------------------------------------------------------------------
-# TEST 4: PUT with customer_id="" (empty string) should clear it
-# -----------------------------------------------------------------------------
-if created_courier_id:
-    try:
-        r = _req("PUT", f"/couriers/{created_courier_id}", json={"customer_id": ""})
-        if r.status_code != 200:
-            record("PUT customer_id='' accepted", False, f"status={r.status_code}, body={r.text[:300]}")
-        else:
-            data = r.json()
-            if data.get("customer_id") != "":
-                record("PUT customer_id='' clears value", False, f"got customer_id={data.get('customer_id')!r}")
-            else:
-                record("PUT customer_id='' clears value", True, "customer_id is now ''")
-    except Exception as e:
-        record("PUT customer_id=''", False, f"exception: {e}")
-
-
-# -----------------------------------------------------------------------------
-# TEST 5: GET /api/couriers/{id} returns updated customer_id
-# -----------------------------------------------------------------------------
-if created_courier_id:
-    try:
-        # Set to a new value, then GET and verify
-        r_put = _req("PUT", f"/couriers/{created_courier_id}", json={"customer_id": "9988776655"})
-        r = _req("GET", f"/couriers/{created_courier_id}")
-        if r.status_code != 200:
-            record("GET /couriers/{id} after update", False, f"status={r.status_code}, body={r.text[:300]}")
-        else:
-            data = r.json()
-            if data.get("customer_id") != "9988776655":
-                record("GET returns updated customer_id", False, f"got={data.get('customer_id')!r}")
-            else:
-                record("GET returns updated customer_id", True, "customer_id=9988776655")
-    except Exception as e:
-        record("GET after update", False, f"exception: {e}")
-
-
-# -----------------------------------------------------------------------------
-# TEST 6a: POST without customer_id still works (defaults to "")
-# -----------------------------------------------------------------------------
-regression_id = None
-try:
-    payload = {
-        "name": "Regression Test Courier",
-        "series_prefix": "RGT",
-        "next_number": 1,
-        "number_padding": 4,
-        "contact_phone": "9123456789",
-        "tracking_url_template": "https://example.com/track/{tracking_id}",
-    }
-    r = _req("POST", "/couriers", json=payload)
-    if r.status_code != 200:
-        record("POST without customer_id", False, f"status={r.status_code}, body={r.text[:300]}")
-    else:
-        data = r.json()
-        regression_id = data.get("id")
-        if data.get("customer_id") != "":
-            record("POST w/o customer_id defaults to ''", False, f"got={data.get('customer_id')!r}")
-        else:
-            record("POST w/o customer_id defaults to ''", True)
-        # Check all other fields round-tripped
-        ok = all(data.get(k) == v for k, v in payload.items())
-        record("POST preserves fields w/o customer_id", ok)
-except Exception as e:
-    record("POST regression", False, f"exception: {e}")
-
-
-# -----------------------------------------------------------------------------
-# TEST 6b: PUT existing fields (no customer_id in body) still works
-# -----------------------------------------------------------------------------
-if regression_id:
-    try:
-        payload = {
-            "name": "Regression Test Courier (Updated)",
-            "tracking_url_template": "https://newexample.com/t/{tracking_id}",
-            "contact_phone": "9000000000",
-            "series_prefix": "RGX",
-        }
-        r = _req("PUT", f"/couriers/{regression_id}", json=payload)
-        if r.status_code != 200:
-            record("PUT other fields w/o customer_id", False, f"status={r.status_code}, body={r.text[:300]}")
-        else:
-            data = r.json()
-            ok = all(data.get(k) == v for k, v in payload.items())
-            if not ok:
-                mismatches = {k: (v, data.get(k)) for k, v in payload.items() if data.get(k) != v}
-                record("PUT other fields w/o customer_id", False, f"mismatches={mismatches}")
-            else:
-                record("PUT other fields w/o customer_id", True)
-            # customer_id unchanged ("" from create)
-            if data.get("customer_id") != "":
-                record("PUT w/o customer_id preserves previous", False, f"got={data.get('customer_id')!r}")
-            else:
-                record("PUT w/o customer_id preserves previous", True)
-    except Exception as e:
-        record("PUT regression", False, f"exception: {e}")
-
-
-# -----------------------------------------------------------------------------
-# TEST 7: Cleanup - delete test couriers
-# -----------------------------------------------------------------------------
-for cid, label in [(created_courier_id, "primary"), (regression_id, "regression")]:
-    if cid:
-        try:
-            r = _req("DELETE", f"/couriers/{cid}")
-            if r.status_code == 200 and r.json().get("ok"):
-                record(f"DELETE cleanup ({label})", True, f"id={cid}")
-            else:
-                record(f"DELETE cleanup ({label})", False, f"status={r.status_code}, body={r.text[:200]}")
-        except Exception as e:
-            record(f"DELETE cleanup ({label})", False, f"exception: {e}")
-
-
-# -----------------------------------------------------------------------------
-# Summary
-# -----------------------------------------------------------------------------
-print("\n" + "=" * 70)
-passed = sum(1 for _, ok, _ in results if ok)
-failed = sum(1 for _, ok, _ in results if not ok)
-print(f"RESULTS: {passed} passed, {failed} failed (of {len(results)})")
-if failed:
+# ------------------------------------------------------------------
+print("\n" + "=" * 60)
+print(f"RESULTS: {passed} passed, {failed} failed")
+if failures:
     print("\nFAILURES:")
-    for name, ok, detail in results:
-        if not ok:
-            print(f"  - {name}: {detail}")
-sys.exit(0 if failed == 0 else 1)
+    for f in failures:
+        print(f"  - {f}")
+    sys.exit(1)
+print("ALL CHECKS PASSED")

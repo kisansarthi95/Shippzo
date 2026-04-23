@@ -173,3 +173,56 @@ agent_communication:
         passed. No regressions detected. The PUT endpoint correctly accepts
         empty string to clear the field (distinct from null/missing which is
         ignored by the `v is not None` filter). Ready for frontend review.
+
+---
+
+## Backend Test Run: Settings custom_fields capability (2026-04-23)
+
+backend:
+  - task: "Settings custom_fields (list of CustomLabelField) on GET/PUT /api/settings"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "testing"
+        -comment: |
+            All 54 assertions passed against
+            https://logistics-hub-740.preview.emergentagent.com/api
+            via /app/backend_test.py.
+            Coverage:
+            1. GET /api/settings baseline — response includes custom_fields (list),
+               and all pre-existing keys (sender, brand, label_fields) remain intact.
+               No regression on existing structure.
+            2. PUT /api/settings with 2 CustomLabelField items (GST footer_bottom +
+               FSSAI header_top) — returns 200, body contains both items with every
+               field intact (label, value, position, enabled, bold, size) and each
+               item has a server-generated unique `id` (8-char uuid slice).
+            3. PUT with 8 items — only the first 6 are persisted (cap enforced via
+               `payload.custom_fields[:6]`). Labels F0..F5 retained, F6/F7 dropped.
+               Confirmed on both PUT response and subsequent GET.
+            4. PUT with "custom_fields": [] — list is successfully cleared (returned
+               [] and GET confirms []).
+            5. PUT with only `sender` (no custom_fields key) — previously seeded
+               custom_fields list is PRESERVED (length and contents, including the
+               generated id). The `payload.custom_fields is not None` guard in
+               update_settings() behaves correctly.
+            6. Final GET /api/settings reflects the latest persisted state
+               (sender = Mahek Creations, custom_fields = [PAN entry]).
+            7. Regression smoke: GET /api/shipments, /api/couriers (customer_id
+               field still present), /api/shipments/stats (all stat keys present)
+               — no regressions.
+        -agent: "testing"
+        -comment: "CustomLabelField model + cap-at-6 logic + preserve-on-omit behavior are all working as designed."
+
+agent_communication:
+    -agent: "testing"
+    -message: |
+        Settings custom_fields backend changes fully verified. 54/54 assertions
+        passed. GET returns an empty list by default, PUT accepts/persists up to
+        6 items with auto-generated IDs, empty-array clears the list, and
+        omitting the key preserves prior values. No regressions on shipments,
+        couriers, or stats endpoints. Ready for main agent summary/finish.
