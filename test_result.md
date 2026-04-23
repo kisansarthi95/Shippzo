@@ -468,6 +468,30 @@ test_plan:
 agent_communication:
     -agent: "main"
     -message: |
+        Edge-case follow-up fix (2026-04-23, same day):
+        Previous testing revealed that `gspread.append_row` could
+        occasionally land a new row on a previously soft-deleted
+        (tombstoned) row, because gspread's default `values.append`
+        logic depends on detecting a "data block". Fix: rewrote
+        `sheet_writer.append_order_row` to compute the next empty row
+        explicitly via `_find_next_empty_row(ws)` (scans get_all_values
+        for the last row that has ANY non-blank cell) and then uses
+        `ws.update("A{n}:N{n}", ...)` to write to that exact row. The
+        sheet auto-grows if `row_count` is close to capacity. The
+        `updated_range` shape returned stays identical (`'Tab'!A<n>:N<n>`)
+        so `parse_row_from_updated_range` and the rest of the pipeline
+        keep working unchanged.
+        Verified via `/tmp/test_tombstone.py`:
+          Step 1 Paste #1 -> row 9
+          Step 2 Delete    -> row 9 marked DELETED
+          Step 3 Paste #2 -> row 10 (NOT 9! Tombstone honored)
+        PASS. Tombstones are now permanent against later appends.
+        Files changed: /app/backend/sheet_writer.py only. No API or
+        model changes, so no retest is strictly required, but please
+        re-run the soft-delete suite (same cases as before) to confirm
+        no regression on the response shape.
+    -agent: "main"
+    -message: |
         Please test the new soft-delete behaviour end-to-end against the
         backend at /api:
         1. POST /api/smart-paste with payload {"text": "Name: Test Soft Delete\nPhone: 9998887770\nAddress: 5 MG Road\nCity: Surat\nState: Gujarat\nPincode: 395001\nItem: Test\nAmount: 100\nPayment: COD"}. Save the returned id and sheet_row_num (must be int > 1).

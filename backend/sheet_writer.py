@@ -59,6 +59,35 @@ def _get_worksheet():
         )
 
 
+def _find_next_empty_row(ws) -> int:
+    """Return the 1-based row number just after the last non-empty row.
+
+    We use the entire sheet's values (including tombstones like "DELETED"
+    in the Status column) so that append never lands on a previously used
+    row. This makes our soft-delete markers permanent even across many
+    subsequent appends.
+
+    gspread's default `append_row` uses the Google Sheets values.append API
+    which can occasionally "fall back" into the middle of the data block
+    when it detects a perceived table boundary. Writing to an explicit row
+    sidesteps that entirely.
+    """
+    # get_all_values returns a 2-D list; len() is the number of rows with data.
+    # If the sheet has only a header, len == 1 → next row = 2.
+    try:
+        rows = ws.get_all_values()
+    except Exception:
+        # Fallback: ws.row_count is the allocated size, not the used count,
+        # so we use it only if values fetch fails.
+        return int(getattr(ws, "row_count", 1)) + 1
+    # Strip trailing fully-empty rows; keep rows that have any non-blank cell.
+    used = 0
+    for i, row in enumerate(rows, start=1):
+        if any((c or "").strip() for c in row):
+            used = i
+    return used + 1
+
+
 def append_order_row(
     *,
     user_id: str = "",
@@ -76,26 +105,43 @@ def append_order_row(
     notice: str = "",
 ) -> Dict[str, Any]:
     """
-    Append one row to the Master Sheet.
-    Returns {"row": <row_number>, "sheet_id": ..., "tab": ...} on success.
-    Raises on failure (caller must wrap in try/except).
+    Append one row to the Master Sheet at the first guaranteed-empty row.
+
+    Unlike gspread's `append_row`, this writes to an explicit row index
+    computed via `_find_next_empty_row`, so rows that were previously
+    soft-deleted (Status="DELETED") are preserved forever — no accidental
+    overwrite. Returns {"ok": True, "updated_range": "'Tab'!A<n>:N<n>",
+    "tab": ..., "sheet_id": ...} on success. Raises on failure.
     """
     ws = _get_worksheet()
     ts = datetime.now(timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M:%S")
 
-    row = [
+    row_values = [
         ts, user_id, order_id, name, phone, address,
         city, state, pincode, item_type,
         str(amount) if amount not in (None, "") else "",
         payment_mode, status, notice,
     ]
-    # value_input_option="USER_ENTERED" — respects Sheet formatting (numbers, dates)
-    result = ws.append_row(row, value_input_option="USER_ENTERED")
-    # gspread returns the update range, e.g. 'All Master Data!A123:N123'
-    updated = (result or {}).get("updates", {})
+    next_row = _find_next_empty_row(ws)
+    # Auto-grow the sheet if we're about to write past its allocated rows.
+    if hasattr(ws, "row_count") and next_row > int(ws.row_count):
+        try:
+            ws.add_rows(max(100, next_row - int(ws.row_count)))
+        except Exception:
+            pass  # non-fatal; update() below will still work or raise cleanly.
+
+    # Columns A..N (14 cols) — build A1 range for the exact row.
+    last_col_letter = _col_letter(len(COLUMNS))  # "N" for 14 columns
+    target_range = f"A{next_row}:{last_col_letter}{next_row}"
+
+    ws.update(target_range, [row_values], value_input_option="USER_ENTERED")
+
+    # Normalise the updated_range to the same shape gspread.append_row emits
+    # so the caller (parse_row_from_updated_range) keeps working unchanged.
+    updated_range = f"'{ws.title}'!{target_range}"
     return {
         "ok": True,
-        "updated_range": updated.get("updatedRange"),
+        "updated_range": updated_range,
         "tab": ws.title,
         "sheet_id": os.getenv("MASTER_SHEET_ID", ""),
     }
