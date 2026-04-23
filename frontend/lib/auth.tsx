@@ -10,7 +10,7 @@
  */
 import React, { createContext, useContext, useEffect, useState, useCallback } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { api } from "./api";
+import { api, registerUnauthorizedHandler } from "./api";
 
 const TOKEN_KEY = "@auth_token";
 const USER_KEY = "@auth_user";
@@ -125,6 +125,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   return (
     <AuthCtx.Provider value={{ user, token, loading, signIn, signUp, signOut, refresh }}>
       {children}
+    </AuthCtx.Provider>
+  );
+}
+
+export function useAuth(): AuthState {
+  const ctx = useContext(AuthCtx);
+  if (!ctx) throw new Error("useAuth() must be inside <AuthProvider>");
+  return ctx;
+}
+{children}
     </AuthCtx.Provider>
   );
 }

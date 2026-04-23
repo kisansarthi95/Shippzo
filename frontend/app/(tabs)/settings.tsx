@@ -19,8 +19,9 @@ import * as ImagePicker from "expo-image-picker";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter, useFocusEffect } from "expo-router";
-import { Api, Courier, Settings as SettingsT, SenderAddress, SheetPreview, SHEET_FIELDS } from "../../lib/api";
+import { Api, Courier, Settings as SettingsT, SenderAddress, SheetPreview, SHEET_FIELDS, api } from "../../lib/api";
 import { colors } from "../../lib/theme";
+import { useAuth } from "../../lib/auth";
 
 /**
  * CONTENT BUDGET SYSTEM
@@ -116,6 +117,7 @@ function fillTemplate(tpl: string, brand?: string): string {
 
 export default function SettingsScreen() {
   const router = useRouter();
+  const { user, signOut } = useAuth();
 
   const [sender, setSender] = useState<SenderAddress>({
     name: "", phone: "", address_line1: "", address_line2: "",
@@ -293,6 +295,90 @@ export default function SettingsScreen() {
           contentContainerStyle={{ padding: 16, paddingBottom: 120 }}
           keyboardShouldPersistTaps="handled"
         >
+          {/* Account (Phase-1 multi-tenant auth) */}
+          <Section title="Account" icon="person-circle-outline">
+            <View style={styles.accountRow}>
+              <View style={styles.accountAvatar}>
+                <Text style={styles.accountAvatarTxt}>
+                  {(user?.name || user?.email || "?").slice(0, 1).toUpperCase()}
+                </Text>
+              </View>
+              <View style={{ flex: 1, gap: 2 }}>
+                <Text style={styles.accountName} numberOfLines={1}>
+                  {user?.name || user?.shop_name || user?.email || "Guest"}
+                </Text>
+                <Text style={styles.accountEmail} numberOfLines={1}>
+                  {user?.email || ""}
+                </Text>
+                <View style={{ flexDirection: "row", gap: 6, marginTop: 4, flexWrap: "wrap" }}>
+                  {user?.is_admin ? (
+                    <View style={styles.badgeAdmin}>
+                      <Ionicons name="shield-checkmark" size={11} color="#fff" />
+                      <Text style={styles.badgeTxt}>Admin</Text>
+                    </View>
+                  ) : null}
+                  <View style={styles.badgePlan}>
+                    <Text style={styles.badgeTxt}>
+                      {(user?.plan || "free_trial").replace("_", " ").toUpperCase()}
+                    </Text>
+                  </View>
+                </View>
+              </View>
+            </View>
+
+            <TouchableOpacity
+              testID="clear-demo-btn"
+              style={[styles.secondaryBtn, { marginTop: 12 }]}
+              onPress={() => {
+                Alert.alert(
+                  "Clear demo data?",
+                  "આ તમારા 15 demo shipments હટાવી દેશે. તમારી real shipments ને અસર નહીં થાય.",
+                  [
+                    { text: "Cancel", style: "cancel" },
+                    {
+                      text: "Clear",
+                      style: "destructive",
+                      onPress: async () => {
+                        try {
+                          const r = await api.post("/demo/clear");
+                          Alert.alert(
+                            "Done",
+                            `Removed ${r.data?.deleted ?? 0} demo rows.`
+                          );
+                        } catch (e: any) {
+                          Alert.alert("Failed", e?.message || "Could not clear demo data");
+                        }
+                      },
+                    },
+                  ]
+                );
+              }}
+            >
+              <Ionicons name="sparkles-outline" size={16} color={colors.primary} />
+              <Text style={styles.secondaryBtnTxt}>Clear Demo Data</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              testID="sign-out-btn"
+              style={[styles.dangerBtn, { marginTop: 8 }]}
+              onPress={() => {
+                Alert.alert("Sign out?", "તમારે ફરી login કરવું પડશે.", [
+                  { text: "Cancel", style: "cancel" },
+                  {
+                    text: "Sign out",
+                    style: "destructive",
+                    onPress: async () => {
+                      await signOut();
+                    },
+                  },
+                ]);
+              }}
+            >
+              <Ionicons name="log-out-outline" size={16} color="#C62828" />
+              <Text style={styles.dangerBtnTxt}>Sign out</Text>
+            </TouchableOpacity>
+          </Section>
+
           {/* Google Sheet */}
           <Section title="Google Sheet (Orders source)" icon="logo-google">
             <View style={styles.sampleBox} testID="sheet-sample-box">
@@ -1293,6 +1379,61 @@ const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: colors.background },
   header: { paddingHorizontal: 20, paddingTop: 10, paddingBottom: 8 },
   title: { fontSize: 24, fontWeight: "800", color: colors.text },
+  // -- Account block ----
+  accountRow: { flexDirection: "row", alignItems: "center", gap: 12 },
+  accountAvatar: {
+    width: 52,
+    height: 52,
+    borderRadius: 26,
+    backgroundColor: colors.primary,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  accountAvatarTxt: { color: "#fff", fontWeight: "800", fontSize: 22 },
+  accountName: { fontSize: 15, fontWeight: "800", color: colors.text },
+  accountEmail: { fontSize: 12, color: colors.textMuted },
+  badgeAdmin: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 3,
+    backgroundColor: "#2E7D32",
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+    borderRadius: 6,
+  },
+  badgePlan: {
+    backgroundColor: "#FEF3C7",
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: "#FDE68A",
+  },
+  badgeTxt: { fontSize: 10, fontWeight: "800", color: "#fff", letterSpacing: 0.5 },
+  secondaryBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    backgroundColor: "#EEF2FF",
+    borderRadius: 10,
+    paddingVertical: 11,
+    borderWidth: 1,
+    borderColor: "#C7D2FE",
+  },
+  secondaryBtnTxt: { color: colors.primary, fontWeight: "700", fontSize: 14 },
+  dangerBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    backgroundColor: "#FEE2E2",
+    borderRadius: 10,
+    paddingVertical: 11,
+    borderWidth: 1,
+    borderColor: "#FCA5A5",
+  },
+  dangerBtnTxt: { color: "#C62828", fontWeight: "700", fontSize: 14 },
   section: {
     backgroundColor: colors.surface,
     borderWidth: 2,

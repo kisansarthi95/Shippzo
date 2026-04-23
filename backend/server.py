@@ -613,9 +613,12 @@ async def update_settings(
         ]
     if not update:
         raise HTTPException(status_code=400, detail="No fields to update")
+    # Per-user settings doc. Ensures tenants don't overwrite each other.
+    settings_filter = {"user_id": current_user["id"]}
+    update["user_id"] = current_user["id"]
     res = await db.settings.find_one_and_update(
-        {"id": "default"},
-        {"$set": update},
+        settings_filter,
+        {"$set": update, "$setOnInsert": {"id": f"settings_{current_user['id'][:8]}"}},
         upsert=True,
         return_document=True,
     )
@@ -737,8 +740,8 @@ def auto_guess_mapping(headers: List[str]) -> Dict[str, str]:
 
 
 @api_router.get("/sheets/orders")
-async def sheets_orders():
-    doc = await db.settings.find_one({"id": "default"}, {"_id": 0})
+async def sheets_orders(current_user: Dict[str, Any] = Depends(get_current_user)):
+    doc = await db.settings.find_one({"user_id": current_user["id"]}, {"_id": 0})
     if not doc:
         raise HTTPException(status_code=400, detail="Settings not configured")
     s = Settings(**doc)
@@ -756,7 +759,8 @@ async def sheets_orders():
     # Find shipments that were imported from this sheet to mark them
     imported_keys = set()
     existing = await db.shipments.find(
-        {"sheet_row_key": {"$ne": ""}}, {"_id": 0, "sheet_row_key": 1}
+        {"user_id": current_user["id"], "sheet_row_key": {"$ne": ""}},
+        {"_id": 0, "sheet_row_key": 1},
     ).to_list(5000)
     for e in existing:
         if e.get("sheet_row_key"):
@@ -844,9 +848,9 @@ async def shipments_stats(current_user: Dict[str, Any] = Depends(get_current_use
     base = {"user_id": current_user["id"]}
     total = await db.shipments.count_documents(base)
     delivered = await db.shipments.count_documents({**base, "status": "Delivered"})
-    pending = await db.shipments.count_documents({"status": "Pending"})
+    pending = await db.shipments.count_documents({**base, "status": "Pending"})
     cod_cursor = db.shipments.aggregate([
-        {"$match": {"payment_mode": "COD", "status": {"$ne": "Cancelled"}}},
+        {"$match": {**base, "payment_mode": "COD", "status": {"$ne": "Cancelled"}}},
         {"$group": {"_id": None, "sum": {"$sum": "$amount"}, "count": {"$sum": 1}}},
     ])
     cod_sum = 0.0
@@ -855,7 +859,7 @@ async def shipments_stats(current_user: Dict[str, Any] = Depends(get_current_use
         cod_sum = float(row.get("sum", 0.0))
         cod_count = int(row.get("count", 0))
     prepaid_cursor = db.shipments.aggregate([
-        {"$match": {"payment_mode": "Prepaid", "status": {"$ne": "Cancelled"}}},
+        {"$match": {**base, "payment_mode": "Prepaid", "status": {"$ne": "Cancelled"}}},
         {"$group": {"_id": None, "sum": {"$sum": "$amount"}, "count": {"$sum": 1}}},
     ])
     prepaid_sum = 0.0
@@ -914,8 +918,8 @@ async def sheets_sample_template():
 
 
 @api_router.get("/shipments/export/csv", response_class=PlainTextResponse)
-async def export_csv():
-    docs = await db.shipments.find({}, {"_id": 0}).sort("created_at", -1).to_list(5000)
+async def export_csv(current_user: Dict[str, Any] = Depends(get_current_user)):
+    docs = await db.shipments.find({"user_id": current_user["id"]}, {"_id": 0}).sort("created_at", -1).to_list(5000)
     buf = io.StringIO()
     writer = csv.writer(buf)
     writer.writerow([
@@ -941,9 +945,15 @@ async def export_csv():
 
 
 @api_router.get("/shipments/by-tracking/{tracking_id}")
-async def get_shipment_by_tracking(tracking_id: str):
+async def get_shipment_by_tracking(
+    tracking_id: str,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
     doc = await db.shipments.find_one(
-        {"tracking_id": {"$regex": f"^{tracking_id}$", "$options": "i"}},
+        {
+            "user_id": current_user["id"],
+            "tracking_id": {"$regex": f"^{tracking_id}$", "$options": "i"},
+        },
         {"_id": 0},
     )
     if not doc:
@@ -952,29 +962,45 @@ async def get_shipment_by_tracking(tracking_id: str):
 
 
 @api_router.post("/shipments/bulk-fetch")
-async def bulk_fetch(payload: Dict[str, List[str]]):
+async def bulk_fetch(
+    payload: Dict[str, List[str]],
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
     ids = payload.get("ids", [])
     if not ids:
         return []
-    docs = await db.shipments.find({"id": {"$in": ids}}, {"_id": 0}).to_list(500)
+    docs = await db.shipments.find(
+        {"user_id": current_user["id"], "id": {"$in": ids}},
+        {"_id": 0},
+    ).to_list(500)
     by_id = {d["id"]: Shipment(**d) for d in docs}
     ordered = [by_id[i].model_dump() for i in ids if i in by_id]
     return ordered
 
 
 @api_router.get("/shipments/{shipment_id}", response_model=Shipment)
-async def get_shipment(shipment_id: str):
-    doc = await db.shipments.find_one({"id": shipment_id}, {"_id": 0})
+async def get_shipment(
+    shipment_id: str,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    doc = await db.shipments.find_one(
+        {"id": shipment_id, "user_id": current_user["id"]}, {"_id": 0}
+    )
     if not doc:
         raise HTTPException(status_code=404, detail="Shipment not found")
     return Shipment(**doc)
 
 
 @api_router.post("/shipments", response_model=Shipment)
-async def create_shipment(payload: ShipmentCreate):
+async def create_shipment(
+    payload: ShipmentCreate,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
     data = payload.model_dump()
     if data.get("courier_id") and not data.get("courier_name"):
-        c = await db.couriers.find_one({"id": data["courier_id"]}, {"_id": 0})
+        c = await db.couriers.find_one(
+            {"id": data["courier_id"], "user_id": current_user["id"]}, {"_id": 0}
+        )
         if c:
             data["courier_name"] = c.get("name", "")
     # ensure amount is populated
@@ -988,12 +1014,18 @@ async def create_shipment(payload: ShipmentCreate):
     if data.get("custom_values") is None:
         data["custom_values"] = {}
     shipment = Shipment(**data)
-    await db.shipments.insert_one(shipment.model_dump())
+    doc = shipment.model_dump()
+    doc["user_id"] = current_user["id"]
+    await db.shipments.insert_one(doc)
     return shipment
 
 
 @api_router.put("/shipments/{shipment_id}", response_model=Shipment)
-async def update_shipment(shipment_id: str, payload: ShipmentUpdate):
+async def update_shipment(
+    shipment_id: str,
+    payload: ShipmentUpdate,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
     update = {k: v for k, v in payload.model_dump().items() if v is not None}
     if "status" in update and update["status"] == "Delivered":
         update["delivered_at"] = utcnow_iso()
@@ -1007,10 +1039,14 @@ async def update_shipment(shipment_id: str, payload: ShipmentUpdate):
     new_status = update.get("status")
     prev_doc = None
     if new_status is not None:
-        prev_doc = await db.shipments.find_one({"id": shipment_id}, {"_id": 0})
+        prev_doc = await db.shipments.find_one(
+            {"id": shipment_id, "user_id": current_user["id"]}, {"_id": 0}
+        )
 
     res = await db.shipments.find_one_and_update(
-        {"id": shipment_id}, {"$set": update}, return_document=True
+        {"id": shipment_id, "user_id": current_user["id"]},
+        {"$set": update},
+        return_document=True,
     )
     if not res:
         raise HTTPException(status_code=404, detail="Shipment not found")
@@ -1042,7 +1078,10 @@ async def update_shipment(shipment_id: str, payload: ShipmentUpdate):
 
 
 @api_router.delete("/shipments/{shipment_id}")
-async def delete_shipment(shipment_id: str):
+async def delete_shipment(
+    shipment_id: str,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
     """Soft-delete: if the shipment is linked to a Master Sheet row, mark
     that row's Status="DELETED" before removing the local record. The
     Sheet row itself is preserved as an audit trail so that data never
@@ -1050,7 +1089,9 @@ async def delete_shipment(shipment_id: str):
     is removed. Sheet failures do NOT block the local delete — we log
     and proceed so users are never stuck.
     """
-    doc = await db.shipments.find_one({"id": shipment_id}, {"_id": 0})
+    doc = await db.shipments.find_one(
+        {"id": shipment_id, "user_id": current_user["id"]}, {"_id": 0}
+    )
     if not doc:
         raise HTTPException(status_code=404, detail="Shipment not found")
 
@@ -1071,7 +1112,9 @@ async def delete_shipment(shipment_id: str):
             sheet_result["ok"] = False
             sheet_result["error"] = str(e)
 
-    res = await db.shipments.delete_one({"id": shipment_id})
+    res = await db.shipments.delete_one(
+        {"id": shipment_id, "user_id": current_user["id"]}
+    )
     if res.deleted_count == 0:
         # Race condition — someone else deleted. Still return 404.
         raise HTTPException(status_code=404, detail="Shipment not found")
@@ -1295,6 +1338,7 @@ def _clean_phone(p: str) -> str:
 async def find_duplicate_matches(
     phone: Optional[str],
     order_id: Optional[str],
+    user_id: Optional[str] = None,
     limit: int = 5,
 ) -> List[Dict[str, Any]]:
     """Return a list of duplicate candidates across pending orders and
@@ -1326,6 +1370,8 @@ async def find_duplicate_matches(
         or_clauses.append({"order_id_hint": {"$regex": f"^{safe}$", "$options": "i"}})
 
     query: Dict[str, Any] = {"$or": or_clauses} if or_clauses else {}
+    if user_id:
+        query["user_id"] = user_id
 
     # Pending orders (not yet shipped).
     pending_q = {**query, "status": {"$ne": "shipped"}}
@@ -1382,7 +1428,10 @@ async def find_duplicate_matches(
 
 
 @api_router.post("/smart-paste/check-duplicate")
-async def smart_paste_check_duplicate(payload: SmartPasteRequest):
+async def smart_paste_check_duplicate(
+    payload: SmartPasteRequest,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
     """Inspect pasted text for duplicates WITHOUT saving.
 
     Returns:
@@ -1403,6 +1452,7 @@ async def smart_paste_check_duplicate(payload: SmartPasteRequest):
     duplicates = await find_duplicate_matches(
         phone=fields.get("customer_phone", ""),
         order_id=fields.get("order_id", "") or fields.get("order_id_hint", ""),
+        user_id=current_user["id"],
     )
     return {
         "fields": fields,
@@ -1439,7 +1489,7 @@ async def smart_paste_create(
                 ", ".join(items_val) if isinstance(items_val, list) else str(items_val)
             )
             sheet_meta = sheet_append_order_row(
-                user_id="",  # single-user mode; Phase 4 will inject real ID
+                user_id=current_user["id"],
                 order_id=fields.get("order_id", "") or "",
                 name=fields.get("customer_name", "") or "",
                 phone=fields.get("customer_phone", "") or "",
@@ -1505,8 +1555,12 @@ async def sheets_probe():
 
 
 @api_router.get("/orders/pending", response_model=List[PendingOrder])
-async def list_pending_orders(source: Optional[str] = None, status: Optional[str] = None):
-    q: Dict[str, Any] = {}
+async def list_pending_orders(
+    source: Optional[str] = None,
+    status: Optional[str] = None,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    q: Dict[str, Any] = {"user_id": current_user["id"]}
     if source:
         q["source"] = source
     if status:
@@ -1518,33 +1572,51 @@ async def list_pending_orders(source: Optional[str] = None, status: Optional[str
 
 
 @api_router.get("/orders/pending/{order_id}", response_model=PendingOrder)
-async def get_pending_order(order_id: str):
-    doc = await db.pending_orders.find_one({"id": order_id}, {"_id": 0})
+async def get_pending_order(
+    order_id: str,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    doc = await db.pending_orders.find_one(
+        {"id": order_id, "user_id": current_user["id"]}, {"_id": 0}
+    )
     if not doc:
         raise HTTPException(status_code=404, detail="Order not found")
     return doc
 
 
 @api_router.put("/orders/pending/{order_id}", response_model=PendingOrder)
-async def update_pending_order(order_id: str, payload: Dict[str, Any]):
+async def update_pending_order(
+    order_id: str,
+    payload: Dict[str, Any],
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
     # Allow partial field updates (user edits before shipping)
     allowed = {k for k in PendingOrder.model_fields if k not in ("id", "created_at", "source")}
     upd = {k: v for k, v in payload.items() if k in allowed}
     if not upd:
         raise HTTPException(status_code=400, detail="No valid fields to update")
-    res = await db.pending_orders.update_one({"id": order_id}, {"$set": upd})
+    res = await db.pending_orders.update_one(
+        {"id": order_id, "user_id": current_user["id"]}, {"$set": upd}
+    )
     if res.matched_count == 0:
         raise HTTPException(status_code=404, detail="Order not found")
-    doc = await db.pending_orders.find_one({"id": order_id}, {"_id": 0})
+    doc = await db.pending_orders.find_one(
+        {"id": order_id, "user_id": current_user["id"]}, {"_id": 0}
+    )
     return doc
 
 
 @api_router.delete("/orders/pending/{order_id}")
-async def delete_pending_order(order_id: str):
+async def delete_pending_order(
+    order_id: str,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
     """Soft-delete pending (Smart-Paste) orders: tombstone the Master Sheet
     row if linked, then remove the local record. Sheet failures are logged
     but do not block local deletion."""
-    doc = await db.pending_orders.find_one({"id": order_id}, {"_id": 0})
+    doc = await db.pending_orders.find_one(
+        {"id": order_id, "user_id": current_user["id"]}, {"_id": 0}
+    )
     if not doc:
         raise HTTPException(status_code=404, detail="Order not found")
 
@@ -1563,22 +1635,32 @@ async def delete_pending_order(order_id: str):
             sheet_result["ok"] = False
             sheet_result["error"] = str(e)
 
-    res = await db.pending_orders.delete_one({"id": order_id})
+    res = await db.pending_orders.delete_one(
+        {"id": order_id, "user_id": current_user["id"]}
+    )
     if res.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Order not found")
     return {"ok": True, "sheet": sheet_result}
 
 
 @api_router.post("/orders/pending/{order_id}/ship", response_model=Shipment)
-async def ship_pending_order(order_id: str, payload: ShipOrderRequest):
+async def ship_pending_order(
+    order_id: str,
+    payload: ShipOrderRequest,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
     """Promote a pending order to a real shipment — allocates tracking ID."""
-    order = await db.pending_orders.find_one({"id": order_id}, {"_id": 0})
+    order = await db.pending_orders.find_one(
+        {"id": order_id, "user_id": current_user["id"]}, {"_id": 0}
+    )
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
     if order.get("status") == "shipped":
         raise HTTPException(status_code=400, detail="Order already shipped")
 
-    courier = await db.couriers.find_one({"id": payload.courier_id}, {"_id": 0})
+    courier = await db.couriers.find_one(
+        {"id": payload.courier_id, "user_id": current_user["id"]}, {"_id": 0}
+    )
     if not courier:
         raise HTTPException(status_code=404, detail="Courier not found")
 
@@ -1586,7 +1668,10 @@ async def ship_pending_order(order_id: str, payload: ShipOrderRequest):
     padding = int(courier.get("number_padding") or 4)
     next_num = int(courier.get("next_number") or 1)
     tracking_id = f"{courier.get('series_prefix','')}{str(next_num).zfill(padding)}"
-    await db.couriers.update_one({"id": courier["id"]}, {"$inc": {"next_number": 1}})
+    await db.couriers.update_one(
+        {"id": courier["id"], "user_id": current_user["id"]},
+        {"$inc": {"next_number": 1}},
+    )
 
     # Build shipment from order + optional overrides
     overrides = payload.overrides or {}
@@ -1623,12 +1708,13 @@ async def ship_pending_order(order_id: str, payload: ShipOrderRequest):
         # Carry the Master Sheet row number so a future delete can soft-delete
         # the exact tombstone row (preserves audit trail across app users).
         "sheet_row_num": order.get("sheet_row_num"),
+        "user_id": current_user["id"],
     }
     await db.shipments.insert_one(ship_doc)
 
     # Mark order as shipped + link
     await db.pending_orders.update_one(
-        {"id": order_id},
+        {"id": order_id, "user_id": current_user["id"]},
         {"$set": {
             "status": "shipped",
             "processed_at": utcnow_iso(),
@@ -1659,8 +1745,10 @@ async def ship_pending_order(order_id: str, payload: ShipOrderRequest):
 
 
 @api_router.get("/orders/pending-count")
-async def pending_orders_count():
-    n = await db.pending_orders.count_documents({"status": "pending"})
+async def pending_orders_count(current_user: Dict[str, Any] = Depends(get_current_user)):
+    n = await db.pending_orders.count_documents(
+        {"user_id": current_user["id"], "status": "pending"}
+    )
     return {"count": n}
 
 

@@ -1,4 +1,5 @@
 import axios from "axios";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 
 const BASE = process.env.EXPO_PUBLIC_BACKEND_URL;
 
@@ -6,6 +7,59 @@ export const api = axios.create({
   baseURL: `${BASE}/api`,
   timeout: 25000,
 });
+
+/**
+ * Request interceptor: if the session token exists in storage (set by
+ * AuthProvider), attach it as Bearer. This is a safety net — AuthProvider
+ * also sets api.defaults.headers so this rarely fires, but it guards
+ * against edge cases (e.g. the provider's default was cleared).
+ */
+api.interceptors.request.use(async (config) => {
+  try {
+    if (!config.headers?.Authorization && !config.headers?.authorization) {
+      const token = await AsyncStorage.getItem("@auth_token");
+      if (token) {
+        config.headers = config.headers ?? {};
+        (config.headers as any).Authorization = `Bearer ${token}`;
+      }
+    }
+  } catch {
+    /* storage unavailable - continue without */
+  }
+  return config;
+});
+
+/**
+ * Response interceptor: on 401 (expired/invalid token) clear credentials
+ * so AuthGate can redirect to /login. We import auth dynamically to avoid
+ * a circular module-load between auth.tsx and api.ts.
+ */
+let _onUnauthorized: (() => void) | null = null;
+export function registerUnauthorizedHandler(fn: () => void) {
+  _onUnauthorized = fn;
+}
+
+api.interceptors.response.use(
+  (r) => r,
+  async (err) => {
+    const status = err?.response?.status;
+    const url: string = err?.config?.url || "";
+    // Don't auto-logout on the login/signup endpoints themselves — their
+    // 401 means "wrong credentials", which the form handles locally.
+    const isAuthEndpoint =
+      url.includes("/auth/login") || url.includes("/auth/signup");
+    if (status === 401 && !isAuthEndpoint) {
+      try {
+        await AsyncStorage.multiRemove(["@auth_token", "@auth_user"]);
+        delete api.defaults.headers.common["Authorization"];
+      } catch {
+        /* ignore */
+      }
+      _onUnauthorized?.();
+    }
+    return Promise.reject(err);
+  }
+);
 
 export type Courier = {
   id: string;
