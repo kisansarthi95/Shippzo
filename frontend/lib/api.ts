@@ -76,6 +76,9 @@ export type CustomLabelField = {
   enabled: boolean;
   bold?: boolean;
   size?: "xs" | "sm" | "md";
+  source?: "static" | "shipment";
+  sheet_column?: string;
+  placeholder?: string;
 };
 
 export type Settings = {
@@ -115,6 +118,7 @@ export type Shipment = {
   token_amount?: number;
   box_dimensions?: string;
   shipment_notes?: string;
+  custom_values?: Record<string, string>;
   status: "Pending" | "Delivered" | "Cancelled";
   created_at: string;
   delivered_at?: string | null;

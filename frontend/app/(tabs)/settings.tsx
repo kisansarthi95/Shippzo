@@ -126,6 +126,9 @@ export default function SettingsScreen() {
     enabled: boolean;
     bold?: boolean;
     size?: "xs" | "sm" | "md";
+    source?: "static" | "shipment";
+    sheet_column?: string;
+    placeholder?: string;
   }>>([]);
 
   // Sheet
@@ -715,21 +718,84 @@ export default function SettingsScreen() {
                     />
                   </View>
                   <View style={{ flex: 1.3 }}>
-                    <Text style={styles.cfLabel}>Value</Text>
+                    <Text style={styles.cfLabel}>
+                      {(cf as any).source === "shipment" ? "Placeholder (hint)" : "Value"}
+                    </Text>
                     <TextInput
                       testID={`cf-value-input-${idx}`}
-                      value={cf.value}
+                      value={(cf as any).source === "shipment" ? ((cf as any).placeholder || "") : cf.value}
                       onChangeText={(t) => {
                         const next = [...customFields];
-                        next[idx] = { ...cf, value: t };
+                        if ((cf as any).source === "shipment") {
+                          next[idx] = { ...cf, placeholder: t } as any;
+                        } else {
+                          next[idx] = { ...cf, value: t };
+                        }
                         setCustomFields(next);
                       }}
-                      placeholder="e.g. 24ABCDE1234F1Z5"
+                      placeholder={(cf as any).source === "shipment"
+                        ? "e.g. GST number of customer"
+                        : "e.g. 24ABCDE1234F1Z5"}
                       placeholderTextColor="#9CA3AF"
                       style={styles.input}
                     />
                   </View>
                 </View>
+
+                {/* Source type picker: Static vs Per-Shipment */}
+                <Text style={styles.cfLabel}>Field Type</Text>
+                <View style={{ flexDirection: "row", gap: 8, marginBottom: 6 }}>
+                  {([
+                    { k: "static", t: "🔒  Static", sub: "Same on every label" },
+                    { k: "shipment", t: "🔄  Per-Shipment", sub: "Type value for each order" },
+                  ] as const).map((opt) => {
+                    const active = ((cf as any).source || "static") === opt.k;
+                    return (
+                      <TouchableOpacity
+                        key={opt.k}
+                        testID={`cf-src-${idx}-${opt.k}`}
+                        onPress={() => {
+                          const next = [...customFields];
+                          next[idx] = { ...cf, source: opt.k } as any;
+                          setCustomFields(next);
+                        }}
+                        style={[styles.cfSourceTile, active && styles.cfSourceTileActive]}
+                      >
+                        <Text style={[styles.cfSourceTitle, active && { color: "#fff" }]}>
+                          {opt.t}
+                        </Text>
+                        <Text style={[styles.cfSourceSub, active && { color: "rgba(255,255,255,0.85)" }]} numberOfLines={1}>
+                          {opt.sub}
+                        </Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+
+                {/* Sheet column mapping (only for per-shipment fields) */}
+                {(cf as any).source === "shipment" && (
+                  <View>
+                    <Text style={styles.cfLabel}>
+                      Google Sheet column (optional)
+                    </Text>
+                    <TextInput
+                      testID={`cf-sheet-col-${idx}`}
+                      value={(cf as any).sheet_column || ""}
+                      onChangeText={(t) => {
+                        const next = [...customFields];
+                        next[idx] = { ...cf, sheet_column: t } as any;
+                        setCustomFields(next);
+                      }}
+                      placeholder="e.g. Customer GST"
+                      placeholderTextColor="#9CA3AF"
+                      style={styles.input}
+                      autoCapitalize="none"
+                    />
+                    <Text style={[styles.hint, { marginTop: 2 }]}>
+                      If set, Smart Paste will auto-fill this field from the matching Google Sheet column.
+                    </Text>
+                  </View>
+                )}
 
                 <Text style={styles.cfLabel}>Position on label</Text>
                 <ScrollView
@@ -1245,6 +1311,30 @@ const styles = StyleSheet.create({
     color: colors.primary,
     fontWeight: "800",
     fontSize: 14,
+  },
+  cfSourceTile: {
+    flex: 1,
+    paddingVertical: 10,
+    paddingHorizontal: 10,
+    borderRadius: 10,
+    borderWidth: 1.5,
+    borderColor: "#E5E7EB",
+    backgroundColor: "#fff",
+    alignItems: "flex-start",
+  },
+  cfSourceTileActive: {
+    backgroundColor: colors.primary,
+    borderColor: colors.primary,
+  },
+  cfSourceTitle: {
+    fontSize: 13,
+    fontWeight: "800",
+    color: colors.text,
+  },
+  cfSourceSub: {
+    fontSize: 10.5,
+    color: "#6B7280",
+    marginTop: 2,
   },
   saveBtn: {
     flexDirection: "row",

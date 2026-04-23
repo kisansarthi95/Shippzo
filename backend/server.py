@@ -135,11 +135,20 @@ class LabelFields(BaseModel):
 class CustomLabelField(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4())[:8])
     label: str = ""             # e.g. "GST:"  (printed as bold prefix)
-    value: str = ""             # static value to print (e.g. "24ABCDE1234F1Z5")
+    value: str = ""             # static value to print (ignored if source="shipment")
     position: str = "meta_row"  # one of the positions above
     enabled: bool = True
     bold: bool = True           # value in bold?
     size: str = "sm"            # "xs" | "sm" | "md"
+    # "static"  = same value for every label (e.g. GST No.)
+    # "shipment"= per-order value; user types it in the New Shipment form
+    #             (optionally auto-filled from a Google Sheet column).
+    source: str = "static"
+    # Optional: for "shipment"-sourced fields, map to a Google Sheet column
+    # header. Smart Paste will populate shipment.custom_values[id] from it.
+    sheet_column: str = ""
+    # Placeholder shown in the Add Shipment input when source="shipment"
+    placeholder: str = ""
 
 
 
@@ -202,6 +211,9 @@ class Shipment(BaseModel):
     token_amount: float = 0.0   # advance already collected (prepaid portion)
     box_dimensions: str = ""    # e.g. "30×20×10 cm"
     shipment_notes: str = ""    # free text, shown on label if toggled on
+    # Per-shipment dynamic custom field values.
+    # Key = CustomLabelField.id, Value = the text to print for this shipment.
+    custom_values: Dict[str, str] = Field(default_factory=dict)
     status: str = "Pending"
     created_at: str = Field(default_factory=utcnow_iso)
     delivered_at: Optional[str] = None
@@ -229,6 +241,7 @@ class ShipmentCreate(BaseModel):
     token_amount: Optional[float] = 0.0
     box_dimensions: Optional[str] = ""
     shipment_notes: Optional[str] = ""
+    custom_values: Optional[Dict[str, str]] = None
     sheet_row_key: Optional[str] = ""
 
 
@@ -821,6 +834,8 @@ async def create_shipment(payload: ShipmentCreate):
     data["amount"] = float(data.get("amount") or data.get("cod_amount") or 0)
     if data.get("items") is None:
         data["items"] = []
+    if data.get("custom_values") is None:
+        data["custom_values"] = {}
     shipment = Shipment(**data)
     await db.shipments.insert_one(shipment.model_dump())
     return shipment

@@ -86,6 +86,10 @@ export default function AddShipment() {
   const [pendingOrderId, setPendingOrderId] = useState("");
   const [saving, setSaving] = useState(false);
 
+  // Phase B Part 2 — per-shipment custom fields (definitions come from Settings)
+  const [customFields, setCustomFields] = useState<Array<any>>([]);
+  const [customValues, setCustomValues] = useState<Record<string, string>>({});
+
   const [sheetConnected, setSheetConnected] = useState(false);
   const [showImport, setShowImport] = useState(false);
   const [importLoading, setImportLoading] = useState(false);
@@ -105,6 +109,7 @@ export default function AddShipment() {
       setCouriers(cs);
       // Intentionally DO NOT auto-select a default courier. User must pick.
       setSheetConnected(Boolean(settings.sheet?.sheet_id));
+      setCustomFields(((settings as any).custom_fields || []) as any[]);
       setLastCourierId(lc || null);
       if (lp === "COD" || lp === "Prepaid") setLastPaymentMode(lp);
       if (lt === "auto" || lt === "manual") setLastTrackMode(lt);
@@ -262,6 +267,7 @@ export default function AddShipment() {
     setSelectedCourier(null);
     setAutoTracking(null);
     setTrackingId("");
+    setCustomValues({});
   };
 
   // Does form have unsaved content? Used by Cancel confirmation.
@@ -400,6 +406,17 @@ export default function AddShipment() {
           item_description: items.join(", "),
           weight: weight.trim() ? `${weight.trim()} ${weightUnit}` : "",
           sheet_row_key: sheetRowKey,
+          custom_values: (() => {
+            // Keep only values for fields that still exist + are enabled
+            // + use per-shipment source. Trim empty strings.
+            const out: Record<string, string> = {};
+            for (const cf of customFields) {
+              if (!cf?.enabled || cf?.source !== "shipment") continue;
+              const v = (customValues[cf.id] || "").trim();
+              if (v) out[cf.id] = v;
+            }
+            return out;
+          })(),
         });
         // Persist last-used choices (hints for next entry, never defaults).
         try {
@@ -946,6 +963,45 @@ export default function AddShipment() {
               />
             </Field>
           </Section>
+
+          {/* ---------- Per-Shipment Custom Fields (defined in Settings) ---------- */}
+          {(() => {
+            const perShipCfs = customFields.filter(
+              (cf) => cf && cf.enabled && cf.source === "shipment"
+            );
+            if (perShipCfs.length === 0) return null;
+            return (
+              <Section title="Custom Fields" icon="layers-outline">
+                <Text style={styles.hint}>
+                  Extra label info for this shipment only. Defined in Settings → Custom Label Fields.
+                </Text>
+                {perShipCfs.map((cf) => {
+                  const key = cf.id;
+                  const displayLabel =
+                    (cf.label || "").replace(/:\s*$/, "") || "Value";
+                  return (
+                    <Field key={key} label={`${displayLabel}${cf.sheet_column ? "  (from Sheet)" : ""}`}>
+                      <TextInput
+                        testID={`cf-ship-input-${key}`}
+                        value={customValues[key] || ""}
+                        onChangeText={(t) =>
+                          setCustomValues({ ...customValues, [key]: t })
+                        }
+                        placeholder={
+                          cf.placeholder || "Enter value for this shipment"
+                        }
+                        placeholderTextColor="#9CA3AF"
+                        style={styles.input}
+                      />
+                      <Text style={styles.hint}>
+                        📍 Prints at: {cf.position?.replace(/_/g, " ") || "meta row"}
+                      </Text>
+                    </Field>
+                  );
+                })}
+              </Section>
+            );
+          })()}
 
           <View style={styles.ctaRow}>
             <TouchableOpacity

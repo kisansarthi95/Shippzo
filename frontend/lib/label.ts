@@ -64,24 +64,37 @@ function senderBlock(sender: SenderAddress, show: boolean) {
  */
 function renderCustomAt(
   fields: CustomLabelField[] | undefined,
-  position: CustomLabelField["position"]
+  position: CustomLabelField["position"],
+  shipment?: Shipment
 ): string {
   if (!fields || fields.length === 0) return "";
-  const rows = fields.filter(
-    (f) => f.enabled && f.position === position && (f.label || f.value)
-  );
-  if (rows.length === 0) return "";
+  // Resolve each field's effective value:
+  //   source="static"   → use cf.value
+  //   source="shipment" → use shipment.custom_values[cf.id] (skip if empty)
+  const cv: Record<string, string> =
+    (shipment as any)?.custom_values || {};
+  const resolved = fields
+    .filter((f) => f.enabled && f.position === position)
+    .map((f) => {
+      const effVal =
+        (f as any).source === "shipment"
+          ? (cv[f.id] || "").trim()
+          : (f.value || "").trim();
+      return { ...f, _val: effVal };
+    })
+    .filter((f) => f.label || f._val);
+  if (resolved.length === 0) return "";
   // Map size → CSS class token
   const sizeCls = (s?: string) =>
     s === "md" ? "cf-md" : s === "xs" ? "cf-xs" : "cf-sm";
   // Special inline markup for `meta_row` — it's rendered inside an existing
   // flex row of <span> items, so we match that shape.
   if (position === "meta_row") {
-    return rows
+    return resolved
       .map((f) => {
         const val = f.bold
-          ? `<b>${escape(f.value)}</b>`
-          : escape(f.value);
+          ? `<b>${escape(f._val)}</b>`
+          : escape(f._val);
         return `<span class="cf-meta ${sizeCls(f.size)}">${
           f.label ? `<b class="lbl">${escape(f.label)}</b> ` : ""
         }${val}</span>`;
@@ -91,11 +104,11 @@ function renderCustomAt(
   // All other positions use a tiny stacked row block.
   const wrapClass =
     position === "notes_area" ? "cf-notes-wrap" : "cf-rows";
-  return `<div class="${wrapClass}">${rows
+  return `<div class="${wrapClass}">${resolved
     .map(
       (f) => `<div class="cf-row ${sizeCls(f.size)}">${
         f.label ? `<b class="cf-lbl">${escape(f.label)}</b> ` : ""
-      }${f.bold ? `<b>${escape(f.value)}</b>` : escape(f.value)}</div>`
+      }${f.bold ? `<b>${escape(f._val)}</b>` : escape(f._val)}</div>`
     )
     .join("")}</div>`;
 }
@@ -154,12 +167,12 @@ function singleLabel(s: Shipment, sender: SenderAddress, opts: LabelOptions) {
   // ---- Custom user-defined fields (Phase B) ----
   // Pre-render each position slot once so the template below stays readable.
   const cf = opts.customFields || [];
-  const cfHeaderTop    = renderCustomAt(cf, "header_top");
-  const cfFromBlock    = renderCustomAt(cf, "from_block");
-  const cfToBlock      = renderCustomAt(cf, "to_block");
-  const cfMetaRow      = renderCustomAt(cf, "meta_row");
-  const cfNotesArea    = renderCustomAt(cf, "notes_area");
-  const cfFooterBottom = renderCustomAt(cf, "footer_bottom");
+  const cfHeaderTop    = renderCustomAt(cf, "header_top",    s);
+  const cfFromBlock    = renderCustomAt(cf, "from_block",    s);
+  const cfToBlock      = renderCustomAt(cf, "to_block",      s);
+  const cfMetaRow      = renderCustomAt(cf, "meta_row",      s);
+  const cfNotesArea    = renderCustomAt(cf, "notes_area",    s);
+  const cfFooterBottom = renderCustomAt(cf, "footer_bottom", s);
 
   // Look up courier's printable customer_id (if provided in options)
   const courier = (opts.couriers || []).find(
