@@ -166,6 +166,13 @@ export default function SettingsScreen() {
   const [connectedSheetId, setConnectedSheetId] = useState("");
   const [connectedHeaders, setConnectedHeaders] = useState<string[]>([]);
 
+  // Phase-4b+ Smart Paste AI customisation
+  const [spaiEnabled, setSpaiEnabled] = useState(true);
+  const [spaiInstructions, setSpaiInstructions] = useState("");
+  const [spaiDefaultPrompt, setSpaiDefaultPrompt] = useState("");
+  const [spaiShowDefault, setSpaiShowDefault] = useState(false);
+  const [spaiSaving, setSpaiSaving] = useState(false);
+
   const load = useCallback(async () => {
     const [s, cs] = await Promise.all([Api.getSettings(), Api.listCouriers()]);
     setSender(s.sender);
@@ -182,6 +189,9 @@ export default function SettingsScreen() {
     }
     setCustomFields(((s as any).custom_fields || []) as any);
     setShipmentTagline(String((s as any).shipment_tagline || ""));
+    // Phase-4b+ smart paste AI fields
+    setSpaiEnabled((s as any).smart_paste_ai_enabled !== false);
+    setSpaiInstructions(String((s as any).smart_paste_instructions || ""));
     if (s.sheet?.sheet_id) {
       setSheetStatus("connected");
       setSheetUrl(s.sheet.url);
@@ -196,6 +206,48 @@ export default function SettingsScreen() {
   }, [load]);
 
   useFocusEffect(useCallback(() => { load(); }, [load]));
+
+  // Pull the bundled default prompt once so the user can peek / reset.
+  useEffect(() => {
+    (async () => {
+      try {
+        const r = await Api.smartPasteDefaultPrompt();
+        setSpaiDefaultPrompt(r.default_prompt || "");
+      } catch {
+        /* non-fatal */
+      }
+    })();
+  }, []);
+
+  const saveSmartPasteAI = async () => {
+    try {
+      setSpaiSaving(true);
+      await api.put("/settings", {
+        smart_paste_ai_enabled: spaiEnabled,
+        smart_paste_instructions: spaiInstructions,
+      });
+      Alert.alert("Saved", "Smart Paste AI settings updated.");
+    } catch (e: any) {
+      Alert.alert("Save failed", e?.response?.data?.detail || e?.message || "Please try again");
+    } finally {
+      setSpaiSaving(false);
+    }
+  };
+
+  const resetSmartPasteAI = () => {
+    Alert.alert(
+      "Reset instructions?",
+      "This will clear your custom instructions. The bundled default prompt will be used as-is.",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Reset",
+          style: "destructive",
+          onPress: () => setSpaiInstructions(""),
+        },
+      ],
+    );
+  };
 
   const saveSender = async () => {
     try {
@@ -382,6 +434,100 @@ export default function SettingsScreen() {
               <Ionicons name="log-out-outline" size={16} color="#C62828" />
               <Text style={styles.dangerBtnTxt}>Sign out</Text>
             </TouchableOpacity>
+          </Section>
+
+          {/* Phase-4b+ Smart Paste AI */}
+          <Section title="Smart Paste AI" icon="sparkles-outline">
+            <View style={styles.spaiIntro}>
+              <View style={styles.spaiBadge}>
+                <Ionicons name="sparkles" size={11} color="#fff" />
+                <Text style={styles.spaiBadgeTxt}>AI powered</Text>
+              </View>
+              <Text style={styles.spaiHint}>
+                WhatsApp-style પેસ્ટ ને LLM automatically ફોર્મ માં convert કરે છે — ChatGPT bounce ખતમ. દરેક user પોતાના વ્યવસાય પ્રમાણે અલગ instructions રાખી શકે.
+              </Text>
+            </View>
+
+            <View style={styles.toggleRow}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.toggleLbl}>Enable AI parser</Text>
+                <Text style={styles.toggleSub}>
+                  OFF કરશો તો regex fallback વાપરશે (free, no credits).
+                </Text>
+              </View>
+              <Switch
+                testID="spai-enabled-toggle"
+                value={spaiEnabled}
+                onValueChange={setSpaiEnabled}
+              />
+            </View>
+
+            <Text style={styles.fieldLabel}>Your custom instructions (optional)</Text>
+            <Text style={styles.fieldHelp}>
+              આ text તમારા default ShipBot rules પહેલા inject થશે. દા.ત. "Always use ODC3 as default item", "Ignore 'Rush order' keyword", વગેરે.
+            </Text>
+            <TextInput
+              testID="spai-instructions-input"
+              style={styles.spaiTextArea}
+              value={spaiInstructions}
+              onChangeText={setSpaiInstructions}
+              placeholder={
+                "Example:\n- Token ₹ means prepaid advance, route to NOTES.\n- Default courier is India Post if not specified.\n- Any number after 'wt' is weight in grams."
+              }
+              placeholderTextColor="#94A3B8"
+              multiline
+              numberOfLines={8}
+              textAlignVertical="top"
+            />
+            <Text style={styles.spaiCharCount}>
+              {spaiInstructions.length} / 8000 chars
+            </Text>
+
+            <View style={styles.spaiActions}>
+              <TouchableOpacity
+                testID="spai-save-btn"
+                disabled={spaiSaving}
+                onPress={saveSmartPasteAI}
+                style={[styles.primaryBtn, spaiSaving && { opacity: 0.6 }]}
+              >
+                {spaiSaving ? (
+                  <ActivityIndicator color="#fff" />
+                ) : (
+                  <>
+                    <Ionicons name="checkmark-circle" size={16} color="#fff" />
+                    <Text style={styles.primaryBtnTxt}>Save</Text>
+                  </>
+                )}
+              </TouchableOpacity>
+              <TouchableOpacity
+                testID="spai-reset-btn"
+                style={styles.secondaryBtn}
+                onPress={resetSmartPasteAI}
+              >
+                <Ionicons name="refresh" size={16} color={colors.primary} />
+                <Text style={styles.secondaryBtnTxt}>Reset</Text>
+              </TouchableOpacity>
+            </View>
+
+            <TouchableOpacity
+              testID="spai-default-toggle"
+              style={styles.spaiDefaultToggle}
+              onPress={() => setSpaiShowDefault((v) => !v)}
+            >
+              <Ionicons
+                name={spaiShowDefault ? "chevron-up" : "chevron-down"}
+                size={14}
+                color="#64748B"
+              />
+              <Text style={styles.spaiDefaultToggleTxt}>
+                {spaiShowDefault ? "Hide" : "View"} bundled ShipBot rules
+              </Text>
+            </TouchableOpacity>
+            {spaiShowDefault && spaiDefaultPrompt ? (
+              <View style={styles.spaiDefaultBox}>
+                <Text style={styles.spaiDefaultText}>{spaiDefaultPrompt}</Text>
+              </View>
+            ) : null}
           </Section>
 
           {/* Google Sheet */}
@@ -1442,6 +1588,56 @@ const styles = StyleSheet.create({
     borderColor: "#FCA5A5",
   },
   dangerBtnTxt: { color: "#C62828", fontWeight: "700", fontSize: 14 },
+
+  // --- Smart Paste AI -------------------------------------------------
+  spaiIntro: { gap: 8, marginBottom: 4 },
+  spaiBadge: {
+    alignSelf: "flex-start",
+    flexDirection: "row", alignItems: "center", gap: 4,
+    backgroundColor: "#7C3AED", paddingHorizontal: 8, paddingVertical: 3, borderRadius: 999,
+  },
+  spaiBadgeTxt: { color: "#fff", fontSize: 10, fontWeight: "800", letterSpacing: 0.4 },
+  spaiHint: { fontSize: 12.5, color: "#475569", lineHeight: 19 },
+  toggleRow: {
+    flexDirection: "row", alignItems: "center", gap: 10,
+    paddingVertical: 10, marginTop: 8,
+    borderTopWidth: 1, borderBottomWidth: 1, borderColor: "#F1F5F9",
+  },
+  toggleLbl: { fontSize: 14, fontWeight: "800", color: "#1E293B" },
+  toggleSub: { fontSize: 11.5, color: "#64748B", marginTop: 2 },
+  fieldLabel: { fontSize: 11, color: "#64748B", fontWeight: "800", letterSpacing: 0.6, marginTop: 14 },
+  fieldHelp: { fontSize: 11.5, color: "#64748B", marginTop: 4, lineHeight: 17 },
+  spaiTextArea: {
+    marginTop: 6,
+    minHeight: 160,
+    maxHeight: 320,
+    borderWidth: 1.5, borderColor: "#CBD5E1", borderRadius: 10,
+    paddingHorizontal: 12, paddingVertical: 10,
+    fontSize: 13, color: "#0F172A", lineHeight: 19,
+    backgroundColor: "#F8FAFC",
+    fontFamily: Platform.select({ ios: "Menlo", android: "monospace", default: "monospace" }) as any,
+  },
+  spaiCharCount: { fontSize: 10.5, color: "#94A3B8", textAlign: "right", marginTop: 4 },
+  spaiActions: { flexDirection: "row", gap: 8, marginTop: 10 },
+  primaryBtn: {
+    flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6,
+    backgroundColor: colors.primary, borderRadius: 10, paddingVertical: 11,
+  },
+  primaryBtnTxt: { color: "#fff", fontWeight: "800", fontSize: 14 },
+  spaiDefaultToggle: {
+    flexDirection: "row", alignItems: "center", gap: 4,
+    marginTop: 14, alignSelf: "flex-start",
+  },
+  spaiDefaultToggleTxt: { color: "#64748B", fontSize: 12, fontWeight: "700" },
+  spaiDefaultBox: {
+    marginTop: 8, padding: 10,
+    backgroundColor: "#F1F5F9", borderRadius: 8,
+    borderWidth: 1, borderColor: "#E2E8F0",
+  },
+  spaiDefaultText: {
+    fontSize: 11, color: "#334155", lineHeight: 17,
+    fontFamily: Platform.select({ ios: "Menlo", android: "monospace", default: "monospace" }) as any,
+  },
   section: {
     backgroundColor: colors.surface,
     borderWidth: 2,
