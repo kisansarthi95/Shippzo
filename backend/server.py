@@ -1454,6 +1454,19 @@ class SmartPasteRequest(BaseModel):
     use_ai: Optional[bool] = True   # Phase-4b+: LLM-driven parse by default
 
 
+class SmartPasteChatRequest(BaseModel):
+    """Turn-based Smart Paste chat.
+
+    The client holds the conversation state (current known fields + list
+    of what's still missing) and sends the user's natural-language reply
+    on each turn. We build a synthetic structured block from `fields`,
+    append the reply, re-run the LLM, and return merged fields plus an
+    AI message the client can render as a chat bubble.
+    """
+    fields: Dict[str, Any] = {}
+    reply: str = ""
+
+
 class ShipOrderRequest(BaseModel):
     courier_id: str
     # optional overrides before creating the shipment
@@ -1871,6 +1884,174 @@ async def smart_paste_check_duplicate(
             "source": ai_source,
         },
     }
+
+
+
+# Labels / order used by the chat endpoint to build both the synthetic
+# structured block it feeds to the LLM and the natural-language AI
+# message returned to the client.
+_CHAT_REQUIRED = ["NAME", "PHONE", "ADDRESS_1", "CITY", "STATE", "PINCODE", "AMOUNT"]
+_CHAT_LABEL = {
+    "NAME": "Name",
+    "PHONE": "Phone",
+    "ADDRESS_1": "Address",
+    "ADDRESS_2": "Landmark",
+    "CITY": "City",
+    "STATE": "State",
+    "PINCODE": "Pincode",
+    "ITEMS": "Items",
+    "AMOUNT": "Amount",
+    "PAYMENT": "Payment",
+    "COURIER": "Courier",
+    "ORDER_ID": "Order ID",
+    "WEIGHT": "Weight",
+    "NOTES": "Notes",
+}
+
+
+def _legacy_to_schema(legacy: Dict[str, Any]) -> Dict[str, str]:
+    """Convert the app's snake_case field dict into the 14-line schema
+    keys the LLM and regex parser share."""
+    items = legacy.get("items")
+    items_text = (
+        ", ".join(items) if isinstance(items, list) else (str(items) if items else "")
+    )
+    amt = legacy.get("amount")
+    amt_text = "" if amt in (None, "", 0) else str(amt)
+    return {
+        "NAME": legacy.get("customer_name", "") or "",
+        "PHONE": legacy.get("customer_phone", "") or "",
+        "ADDRESS_1": legacy.get("address_line1", "") or "",
+        "ADDRESS_2": legacy.get("address_line2", "") or "",
+        "CITY": legacy.get("city", "") or "",
+        "STATE": legacy.get("state", "") or "",
+        "PINCODE": legacy.get("pincode", "") or "",
+        "ITEMS": items_text,
+        "AMOUNT": amt_text,
+        "PAYMENT": (legacy.get("payment_mode") or "").upper(),
+        "COURIER": legacy.get("courier_name", "") or "",
+        "ORDER_ID": legacy.get("order_id", "") or "",
+        "WEIGHT": legacy.get("weight", "") or "",
+        "NOTES": legacy.get("notes", "") or "",
+    }
+
+
+@api_router.post("/smart-paste/chat")
+async def smart_paste_chat(
+    payload: SmartPasteChatRequest,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    """Conversational Smart Paste.
+
+    The client sends the current known fields plus the user's latest
+    natural-language reply. We build a synthetic structured block from
+    the known fields, append the reply as fresh context, re-run the LLM
+    parse (same pipeline as check-duplicate), and return:
+
+      * fields          — merged dict in the app's snake_case schema
+      * missing         — remaining REQUIRED keys (uppercase schema)
+      * complete        — true when every REQUIRED key has a value
+      * ai_message      — markdown-like bullet list the client renders
+                          as a chat bubble
+      * complexity / reason — from the LLM's classification
+    """
+    incoming = payload.fields or {}
+    # Accept both snake_case (from previous parse) and UPPERCASE schema
+    # keys so callers can round-trip without converting.
+    if any(k.isupper() for k in incoming.keys()):
+        schema = {k: str(incoming.get(k, "") or "") for k in _CHAT_LABEL.keys()}
+    else:
+        schema = _legacy_to_schema(incoming)
+
+    # Build the synthetic block so the LLM has full grounding — known
+    # KEY: value lines first, then the user's freeform reply.
+    lines: List[str] = []
+    for k in _CHAT_LABEL.keys():
+        v = (schema.get(k) or "").strip()
+        if v:
+            lines.append(f"{k}: {v}")
+    synthetic = "\n".join(lines)
+    reply = (payload.reply or "").strip()
+    combined = synthetic + ("\n\n" + reply if reply else "")
+
+    # Re-parse with the user's custom instructions so their business
+    # rules still apply.
+    s = await db.settings.find_one(
+        {"user_id": current_user["id"]},
+        {"_id": 0, "smart_paste_instructions": 1, "smart_paste_ai_enabled": 1},
+    ) or {}
+
+    parsed = parse_structured_paste(combined)
+    fields: Dict[str, Any] = dict(parsed.get("fields", {}) or {})
+
+    ai_source = "regex"
+    complexity = ""
+    reason = ""
+    try:
+        if s.get("smart_paste_ai_enabled", True):
+            ai = await parse_paste_via_llm(
+                combined,
+                custom_instructions=(s.get("smart_paste_instructions") or "").strip(),
+            )
+            if ai.get("source") == "llm":
+                mapped = sm_to_legacy_fields(ai["fields"])
+                for k, v in mapped.items():
+                    if v:
+                        fields[k] = v
+                if isinstance(fields.get("amount"), str):
+                    m = re.search(r"(\d+(?:\.\d+)?)", fields["amount"].replace(",", ""))
+                    if m:
+                        try:
+                            fields["amount"] = float(m.group(1))
+                        except Exception:
+                            pass
+                ai_source = "llm"
+                complexity = ai.get("complexity", "")
+                reason = ai.get("ai_reason", "")
+    except Exception:
+        logger.exception("LLM path failed on smart-paste/chat — using regex only")
+
+    # Compute what's still required but missing.
+    out_schema = _legacy_to_schema(fields)
+    missing: List[str] = []
+    for k in _CHAT_REQUIRED:
+        v = (out_schema.get(k) or "").strip()
+        if not v:
+            missing.append(k)
+
+    # Compose the AI chat bubble (template-based — fast, no extra LLM
+    # call). Shows what we have, what we still need.
+    known_bullets = []
+    for k in _CHAT_LABEL.keys():
+        v = (out_schema.get(k) or "").strip()
+        if v and k != "NOTES":
+            known_bullets.append(f"• {_CHAT_LABEL[k]}: {v}")
+    known_block = "\n".join(known_bullets) if known_bullets else "• (nothing yet)"
+
+    if missing:
+        missing_block = "\n".join(
+            f"• {_CHAT_LABEL[k]}" for k in missing
+        )
+        ai_message = (
+            f"Got these so far:\n{known_block}\n\n"
+            f"Still need:\n{missing_block}\n\n"
+            f"Please share (you can type or tap 🎤 on the keyboard to speak)."
+        )
+    else:
+        ai_message = (
+            f"All set!\n{known_block}\n\nSaving the order now…"
+        )
+
+    return {
+        "fields": fields,
+        "missing": missing,
+        "complete": len(missing) == 0,
+        "ai_message": ai_message,
+        "complexity": complexity,
+        "reason": reason,
+        "source": ai_source,
+    }
+
 
 
 @api_router.post("/smart-paste", response_model=PendingOrder)

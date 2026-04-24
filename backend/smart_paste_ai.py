@@ -48,12 +48,12 @@ in this exact order, with no emoji / no explanation / no extra lines:
 
 NAME: <customer name in English>
 PHONE: <10 digits only, strip +91 or 0>
-ADDRESS_1: <primary address line>
-ADDRESS_2: <secondary address or ->
+ADDRESS_1: <primary address line — street / house / area ONLY>
+ADDRESS_2: <secondary address / landmark or ->
 CITY: <city in English>
 STATE: <state in English>
 PINCODE: <6 digits only>
-ITEMS: <item x qty, comma separated>
+ITEMS: <item + quantity, like "Saree x 2" — comma separated for multiple>
 AMOUNT: <number only, no ₹ symbol>
 PAYMENT: <COD or PAID>
 COURIER: <courier name or ->
@@ -65,6 +65,17 @@ Rules:
   - Convert Gujarati (૧૨૩) & Hindi (१२३) digits to English (123).
   - If any field is missing or unclear → write EXACTLY: -
   - NEVER guess, invent or assume data.
+  - ITEMS MUST NEVER appear in ADDRESS fields. Products (saree, kurti,
+    dress, shoes, toy, book, etc.) always go in ITEMS — NEVER in
+    ADDRESS_1 or ADDRESS_2.
+  - QUANTITY rules for ITEMS:
+    * "Saree 2 pcs" → "Saree x 2"
+    * "Saree 2" → "Saree x 2"
+    * "2 saree" → "Saree x 2"
+    * "Saree" (no qty mentioned) → "Saree x 1"
+    * Multiple items: "Saree x 2, Kurti x 1"
+  - ADDRESS_1 is ONLY physical address: house no / street / area /
+    colony / village. NEVER products, quantity, or amount.
   - AMOUNT = COD amount (never PAID/token unless explicitly COD).
   - Token-paid amounts go in NOTES as "Token <value>".
   - PAYMENT = COD if a COD number is present, else PAID.

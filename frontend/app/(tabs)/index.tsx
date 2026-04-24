@@ -80,15 +80,18 @@ export default function Dashboard() {
   const [pasting, setPasting] = useState(false);
   const [pasteStage, setPasteStage] = useState<"" | "parsing" | "saving">("");
 
-  // AI Preview & Edit Modal — shown AFTER successful AI parse. User can
-  // review every field, edit anything the AI got wrong, and confirm.
-  // Mirrors Custom-GPT's turn-by-turn confirmation: nothing is saved
-  // without an explicit tap.
-  const [previewOpen, setPreviewOpen] = useState(false);
-  const [previewFields, setPreviewFields] = useState<Record<string, string>>({});
-  const [aiComplexity, setAiComplexity] = useState<"simple" | "medium" | "complex" | "">("");
-  const [aiReason, setAiReason] = useState("");
-  const [aiMissing, setAiMissing] = useState<string[]>([]);
+  // Smart Paste Chat — conversational flow. AI asks for missing details
+  // in natural language, user types/dictates replies (keyboard mic works
+  // out of the box on iOS/Android for voice-to-text). Nothing is saved
+  // until the AI confirms all required fields are present.
+  const [chatOpen, setChatOpen] = useState(false);
+  type ChatMsg = { role: "ai" | "user" | "system"; text: string };
+  const [chatMessages, setChatMessages] = useState<ChatMsg[]>([]);
+  const [chatFields, setChatFields] = useState<Record<string, any>>({});
+  const [chatComplexity, setChatComplexity] = useState<"simple" | "medium" | "complex" | "">("");
+  const [chatReason, setChatReason] = useState("");
+  const [chatInput, setChatInput] = useState("");
+  const [chatSending, setChatSending] = useState(false);
   const [suggestedCustomer, setSuggestedCustomer] = useState<any | null>(null);
   const [dupFound, setDupFound] = useState<any[]>([]);
 
@@ -176,9 +179,11 @@ export default function Dashboard() {
   };
 
   /**
-   * Run the AI parse, then ALWAYS surface an editable preview. Users
-   * review & confirm (or tweak) before the order is queued. This
-   * matches the Custom-GPT confirmation turn.
+   * End-to-end Smart Paste flow (AI first, chat-on-missing).
+   *   1. /smart-paste/check-duplicate runs the LLM on backend.
+   *   2. If ALL required fields present → save immediately (no form).
+   *   3. Else → open chat modal and let the AI ask for missing details
+   *      naturally. User can type or use the keyboard 🎤 to dictate.
    */
   const runSmartPasteAI = async (text: string, fromModal = false) => {
     try {
@@ -186,24 +191,37 @@ export default function Dashboard() {
       setPasteStage("parsing");
       const dup = await Api.smartPasteCheckDuplicate(text);
 
-      // Close the fallback paste modal so the preview is the only sheet.
+      // Close the fallback paste modal before the next sheet animates in.
       if (fromModal) setPasteModalOpen(false);
 
-      // Seed preview form with AI-extracted values (blank = missing).
-      const seeded = fromLegacy(dup.fields || {});
-      setPreviewFields(seeded);
-      setAiComplexity((dup.ai?.complexity as any) || "");
-      setAiReason(dup.ai?.reason || "");
-      setAiMissing(dup.ai?.missing || []);
-      setDupFound(dup.duplicates || []);
-      setSuggestedCustomer(null);
+      const missing = (dup.ai?.missing || []).filter((k) =>
+        REQUIRED_FIELDS.includes(k)
+      );
+      const legacyFields = dup.fields || {};
+
       setPasting(false);
       setPasteStage("");
-      setPreviewOpen(true);
 
-      // Fire-and-forget: if a phone is present, look up past customers.
-      // Don't block the preview on this — it just decorates the sheet.
-      const phone = seeded.PHONE;
+      // All required present + no duplicates → save directly, no UI.
+      if (missing.length === 0 && (dup.duplicates || []).length === 0) {
+        await saveFromFields(legacyFields);
+        return;
+      }
+
+      // Otherwise: open chat modal. Seed first AI bubble from the initial
+      // parse (no extra LLM call needed — we already have `fields`).
+      setChatFields(legacyFields);
+      setChatComplexity((dup.ai?.complexity as any) || "");
+      setChatReason(dup.ai?.reason || "");
+      setDupFound(dup.duplicates || []);
+      setSuggestedCustomer(null);
+      setChatInput("");
+      const firstMsg = buildChatMessage(legacyFields, missing, true);
+      setChatMessages([{ role: "ai", text: firstMsg }]);
+      setChatOpen(true);
+
+      // Background phone lookup for repeat-customer suggestion.
+      const phone = (legacyFields.customer_phone || "").toString();
       if (phone && phone.replace(/\D/g, "").length >= 10) {
         Api.lookupCustomerByPhone(phone)
           .then((r) => {
@@ -223,83 +241,203 @@ export default function Dashboard() {
     }
   };
 
+  /**
+   * Build the natural-language chat bubble the AI posts: "Got X, Y. Still
+   * need Z." Matches the backend's template so the UX feels consistent.
+   */
+  const buildChatMessage = (
+    legacyFields: Record<string, any>,
+    missing: string[],
+    isFirst: boolean,
+  ): string => {
+    const lines: string[] = [];
+    const push = (label: string, key: string) => {
+      const v = legacyFields[key];
+      if (v && String(v).trim()) lines.push(`• ${label}: ${v}`);
+    };
+    push("Name", "customer_name");
+    push("Phone", "customer_phone");
+    push("Address", "address_line1");
+    if (legacyFields.address_line2) lines.push(`• Landmark: ${legacyFields.address_line2}`);
+    push("City", "city");
+    push("State", "state");
+    push("Pincode", "pincode");
+    // Items can be array or string.
+    const itemsVal = legacyFields.items;
+    const itemsText = Array.isArray(itemsVal) ? itemsVal.join(", ") : itemsVal;
+    if (itemsText && String(itemsText).trim()) lines.push(`• Items: ${itemsText}`);
+    if (legacyFields.amount != null && legacyFields.amount !== "")
+      lines.push(`• Amount: ₹${legacyFields.amount}`);
+    if (legacyFields.payment_mode)
+      lines.push(`• Payment: ${String(legacyFields.payment_mode).toUpperCase()}`);
+
+    const known = lines.length
+      ? lines.join("\n")
+      : "• (nothing yet)";
+
+    if (missing.length === 0) {
+      return `All set!\n${known}\n\nSaving the order now…`;
+    }
+    const miss = missing
+      .map((k) => `• ${FIELD_META[k]?.label || k}`)
+      .join("\n");
+    const prefix = isFirst ? "Got these so far:" : "Updated:";
+    return `${prefix}\n${known}\n\nStill need:\n${miss}\n\nPlease share (type or tap 🎤 on the keyboard to speak).`;
+  };
+
   const applySuggestedCustomer = () => {
     if (!suggestedCustomer) return;
-    setPreviewFields((prev) => ({
+    const updated = {
+      ...chatFields,
+      customer_name: suggestedCustomer.customer_name || chatFields.customer_name,
+      customer_phone: suggestedCustomer.customer_phone || chatFields.customer_phone,
+      address_line1: suggestedCustomer.address_line1 || chatFields.address_line1,
+      address_line2: suggestedCustomer.address_line2 || chatFields.address_line2,
+      city: suggestedCustomer.city || chatFields.city,
+      state: suggestedCustomer.state || chatFields.state,
+      pincode: suggestedCustomer.pincode || chatFields.pincode,
+    };
+    setChatFields(updated);
+    // Recompute missing from updated fields.
+    const stillMissing = REQUIRED_FIELDS.filter((k) => {
+      const snakeKey: Record<string, string> = {
+        NAME: "customer_name",
+        PHONE: "customer_phone",
+        ADDRESS_1: "address_line1",
+        CITY: "city",
+        STATE: "state",
+        PINCODE: "pincode",
+        AMOUNT: "amount",
+      };
+      const v = updated[snakeKey[k]];
+      return !v || !String(v).trim();
+    });
+    const msg = buildChatMessage(updated, stillMissing, false);
+    setChatMessages((prev) => [
       ...prev,
-      NAME: suggestedCustomer.customer_name || prev.NAME,
-      PHONE: suggestedCustomer.customer_phone || prev.PHONE,
-      ADDRESS_1: suggestedCustomer.address_line1 || prev.ADDRESS_1,
-      ADDRESS_2: suggestedCustomer.address_line2 || prev.ADDRESS_2,
-      CITY: suggestedCustomer.city || prev.CITY,
-      STATE: suggestedCustomer.state || prev.STATE,
-      PINCODE: suggestedCustomer.pincode || prev.PINCODE,
-    }));
+      { role: "system", text: `Used past address for ${suggestedCustomer.customer_name}.` },
+      { role: "ai", text: msg },
+    ]);
+    setSuggestedCustomer(null);
+    // If nothing more is needed, auto-save.
+    if (stillMissing.length === 0 && dupFound.length === 0) {
+      saveFromFields(updated);
+    }
+  };
+
+  /**
+   * User sent a chat reply. Push it to the backend `/smart-paste/chat`
+   * endpoint which merges the reply into current fields, re-parses via
+   * LLM, and returns updated fields + the next AI message.
+   */
+  const sendChatReply = async () => {
+    const reply = chatInput.trim();
+    if (!reply) return;
+    setChatMessages((prev) => [...prev, { role: "user", text: reply }]);
+    setChatInput("");
+    setChatSending(true);
+    try {
+      const res = await Api.smartPasteChat(chatFields, reply);
+      setChatFields(res.fields || {});
+      setChatComplexity((res.complexity as any) || "");
+      setChatReason(res.reason || "");
+      const msg = buildChatMessage(res.fields || {}, res.missing || [], false);
+      setChatMessages((prev) => [...prev, { role: "ai", text: msg }]);
+      setChatSending(false);
+      if (res.complete) {
+        // Handle duplicate confirmation if any were flagged earlier.
+        if (dupFound.length > 0) {
+          const lines = dupFound
+            .map((d: any, i: number) => {
+              const id =
+                d.kind === "shipment" ? d.tracking_id : `PEND ${String(d.id).slice(0, 6)}`;
+              const why = (d.match_on || []).join(" + ") || "match";
+              const oid = d.order_id ? ` · #${d.order_id}` : "";
+              return `${i + 1}. ${id} — ${d.customer_name}${oid}  (${why})`;
+            })
+            .join("\n");
+          Alert.alert(
+            "Possible duplicate",
+            `Found ${dupFound.length} existing order${
+              dupFound.length > 1 ? "s" : ""
+            } with the same phone/order ID:\n\n${lines}\n\nCreate this order anyway?`,
+            [
+              { text: "Cancel", style: "cancel" },
+              {
+                text: "Create anyway",
+                style: "destructive",
+                onPress: () => saveFromFields(res.fields || {}),
+              },
+            ]
+          );
+          return;
+        }
+        await saveFromFields(res.fields || {});
+      }
+    } catch (e: any) {
+      setChatSending(false);
+      setChatMessages((prev) => [
+        ...prev,
+        { role: "system", text: "Something went wrong. Please try again." },
+      ]);
+    }
+  };
+
+  const closeChat = () => {
+    setChatOpen(false);
+    setChatMessages([]);
+    setChatFields({});
+    setChatInput("");
+    setDupFound([]);
     setSuggestedCustomer(null);
   };
 
   /**
-   * User tapped "Save Order" in the preview. Validate required fields,
-   * build a structured KEY: value block and post to /api/smart-paste.
-   * The backend regex parser picks it up verbatim (no extra LLM call
-   * needed since every field is already labelled).
+   * Build a canonical 14-line KEY: value block from the final fields
+   * and post it to /api/smart-paste. Backend's regex parser accepts
+   * this verbatim — no wasted LLM call.
    */
-  const submitPreview = async () => {
-    const missing = REQUIRED_FIELDS.filter(
-      (k) => !(previewFields[k] || "").trim()
-    );
-    if (missing.length > 0) {
-      const labels = missing.map((k) => FIELD_META[k]?.label || k).join(", ");
-      Alert.alert("Missing required fields", `Please fill in: ${labels}`);
-      return;
-    }
-    // Duplicate confirmation (pulled from the initial check).
-    if (dupFound.length > 0) {
-      const lines = dupFound
-        .map((d: any, i: number) => {
-          const id =
-            d.kind === "shipment" ? d.tracking_id : `PEND ${String(d.id).slice(0, 6)}`;
-          const why = (d.match_on || []).join(" + ") || "match";
-          const oid = d.order_id ? ` · #${d.order_id}` : "";
-          return `${i + 1}. ${id} — ${d.customer_name}${oid}  (${why})`;
-        })
-        .join("\n");
-      Alert.alert(
-        "Possible duplicate",
-        `Found ${dupFound.length} existing order${
-          dupFound.length > 1 ? "s" : ""
-        } with the same phone/order ID:\n\n${lines}\n\nCreate this order anyway?`,
-        [
-          { text: "Cancel", style: "cancel" },
-          {
-            text: "Create anyway",
-            style: "destructive",
-            onPress: () => commitPreview(),
-          },
-        ]
-      );
-      return;
-    }
-    await commitPreview();
-  };
-
-  const commitPreview = async () => {
+  const saveFromFields = async (legacyFields: Record<string, any>) => {
     try {
       setPasting(true);
+      setChatSending(true);
       setPasteStage("saving");
-      // Build structured block from preview fields — backend regex parser
-      // will accept it as-is.
+      const schema = {
+        NAME: legacyFields.customer_name || "",
+        PHONE: legacyFields.customer_phone || "",
+        ADDRESS_1: legacyFields.address_line1 || "",
+        ADDRESS_2: legacyFields.address_line2 || "",
+        CITY: legacyFields.city || "",
+        STATE: legacyFields.state || "",
+        PINCODE: legacyFields.pincode || "",
+        ITEMS: Array.isArray(legacyFields.items)
+          ? legacyFields.items.join(", ")
+          : String(legacyFields.items || ""),
+        AMOUNT:
+          legacyFields.amount != null && legacyFields.amount !== ""
+            ? String(legacyFields.amount)
+            : "",
+        PAYMENT: String(legacyFields.payment_mode || "").toUpperCase(),
+        COURIER: legacyFields.courier_name || "",
+        ORDER_ID: legacyFields.order_id || "",
+        WEIGHT: legacyFields.weight || "",
+        NOTES: legacyFields.notes || "",
+      } as Record<string, string>;
       const lines = FIELD_ORDER.map((k) => {
-        const v = (previewFields[k] || "").trim();
+        const v = (schema[k] || "").toString().trim();
         return v ? `${k}: ${v}` : null;
       }).filter(Boolean) as string[];
       const text = lines.join("\n");
       await Api.smartPasteCreate(text);
       setPasting(false);
+      setChatSending(false);
       setPasteStage("");
-      setPreviewOpen(false);
-      setPreviewFields({});
-      setPasteText("");
+      setChatMessages((prev) => [
+        ...prev,
+        { role: "ai", text: "✅ Order added to your Pending Orders queue." },
+      ]);
+      // Close the chat after a brief moment so the user sees the confirmation.
+      setTimeout(() => closeChat(), 1200);
       Alert.alert(
         "✅ Order added",
         "Order queued in Orders tab. Ready to ship.",
@@ -310,11 +448,17 @@ export default function Dashboard() {
       );
     } catch (err: any) {
       setPasting(false);
+      setChatSending(false);
       setPasteStage("");
-      Alert.alert(
-        "Save failed",
-        err?.response?.data?.detail || err?.message || "Please try again."
-      );
+      setChatMessages((prev) => [
+        ...prev,
+        {
+          role: "system",
+          text:
+            "Save failed: " +
+            (err?.response?.data?.detail || err?.message || "please try again"),
+        },
+      ]);
     }
   };
 
@@ -453,59 +597,49 @@ export default function Dashboard() {
         </View>
       </Modal>
 
-      {/* AI Preview & Edit Modal — shown AFTER a successful AI parse. User
-          can review every field, edit anything the AI got wrong, see the
-          address-complexity badge, and confirm before the order is saved.
-          If a repeat customer is detected (matching phone from past
-          shipments), a green suggestion banner lets the user auto-fill
-          their saved address in one tap. */}
+      {/* Smart Paste Chat Modal — conversational flow. AI asks for missing
+          details in natural language; user types replies or taps the
+          keyboard 🎤 to dictate (built-in Android/iOS speech-to-text).
+          Complexity badge + repeat-customer banner live in the header. */}
       <Modal
-        visible={previewOpen}
+        visible={chatOpen}
         animationType="slide"
         transparent
-        onRequestClose={() => setPreviewOpen(false)}
+        onRequestClose={closeChat}
       >
         <KeyboardAvoidingView
           behavior={Platform.OS === "ios" ? "padding" : undefined}
           style={styles.modalOverlay}
         >
-          <View style={[styles.modalCard, { maxHeight: "92%" }]}>
+          <View style={[styles.modalCard, { maxHeight: "92%", minHeight: "70%" }]}>
             <View style={styles.modalHeader}>
-              <Ionicons name="sparkles" size={18} color="#7C3AED" />
-              <Text style={styles.modalTitle}>Review order</Text>
-              <TouchableOpacity
-                onPress={() => setPreviewOpen(false)}
-                hitSlop={10}
-                disabled={pasting}
-              >
+              <Ionicons name="chatbubbles" size={18} color="#7C3AED" />
+              <Text style={styles.modalTitle}>Smart Paste Chat</Text>
+              <TouchableOpacity onPress={closeChat} hitSlop={10} disabled={chatSending}>
                 <Ionicons name="close" size={22} color={colors.text} />
               </TouchableOpacity>
             </View>
 
-            <Text style={styles.modalHint}>
-              AI has extracted these details. Review, edit if needed, then save.
-            </Text>
-
-            {/* Badges row: complexity + duplicate warning */}
+            {/* Complexity + duplicate badges, if any */}
             <View style={styles.badgesRow}>
-              {!!aiComplexity && (
+              {!!chatComplexity && (
                 <View
                   style={[
                     styles.badge,
-                    aiComplexity === "complex"
+                    chatComplexity === "complex"
                       ? styles.badgeComplex
-                      : aiComplexity === "medium"
+                      : chatComplexity === "medium"
                       ? styles.badgeMedium
                       : styles.badgeSimple,
                   ]}
                 >
                   <Ionicons
-                    name={aiComplexity === "complex" ? "warning" : "checkmark-circle"}
+                    name={chatComplexity === "complex" ? "warning" : "checkmark-circle"}
                     size={12}
                     color={
-                      aiComplexity === "complex"
+                      chatComplexity === "complex"
                         ? "#92400E"
-                        : aiComplexity === "medium"
+                        : chatComplexity === "medium"
                         ? "#92400E"
                         : "#065F46"
                     }
@@ -515,17 +649,17 @@ export default function Dashboard() {
                       styles.badgeText,
                       {
                         color:
-                          aiComplexity === "complex"
+                          chatComplexity === "complex"
                             ? "#92400E"
-                            : aiComplexity === "medium"
+                            : chatComplexity === "medium"
                             ? "#92400E"
                             : "#065F46",
                       },
                     ]}
                   >
-                    {aiComplexity === "complex"
+                    {chatComplexity === "complex"
                       ? "Complex address"
-                      : aiComplexity === "medium"
+                      : chatComplexity === "medium"
                       ? "Medium complexity"
                       : "Simple address"}
                   </Text>
@@ -542,19 +676,11 @@ export default function Dashboard() {
               )}
             </View>
 
-            {!!aiReason && (
-              <Text style={styles.aiReasonText} numberOfLines={2}>
-                💡 {aiReason}
-              </Text>
-            )}
-
             {/* Repeat-customer suggestion banner */}
             {suggestedCustomer && (
               <View style={styles.suggestBanner}>
                 <View style={{ flex: 1 }}>
-                  <Text style={styles.suggestBannerTitle}>
-                    🎯 Repeat customer
-                  </Text>
+                  <Text style={styles.suggestBannerTitle}>🎯 Repeat customer</Text>
                   <Text style={styles.suggestBannerBody} numberOfLines={2}>
                     {suggestedCustomer.customer_name} —{" "}
                     {suggestedCustomer.address_line1}
@@ -564,10 +690,7 @@ export default function Dashboard() {
                       : ""}
                   </Text>
                 </View>
-                <TouchableOpacity
-                  onPress={applySuggestedCustomer}
-                  style={styles.suggestBtn}
-                >
+                <TouchableOpacity onPress={applySuggestedCustomer} style={styles.suggestBtn}>
                   <Text style={styles.suggestBtnText}>Use</Text>
                 </TouchableOpacity>
                 <TouchableOpacity
@@ -580,75 +703,78 @@ export default function Dashboard() {
               </View>
             )}
 
+            {/* Message stream */}
             <ScrollView
-              style={{ maxHeight: 420 }}
+              style={{ flex: 1, marginVertical: 8 }}
+              contentContainerStyle={{ paddingBottom: 8 }}
               keyboardShouldPersistTaps="handled"
             >
-              {FIELD_ORDER.map((k) => {
-                const meta = FIELD_META[k] || { label: k, placeholder: "" };
-                const required = REQUIRED_FIELDS.includes(k);
-                const value = previewFields[k] || "";
-                const isMissing = required && !value.trim();
-                return (
-                  <View key={k} style={styles.fieldWrap}>
-                    <Text style={styles.fieldLabel}>
-                      {meta.label}
-                      {required && <Text style={{ color: "#DC2626" }}> *</Text>}
+              {chatMessages.map((m, i) => {
+                if (m.role === "system") {
+                  return (
+                    <Text key={i} style={styles.chatSystemText}>
+                      {m.text}
                     </Text>
-                    <TextInput
-                      testID={`preview-input-${k}`}
-                      value={value}
-                      onChangeText={(v) =>
-                        setPreviewFields((prev) => ({ ...prev, [k]: v }))
-                      }
-                      placeholder={meta.placeholder}
-                      placeholderTextColor="#9CA3AF"
-                      keyboardType={meta.keyboard || "default"}
+                  );
+                }
+                const isAI = m.role === "ai";
+                return (
+                  <View
+                    key={i}
+                    style={[
+                      styles.chatBubble,
+                      isAI ? styles.chatBubbleAI : styles.chatBubbleUser,
+                    ]}
+                  >
+                    {isAI && (
+                      <Text style={styles.chatBubbleKicker}>🤖 AI</Text>
+                    )}
+                    <Text
                       style={[
-                        styles.fieldInput,
-                        isMissing && styles.fieldInputMissing,
+                        styles.chatBubbleText,
+                        isAI ? { color: "#111827" } : { color: "#fff" },
                       ]}
-                      editable={!pasting}
-                    />
+                    >
+                      {m.text}
+                    </Text>
                   </View>
                 );
               })}
+              {chatSending && (
+                <View style={[styles.chatBubble, styles.chatBubbleAI]}>
+                  <ActivityIndicator size="small" color="#7C3AED" />
+                </View>
+              )}
             </ScrollView>
 
-            {pasting && (
-              <View style={styles.aiStatusRow}>
-                <ActivityIndicator size="small" color="#7C3AED" />
-                <Text style={styles.aiStatusText}>
-                  {pasteStage === "saving" ? "Saving order…" : "Processing…"}
-                </Text>
-              </View>
-            )}
-
-            <View style={styles.modalActions}>
+            {/* Input row + send button. Users can tap the keyboard 🎤 icon
+                to dictate (native STT on iOS/Android). */}
+            <View style={styles.chatInputRow}>
+              <TextInput
+                testID="chat-input"
+                value={chatInput}
+                onChangeText={setChatInput}
+                placeholder="Type or tap 🎤 on keyboard to speak…"
+                placeholderTextColor="#9CA3AF"
+                multiline
+                style={styles.chatInput}
+                editable={!chatSending}
+                onSubmitEditing={sendChatReply}
+                blurOnSubmit={false}
+              />
               <TouchableOpacity
-                style={[styles.modalBtn, { backgroundColor: "#E5E7EB" }]}
-                onPress={() => setPreviewOpen(false)}
-                disabled={pasting}
-              >
-                <Text style={[styles.modalBtnText, { color: colors.text }]}>Cancel</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                testID="preview-submit"
+                testID="chat-send"
+                onPress={sendChatReply}
+                disabled={chatSending || !chatInput.trim()}
                 style={[
-                  styles.modalBtn,
-                  { backgroundColor: "#10B981", opacity: pasting ? 0.7 : 1 },
+                  styles.chatSendBtn,
+                  {
+                    backgroundColor:
+                      chatSending || !chatInput.trim() ? "#D1D5DB" : "#7C3AED",
+                  },
                 ]}
-                onPress={submitPreview}
-                disabled={pasting}
               >
-                {pasting ? (
-                  <ActivityIndicator size="small" color="#fff" />
-                ) : (
-                  <>
-                    <Ionicons name="checkmark-circle" size={14} color="#fff" />
-                    <Text style={styles.modalBtnText}>Save Order</Text>
-                  </>
-                )}
+                <Ionicons name="send" size={18} color="#fff" />
               </TouchableOpacity>
             </View>
           </View>
@@ -1339,5 +1465,69 @@ const styles = StyleSheet.create({
     color: "#fff",
     fontWeight: "800",
     fontSize: 12,
+  },
+
+  /* Chat Modal — bubbles & input row. */
+  chatBubble: {
+    maxWidth: "88%",
+    padding: 10,
+    borderRadius: 14,
+    marginVertical: 4,
+  },
+  chatBubbleAI: {
+    alignSelf: "flex-start",
+    backgroundColor: "#F3F4F6",
+    borderBottomLeftRadius: 4,
+  },
+  chatBubbleUser: {
+    alignSelf: "flex-end",
+    backgroundColor: "#7C3AED",
+    borderBottomRightRadius: 4,
+  },
+  chatBubbleKicker: {
+    fontSize: 10,
+    fontWeight: "800",
+    color: "#6D28D9",
+    marginBottom: 2,
+    letterSpacing: 0.5,
+  },
+  chatBubbleText: {
+    fontSize: 13,
+    lineHeight: 19,
+  },
+  chatSystemText: {
+    alignSelf: "center",
+    fontSize: 11,
+    color: "#6B7280",
+    fontStyle: "italic",
+    marginVertical: 6,
+    textAlign: "center",
+  },
+  chatInputRow: {
+    flexDirection: "row",
+    alignItems: "flex-end",
+    gap: 8,
+    borderTopWidth: 1,
+    borderTopColor: "#E5E7EB",
+    paddingTop: 10,
+  },
+  chatInput: {
+    flex: 1,
+    borderWidth: 1.5,
+    borderColor: "#E5E7EB",
+    borderRadius: 20,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    fontSize: 14,
+    color: colors.text,
+    backgroundColor: "#FAFAFA",
+    maxHeight: 100,
+  },
+  chatSendBtn: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    justifyContent: "center",
+    alignItems: "center",
   },
 });

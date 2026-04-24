@@ -1139,51 +1139,72 @@ frontend:
         -working: true
         -agent: "main"
         -comment: |
-            Batch 1 Smart Paste improvements landed:
+            Superseded by the Chat-UI rewrite below. The preview/edit
+            form proved to be the very "form ઝંઝટ" the user wanted to
+            avoid. Complexity badge + Repeat-customer banner + Customer
+            Memory endpoint were all KEPT and now live inside the chat
+            modal instead of the preview sheet.
 
-            FRONT-END (`/app/frontend/app/(tabs)/index.tsx`)
-              * AI Preview & Edit Modal — AFTER every successful parse,
-                user now sees an editable sheet with ALL 14 schema fields
-                (primary first, optional after), each pre-filled from the
-                AI's best guess. Required fields show a red asterisk AND
-                a red border/background when empty, so users can't miss
-                them. Save is blocked until all required fields are
-                filled; duplicate warnings still pop a confirm dialog.
-              * Address-Complexity Badge — backend already returns
-                `complexity` (simple / medium / complex) + a short reason.
-                We render the value as a coloured pill in the preview
-                header (green / amber / orange) plus the reason on a
-                sub-line ("💡 Clear address and details", etc.).
-              * Repeat-Customer Banner — as soon as the preview opens and
-                a PHONE is available, we fire a background
-                `GET /api/customers/by-phone/{phone}` call. On hit we
-                render a green banner "🎯 Repeat customer — {name} —
-                {address}, {city} (N past orders)" with a one-tap **Use**
-                button that fills NAME / PHONE / ADDRESS_* / CITY /
-                STATE / PINCODE from the past shipment. A close-icon
-                dismisses the banner without applying.
-              * Save path — instead of POSTing the raw pasted text again,
-                Save Order now constructs a canonical 14-line KEY: value
-                block from the preview form and POSTs THAT to
-                `/api/smart-paste`. This avoids a second wasted LLM call
-                and guarantees what-you-see-is-what-gets-saved.
+  - task: "Smart Paste Chat UI (voice-ready, no forms)"
+    implemented: true
+    working: true
+    file: "/app/frontend/app/(tabs)/index.tsx & /app/backend/server.py & /app/backend/smart_paste_ai.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "main"
+        -comment: |
+            Major UX rewrite — replaces the rigid form preview with a
+            conversational chat modal that mirrors the Custom-GPT
+            interaction the user was replicating:
 
-            BACK-END (`/app/backend/server.py`)
-              * New endpoint `GET /api/customers/by-phone/{phone}` — tenant-
-                scoped lookup (matches last-10-digit suffix) that searches
-                first in `shipments`, then `pending_orders`. Returns
-                `{found, count, customer}` with name + full address so the
-                front-end can auto-fill.
+            FRONT-END
+              * When the AI parse is complete (all required fields
+                present) → order is SAVED silently, zero clicks needed.
+              * When anything is missing → a bottom-sheet Chat Modal
+                opens with a 🤖 AI bubble listing "Got these so far:"
+                (known fields) and "Still need:" (missing fields) in
+                natural language.
+              * User types a reply — OR taps the keyboard 🎤 mic to
+                dictate. iOS and Android both have native speech-to-text
+                built into their keyboards, so no extra permissions,
+                libraries or API keys are needed for voice.
+              * Each reply round-trips through /smart-paste/chat, and
+                the AI responds with an updated summary until all
+                required fields are filled. Then the order auto-saves
+                and the chat shows "✅ Order added".
+              * Complexity badge + repeat-customer banner (with one-tap
+                "Use past address" button) live in the chat header.
+              * Duplicate detection still prompts a confirm dialog
+                before save.
 
-            Verified on localhost:3000 with admin@test.com:
-              * Pasting "Ramesh Patel 9876543210 Saree 2 pcs 1500 COD"
-                opens the preview with AI-detected Medium complexity, a
-                repeat-customer banner (12, Navrangpura Main Road,
-                Ahmedabad — 6 past orders), and red-bordered missing
-                ADDRESS/CITY/STATE/PINCODE inputs.
-              * Tapping "Use" instantly fills the blank fields.
-              * Tapping "Save Order" posts the merged 14-line block and
-                creates the pending order (backend 200 OK).
+            BACK-END
+              * NEW endpoint `POST /api/smart-paste/chat` — body
+                `{fields, reply}`. Accepts current known fields in
+                snake_case or uppercase schema, builds a synthetic
+                "KEY: value\n\n<user reply>" block, re-runs the same
+                LLM pipeline as /check-duplicate, and returns
+                `{fields, missing, complete, ai_message, complexity,
+                reason}`.
+              * UPDATED `DEFAULT_SHIPBOT_PROMPT` in smart_paste_ai.py:
+                - Explicit rule: "ITEMS MUST NEVER appear in ADDRESS
+                  fields" (fixes the bug where 'Saree 2 pcs' leaked
+                  into ADDRESS_1).
+                - Explicit QUANTITY parsing rules: 'Saree 2 pcs' →
+                  'Saree x 2', 'Saree' alone → 'Saree x 1', multiple
+                  items comma-separated.
+
+            Verified end-to-end on localhost:3000:
+              * Paste "Kiran Shah 9988776655 Saree 2 pcs 1800 COD"
+                → Chat opens: "Got these so far: Name, Phone,
+                Items: Saree x 2 ✅ (qty parsed!), Amount, Payment.
+                Still need: Address, City, State, Pincode."
+              * Reply "45 MG Road, Ahmedabad, Gujarat 380001" → AI
+                updates the summary, marks everything complete, and
+                queues the order.
+              * Backend logs confirmed 200 OK on /chat and /smart-paste.
 
 agent_communication:
     -agent: "main"

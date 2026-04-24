@@ -436,6 +436,18 @@ export const Api = {
   smartPasteCreate: (text: string) =>
     api.post<PendingOrder>("/smart-paste", { text }).then((r) => r.data),
 
+  // Conversational Smart Paste (chat UI).
+  smartPasteChat: (fields: Record<string, any>, reply: string) =>
+    api.post<{
+      fields: Record<string, any>;
+      missing: string[];
+      complete: boolean;
+      ai_message: string;
+      complexity: "simple" | "medium" | "complex" | "";
+      reason: string;
+      source: "llm" | "regex" | "fallback";
+    }>("/smart-paste/chat", { fields, reply }).then((r) => r.data),
+
   // Customer memory — look up past customer by phone for auto-suggest.
   lookupCustomerByPhone: (phone: string) =>
     api.get<{
