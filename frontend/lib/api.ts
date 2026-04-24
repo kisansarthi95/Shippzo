@@ -433,8 +433,8 @@ export const Api = {
         match_on: string[];
       }>;
     }>("/smart-paste/check-duplicate", { text }).then((r) => r.data),
-  smartPasteCreate: (text: string) =>
-    api.post<PendingOrder>("/smart-paste", { text }).then((r) => r.data),
+  smartPasteCreate: (text: string, skipLlm: boolean = false) =>
+    api.post<PendingOrder>("/smart-paste", { text, skip_llm: skipLlm }).then((r) => r.data),
 
   // Conversational Smart Paste (chat UI).
   smartPasteChat: (fields: Record<string, any>, reply: string) =>

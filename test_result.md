@@ -1206,6 +1206,44 @@ frontend:
                 queues the order.
               * Backend logs confirmed 200 OK on /chat and /smart-paste.
 
+  - task: "Smart Paste Chat — speed + Save Now button (Step A)"
+    implemented: true
+    working: true
+    file: "/app/frontend/app/(tabs)/index.tsx & /app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "main"
+        -comment: |
+            Addressed the user's two UX pain-points with the chat flow:
+
+            SPEED
+              * Added `skip_llm: bool` flag to `SmartPasteRequest`
+                (backend). When True, /api/smart-paste bypasses the LLM
+                round-trip entirely and uses only the regex parser.
+              * Chat save path now sets `skip_llm = True` because the
+                canonical 14-line KEY:value block we build client-side
+                is already unambiguous — saves ~2–4 s on every save.
+              * Added optimistic "🤖 AI — Thinking…" typing bubble that
+                appears the moment the user taps Send, so the wait
+                feels responsive rather than silent.
+
+            SAVE BUTTON
+              * Added a large green "Save order now" button that appears
+                above the chat input ONLY when every required field is
+                already present (computed via `useMemo` on chatFields).
+                Users can save without sending another chat turn.
+              * Input placeholder switches to "Add more info (optional)
+                or tap Save" in the complete state so the CTA is clear.
+
+            Verified end-to-end on localhost:3000: typing bubble shows
+            immediately on send; backend logs confirm /chat → /smart-paste
+            round-trip completes successfully. TDZ bug fixed by moving
+            `chatComplete` useMemo after `REQUIRED_FIELDS` declaration.
+
+
 agent_communication:
     -agent: "main"
     -message: |

@@ -85,7 +85,7 @@ export default function Dashboard() {
   // out of the box on iOS/Android for voice-to-text). Nothing is saved
   // until the AI confirms all required fields are present.
   const [chatOpen, setChatOpen] = useState(false);
-  type ChatMsg = { role: "ai" | "user" | "system"; text: string };
+  type ChatMsg = { role: "ai" | "user" | "system"; text: string; typing?: boolean };
   const [chatMessages, setChatMessages] = useState<ChatMsg[]>([]);
   const [chatFields, setChatFields] = useState<Record<string, any>>({});
   const [chatComplexity, setChatComplexity] = useState<"simple" | "medium" | "complex" | "">("");
@@ -127,6 +127,25 @@ export default function Dashboard() {
   const REQUIRED_FIELDS = [
     "NAME", "PHONE", "ADDRESS_1", "CITY", "STATE", "PINCODE", "AMOUNT",
   ];
+
+  /** Derived: do we already have every required field? Controls the
+   *  "Save Now" button visibility in the chat input row. */
+  const chatComplete = React.useMemo(() => {
+    const keyMap: Record<string, string> = {
+      NAME: "customer_name",
+      PHONE: "customer_phone",
+      ADDRESS_1: "address_line1",
+      CITY: "city",
+      STATE: "state",
+      PINCODE: "pincode",
+      AMOUNT: "amount",
+    };
+    return REQUIRED_FIELDS.every((k) => {
+      const v = chatFields[keyMap[k]];
+      return v != null && String(v).trim() !== "";
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chatFields]);
 
   // Map from backend (snake_case / shipment schema) → UI schema (UPPER).
   const fromLegacy = (legacy: any): Record<string, string> => {
@@ -333,7 +352,13 @@ export default function Dashboard() {
   const sendChatReply = async () => {
     const reply = chatInput.trim();
     if (!reply) return;
-    setChatMessages((prev) => [...prev, { role: "user", text: reply }]);
+    // Add user bubble + an optimistic "…" AI typing indicator so the UI
+    // feels responsive even though the LLM call itself takes a few seconds.
+    setChatMessages((prev) => [
+      ...prev,
+      { role: "user", text: reply },
+      { role: "ai", text: "…", typing: true },
+    ]);
     setChatInput("");
     setChatSending(true);
     try {
@@ -342,7 +367,15 @@ export default function Dashboard() {
       setChatComplexity((res.complexity as any) || "");
       setChatReason(res.reason || "");
       const msg = buildChatMessage(res.fields || {}, res.missing || [], false);
-      setChatMessages((prev) => [...prev, { role: "ai", text: msg }]);
+      // Replace the typing placeholder with the real AI bubble.
+      setChatMessages((prev) => {
+        const out = [...prev];
+        const idx = out.findIndex((m) => m.typing);
+        const bubble: ChatMsg = { role: "ai", text: msg };
+        if (idx >= 0) out[idx] = bubble;
+        else out.push(bubble);
+        return out;
+      });
       setChatSending(false);
       if (res.complete) {
         // Handle duplicate confirmation if any were flagged earlier.
@@ -376,10 +409,11 @@ export default function Dashboard() {
       }
     } catch (e: any) {
       setChatSending(false);
-      setChatMessages((prev) => [
-        ...prev,
-        { role: "system", text: "Something went wrong. Please try again." },
-      ]);
+      setChatMessages((prev) => {
+        const out = prev.filter((m) => !m.typing);
+        out.push({ role: "system", text: "Something went wrong. Please try again." });
+        return out;
+      });
     }
   };
 
@@ -428,7 +462,7 @@ export default function Dashboard() {
         return v ? `${k}: ${v}` : null;
       }).filter(Boolean) as string[];
       const text = lines.join("\n");
-      await Api.smartPasteCreate(text);
+      await Api.smartPasteCreate(text, true);  // skip_llm = true (we already have canonical fields → save 2-4s)
       setPasting(false);
       setChatSending(false);
       setPasteStage("");
@@ -718,6 +752,24 @@ export default function Dashboard() {
                   );
                 }
                 const isAI = m.role === "ai";
+                // Typing indicator bubble — animated "…" while the AI
+                // response is in-flight.
+                if (m.typing) {
+                  return (
+                    <View
+                      key={i}
+                      style={[styles.chatBubble, styles.chatBubbleAI]}
+                    >
+                      <Text style={styles.chatBubbleKicker}>🤖 AI</Text>
+                      <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+                        <ActivityIndicator size="small" color="#7C3AED" />
+                        <Text style={[styles.chatBubbleText, { color: "#6B7280" }]}>
+                          Thinking…
+                        </Text>
+                      </View>
+                    </View>
+                  );
+                }
                 return (
                   <View
                     key={i}
@@ -740,21 +792,33 @@ export default function Dashboard() {
                   </View>
                 );
               })}
-              {chatSending && (
-                <View style={[styles.chatBubble, styles.chatBubbleAI]}>
-                  <ActivityIndicator size="small" color="#7C3AED" />
-                </View>
-              )}
             </ScrollView>
 
             {/* Input row + send button. Users can tap the keyboard 🎤 icon
-                to dictate (native STT on iOS/Android). */}
+                to dictate (native STT on iOS/Android). When all required
+                fields are already filled, a green "Save Now" button
+                appears above the input so the user can commit without
+                another chat turn. */}
+            {chatComplete && !chatSending && (
+              <TouchableOpacity
+                testID="chat-save-now"
+                style={styles.chatSaveNowBtn}
+                onPress={() => saveFromFields(chatFields)}
+              >
+                <Ionicons name="checkmark-circle" size={16} color="#fff" />
+                <Text style={styles.chatSaveNowText}>Save order now</Text>
+              </TouchableOpacity>
+            )}
             <View style={styles.chatInputRow}>
               <TextInput
                 testID="chat-input"
                 value={chatInput}
                 onChangeText={setChatInput}
-                placeholder="Type or tap 🎤 on keyboard to speak…"
+                placeholder={
+                  chatComplete
+                    ? "Add more info (optional) or tap Save"
+                    : "Type or tap 🎤 on keyboard to speak…"
+                }
                 placeholderTextColor="#9CA3AF"
                 multiline
                 style={styles.chatInput}
@@ -1529,5 +1593,30 @@ const styles = StyleSheet.create({
     borderRadius: 22,
     justifyContent: "center",
     alignItems: "center",
+  },
+
+  /* "Save Now" button — appears above the chat input once every required
+     field is filled, so the user can commit without another turn. */
+  chatSaveNowBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    backgroundColor: "#10B981",
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    borderRadius: 10,
+    marginBottom: 8,
+    shadowColor: "#10B981",
+    shadowOpacity: 0.25,
+    shadowRadius: 6,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 2,
+  },
+  chatSaveNowText: {
+    color: "#fff",
+    fontWeight: "800",
+    fontSize: 14,
+    letterSpacing: 0.3,
   },
 });

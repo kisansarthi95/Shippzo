@@ -1452,6 +1452,7 @@ class PendingOrder(BaseModel):
 class SmartPasteRequest(BaseModel):
     text: str
     use_ai: Optional[bool] = True   # Phase-4b+: LLM-driven parse by default
+    skip_llm: Optional[bool] = False  # fast path when text is already canonical
 
 
 class SmartPasteChatRequest(BaseModel):
@@ -2070,6 +2071,11 @@ async def smart_paste_create(
     parsed = parse_structured_paste(text)
     fields: Dict[str, Any] = dict(parsed["fields"])
 
+    # Fast path: when the caller has already collected every field (chat
+    # flow posts a canonical `KEY: value` block), skip the LLM round-trip
+    # entirely — saves 2–4 s on every save.
+    skip_llm = bool(getattr(payload, "skip_llm", False))
+
     # Phase-4b+: merge LLM-extracted fields over the regex pass so raw
     # WhatsApp messages parse cleanly even without the 14-line format.
     try:
@@ -2077,7 +2083,7 @@ async def smart_paste_create(
             {"user_id": current_user["id"]},
             {"_id": 0, "smart_paste_instructions": 1, "smart_paste_ai_enabled": 1},
         ) or {}
-        if s.get("smart_paste_ai_enabled", True):
+        if not skip_llm and s.get("smart_paste_ai_enabled", True):
             ai = await parse_paste_via_llm(
                 text,
                 custom_instructions=(s.get("smart_paste_instructions") or "").strip(),
