@@ -7,11 +7,9 @@ import {
   TouchableOpacity,
   RefreshControl,
   ActivityIndicator,
-  Linking,
   Alert,
   Modal,
   TextInput,
-  Platform,
   useWindowDimensions,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -73,10 +71,24 @@ export default function Dashboard() {
     load().catch(() => {});
   };
 
-  // Smart Paste — hybrid flow: auto-paste from clipboard, fallback to modal
+  // Smart Paste — AI-first flow: auto-paste raw WhatsApp text from clipboard,
+  // LLM parses everything. Modal is just a fallback when clipboard is empty.
   const [pasteModalOpen, setPasteModalOpen] = useState(false);
   const [pasteText, setPasteText] = useState("");
   const [pasting, setPasting] = useState(false);
+  const [pasteStage, setPasteStage] = useState<"" | "parsing" | "saving">("");
+
+  // Labels shown in the missing-fields alert. Keep the order users care about.
+  const MISSING_LABEL: Record<string, string> = {
+    NAME: "Customer name",
+    PHONE: "Phone number",
+    ADDRESS_1: "Address",
+    CITY: "City",
+    STATE: "State",
+    PINCODE: "Pincode",
+    ITEMS: "Item(s)",
+    AMOUNT: "Amount",
+  };
 
   const handleSmartPaste = async () => {
     try {
@@ -87,37 +99,77 @@ export default function Dashboard() {
       } catch {
         text = "";
       }
-      // Valid structured text check: must have "NAME:" OR "PHONE:" keyword
-      const hasStructure = /\b(NAME|PHONE|MOBILE|ADDRESS_1|PINCODE)\s*:/i.test(text);
-      if (!text.trim() || !hasStructure) {
-        // Fallback: open modal with empty textarea
-        setPasteText(text || "");
+      if (!text.trim()) {
+        // Clipboard empty → open modal so the user can paste manually.
+        setPasteText("");
         setPasteModalOpen(true);
         setPasting(false);
         return;
       }
-      // Happy path: check duplicates → confirm → save.
-      await runWithDuplicateGuard(text);
+      // Happy path: AI parses raw text → check duplicates → save.
+      await runSmartPasteAI(text);
     } catch (e: any) {
       setPasting(false);
-      Alert.alert("Paste failed", e?.response?.data?.detail || e?.message || "Try again");
+      setPasteStage("");
+      Alert.alert(
+        "Smart Paste failed",
+        e?.response?.data?.detail || e?.message || "Please try again."
+      );
     }
   };
 
   /**
-   * Run Smart Paste WITH duplicate detection. If the backend finds matches
-   * on phone or order_id, show a confirmation dialog listing them. The
-   * user can cancel, or proceed anyway (e.g., same customer ordering a
-   * new item).
+   * End-to-end Smart Paste flow (AI first).
+   *   1. Call /smart-paste/check-duplicate → backend runs LLM, returns fields,
+   *      missing fields, and any duplicates.
+   *   2. If AI couldn't extract critical fields → prompt user to edit.
+   *   3. If duplicates → confirm before save.
+   *   4. Otherwise create the pending order directly.
    */
-  const runWithDuplicateGuard = async (text: string) => {
+  const runSmartPasteAI = async (text: string, fromModal = false) => {
     try {
+      setPasting(true);
+      setPasteStage("parsing");
       const dup = await Api.smartPasteCheckDuplicate(text);
+
+      // --- AI missing critical fields? --------------------------------
+      const missing = dup.ai?.missing || [];
+      const critical = missing.filter((k) =>
+        ["NAME", "PHONE", "ADDRESS_1", "PINCODE"].includes(k)
+      );
+      if (critical.length > 0) {
+        setPasting(false);
+        setPasteStage("");
+        const labels = critical
+          .map((k) => `• ${MISSING_LABEL[k] || k}`)
+          .join("\n");
+        Alert.alert(
+          "Some info is missing",
+          `AI couldn't find:\n\n${labels}\n\nPlease edit the text to add missing details.`,
+          [
+            { text: "Cancel", style: "cancel" },
+            {
+              text: "Edit text",
+              onPress: () => {
+                setPasteText(text);
+                setPasteModalOpen(true);
+              },
+            },
+          ]
+        );
+        return;
+      }
+
+      // --- Duplicates? ------------------------------------------------
       if (dup.duplicates && dup.duplicates.length > 0) {
         setPasting(false);
+        setPasteStage("");
         const lines = dup.duplicates
           .map((d, i) => {
-            const id = d.kind === "shipment" ? d.tracking_id : `PEND ${String(d.id).slice(0, 6)}`;
+            const id =
+              d.kind === "shipment"
+                ? d.tracking_id
+                : `PEND ${String(d.id).slice(0, 6)}`;
             const why = (d.match_on || []).join(" + ") || "match";
             const oid = d.order_id ? ` · #${d.order_id}` : "";
             return `${i + 1}. ${id} — ${d.customer_name}${oid}  (${why})`;
@@ -133,109 +185,60 @@ export default function Dashboard() {
             {
               text: "Create anyway",
               style: "destructive",
-              onPress: async () => {
-                setPasting(true);
-                try {
-                  await Api.smartPasteCreate(text);
-                  Alert.alert("Added", "Order queued in Orders tab.", [
-                    { text: "OK", style: "cancel" },
-                    { text: "View Orders →", onPress: () => router.push("/orders") },
-                  ]);
-                } catch (err: any) {
-                  Alert.alert(
-                    "Paste failed",
-                    err?.response?.data?.detail || err?.message || "Try again"
-                  );
-                } finally {
-                  setPasting(false);
-                }
-              },
+              onPress: () => saveSmartPaste(text, fromModal),
             },
           ]
         );
         return;
       }
-      // No duplicates → create directly.
-      await Api.smartPasteCreate(text);
-      setPasting(false);
-      Alert.alert("✅ Order added", "Order queued in Orders tab. Ready to ship.", [
-        { text: "OK", style: "cancel" },
-        { text: "View Orders →", onPress: () => router.push("/orders") },
-      ]);
+
+      // --- No duplicates → save directly. -----------------------------
+      await saveSmartPaste(text, fromModal);
     } catch (e: any) {
       setPasting(false);
-      Alert.alert("Paste failed", e?.response?.data?.detail || e?.message || "Try again");
+      setPasteStage("");
+      Alert.alert(
+        "Smart Paste failed",
+        e?.response?.data?.detail || e?.message || "Please try again."
+      );
     }
   };
 
-  const submitPasteModal = async () => {
-    if (!pasteText.trim()) {
-      Alert.alert("Empty", "Please paste text first");
-      return;
-    }
+  const saveSmartPaste = async (text: string, fromModal: boolean) => {
     try {
       setPasting(true);
-      const dup = await Api.smartPasteCheckDuplicate(pasteText);
-      if (dup.duplicates && dup.duplicates.length > 0) {
-        setPasting(false);
-        const lines = dup.duplicates
-          .map((d, i) => {
-            const id = d.kind === "shipment" ? d.tracking_id : `PEND ${String(d.id).slice(0, 6)}`;
-            const why = (d.match_on || []).join(" + ") || "match";
-            const oid = d.order_id ? ` · #${d.order_id}` : "";
-            return `${i + 1}. ${id} — ${d.customer_name}${oid}  (${why})`;
-          })
-          .join("\n");
-        Alert.alert(
-          "Possible duplicate",
-          `Found ${dup.duplicates.length} existing order${
-            dup.duplicates.length > 1 ? "s" : ""
-          } with the same phone/order ID:\n\n${lines}\n\nCreate this order anyway?`,
-          [
-            { text: "Cancel", style: "cancel" },
-            {
-              text: "Create anyway",
-              style: "destructive",
-              onPress: async () => {
-                setPasting(true);
-                try {
-                  await Api.smartPasteCreate(pasteText);
-                  setPasteModalOpen(false);
-                  setPasteText("");
-                  Alert.alert("Added", "Order queued in Orders tab.", [
-                    { text: "OK", style: "cancel" },
-                    { text: "View Orders →", onPress: () => router.push("/orders") },
-                  ]);
-                } catch (err: any) {
-                  Alert.alert(
-                    "Paste failed",
-                    err?.response?.data?.detail || err?.message || "Try again"
-                  );
-                } finally {
-                  setPasting(false);
-                }
-              },
-            },
-          ]
-        );
-        return;
-      }
-      await Api.smartPasteCreate(pasteText);
+      setPasteStage("saving");
+      await Api.smartPasteCreate(text);
       setPasting(false);
-      setPasteModalOpen(false);
-      setPasteText("");
+      setPasteStage("");
+      if (fromModal) {
+        setPasteModalOpen(false);
+        setPasteText("");
+      }
       Alert.alert(
         "✅ Order added",
-        "Order queued in Orders tab.",
+        "Order queued in Orders tab. Ready to ship.",
         [
           { text: "OK", style: "cancel" },
           { text: "View Orders →", onPress: () => router.push("/orders") },
         ]
       );
-    } catch (e: any) {
+    } catch (err: any) {
       setPasting(false);
-      Alert.alert("Parse failed", e?.response?.data?.detail || e?.message || "Invalid format");
+      setPasteStage("");
+      Alert.alert(
+        "Save failed",
+        err?.response?.data?.detail || err?.message || "Please try again."
+      );
     }
+  };
+
+  const submitPasteModal = async () => {
+    if (!pasteText.trim()) {
+      Alert.alert("Empty", "Please paste some text first.");
+      return;
+    }
+    await runSmartPasteAI(pasteText, true);
   };
 
   const pasteFromClipboardToModal = async () => {
@@ -285,7 +288,8 @@ export default function Dashboard() {
         </View>
       </View>
 
-      {/* Smart Paste Fallback Modal */}
+      {/* Smart Paste Fallback Modal — clipboard was empty, user pastes raw
+          WhatsApp/SMS text here and the AI parses it on the backend. */}
       <Modal
         visible={pasteModalOpen}
         animationType="slide"
@@ -303,65 +307,13 @@ export default function Dashboard() {
             </View>
 
             <Text style={styles.modalHint}>
-              Paste text from Shipment Parser GPT (14-line format).
+              Paste any WhatsApp/SMS order text below. AI will auto-fill the form — no formatting needed.
             </Text>
 
             <View style={styles.modalQuickRow}>
               <TouchableOpacity style={styles.modalQuickBtn} onPress={pasteFromClipboardToModal}>
                 <Ionicons name="clipboard-outline" size={14} color="#7C3AED" />
-                <Text style={styles.modalQuickBtnText}>Paste Clipboard</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={styles.modalQuickBtn}
-                onPress={async () => {
-                  // Try native ChatGPT app first, fall back to web URL.
-                  const webUrl = "https://chatgpt.com/gpts";
-
-                  // Helper: silently attempt each URL; return true on success.
-                  const tryOpen = async (url: string): Promise<boolean> => {
-                    try {
-                      await Linking.openURL(url);
-                      return true;
-                    } catch {
-                      return false;
-                    }
-                  };
-
-                  if (Platform.OS === "android") {
-                    // 1) Custom scheme (some ChatGPT builds register chatgpt://)
-                    if (await tryOpen("chatgpt://")) return;
-                    // 2) Launch MAIN/LAUNCHER activity of the ChatGPT package
-                    //    directly. NEW_TASK flag (0x10000000) is required when
-                    //    starting an activity outside the current task.
-                    const mainIntent =
-                      "intent:#Intent;" +
-                      "action=android.intent.action.MAIN;" +
-                      "category=android.intent.category.LAUNCHER;" +
-                      "package=com.openai.chatgpt;" +
-                      "launchFlags=0x10000000;" +
-                      "end";
-                    if (await tryOpen(mainIntent)) return;
-                    // 3) Try opening chatgpt.com with package hint (App Links)
-                    const appLinkIntent =
-                      "intent://chatgpt.com/#Intent;" +
-                      "scheme=https;" +
-                      "package=com.openai.chatgpt;" +
-                      "launchFlags=0x10000000;" +
-                      "S.browser_fallback_url=" +
-                      encodeURIComponent(webUrl) +
-                      ";end";
-                    if (await tryOpen(appLinkIntent)) return;
-                  } else {
-                    // iOS: try the chatgpt:// URL scheme
-                    if (await tryOpen("chatgpt://")) return;
-                  }
-
-                  // Last resort: open in browser
-                  Linking.openURL(webUrl).catch(() => {});
-                }}
-              >
-                <Ionicons name="chatbubbles-outline" size={14} color="#7C3AED" />
-                <Text style={styles.quickBtnText}>Open GPT</Text>
+                <Text style={styles.modalQuickBtnText}>Paste from Clipboard</Text>
               </TouchableOpacity>
             </View>
 
@@ -370,22 +322,35 @@ export default function Dashboard() {
               value={pasteText}
               onChangeText={setPasteText}
               multiline
-              placeholder={"NAME: ...\nPHONE: ...\nADDRESS_1: ...\nCITY: ...\nPINCODE: ...\nAMOUNT: ...\nPAYMENT: COD / PAID"}
+              placeholder={
+                "e.g. Ramesh Patel, 9876543210, 45 MG Road, Ahmedabad 380001, Saree 2 pcs, 1200 COD"
+              }
               placeholderTextColor="#9CA3AF"
               style={styles.modalInput}
               autoFocus
+              editable={!pasting}
             />
+
+            {pasting && (
+              <View style={styles.aiStatusRow}>
+                <ActivityIndicator size="small" color="#7C3AED" />
+                <Text style={styles.aiStatusText}>
+                  {pasteStage === "saving" ? "Saving order…" : "AI is parsing…"}
+                </Text>
+              </View>
+            )}
 
             <View style={styles.modalActions}>
               <TouchableOpacity
                 style={[styles.modalBtn, { backgroundColor: "#E5E7EB" }]}
                 onPress={() => setPasteModalOpen(false)}
+                disabled={pasting}
               >
                 <Text style={[styles.modalBtnText, { color: colors.text }]}>Cancel</Text>
               </TouchableOpacity>
               <TouchableOpacity
                 testID="smart-paste-submit"
-                style={[styles.modalBtn, { backgroundColor: "#7C3AED" }]}
+                style={[styles.modalBtn, { backgroundColor: "#7C3AED", opacity: pasting ? 0.7 : 1 }]}
                 onPress={submitPasteModal}
                 disabled={pasting}
               >
@@ -394,7 +359,7 @@ export default function Dashboard() {
                 ) : (
                   <>
                     <Ionicons name="sparkles" size={14} color="#fff" />
-                    <Text style={styles.modalBtnText}>Auto-fill & Queue</Text>
+                    <Text style={styles.modalBtnText}>AI Parse & Queue</Text>
                   </>
                 )}
               </TouchableOpacity>
@@ -949,4 +914,24 @@ const styles = StyleSheet.create({
     gap: 6,
   },
   modalBtnText: { color: "#fff", fontWeight: "800", fontSize: 13 },
+
+  /* AI parsing indicator shown inside the Smart Paste modal while the
+     backend LLM call is in-flight. */
+  aiStatusRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    marginTop: 10,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    backgroundColor: "#F5F3FF",
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "#DDD6FE",
+  },
+  aiStatusText: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: "#6D28D9",
+  },
 });

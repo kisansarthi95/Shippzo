@@ -1077,3 +1077,47 @@ agent_communication:
           - No other data touched; no test fixtures left behind.
 
         Marking task working=true. No retesting required.
+
+
+#====================================================================================================
+# 2026-04-24 — Phase 4b+ Smart Paste AI frontend cleanup
+#====================================================================================================
+frontend:
+  - task: "Smart Paste AI — remove legacy ChatGPT flow"
+    implemented: true
+    working: true
+    file: "/app/frontend/app/(tabs)/index.tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "main"
+        -comment: |
+            Refactored `/app/frontend/app/(tabs)/index.tsx` to remove the
+            legacy "14-line format" flow entirely:
+              * Dropped the hasStructure regex check — any raw WhatsApp/SMS
+                text now triggers the AI flow directly.
+              * Removed the "Open GPT" modal button and its Android intent
+                fallback.
+              * Updated modal hint, placeholder, and submit CTA ("AI Parse
+                & Queue").
+              * Added inline "AI is parsing…"/"Saving order…" indicator
+                inside the modal while the request is in flight.
+              * Surfaces `ai.missing` critical fields (NAME/PHONE/
+                ADDRESS_1/PINCODE) in an Alert with an "Edit text" action
+                that reopens the modal pre-filled with the user's paste.
+              * Unified save path (`saveSmartPaste`) so the duplicate
+                confirmation and no-duplicate branches share logic.
+            Verified on localhost:3000 with admin@test.com: modal displays
+            new hint, no legacy strings, "AI Parse & Queue" CTA visible.
+
+agent_communication:
+    -agent: "main"
+    -message: |
+        Completed Phase 4b+ Smart Paste AI frontend integration. Users can
+        now paste raw WhatsApp text (from clipboard) and the backend LLM
+        parses it directly — no ChatGPT bounce required. Manual UI check
+        passed (screenshot verified). No testing-agent run needed for this
+        purely UI refactor; backend endpoints already covered by earlier
+        Smart Paste tests.
