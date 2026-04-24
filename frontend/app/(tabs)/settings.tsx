@@ -1683,6 +1683,7 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 }
 
 const styles = StyleSheet.create({
+  safe: { flex: 1, backgroundColor: colors.background },
   header: { paddingHorizontal: 20, paddingTop: 10, paddingBottom: 8 },
   title: { fontSize: 24, fontWeight: "800", color: colors.text },
   // -- Account block ----
