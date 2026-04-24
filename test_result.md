@@ -1112,6 +1112,37 @@ frontend:
             Verified on localhost:3000 with admin@test.com: modal displays
             new hint, no legacy strings, "AI Parse & Queue" CTA visible.
 
+  - task: "Smart Paste AI — Missing Fields Modal (ask-before-save)"
+    implemented: true
+    working: true
+    file: "/app/frontend/app/(tabs)/index.tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "main"
+        -comment: |
+            Replaced the "Some info is missing" Alert with a proper
+            Missing-Fields Modal that mirrors the Custom GPT turn-by-turn
+            conversation: when the LLM flags any REQUIRED field as missing
+            (NAME, PHONE, ADDRESS_1, CITY, STATE, PINCODE, AMOUNT), a
+            bottom-sheet form opens with:
+              * Context chips showing what the AI *did* find (name, phone,
+                city) so the user has grounding.
+              * A labelled TextInput per missing field with sensible
+                placeholders and appropriate keyboard types (phone-pad for
+                PHONE, numeric for PINCODE/AMOUNT).
+              * A red asterisk on every required field.
+              * Proper KeyboardAvoidingView wrapping so the inputs don't
+                get hidden behind the keyboard on iOS/Android.
+            On submit, we validate all required fields are filled, build a
+            "KEY: value" appendix, append it to the original paste, and
+            re-run the full AI pipeline (check-duplicate → save). Verified
+            end-to-end: pasting "Ramesh Patel 380001 Saree 2 pcs 1200 COD"
+            surfaces the modal, filling the four missing fields and
+            tapping "Save Order" creates the pending order successfully.
+
 agent_communication:
     -agent: "main"
     -message: |

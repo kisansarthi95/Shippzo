@@ -10,6 +10,8 @@ import {
   Alert,
   Modal,
   TextInput,
+  KeyboardAvoidingView,
+  Platform,
   useWindowDimensions,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -78,16 +80,61 @@ export default function Dashboard() {
   const [pasting, setPasting] = useState(false);
   const [pasteStage, setPasteStage] = useState<"" | "parsing" | "saving">("");
 
-  // Labels shown in the missing-fields alert. Keep the order users care about.
-  const MISSING_LABEL: Record<string, string> = {
-    NAME: "Customer name",
-    PHONE: "Phone number",
-    ADDRESS_1: "Address",
-    CITY: "City",
-    STATE: "State",
-    PINCODE: "Pincode",
-    ITEMS: "Item(s)",
-    AMOUNT: "Amount",
+  // Missing-Fields Modal — shown when AI couldn't extract one or more
+  // required fields. Mirrors what the Custom GPT does in chat: asks the
+  // user for the missing bits, then retries the save.
+  const [missingModalOpen, setMissingModalOpen] = useState(false);
+  const [missingFieldValues, setMissingFieldValues] = useState<Record<string, string>>({});
+  const [knownAIFields, setKnownAIFields] = useState<Record<string, string>>({});
+  const [originalPasteText, setOriginalPasteText] = useState("");
+  const [missingRequired, setMissingRequired] = useState<string[]>([]);
+
+  // Human-readable labels + placeholders for each schema field.
+  const FIELD_META: Record<
+    string,
+    { label: string; placeholder: string; keyboard?: "default" | "phone-pad" | "numeric" }
+  > = {
+    NAME:      { label: "Customer Name",    placeholder: "e.g. Ramesh Patel" },
+    PHONE:     { label: "Mobile Number",    placeholder: "10-digit mobile", keyboard: "phone-pad" },
+    ADDRESS_1: { label: "Address",          placeholder: "House / street / area" },
+    ADDRESS_2: { label: "Address Line 2",   placeholder: "Landmark / optional" },
+    CITY:      { label: "City",             placeholder: "e.g. Ahmedabad" },
+    STATE:     { label: "State",            placeholder: "e.g. Gujarat" },
+    PINCODE:   { label: "Pincode",          placeholder: "6 digits", keyboard: "numeric" },
+    ITEMS:     { label: "Item(s)",          placeholder: "e.g. Saree x 2" },
+    AMOUNT:    { label: "Amount (₹)",       placeholder: "COD amount", keyboard: "numeric" },
+    PAYMENT:   { label: "Payment",          placeholder: "COD or PAID" },
+    COURIER:   { label: "Courier",          placeholder: "optional" },
+    ORDER_ID:  { label: "Order ID",         placeholder: "optional" },
+    WEIGHT:    { label: "Weight",           placeholder: "e.g. 500g" },
+    NOTES:     { label: "Notes",            placeholder: "special instructions" },
+  };
+
+  // Fields the app treats as REQUIRED — if AI can't find these, we must ask.
+  const REQUIRED_FIELDS = [
+    "NAME", "PHONE", "ADDRESS_1", "CITY", "STATE", "PINCODE", "AMOUNT",
+  ];
+
+  // Map from backend (snake_case / shipment schema) → UI schema (UPPER).
+  const fromLegacy = (legacy: any): Record<string, string> => {
+    const items = legacy?.items;
+    const itemsText = Array.isArray(items) ? items.join(", ") : String(items ?? "");
+    return {
+      NAME: legacy?.customer_name || "",
+      PHONE: legacy?.customer_phone || "",
+      ADDRESS_1: legacy?.address_line1 || "",
+      ADDRESS_2: legacy?.address_line2 || "",
+      CITY: legacy?.city || "",
+      STATE: legacy?.state || "",
+      PINCODE: legacy?.pincode || "",
+      ITEMS: itemsText,
+      AMOUNT: legacy?.amount != null ? String(legacy.amount) : "",
+      PAYMENT: (legacy?.payment_mode || "").toUpperCase(),
+      COURIER: legacy?.courier_name || "",
+      ORDER_ID: legacy?.order_id || "",
+      WEIGHT: legacy?.weight || "",
+      NOTES: legacy?.notes || "",
+    };
   };
 
   const handleSmartPaste = async () => {
@@ -120,9 +167,9 @@ export default function Dashboard() {
 
   /**
    * End-to-end Smart Paste flow (AI first).
-   *   1. Call /smart-paste/check-duplicate → backend runs LLM, returns fields,
-   *      missing fields, and any duplicates.
-   *   2. If AI couldn't extract critical fields → prompt user to edit.
+   *   1. /smart-paste/check-duplicate runs the LLM on backend.
+   *   2. If REQUIRED fields still missing → open MissingFieldsModal so
+   *      the user can fill them in (like the Custom GPT asks in chat).
    *   3. If duplicates → confirm before save.
    *   4. Otherwise create the pending order directly.
    */
@@ -132,31 +179,23 @@ export default function Dashboard() {
       setPasteStage("parsing");
       const dup = await Api.smartPasteCheckDuplicate(text);
 
-      // --- AI missing critical fields? --------------------------------
+      // --- Required fields missing? Ask the user. --------------------
       const missing = dup.ai?.missing || [];
-      const critical = missing.filter((k) =>
-        ["NAME", "PHONE", "ADDRESS_1", "PINCODE"].includes(k)
-      );
-      if (critical.length > 0) {
+      const stillNeeded = missing.filter((k) => REQUIRED_FIELDS.includes(k));
+      if (stillNeeded.length > 0) {
         setPasting(false);
         setPasteStage("");
-        const labels = critical
-          .map((k) => `• ${MISSING_LABEL[k] || k}`)
-          .join("\n");
-        Alert.alert(
-          "Some info is missing",
-          `AI couldn't find:\n\n${labels}\n\nPlease edit the text to add missing details.`,
-          [
-            { text: "Cancel", style: "cancel" },
-            {
-              text: "Edit text",
-              onPress: () => {
-                setPasteText(text);
-                setPasteModalOpen(true);
-              },
-            },
-          ]
-        );
+        // Close the fallback paste modal so the missing-fields sheet is
+        // the only one on screen.
+        if (fromModal) setPasteModalOpen(false);
+        const known = fromLegacy(dup.fields || {});
+        setKnownAIFields(known);
+        const initial: Record<string, string> = {};
+        stillNeeded.forEach((k) => { initial[k] = ""; });
+        setMissingFieldValues(initial);
+        setMissingRequired(stillNeeded);
+        setOriginalPasteText(text);
+        setMissingModalOpen(true);
         return;
       }
 
@@ -231,6 +270,37 @@ export default function Dashboard() {
         err?.response?.data?.detail || err?.message || "Please try again."
       );
     }
+  };
+
+  /**
+   * User has filled in the previously-missing fields. Build a 14-line
+   * KEY: value appendix (which the backend's regex parser already
+   * understands), append to the original paste, and re-run the AI flow.
+   */
+  const submitMissingFields = async () => {
+    // Validate required fields are filled.
+    const empty = missingRequired.filter(
+      (k) => !(missingFieldValues[k] || "").trim()
+    );
+    if (empty.length > 0) {
+      const labels = empty.map((k) => FIELD_META[k]?.label || k).join(", ");
+      Alert.alert("Still missing", `Please fill in: ${labels}`);
+      return;
+    }
+    // Build appendix so the server sees explicit KEY: value lines.
+    const lines: string[] = [];
+    missingRequired.forEach((k) => {
+      const v = (missingFieldValues[k] || "").trim();
+      if (v) lines.push(`${k}: ${v}`);
+    });
+    const merged = (originalPasteText || "").trim() + "\n\n" + lines.join("\n");
+    setMissingModalOpen(false);
+    setMissingFieldValues({});
+    setMissingRequired([]);
+    setKnownAIFields({});
+    setOriginalPasteText("");
+    // Re-run the full pipeline with the merged text.
+    await runSmartPasteAI(merged, false);
   };
 
   const submitPasteModal = async () => {
@@ -366,6 +436,121 @@ export default function Dashboard() {
             </View>
           </View>
         </View>
+      </Modal>
+
+      {/* Missing Fields Modal — opens when the AI couldn't extract one or
+          more REQUIRED fields. Mirrors the Custom GPT's "please provide"
+          turn so nothing gets saved with blanks. */}
+      <Modal
+        visible={missingModalOpen}
+        animationType="slide"
+        transparent
+        onRequestClose={() => setMissingModalOpen(false)}
+      >
+        <KeyboardAvoidingView
+          behavior={Platform.OS === "ios" ? "padding" : undefined}
+          style={styles.modalOverlay}
+        >
+          <View style={[styles.modalCard, { maxHeight: "92%" }]}>
+            <View style={styles.modalHeader}>
+              <Ionicons name="alert-circle" size={18} color="#D97706" />
+              <Text style={styles.modalTitle}>Please add missing details</Text>
+              <TouchableOpacity
+                onPress={() => setMissingModalOpen(false)}
+                hitSlop={10}
+                disabled={pasting}
+              >
+                <Ionicons name="close" size={22} color={colors.text} />
+              </TouchableOpacity>
+            </View>
+
+            <Text style={styles.modalHint}>
+              AI could read the message but a few required fields were not
+              clear. Please fill them in below — then we'll save the order.
+            </Text>
+
+            {/* Context chips: show what the AI DID find. */}
+            {(knownAIFields.NAME || knownAIFields.PHONE || knownAIFields.CITY) ? (
+              <View style={styles.aiKnownRow}>
+                {knownAIFields.NAME ? (
+                  <Text style={styles.aiKnownChip}>👤 {knownAIFields.NAME}</Text>
+                ) : null}
+                {knownAIFields.PHONE ? (
+                  <Text style={styles.aiKnownChip}>📞 {knownAIFields.PHONE}</Text>
+                ) : null}
+                {knownAIFields.CITY ? (
+                  <Text style={styles.aiKnownChip}>📍 {knownAIFields.CITY}</Text>
+                ) : null}
+              </View>
+            ) : null}
+
+            <ScrollView
+              style={{ maxHeight: 380 }}
+              keyboardShouldPersistTaps="handled"
+            >
+              {missingRequired.map((k) => {
+                const meta = FIELD_META[k] || { label: k, placeholder: "" };
+                return (
+                  <View key={k} style={styles.fieldWrap}>
+                    <Text style={styles.fieldLabel}>
+                      {meta.label}
+                      <Text style={{ color: "#DC2626" }}> *</Text>
+                    </Text>
+                    <TextInput
+                      testID={`missing-input-${k}`}
+                      value={missingFieldValues[k] || ""}
+                      onChangeText={(v) =>
+                        setMissingFieldValues((prev) => ({ ...prev, [k]: v }))
+                      }
+                      placeholder={meta.placeholder}
+                      placeholderTextColor="#9CA3AF"
+                      keyboardType={meta.keyboard || "default"}
+                      style={styles.fieldInput}
+                      editable={!pasting}
+                    />
+                  </View>
+                );
+              })}
+            </ScrollView>
+
+            {pasting && (
+              <View style={styles.aiStatusRow}>
+                <ActivityIndicator size="small" color="#7C3AED" />
+                <Text style={styles.aiStatusText}>
+                  {pasteStage === "saving" ? "Saving order…" : "Re-parsing…"}
+                </Text>
+              </View>
+            )}
+
+            <View style={styles.modalActions}>
+              <TouchableOpacity
+                style={[styles.modalBtn, { backgroundColor: "#E5E7EB" }]}
+                onPress={() => setMissingModalOpen(false)}
+                disabled={pasting}
+              >
+                <Text style={[styles.modalBtnText, { color: colors.text }]}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                testID="missing-fields-submit"
+                style={[
+                  styles.modalBtn,
+                  { backgroundColor: "#10B981", opacity: pasting ? 0.7 : 1 },
+                ]}
+                onPress={submitMissingFields}
+                disabled={pasting}
+              >
+                {pasting ? (
+                  <ActivityIndicator size="small" color="#fff" />
+                ) : (
+                  <>
+                    <Ionicons name="checkmark-circle" size={14} color="#fff" />
+                    <Text style={styles.modalBtnText}>Save Order</Text>
+                  </>
+                )}
+              </TouchableOpacity>
+            </View>
+          </View>
+        </KeyboardAvoidingView>
       </Modal>
 
       <ScrollView
@@ -933,5 +1118,43 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: "700",
     color: "#6D28D9",
+  },
+
+  /* Missing-Fields Modal — chips showing what AI already found. */
+  aiKnownRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 6,
+    marginBottom: 10,
+  },
+  aiKnownChip: {
+    fontSize: 11,
+    fontWeight: "700",
+    color: "#065F46",
+    backgroundColor: "#ECFDF5",
+    borderWidth: 1,
+    borderColor: "#A7F3D0",
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 999,
+  },
+  fieldWrap: {
+    marginBottom: 10,
+  },
+  fieldLabel: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: colors.text,
+    marginBottom: 4,
+  },
+  fieldInput: {
+    borderWidth: 1.5,
+    borderColor: "#E5E7EB",
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    fontSize: 14,
+    color: colors.text,
+    backgroundColor: "#FAFAFA",
   },
 });
