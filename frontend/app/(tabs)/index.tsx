@@ -118,7 +118,7 @@ export default function Dashboard() {
 
   // Field order in the preview form. Primary fields first, then optional.
   const FIELD_ORDER = [
-    "NAME", "PHONE", "ADDRESS_1", "ADDRESS_2", "CITY", "STATE", "PINCODE",
+    "NAME", "PHONE", "ALT_PHONE", "ADDRESS_1", "ADDRESS_2", "CITY", "STATE", "PINCODE",
     "ITEMS", "AMOUNT", "PAYMENT",
     "COURIER", "ORDER_ID", "WEIGHT", "NOTES",
   ];
@@ -276,6 +276,9 @@ export default function Dashboard() {
     };
     push("Name", "customer_name");
     push("Phone", "customer_phone");
+    // Show alt phone right under the primary so users see both at a glance.
+    if (legacyFields.customer_alt_phone)
+      lines.push(`• Alt Phone: ${legacyFields.customer_alt_phone}`);
     push("Address", "address_line1");
     if (legacyFields.address_line2) lines.push(`• Landmark: ${legacyFields.address_line2}`);
     push("City", "city");
@@ -439,6 +442,7 @@ export default function Dashboard() {
       const schema = {
         NAME: legacyFields.customer_name || "",
         PHONE: legacyFields.customer_phone || "",
+        ALT_PHONE: legacyFields.customer_alt_phone || "",
         ADDRESS_1: legacyFields.address_line1 || "",
         ADDRESS_2: legacyFields.address_line2 || "",
         CITY: legacyFields.city || "",

@@ -30,10 +30,10 @@ _MODEL = os.getenv("SMART_PASTE_MODEL", "gpt-4.1-nano")
 _PROVIDER = os.getenv("SMART_PASTE_PROVIDER", "openai")
 _TIMEOUT = float(os.getenv("SMART_PASTE_TIMEOUT", "6.0"))
 
-# The 14-line schema we ALWAYS return (hidden from users).
+# The 15-line schema we ALWAYS return (hidden from users).
 SCHEMA_FIELDS: List[str] = [
-    "NAME", "PHONE", "ADDRESS_1", "ADDRESS_2", "CITY", "STATE", "PINCODE",
-    "ITEMS", "AMOUNT", "PAYMENT", "COURIER", "ORDER_ID", "WEIGHT", "NOTES",
+    "NAME", "PHONE", "ALT_PHONE", "ADDRESS_1", "ADDRESS_2", "CITY", "STATE",
+    "PINCODE", "ITEMS", "AMOUNT", "PAYMENT", "COURIER", "ORDER_ID", "WEIGHT", "NOTES",
 ]
 
 # Default ShipBot-style system prompt bundled with the app. Users can
@@ -41,48 +41,84 @@ SCHEMA_FIELDS: List[str] = [
 DEFAULT_SHIPBOT_PROMPT = """\
 You are "ShipBot" — a strict Shipment Data Parser for a courier app.
 You process WhatsApp messages in Gujarati / Hindi / English and extract
-shipment details into a fixed 14-line structured block.
+shipment details into a fixed 15-line structured block.
 
-OUTPUT FORMAT (STRICT) — return ONE code block with EXACTLY 14 lines,
+CRITICAL: Every line must be a real parsed value OR a single dash `-`.
+NEVER output template placeholders like "<customer name>", "<phone>",
+"<6 digits>" etc. — those are descriptions, NOT values. If the text
+doesn't contain the info, write `-` only.
+
+OUTPUT FORMAT (STRICT) — return ONE code block with EXACTLY 15 lines,
 in this exact order, with no emoji / no explanation / no extra lines:
 
-NAME: <customer name in English>
-PHONE: <10 digits only, strip +91 or 0>
-ADDRESS_1: <primary address line — street / house / area ONLY>
-ADDRESS_2: <secondary address / landmark or ->
-CITY: <city in English>
-STATE: <state in English>
-PINCODE: <6 digits only>
-ITEMS: <item + quantity, like "Saree x 2" — comma separated for multiple>
-AMOUNT: <number only, no ₹ symbol>
-PAYMENT: <COD or PAID>
-COURIER: <courier name or ->
-ORDER_ID: <order number or ->
-WEIGHT: <weight with unit or ->
-NOTES: <special instruction or ->
+NAME: (real customer name, keep original script — Gujarati stays Gujarati, English stays English)
+PHONE: (primary 10 digits only, strip +91 or 0)
+ALT_PHONE: (second / alternative 10-digit number if message has TWO phones, else -)
+ADDRESS_1: (primary address line — street / house / area / village ONLY, keep original script)
+ADDRESS_2: (secondary address / landmark, else -)
+CITY: (city / town — keep original script)
+STATE: (state — keep original script)
+PINCODE: (6 digits only)
+ITEMS: (item + quantity like "Saree x 2"; comma-separated for multiple)
+AMOUNT: (number only, no ₹ symbol)
+PAYMENT: (COD or PAID)
+COURIER: (courier name or -)
+ORDER_ID: (order number or -)
+WEIGHT: (weight with unit or -)
+NOTES: (special instruction or -)
 
-Rules:
+EXAMPLE of a GOOD response (for a Gujarati message):
+```
+NAME: Asari Nikunj Babubhai
+PHONE: 8128949387
+ALT_PHONE: 7874786098
+ADDRESS_1: મુ-પોસ્ટ ઝિંઝોડી, તાલુકો ભિલોડા, જિલ્લા અરવલ્લી
+ADDRESS_2: -
+CITY: Aravalli
+STATE: Gujarat
+PINCODE: 383246
+ITEMS: ODC3 x 1
+AMOUNT: -
+PAYMENT: COD
+COURIER: -
+ORDER_ID: -
+WEIGHT: 20gm
+NOTES: -
+```
+
+RULES:
+  - NEVER output angle brackets `<` or `>` in a value. They are only used
+    as description markers in this prompt — a value must be a real word
+    or the single character `-`.
   - Convert Gujarati (૧૨૩) & Hindi (१२३) digits to English (123).
   - If any field is missing or unclear → write EXACTLY: -
   - NEVER guess, invent or assume data.
+  - When two phone numbers appear (e.g. "8128949387 / 7874786098" or
+    "call 98765 43210 or 99887 76655"), the FIRST goes in PHONE and the
+    SECOND goes in ALT_PHONE.
   - ITEMS MUST NEVER appear in ADDRESS fields. Products (saree, kurti,
-    dress, shoes, toy, book, etc.) always go in ITEMS — NEVER in
-    ADDRESS_1 or ADDRESS_2.
+    dress, shoes, toy, book, ODC, gm/kg weight codes, etc.) always go
+    in ITEMS — NEVER in ADDRESS_1 or ADDRESS_2.
   - QUANTITY rules for ITEMS:
     * "Saree 2 pcs" → "Saree x 2"
     * "Saree 2" → "Saree x 2"
     * "2 saree" → "Saree x 2"
     * "Saree" (no qty mentioned) → "Saree x 1"
     * Multiple items: "Saree x 2, Kurti x 1"
+    * A weight-only item like "20gm ODC3" → "ODC3 x 1" (weight goes in WEIGHT)
   - ADDRESS_1 is ONLY physical address: house no / street / area /
-    colony / village. NEVER products, quantity, or amount.
+    colony / village / post / taluka / district. NEVER products,
+    quantity, or amount.
+  - City / State should be English transliteration when obvious (e.g.
+    "અરવલ્લી" → "Aravalli", "ગુજરાત" → "Gujarat") so the courier sheet
+    is consistent; otherwise keep the source script.
   - AMOUNT = COD amount (never PAID/token unless explicitly COD).
   - Token-paid amounts go in NOTES as "Token <value>".
   - PAYMENT = COD if a COD number is present, else PAID.
 
-After the 14-line block, on a NEW line, output one JSON object describing
-the address complexity, like:
-  {"complexity":"simple"|"medium"|"complex","reason":"<max 10 words>"}
+After the 15-line block, on a NEW line, output one JSON object describing
+the address complexity:
+  {"complexity":"simple"|"medium"|"complex","reason":"short reason"}
 Nothing else.
 """
 
@@ -178,6 +214,12 @@ def _parse_schema_block(raw: str) -> Tuple[Dict[str, str], List[str]]:
             or val.lower() in {"n/a", "na", "none", "null", ""}
         ):
             val = ""
+        # Defensive: if the LLM copied our template placeholder
+        # verbatim (e.g. "<customer name in English>", "<6 digits only>")
+        # treat it as missing. Without this, the broken value would leak
+        # into the Orders list and Google Sheet.
+        if val and "<" in val and ">" in val:
+            val = ""
         out[key] = _digits_to_en(val)
 
     missing = [k for k in SCHEMA_FIELDS if not out[k]]
@@ -233,11 +275,23 @@ def _empty_result(source: str) -> Dict[str, Any]:
 # ---- Converters for existing pipeline ----------------------------------
 
 def to_legacy_fields(ai_fields: Dict[str, str]) -> Dict[str, str]:
-    """Map the 14-line schema keys onto the field names the rest of the
-    app (Shipment model) already uses."""
+    """Map the 15-line schema keys onto the field names the rest of the
+    app (Shipment model) already uses. Also splits compound phone values
+    like "9876543210 / 9988776655" into primary + alternative.
+    """
+    phone_raw = ai_fields.get("PHONE", "") or ""
+    alt_raw = ai_fields.get("ALT_PHONE", "") or ""
+
+    primary, alt = _split_compound_phone(phone_raw)
+    # If the LLM already put a value in ALT_PHONE, prefer that over our
+    # best-effort split.
+    if alt_raw.strip():
+        alt = alt_raw
+
     return {
         "customer_name":  ai_fields.get("NAME", ""),
-        "customer_phone": ai_fields.get("PHONE", ""),
+        "customer_phone": primary,
+        "customer_alt_phone": alt,
         "address_line1":  ai_fields.get("ADDRESS_1", ""),
         "address_line2":  ai_fields.get("ADDRESS_2", ""),
         "city":           ai_fields.get("CITY", ""),
@@ -251,3 +305,31 @@ def to_legacy_fields(ai_fields: Dict[str, str]) -> Dict[str, str]:
         "weight":         ai_fields.get("WEIGHT", ""),
         "notes":          ai_fields.get("NOTES", ""),
     }
+
+
+_PHONE_DIGITS_RE = re.compile(r"\d{10,}")
+
+
+def _split_compound_phone(value: str) -> Tuple[str, str]:
+    """Return (primary, alternative) from a free-form phone string.
+
+    Handles inputs like:
+      "8128949387 / 7874786098"          → ("8128949387", "7874786098")
+      "+91-98765 43210, 9988776655"      → ("9876543210",  "9988776655")
+      "call 98765 43210 or 99887 76655"  → ("9876543210",  "9988776655")
+      "9876543210"                       → ("9876543210",  "")
+    """
+    if not value:
+        return ("", "")
+    # Strip +91/91 prefix then pull sequences of 10+ digits.
+    cleaned = re.sub(r"(?:\+?91)", "", value)
+    digits_only = re.sub(r"\D", " ", cleaned)
+    parts = [p for p in digits_only.split() if len(p) >= 10]
+    if not parts:
+        # Still return the original if it looks like a partial number,
+        # so the regex parser can complain about missing digits later.
+        compact = re.sub(r"\D", "", value)
+        return (compact, "")
+    primary = parts[0][-10:]
+    alt = parts[1][-10:] if len(parts) > 1 else ""
+    return (primary, alt)

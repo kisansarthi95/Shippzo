@@ -452,6 +452,7 @@ class Shipment(BaseModel):
     order_id: str = ""
     customer_name: str
     customer_phone: str = ""
+    customer_alt_phone: str = ""   # secondary/alternative 10-digit number
     address_line1: str = ""
     address_line2: str = ""
     city: str = ""
@@ -487,6 +488,7 @@ class ShipmentCreate(BaseModel):
     order_id: Optional[str] = ""
     customer_name: str
     customer_phone: Optional[str] = ""
+    customer_alt_phone: Optional[str] = ""
     address_line1: Optional[str] = ""
     address_line2: Optional[str] = ""
     city: Optional[str] = ""
@@ -512,6 +514,7 @@ class ShipmentUpdate(BaseModel):
     order_id: Optional[str] = None
     customer_name: Optional[str] = None
     customer_phone: Optional[str] = None
+    customer_alt_phone: Optional[str] = None
     address_line1: Optional[str] = None
     address_line2: Optional[str] = None
     city: Optional[str] = None
@@ -1418,6 +1421,7 @@ class PendingOrder(BaseModel):
     # Customer data
     customer_name: str = ""
     customer_phone: str = ""
+    customer_alt_phone: str = ""
     address_line1: str = ""
     address_line2: str = ""
     city: str = ""
@@ -1524,6 +1528,9 @@ def parse_structured_paste(text: str) -> Dict[str, Any]:
         ("MOBILE", "customer_phone"),
         ("CONTACT", "customer_phone"),
         ("PHONE", "customer_phone"),
+        ("ALT_PHONE", "customer_alt_phone"),
+        ("ALTERNATE", "customer_alt_phone"),
+        ("ALTERNATIVE", "customer_alt_phone"),
         ("CITY", "city"),
         ("STATE", "state"),
         ("PINCODE", "pincode"),
@@ -1895,6 +1902,7 @@ _CHAT_REQUIRED = ["NAME", "PHONE", "ADDRESS_1", "CITY", "STATE", "PINCODE", "AMO
 _CHAT_LABEL = {
     "NAME": "Name",
     "PHONE": "Phone",
+    "ALT_PHONE": "Alt Phone",
     "ADDRESS_1": "Address",
     "ADDRESS_2": "Landmark",
     "CITY": "City",
@@ -1911,7 +1919,7 @@ _CHAT_LABEL = {
 
 
 def _legacy_to_schema(legacy: Dict[str, Any]) -> Dict[str, str]:
-    """Convert the app's snake_case field dict into the 14-line schema
+    """Convert the app's snake_case field dict into the 15-line schema
     keys the LLM and regex parser share."""
     items = legacy.get("items")
     items_text = (
@@ -1922,6 +1930,7 @@ def _legacy_to_schema(legacy: Dict[str, Any]) -> Dict[str, str]:
     return {
         "NAME": legacy.get("customer_name", "") or "",
         "PHONE": legacy.get("customer_phone", "") or "",
+        "ALT_PHONE": legacy.get("customer_alt_phone", "") or "",
         "ADDRESS_1": legacy.get("address_line1", "") or "",
         "ADDRESS_2": legacy.get("address_line2", "") or "",
         "CITY": legacy.get("city", "") or "",
