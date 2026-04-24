@@ -80,37 +80,47 @@ export default function Dashboard() {
   const [pasting, setPasting] = useState(false);
   const [pasteStage, setPasteStage] = useState<"" | "parsing" | "saving">("");
 
-  // Missing-Fields Modal — shown when AI couldn't extract one or more
-  // required fields. Mirrors what the Custom GPT does in chat: asks the
-  // user for the missing bits, then retries the save.
-  const [missingModalOpen, setMissingModalOpen] = useState(false);
-  const [missingFieldValues, setMissingFieldValues] = useState<Record<string, string>>({});
-  const [knownAIFields, setKnownAIFields] = useState<Record<string, string>>({});
-  const [originalPasteText, setOriginalPasteText] = useState("");
-  const [missingRequired, setMissingRequired] = useState<string[]>([]);
+  // AI Preview & Edit Modal — shown AFTER successful AI parse. User can
+  // review every field, edit anything the AI got wrong, and confirm.
+  // Mirrors Custom-GPT's turn-by-turn confirmation: nothing is saved
+  // without an explicit tap.
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const [previewFields, setPreviewFields] = useState<Record<string, string>>({});
+  const [aiComplexity, setAiComplexity] = useState<"simple" | "medium" | "complex" | "">("");
+  const [aiReason, setAiReason] = useState("");
+  const [aiMissing, setAiMissing] = useState<string[]>([]);
+  const [suggestedCustomer, setSuggestedCustomer] = useState<any | null>(null);
+  const [dupFound, setDupFound] = useState<any[]>([]);
 
   // Human-readable labels + placeholders for each schema field.
   const FIELD_META: Record<
     string,
-    { label: string; placeholder: string; keyboard?: "default" | "phone-pad" | "numeric" }
+    { label: string; placeholder: string; keyboard?: "default" | "phone-pad" | "numeric"; primary?: boolean }
   > = {
-    NAME:      { label: "Customer Name",    placeholder: "e.g. Ramesh Patel" },
-    PHONE:     { label: "Mobile Number",    placeholder: "10-digit mobile", keyboard: "phone-pad" },
-    ADDRESS_1: { label: "Address",          placeholder: "House / street / area" },
+    NAME:      { label: "Customer Name",    placeholder: "e.g. Ramesh Patel", primary: true },
+    PHONE:     { label: "Mobile Number",    placeholder: "10-digit mobile", keyboard: "phone-pad", primary: true },
+    ADDRESS_1: { label: "Address",          placeholder: "House / street / area", primary: true },
     ADDRESS_2: { label: "Address Line 2",   placeholder: "Landmark / optional" },
-    CITY:      { label: "City",             placeholder: "e.g. Ahmedabad" },
-    STATE:     { label: "State",            placeholder: "e.g. Gujarat" },
-    PINCODE:   { label: "Pincode",          placeholder: "6 digits", keyboard: "numeric" },
-    ITEMS:     { label: "Item(s)",          placeholder: "e.g. Saree x 2" },
-    AMOUNT:    { label: "Amount (₹)",       placeholder: "COD amount", keyboard: "numeric" },
-    PAYMENT:   { label: "Payment",          placeholder: "COD or PAID" },
+    CITY:      { label: "City",             placeholder: "e.g. Ahmedabad", primary: true },
+    STATE:     { label: "State",            placeholder: "e.g. Gujarat", primary: true },
+    PINCODE:   { label: "Pincode",          placeholder: "6 digits", keyboard: "numeric", primary: true },
+    ITEMS:     { label: "Item(s)",          placeholder: "e.g. Saree x 2", primary: true },
+    AMOUNT:    { label: "Amount (₹)",       placeholder: "COD amount", keyboard: "numeric", primary: true },
+    PAYMENT:   { label: "Payment",          placeholder: "COD or PAID", primary: true },
     COURIER:   { label: "Courier",          placeholder: "optional" },
     ORDER_ID:  { label: "Order ID",         placeholder: "optional" },
     WEIGHT:    { label: "Weight",           placeholder: "e.g. 500g" },
     NOTES:     { label: "Notes",            placeholder: "special instructions" },
   };
 
-  // Fields the app treats as REQUIRED — if AI can't find these, we must ask.
+  // Field order in the preview form. Primary fields first, then optional.
+  const FIELD_ORDER = [
+    "NAME", "PHONE", "ADDRESS_1", "ADDRESS_2", "CITY", "STATE", "PINCODE",
+    "ITEMS", "AMOUNT", "PAYMENT",
+    "COURIER", "ORDER_ID", "WEIGHT", "NOTES",
+  ];
+
+  // Fields the app treats as REQUIRED — blocks Save until filled.
   const REQUIRED_FIELDS = [
     "NAME", "PHONE", "ADDRESS_1", "CITY", "STATE", "PINCODE", "AMOUNT",
   ];
@@ -128,7 +138,7 @@ export default function Dashboard() {
       STATE: legacy?.state || "",
       PINCODE: legacy?.pincode || "",
       ITEMS: itemsText,
-      AMOUNT: legacy?.amount != null ? String(legacy.amount) : "",
+      AMOUNT: legacy?.amount != null && legacy.amount !== "" ? String(legacy.amount) : "",
       PAYMENT: (legacy?.payment_mode || "").toUpperCase(),
       COURIER: legacy?.courier_name || "",
       ORDER_ID: legacy?.order_id || "",
@@ -153,7 +163,7 @@ export default function Dashboard() {
         setPasting(false);
         return;
       }
-      // Happy path: AI parses raw text → check duplicates → save.
+      // Happy path: AI parses raw text → ALWAYS open preview to confirm.
       await runSmartPasteAI(text);
     } catch (e: any) {
       setPasting(false);
@@ -166,12 +176,9 @@ export default function Dashboard() {
   };
 
   /**
-   * End-to-end Smart Paste flow (AI first).
-   *   1. /smart-paste/check-duplicate runs the LLM on backend.
-   *   2. If REQUIRED fields still missing → open MissingFieldsModal so
-   *      the user can fill them in (like the Custom GPT asks in chat).
-   *   3. If duplicates → confirm before save.
-   *   4. Otherwise create the pending order directly.
+   * Run the AI parse, then ALWAYS surface an editable preview. Users
+   * review & confirm (or tweak) before the order is queued. This
+   * matches the Custom-GPT confirmation turn.
    */
   const runSmartPasteAI = async (text: string, fromModal = false) => {
     try {
@@ -179,60 +186,33 @@ export default function Dashboard() {
       setPasteStage("parsing");
       const dup = await Api.smartPasteCheckDuplicate(text);
 
-      // --- Required fields missing? Ask the user. --------------------
-      const missing = dup.ai?.missing || [];
-      const stillNeeded = missing.filter((k) => REQUIRED_FIELDS.includes(k));
-      if (stillNeeded.length > 0) {
-        setPasting(false);
-        setPasteStage("");
-        // Close the fallback paste modal so the missing-fields sheet is
-        // the only one on screen.
-        if (fromModal) setPasteModalOpen(false);
-        const known = fromLegacy(dup.fields || {});
-        setKnownAIFields(known);
-        const initial: Record<string, string> = {};
-        stillNeeded.forEach((k) => { initial[k] = ""; });
-        setMissingFieldValues(initial);
-        setMissingRequired(stillNeeded);
-        setOriginalPasteText(text);
-        setMissingModalOpen(true);
-        return;
-      }
+      // Close the fallback paste modal so the preview is the only sheet.
+      if (fromModal) setPasteModalOpen(false);
 
-      // --- Duplicates? ------------------------------------------------
-      if (dup.duplicates && dup.duplicates.length > 0) {
-        setPasting(false);
-        setPasteStage("");
-        const lines = dup.duplicates
-          .map((d, i) => {
-            const id =
-              d.kind === "shipment"
-                ? d.tracking_id
-                : `PEND ${String(d.id).slice(0, 6)}`;
-            const why = (d.match_on || []).join(" + ") || "match";
-            const oid = d.order_id ? ` · #${d.order_id}` : "";
-            return `${i + 1}. ${id} — ${d.customer_name}${oid}  (${why})`;
+      // Seed preview form with AI-extracted values (blank = missing).
+      const seeded = fromLegacy(dup.fields || {});
+      setPreviewFields(seeded);
+      setAiComplexity((dup.ai?.complexity as any) || "");
+      setAiReason(dup.ai?.reason || "");
+      setAiMissing(dup.ai?.missing || []);
+      setDupFound(dup.duplicates || []);
+      setSuggestedCustomer(null);
+      setPasting(false);
+      setPasteStage("");
+      setPreviewOpen(true);
+
+      // Fire-and-forget: if a phone is present, look up past customers.
+      // Don't block the preview on this — it just decorates the sheet.
+      const phone = seeded.PHONE;
+      if (phone && phone.replace(/\D/g, "").length >= 10) {
+        Api.lookupCustomerByPhone(phone)
+          .then((r) => {
+            if (r.found && r.customer) {
+              setSuggestedCustomer({ ...r.customer, _count: r.count });
+            }
           })
-          .join("\n");
-        Alert.alert(
-          "Possible duplicate",
-          `Found ${dup.duplicates.length} existing order${
-            dup.duplicates.length > 1 ? "s" : ""
-          } with the same phone/order ID:\n\n${lines}\n\nCreate this order anyway?`,
-          [
-            { text: "Cancel", style: "cancel" },
-            {
-              text: "Create anyway",
-              style: "destructive",
-              onPress: () => saveSmartPaste(text, fromModal),
-            },
-          ]
-        );
-        return;
+          .catch(() => {});
       }
-
-      // --- No duplicates → save directly. -----------------------------
-      await saveSmartPaste(text, fromModal);
     } catch (e: any) {
       setPasting(false);
       setPasteStage("");
@@ -243,17 +223,83 @@ export default function Dashboard() {
     }
   };
 
-  const saveSmartPaste = async (text: string, fromModal: boolean) => {
+  const applySuggestedCustomer = () => {
+    if (!suggestedCustomer) return;
+    setPreviewFields((prev) => ({
+      ...prev,
+      NAME: suggestedCustomer.customer_name || prev.NAME,
+      PHONE: suggestedCustomer.customer_phone || prev.PHONE,
+      ADDRESS_1: suggestedCustomer.address_line1 || prev.ADDRESS_1,
+      ADDRESS_2: suggestedCustomer.address_line2 || prev.ADDRESS_2,
+      CITY: suggestedCustomer.city || prev.CITY,
+      STATE: suggestedCustomer.state || prev.STATE,
+      PINCODE: suggestedCustomer.pincode || prev.PINCODE,
+    }));
+    setSuggestedCustomer(null);
+  };
+
+  /**
+   * User tapped "Save Order" in the preview. Validate required fields,
+   * build a structured KEY: value block and post to /api/smart-paste.
+   * The backend regex parser picks it up verbatim (no extra LLM call
+   * needed since every field is already labelled).
+   */
+  const submitPreview = async () => {
+    const missing = REQUIRED_FIELDS.filter(
+      (k) => !(previewFields[k] || "").trim()
+    );
+    if (missing.length > 0) {
+      const labels = missing.map((k) => FIELD_META[k]?.label || k).join(", ");
+      Alert.alert("Missing required fields", `Please fill in: ${labels}`);
+      return;
+    }
+    // Duplicate confirmation (pulled from the initial check).
+    if (dupFound.length > 0) {
+      const lines = dupFound
+        .map((d: any, i: number) => {
+          const id =
+            d.kind === "shipment" ? d.tracking_id : `PEND ${String(d.id).slice(0, 6)}`;
+          const why = (d.match_on || []).join(" + ") || "match";
+          const oid = d.order_id ? ` · #${d.order_id}` : "";
+          return `${i + 1}. ${id} — ${d.customer_name}${oid}  (${why})`;
+        })
+        .join("\n");
+      Alert.alert(
+        "Possible duplicate",
+        `Found ${dupFound.length} existing order${
+          dupFound.length > 1 ? "s" : ""
+        } with the same phone/order ID:\n\n${lines}\n\nCreate this order anyway?`,
+        [
+          { text: "Cancel", style: "cancel" },
+          {
+            text: "Create anyway",
+            style: "destructive",
+            onPress: () => commitPreview(),
+          },
+        ]
+      );
+      return;
+    }
+    await commitPreview();
+  };
+
+  const commitPreview = async () => {
     try {
       setPasting(true);
       setPasteStage("saving");
+      // Build structured block from preview fields — backend regex parser
+      // will accept it as-is.
+      const lines = FIELD_ORDER.map((k) => {
+        const v = (previewFields[k] || "").trim();
+        return v ? `${k}: ${v}` : null;
+      }).filter(Boolean) as string[];
+      const text = lines.join("\n");
       await Api.smartPasteCreate(text);
       setPasting(false);
       setPasteStage("");
-      if (fromModal) {
-        setPasteModalOpen(false);
-        setPasteText("");
-      }
+      setPreviewOpen(false);
+      setPreviewFields({});
+      setPasteText("");
       Alert.alert(
         "✅ Order added",
         "Order queued in Orders tab. Ready to ship.",
@@ -270,37 +316,6 @@ export default function Dashboard() {
         err?.response?.data?.detail || err?.message || "Please try again."
       );
     }
-  };
-
-  /**
-   * User has filled in the previously-missing fields. Build a 14-line
-   * KEY: value appendix (which the backend's regex parser already
-   * understands), append to the original paste, and re-run the AI flow.
-   */
-  const submitMissingFields = async () => {
-    // Validate required fields are filled.
-    const empty = missingRequired.filter(
-      (k) => !(missingFieldValues[k] || "").trim()
-    );
-    if (empty.length > 0) {
-      const labels = empty.map((k) => FIELD_META[k]?.label || k).join(", ");
-      Alert.alert("Still missing", `Please fill in: ${labels}`);
-      return;
-    }
-    // Build appendix so the server sees explicit KEY: value lines.
-    const lines: string[] = [];
-    missingRequired.forEach((k) => {
-      const v = (missingFieldValues[k] || "").trim();
-      if (v) lines.push(`${k}: ${v}`);
-    });
-    const merged = (originalPasteText || "").trim() + "\n\n" + lines.join("\n");
-    setMissingModalOpen(false);
-    setMissingFieldValues({});
-    setMissingRequired([]);
-    setKnownAIFields({});
-    setOriginalPasteText("");
-    // Re-run the full pipeline with the merged text.
-    await runSmartPasteAI(merged, false);
   };
 
   const submitPasteModal = async () => {
@@ -438,14 +453,17 @@ export default function Dashboard() {
         </View>
       </Modal>
 
-      {/* Missing Fields Modal — opens when the AI couldn't extract one or
-          more REQUIRED fields. Mirrors the Custom GPT's "please provide"
-          turn so nothing gets saved with blanks. */}
+      {/* AI Preview & Edit Modal — shown AFTER a successful AI parse. User
+          can review every field, edit anything the AI got wrong, see the
+          address-complexity badge, and confirm before the order is saved.
+          If a repeat customer is detected (matching phone from past
+          shipments), a green suggestion banner lets the user auto-fill
+          their saved address in one tap. */}
       <Modal
-        visible={missingModalOpen}
+        visible={previewOpen}
         animationType="slide"
         transparent
-        onRequestClose={() => setMissingModalOpen(false)}
+        onRequestClose={() => setPreviewOpen(false)}
       >
         <KeyboardAvoidingView
           behavior={Platform.OS === "ios" ? "padding" : undefined}
@@ -453,10 +471,10 @@ export default function Dashboard() {
         >
           <View style={[styles.modalCard, { maxHeight: "92%" }]}>
             <View style={styles.modalHeader}>
-              <Ionicons name="alert-circle" size={18} color="#D97706" />
-              <Text style={styles.modalTitle}>Please add missing details</Text>
+              <Ionicons name="sparkles" size={18} color="#7C3AED" />
+              <Text style={styles.modalTitle}>Review order</Text>
               <TouchableOpacity
-                onPress={() => setMissingModalOpen(false)}
+                onPress={() => setPreviewOpen(false)}
                 hitSlop={10}
                 disabled={pasting}
               >
@@ -465,47 +483,131 @@ export default function Dashboard() {
             </View>
 
             <Text style={styles.modalHint}>
-              AI could read the message but a few required fields were not
-              clear. Please fill them in below — then we'll save the order.
+              AI has extracted these details. Review, edit if needed, then save.
             </Text>
 
-            {/* Context chips: show what the AI DID find. */}
-            {(knownAIFields.NAME || knownAIFields.PHONE || knownAIFields.CITY) ? (
-              <View style={styles.aiKnownRow}>
-                {knownAIFields.NAME ? (
-                  <Text style={styles.aiKnownChip}>👤 {knownAIFields.NAME}</Text>
-                ) : null}
-                {knownAIFields.PHONE ? (
-                  <Text style={styles.aiKnownChip}>📞 {knownAIFields.PHONE}</Text>
-                ) : null}
-                {knownAIFields.CITY ? (
-                  <Text style={styles.aiKnownChip}>📍 {knownAIFields.CITY}</Text>
-                ) : null}
+            {/* Badges row: complexity + duplicate warning */}
+            <View style={styles.badgesRow}>
+              {!!aiComplexity && (
+                <View
+                  style={[
+                    styles.badge,
+                    aiComplexity === "complex"
+                      ? styles.badgeComplex
+                      : aiComplexity === "medium"
+                      ? styles.badgeMedium
+                      : styles.badgeSimple,
+                  ]}
+                >
+                  <Ionicons
+                    name={aiComplexity === "complex" ? "warning" : "checkmark-circle"}
+                    size={12}
+                    color={
+                      aiComplexity === "complex"
+                        ? "#92400E"
+                        : aiComplexity === "medium"
+                        ? "#92400E"
+                        : "#065F46"
+                    }
+                  />
+                  <Text
+                    style={[
+                      styles.badgeText,
+                      {
+                        color:
+                          aiComplexity === "complex"
+                            ? "#92400E"
+                            : aiComplexity === "medium"
+                            ? "#92400E"
+                            : "#065F46",
+                      },
+                    ]}
+                  >
+                    {aiComplexity === "complex"
+                      ? "Complex address"
+                      : aiComplexity === "medium"
+                      ? "Medium complexity"
+                      : "Simple address"}
+                  </Text>
+                </View>
+              )}
+              {dupFound.length > 0 && (
+                <View style={[styles.badge, styles.badgeDup]}>
+                  <Ionicons name="copy-outline" size={12} color="#9F1239" />
+                  <Text style={[styles.badgeText, { color: "#9F1239" }]}>
+                    {dupFound.length} possible duplicate
+                    {dupFound.length > 1 ? "s" : ""}
+                  </Text>
+                </View>
+              )}
+            </View>
+
+            {!!aiReason && (
+              <Text style={styles.aiReasonText} numberOfLines={2}>
+                💡 {aiReason}
+              </Text>
+            )}
+
+            {/* Repeat-customer suggestion banner */}
+            {suggestedCustomer && (
+              <View style={styles.suggestBanner}>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.suggestBannerTitle}>
+                    🎯 Repeat customer
+                  </Text>
+                  <Text style={styles.suggestBannerBody} numberOfLines={2}>
+                    {suggestedCustomer.customer_name} —{" "}
+                    {suggestedCustomer.address_line1}
+                    {suggestedCustomer.city ? `, ${suggestedCustomer.city}` : ""}
+                    {suggestedCustomer._count > 1
+                      ? ` (${suggestedCustomer._count} past orders)`
+                      : ""}
+                  </Text>
+                </View>
+                <TouchableOpacity
+                  onPress={applySuggestedCustomer}
+                  style={styles.suggestBtn}
+                >
+                  <Text style={styles.suggestBtnText}>Use</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  onPress={() => setSuggestedCustomer(null)}
+                  hitSlop={8}
+                  style={{ marginLeft: 6 }}
+                >
+                  <Ionicons name="close" size={18} color="#065F46" />
+                </TouchableOpacity>
               </View>
-            ) : null}
+            )}
 
             <ScrollView
-              style={{ maxHeight: 380 }}
+              style={{ maxHeight: 420 }}
               keyboardShouldPersistTaps="handled"
             >
-              {missingRequired.map((k) => {
+              {FIELD_ORDER.map((k) => {
                 const meta = FIELD_META[k] || { label: k, placeholder: "" };
+                const required = REQUIRED_FIELDS.includes(k);
+                const value = previewFields[k] || "";
+                const isMissing = required && !value.trim();
                 return (
                   <View key={k} style={styles.fieldWrap}>
                     <Text style={styles.fieldLabel}>
                       {meta.label}
-                      <Text style={{ color: "#DC2626" }}> *</Text>
+                      {required && <Text style={{ color: "#DC2626" }}> *</Text>}
                     </Text>
                     <TextInput
-                      testID={`missing-input-${k}`}
-                      value={missingFieldValues[k] || ""}
+                      testID={`preview-input-${k}`}
+                      value={value}
                       onChangeText={(v) =>
-                        setMissingFieldValues((prev) => ({ ...prev, [k]: v }))
+                        setPreviewFields((prev) => ({ ...prev, [k]: v }))
                       }
                       placeholder={meta.placeholder}
                       placeholderTextColor="#9CA3AF"
                       keyboardType={meta.keyboard || "default"}
-                      style={styles.fieldInput}
+                      style={[
+                        styles.fieldInput,
+                        isMissing && styles.fieldInputMissing,
+                      ]}
                       editable={!pasting}
                     />
                   </View>
@@ -517,7 +619,7 @@ export default function Dashboard() {
               <View style={styles.aiStatusRow}>
                 <ActivityIndicator size="small" color="#7C3AED" />
                 <Text style={styles.aiStatusText}>
-                  {pasteStage === "saving" ? "Saving order…" : "Re-parsing…"}
+                  {pasteStage === "saving" ? "Saving order…" : "Processing…"}
                 </Text>
               </View>
             )}
@@ -525,18 +627,18 @@ export default function Dashboard() {
             <View style={styles.modalActions}>
               <TouchableOpacity
                 style={[styles.modalBtn, { backgroundColor: "#E5E7EB" }]}
-                onPress={() => setMissingModalOpen(false)}
+                onPress={() => setPreviewOpen(false)}
                 disabled={pasting}
               >
                 <Text style={[styles.modalBtnText, { color: colors.text }]}>Cancel</Text>
               </TouchableOpacity>
               <TouchableOpacity
-                testID="missing-fields-submit"
+                testID="preview-submit"
                 style={[
                   styles.modalBtn,
                   { backgroundColor: "#10B981", opacity: pasting ? 0.7 : 1 },
                 ]}
-                onPress={submitMissingFields}
+                onPress={submitPreview}
                 disabled={pasting}
               >
                 {pasting ? (
@@ -1156,5 +1258,86 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: colors.text,
     backgroundColor: "#FAFAFA",
+  },
+  fieldInputMissing: {
+    borderColor: "#FCA5A5",
+    backgroundColor: "#FEF2F2",
+  },
+
+  /* Preview Modal — badges row. */
+  badgesRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 6,
+    marginBottom: 6,
+  },
+  badge: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 999,
+    borderWidth: 1,
+  },
+  badgeSimple: {
+    backgroundColor: "#ECFDF5",
+    borderColor: "#A7F3D0",
+  },
+  badgeMedium: {
+    backgroundColor: "#FFFBEB",
+    borderColor: "#FDE68A",
+  },
+  badgeComplex: {
+    backgroundColor: "#FEF3C7",
+    borderColor: "#F59E0B",
+  },
+  badgeDup: {
+    backgroundColor: "#FFE4E6",
+    borderColor: "#FDA4AF",
+  },
+  badgeText: {
+    fontSize: 11,
+    fontWeight: "800",
+  },
+  aiReasonText: {
+    fontSize: 11,
+    color: "#6B7280",
+    fontStyle: "italic",
+    marginBottom: 8,
+  },
+
+  /* Preview Modal — repeat-customer suggestion banner. */
+  suggestBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#ECFDF5",
+    borderWidth: 1,
+    borderColor: "#A7F3D0",
+    borderRadius: 10,
+    padding: 10,
+    marginBottom: 10,
+  },
+  suggestBannerTitle: {
+    fontSize: 12,
+    fontWeight: "800",
+    color: "#065F46",
+  },
+  suggestBannerBody: {
+    fontSize: 11,
+    color: "#047857",
+    marginTop: 2,
+  },
+  suggestBtn: {
+    backgroundColor: "#10B981",
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: 8,
+    marginLeft: 8,
+  },
+  suggestBtnText: {
+    color: "#fff",
+    fontWeight: "800",
+    fontSize: 12,
   },
 });

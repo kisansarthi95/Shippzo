@@ -1131,6 +1131,82 @@ async def bulk_fetch(
     return ordered
 
 
+@api_router.get("/customers/by-phone/{phone}")
+async def get_customer_by_phone(
+    phone: str,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    """Look up the most-recent customer record for a given phone number
+    within the current user's workspace. Powers the Smart Paste AI
+    "repeat customer" suggestion so users don't have to re-type past
+    addresses.
+
+    Search order:
+      1. shipments collection (most authoritative — already dispatched).
+      2. pending_orders collection (pasted but not shipped yet).
+
+    Returns { found: bool, customer: {...} | null, count: int }.
+    """
+    # Normalise to last 10 digits for robust match (strips +91 / spaces).
+    digits = "".join(ch for ch in (phone or "") if ch.isdigit())
+    if len(digits) < 10:
+        return {"found": False, "customer": None, "count": 0}
+    tail = digits[-10:]
+    rx = {"$regex": f"{tail}$"}
+
+    ship_cursor = db.shipments.find(
+        {"user_id": current_user["id"], "customer_phone": rx},
+        {"_id": 0},
+    ).sort("created_at", -1)
+    ships: List[Dict[str, Any]] = await ship_cursor.to_list(10)
+
+    if ships:
+        s = ships[0]
+        return {
+            "found": True,
+            "count": len(ships),
+            "customer": {
+                "customer_name": s.get("customer_name", ""),
+                "customer_phone": s.get("customer_phone", ""),
+                "address_line1": s.get("address_line1", ""),
+                "address_line2": s.get("address_line2", ""),
+                "city": s.get("city", ""),
+                "state": s.get("state", ""),
+                "pincode": s.get("pincode", ""),
+                "source": "shipment",
+                "last_tracking_id": s.get("tracking_id", ""),
+                "last_date": s.get("created_at", ""),
+            },
+        }
+
+    # Fallback: look in pending orders queue.
+    pend_cursor = db.pending_orders.find(
+        {"user_id": current_user["id"], "customer_phone": rx},
+        {"_id": 0},
+    ).sort("created_at", -1)
+    pends: List[Dict[str, Any]] = await pend_cursor.to_list(5)
+    if pends:
+        p = pends[0]
+        return {
+            "found": True,
+            "count": len(pends),
+            "customer": {
+                "customer_name": p.get("customer_name", ""),
+                "customer_phone": p.get("customer_phone", ""),
+                "address_line1": p.get("address_line1", ""),
+                "address_line2": p.get("address_line2", ""),
+                "city": p.get("city", ""),
+                "state": p.get("state", ""),
+                "pincode": p.get("pincode", ""),
+                "source": "pending",
+                "last_date": p.get("created_at", ""),
+            },
+        }
+    return {"found": False, "customer": None, "count": 0}
+
+
+
+
 @api_router.get("/shipments/{shipment_id}", response_model=Shipment)
 async def get_shipment(
     shipment_id: str,

@@ -1123,25 +1123,67 @@ frontend:
         -working: true
         -agent: "main"
         -comment: |
-            Replaced the "Some info is missing" Alert with a proper
-            Missing-Fields Modal that mirrors the Custom GPT turn-by-turn
-            conversation: when the LLM flags any REQUIRED field as missing
-            (NAME, PHONE, ADDRESS_1, CITY, STATE, PINCODE, AMOUNT), a
-            bottom-sheet form opens with:
-              * Context chips showing what the AI *did* find (name, phone,
-                city) so the user has grounding.
-              * A labelled TextInput per missing field with sensible
-                placeholders and appropriate keyboard types (phone-pad for
-                PHONE, numeric for PINCODE/AMOUNT).
-              * A red asterisk on every required field.
-              * Proper KeyboardAvoidingView wrapping so the inputs don't
-                get hidden behind the keyboard on iOS/Android.
-            On submit, we validate all required fields are filled, build a
-            "KEY: value" appendix, append it to the original paste, and
-            re-run the full AI pipeline (check-duplicate → save). Verified
-            end-to-end: pasting "Ramesh Patel 380001 Saree 2 pcs 1200 COD"
-            surfaces the modal, filling the four missing fields and
-            tapping "Save Order" creates the pending order successfully.
+            Replaced with the unified "AI Preview & Edit Modal" (Batch 1
+            below). The dedicated Missing-Fields sheet is no longer needed
+            because the preview modal highlights missing required fields
+            with a red border in the same form that shows ALL fields.
+
+  - task: "Smart Paste Batch 1 — Preview / Customer Memory / Complexity"
+    implemented: true
+    working: true
+    file: "/app/frontend/app/(tabs)/index.tsx & /app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "main"
+        -comment: |
+            Batch 1 Smart Paste improvements landed:
+
+            FRONT-END (`/app/frontend/app/(tabs)/index.tsx`)
+              * AI Preview & Edit Modal — AFTER every successful parse,
+                user now sees an editable sheet with ALL 14 schema fields
+                (primary first, optional after), each pre-filled from the
+                AI's best guess. Required fields show a red asterisk AND
+                a red border/background when empty, so users can't miss
+                them. Save is blocked until all required fields are
+                filled; duplicate warnings still pop a confirm dialog.
+              * Address-Complexity Badge — backend already returns
+                `complexity` (simple / medium / complex) + a short reason.
+                We render the value as a coloured pill in the preview
+                header (green / amber / orange) plus the reason on a
+                sub-line ("💡 Clear address and details", etc.).
+              * Repeat-Customer Banner — as soon as the preview opens and
+                a PHONE is available, we fire a background
+                `GET /api/customers/by-phone/{phone}` call. On hit we
+                render a green banner "🎯 Repeat customer — {name} —
+                {address}, {city} (N past orders)" with a one-tap **Use**
+                button that fills NAME / PHONE / ADDRESS_* / CITY /
+                STATE / PINCODE from the past shipment. A close-icon
+                dismisses the banner without applying.
+              * Save path — instead of POSTing the raw pasted text again,
+                Save Order now constructs a canonical 14-line KEY: value
+                block from the preview form and POSTs THAT to
+                `/api/smart-paste`. This avoids a second wasted LLM call
+                and guarantees what-you-see-is-what-gets-saved.
+
+            BACK-END (`/app/backend/server.py`)
+              * New endpoint `GET /api/customers/by-phone/{phone}` — tenant-
+                scoped lookup (matches last-10-digit suffix) that searches
+                first in `shipments`, then `pending_orders`. Returns
+                `{found, count, customer}` with name + full address so the
+                front-end can auto-fill.
+
+            Verified on localhost:3000 with admin@test.com:
+              * Pasting "Ramesh Patel 9876543210 Saree 2 pcs 1500 COD"
+                opens the preview with AI-detected Medium complexity, a
+                repeat-customer banner (12, Navrangpura Main Road,
+                Ahmedabad — 6 past orders), and red-bordered missing
+                ADDRESS/CITY/STATE/PINCODE inputs.
+              * Tapping "Use" instantly fills the blank fields.
+              * Tapping "Save Order" posts the merged 14-line block and
+                creates the pending order (backend 200 OK).
 
 agent_communication:
     -agent: "main"

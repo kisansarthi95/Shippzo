@@ -436,6 +436,25 @@ export const Api = {
   smartPasteCreate: (text: string) =>
     api.post<PendingOrder>("/smart-paste", { text }).then((r) => r.data),
 
+  // Customer memory — look up past customer by phone for auto-suggest.
+  lookupCustomerByPhone: (phone: string) =>
+    api.get<{
+      found: boolean;
+      count: number;
+      customer: {
+        customer_name: string;
+        customer_phone: string;
+        address_line1: string;
+        address_line2: string;
+        city: string;
+        state: string;
+        pincode: string;
+        source: "shipment" | "pending";
+        last_tracking_id?: string;
+        last_date?: string;
+      } | null;
+    }>(`/customers/by-phone/${encodeURIComponent(phone)}`).then((r) => r.data),
+
   // Phase-4b+ Smart Paste AI helpers
   smartPasteDefaultPrompt: () =>
     api.get<{
