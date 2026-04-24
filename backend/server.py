@@ -1725,21 +1725,58 @@ async def smart_paste_check_duplicate(
 ):
     """Inspect pasted text for duplicates WITHOUT saving.
 
-    Returns:
-      {
-        "fields": {...},              # parsed fields (so the frontend can
-                                      # show a preview without a 2nd round-trip)
-        "confidence": {...},
-        "warnings": [...],
-        "duplicates": [
-          {kind, id, customer_name, customer_phone, order_id,
-           status, created_at, match_on: ["phone","order_id"]},
-          ...
-        ]
-      }
+    Phase-4b+: we now try the LLM parser first (and merge LLM fields over
+    the regex result where non-empty). The ChatGPT-bounce is gone — users
+    can paste raw WhatsApp text directly.
     """
-    parsed = parse_structured_paste(payload.text or "")
-    fields = parsed.get("fields", {}) or {}
+    text = (payload.text or "")
+    parsed = parse_structured_paste(text)
+    fields: Dict[str, Any] = dict(parsed.get("fields", {}) or {})
+
+    # --- LLM pass (best-effort; falls back to regex on any error) ---
+    ai_missing: List[str] = []
+    ai_complexity = ""
+    ai_reason = ""
+    ai_source = "regex"
+    try:
+        s = await db.settings.find_one(
+            {"user_id": current_user["id"]},
+            {"_id": 0, "smart_paste_instructions": 1, "smart_paste_ai_enabled": 1},
+        ) or {}
+        if s.get("smart_paste_ai_enabled", True):
+            ai = await parse_paste_via_llm(
+                text,
+                custom_instructions=(s.get("smart_paste_instructions") or "").strip(),
+            )
+            if ai.get("source") == "llm":
+                mapped = sm_to_legacy_fields(ai["fields"])
+                for k, v in mapped.items():
+                    if v:
+                        fields[k] = v
+                # Amount as float
+                if isinstance(fields.get("amount"), str):
+                    m = re.search(r"(\d+(?:\.\d+)?)", fields["amount"].replace(",", ""))
+                    if m:
+                        try:
+                            fields["amount"] = float(m.group(1))
+                        except Exception:
+                            pass
+                ai_source = "llm"
+                ai_complexity = ai.get("complexity", "")
+                ai_reason = ai.get("ai_reason", "")
+                # Compute still-missing fields the user must provide
+                for (_sk, _lk) in [
+                    ("NAME", "customer_name"), ("PHONE", "customer_phone"),
+                    ("ADDRESS_1", "address_line1"), ("CITY", "city"),
+                    ("STATE", "state"), ("PINCODE", "pincode"),
+                    ("ITEMS", "items"), ("AMOUNT", "amount"),
+                ]:
+                    v = fields.get(_lk)
+                    if not v and (isinstance(v, str) or v in (None, 0)):
+                        ai_missing.append(_sk)
+    except Exception:
+        logger.exception("LLM path failed on check-duplicate — using regex only")
+
     duplicates = await find_duplicate_matches(
         phone=fields.get("customer_phone", ""),
         order_id=fields.get("order_id", "") or fields.get("order_id_hint", ""),
@@ -1750,6 +1787,13 @@ async def smart_paste_check_duplicate(
         "confidence": parsed.get("confidence", {}),
         "warnings": parsed.get("warnings", []),
         "duplicates": duplicates,
+        "ai": {
+            "used": ai_source == "llm",
+            "missing": ai_missing,
+            "complexity": ai_complexity,
+            "reason": ai_reason,
+            "source": ai_source,
+        },
     }
 
 
@@ -1765,8 +1809,36 @@ async def smart_paste_create(
     return 502 so the client never sees a 'ghost' order that isn't in the
     source-of-truth sheet.
     """
-    parsed = parse_structured_paste(payload.text or "")
-    fields = parsed["fields"]
+    text = (payload.text or "")
+    parsed = parse_structured_paste(text)
+    fields: Dict[str, Any] = dict(parsed["fields"])
+
+    # Phase-4b+: merge LLM-extracted fields over the regex pass so raw
+    # WhatsApp messages parse cleanly even without the 14-line format.
+    try:
+        s = await db.settings.find_one(
+            {"user_id": current_user["id"]},
+            {"_id": 0, "smart_paste_instructions": 1, "smart_paste_ai_enabled": 1},
+        ) or {}
+        if s.get("smart_paste_ai_enabled", True):
+            ai = await parse_paste_via_llm(
+                text,
+                custom_instructions=(s.get("smart_paste_instructions") or "").strip(),
+            )
+            if ai.get("source") == "llm":
+                mapped = sm_to_legacy_fields(ai["fields"])
+                for k, v in mapped.items():
+                    if v:
+                        fields[k] = v
+                if isinstance(fields.get("amount"), str):
+                    m = re.search(r"(\d+(?:\.\d+)?)", fields["amount"].replace(",", ""))
+                    if m:
+                        try:
+                            fields["amount"] = float(m.group(1))
+                        except Exception:
+                            pass
+    except Exception:
+        logger.exception("LLM path failed on smart-paste create — using regex only")
 
     # ---- 1) Write to Google Master Sheet first (atomic) ----
     sheet_meta: Dict[str, Any] = {"ok": False}
