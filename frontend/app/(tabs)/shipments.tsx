@@ -73,7 +73,10 @@ export default function Shipments() {
   const [pickerField, setPickerField] = useState<"from" | "to" | null>(null);
   const [selectMode, setSelectMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-  const [bulkPerPage, setBulkPerPage] = useState<1 | 2 | 4>(4);
+  // perPage matches what the LabelViewer accepts so we can route every
+  // option (A4, A6, Thermal 4×6, Barcode 2×1) through the same printer.
+  type BulkPerPage = 1 | 2 | 4 | "thermal" | "barcode";
+  const [bulkPerPage, setBulkPerPage] = useState<BulkPerPage>("thermal");
   const [refreshing, setRefreshing] = useState(false);
   const [settings, setSettings] = useState<Settings | null>(null);
   // Status picker state: when non-null, a bottom-sheet modal is shown for
@@ -484,41 +487,81 @@ export default function Shipments() {
 
       {selectMode && (
         <View style={styles.bulkBar} testID="bulk-bar">
-          <Text style={styles.bulkCount}>
-            {selectedIds.size} selected
-          </Text>
-          <TouchableOpacity testID="bulk-select-all" onPress={selectAllVisible}>
-            <Text style={styles.bulkLink}>Select all</Text>
-          </TouchableOpacity>
-          <View style={{ flex: 1 }} />
-          <View style={{ flexDirection: "row", gap: 4 }}>
-            {([
-              { n: 1, t: "A4" },
-              { n: 2, t: "½A4" },
-              { n: 4, t: "A6" },
-            ] as const).map(({ n, t }) => (
-              <TouchableOpacity
-                key={n}
-                testID={`bulk-layout-${n}`}
-                onPress={() => setBulkPerPage(n as 1 | 2 | 4)}
-                style={[
-                  styles.bulkLayout,
-                  bulkPerPage === n && { backgroundColor: colors.secondary, borderColor: colors.secondary },
-                ]}
-              >
-                <Text style={[
-                  styles.bulkLayoutText,
-                  bulkPerPage === n && { color: "#fff" },
-                ]}>{t}</Text>
-              </TouchableOpacity>
-            ))}
+          {/* Left: count + Select-all link, stacked. */}
+          <View style={styles.bulkBarLeft}>
+            <Text style={styles.bulkCount}>
+              {selectedIds.size} selected
+            </Text>
+            <TouchableOpacity testID="bulk-select-all" onPress={selectAllVisible} hitSlop={6}>
+              <Text style={styles.bulkLink}>Select all</Text>
+            </TouchableOpacity>
           </View>
-          <TouchableOpacity testID="bulk-preview-btn" style={styles.bulkAction} onPress={bulkPreviewPdf}>
-            <Ionicons name="eye-outline" size={16} color={colors.text} />
-          </TouchableOpacity>
-          <TouchableOpacity testID="bulk-print-btn" style={[styles.bulkAction, { backgroundColor: colors.primary }]} onPress={bulkPrint}>
-            <Ionicons name="print" size={16} color="#fff" />
-          </TouchableOpacity>
+
+          {/* Right: layout choice cards. Horizontally scrollable so the
+              row never overlaps regardless of phone width. */}
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={{ gap: 6, alignItems: "center" }}
+            style={{ flexShrink: 1 }}
+          >
+            {([
+              { k: "thermal" as BulkPerPage, top: "Thermal", sub: "(4×6)", icon: "print-outline" },
+              { k: "barcode" as BulkPerPage, top: "Thermal", sub: "(2×1)", icon: "print-outline" },
+              { k: 1 as BulkPerPage,         top: "A4",      sub: "",      icon: "document-outline" },
+              { k: 4 as BulkPerPage,         top: "A6",      sub: "",      icon: "document-outline" },
+            ]).map((opt) => {
+              const active = bulkPerPage === opt.k;
+              return (
+                <TouchableOpacity
+                  key={String(opt.k)}
+                  testID={`bulk-layout-${opt.k}`}
+                  onPress={() => setBulkPerPage(opt.k)}
+                  style={[styles.bulkLayoutCard, active && styles.bulkLayoutCardActive]}
+                >
+                  <Ionicons
+                    name={opt.icon as any}
+                    size={20}
+                    color={active ? "#fff" : colors.primary}
+                  />
+                  <Text
+                    style={[
+                      styles.bulkLayoutTopText,
+                      active && { color: "#fff" },
+                    ]}
+                  >
+                    {opt.top}
+                  </Text>
+                  {opt.sub ? (
+                    <Text
+                      style={[
+                        styles.bulkLayoutSubText,
+                        active && { color: "#fff" },
+                      ]}
+                    >
+                      {opt.sub}
+                    </Text>
+                  ) : null}
+                </TouchableOpacity>
+              );
+            })}
+            <TouchableOpacity
+              testID="bulk-preview-btn"
+              style={styles.bulkLayoutCard}
+              onPress={bulkPreviewPdf}
+            >
+              <Ionicons name="eye-outline" size={20} color={colors.text} />
+              <Text style={styles.bulkLayoutTopText}>Preview</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              testID="bulk-print-btn"
+              style={[styles.bulkLayoutCard, { backgroundColor: colors.primary, borderColor: colors.primary }]}
+              onPress={bulkPrint}
+            >
+              <Ionicons name="print" size={20} color="#fff" />
+              <Text style={[styles.bulkLayoutTopText, { color: "#fff" }]}>Print</Text>
+            </TouchableOpacity>
+          </ScrollView>
         </View>
       )}
 
@@ -1027,33 +1070,54 @@ const styles = StyleSheet.create({
   },
   primaryBtnText: { color: "#fff", fontWeight: "800" },
   bulkBar: {
-    paddingVertical: 10,
+    paddingVertical: 8,
+    paddingLeft: 12,
+    paddingRight: 8,
     backgroundColor: "#fff",
     borderTopWidth: 1,
     borderBottomWidth: 2,
     borderTopColor: "#E5E7EB",
     borderBottomColor: colors.primary,
     flexGrow: 0,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
   },
-  bulkCount: { fontWeight: "800", color: colors.text, fontSize: 13, marginRight: 4 },
-  bulkLink: { color: colors.primary, fontWeight: "700", fontSize: 12, marginRight: 8 },
-  bulkLayout: {
-    paddingHorizontal: 8,
-    paddingVertical: 6,
-    borderWidth: 1,
-    borderColor: "#E5E7EB",
-    borderRadius: 6,
+  bulkBarLeft: {
+    minWidth: 70,
+    paddingRight: 6,
+    borderRightWidth: 1,
+    borderRightColor: "#E5E7EB",
+    marginRight: 4,
   },
-  bulkLayoutText: { fontSize: 11, fontWeight: "700", color: colors.text },
-  bulkAction: {
-    width: 36,
-    height: 36,
-    borderRadius: 8,
-    borderWidth: 1,
+  bulkCount: { fontWeight: "800", color: colors.text, fontSize: 13 },
+  bulkLink: { color: colors.primary, fontWeight: "700", fontSize: 12, marginTop: 2 },
+  /** Each layout option is a small square card with icon + 1-2 text lines. */
+  bulkLayoutCard: {
+    width: 64,
+    height: 64,
+    borderRadius: 10,
+    borderWidth: 1.5,
     borderColor: "#E5E7EB",
     backgroundColor: "#fff",
     justifyContent: "center",
     alignItems: "center",
+    paddingHorizontal: 4,
+  },
+  bulkLayoutCardActive: {
+    backgroundColor: colors.secondary,
+    borderColor: colors.secondary,
+  },
+  bulkLayoutTopText: {
+    fontSize: 11,
+    fontWeight: "800",
+    color: colors.text,
+    marginTop: 2,
+  },
+  bulkLayoutSubText: {
+    fontSize: 9,
+    fontWeight: "700",
+    color: "#6B7280",
   },
 
   /* ----- Date Range Modal ----- */
