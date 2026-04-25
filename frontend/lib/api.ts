@@ -108,6 +108,7 @@ export type LabelFields = {
   weight: boolean;
   item: boolean;
   phone: boolean;
+  alt_phone: boolean;
   customer_id: boolean;
   token_info: boolean;
   box_dimensions: boolean;

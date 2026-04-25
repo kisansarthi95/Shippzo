@@ -1040,6 +1040,7 @@ export default function SettingsScreen() {
               { key: "weight" as const, label: "Weight" },
               { key: "item" as const, label: "Item Description" },
               { key: "phone" as const, label: "Customer Phone" },
+              { key: "alt_phone" as const, label: "Alternative / Secondary Phone" },
               { key: "customer_id" as const, label: "Courier Customer ID" },
               { key: "token_info" as const, label: "Token / Advance Info (footer)" },
               { key: "box_dimensions" as const, label: "Box Dimensions" },

@@ -78,7 +78,36 @@ export default function AddShipment() {
   const [amount, setAmount] = useState("");
   const [tokenAmount, setTokenAmount] = useState("");
   const [boxDimensions, setBoxDimensions] = useState("");
+  // Box dimensions split into 3 separate L × W × H inputs for easier entry.
+  // We keep the legacy combined string in `boxDimensions` for backward
+  // compat (saved on submit) and rebuild it from these 3 values.
+  const [boxL, setBoxL] = useState("");
+  const [boxW, setBoxW] = useState("");
+  const [boxH, setBoxH] = useState("");
   const [shipmentNotes, setShipmentNotes] = useState("");
+  const [customerAltPhone, setCustomerAltPhone] = useState("");
+  // Label-field visibility toggles (synced from /api/settings → label_fields).
+  // Controls which optional sections appear on this New Shipment form so the
+  // form mirrors what will actually be printed.
+  const [labelFields, setLabelFields] = useState<{
+    weight: boolean;
+    item: boolean;
+    phone: boolean;
+    alt_phone: boolean;
+    customer_id: boolean;
+    token_info: boolean;
+    box_dimensions: boolean;
+    shipment_notes: boolean;
+  }>({
+    weight: true,
+    item: true,
+    phone: true,
+    alt_phone: false,
+    customer_id: true,
+    token_info: false,
+    box_dimensions: false,
+    shipment_notes: false,
+  });
   const [itemsText, setItemsText] = useState(""); // newline or comma separated
   const [weight, setWeight] = useState("");
   const [weightUnit, setWeightUnit] = useState<"g" | "kg">("g");
@@ -110,6 +139,20 @@ export default function AddShipment() {
       // Intentionally DO NOT auto-select a default courier. User must pick.
       setSheetConnected(Boolean(settings.sheet?.sheet_id));
       setCustomFields(((settings as any).custom_fields || []) as any[]);
+      // Sync label-field visibility so the form mirrors the user's label
+      // settings — fields hidden on the label are also hidden here.
+      const lf = (settings as any).label_fields || {};
+      setLabelFields((prev) => ({
+        ...prev,
+        weight: lf.weight !== false,           // default true
+        item: lf.item !== false,
+        phone: lf.phone !== false,
+        alt_phone: !!lf.alt_phone,             // default false
+        customer_id: lf.customer_id !== false,
+        token_info: !!lf.token_info,
+        box_dimensions: !!lf.box_dimensions,
+        shipment_notes: !!lf.shipment_notes,
+      }));
       setLastCourierId(lc || null);
       if (lp === "COD" || lp === "Prepaid") setLastPaymentMode(lp);
       if (lt === "auto" || lt === "manual") setLastTrackMode(lt);
@@ -171,6 +214,7 @@ export default function AddShipment() {
         setOrderId(o.order_id || "");
         setCustomerName(o.customer_name || "");
         setCustomerPhone(o.phone || "");
+        setCustomerAltPhone(o.alt_phone || o.customer_alt_phone || "");
         setAddr1(addr.line1);
         setAddr2(addr.line2);
         setCity(o.city || addr.city);
@@ -199,6 +243,25 @@ export default function AddShipment() {
           }
         }
         if (o.pending_order_id) setPendingOrderId(String(o.pending_order_id));
+        // Auto-fill optional fields the AI/regex captured.
+        if (o.box_dimensions) {
+          const bd = String(o.box_dimensions).trim();
+          // Try to split a "30x20x10 cm" or "30 x 20 x 10" into 3 boxes.
+          const parts = bd.split(/x|×|\*/i).map((s) => s.replace(/[^\d.]/g, "")).filter(Boolean);
+          if (parts.length >= 1) setBoxL(parts[0] || "");
+          if (parts.length >= 2) setBoxW(parts[1] || "");
+          if (parts.length >= 3) setBoxH(parts[2] || "");
+          setBoxDimensions(bd);
+        }
+        if (o.shipment_notes) setShipmentNotes(String(o.shipment_notes));
+        // Token / advance amount may be in `token_amount` field or
+        // embedded in NOTES like "Token 200".
+        if (o.token_amount) {
+          setTokenAmount(String(o.token_amount));
+        } else if (o.notes) {
+          const m = /token[^0-9]*([0-9]+(?:\.[0-9]+)?)/i.exec(String(o.notes));
+          if (m) setTokenAmount(m[1]);
+        }
         // Stash raw row for per-shipment custom field auto-fill (runs in
         // separate effect once customFields load from Settings).
         if (o.raw && typeof o.raw === "object") {
@@ -426,6 +489,16 @@ export default function AddShipment() {
         Alert.alert("Validation", "Customer name is required");
         return;
       }
+      // Weight is mandatory — couriers refuse parcels without weight, and
+      // rate calculation depends on it.
+      if (!weight.trim()) {
+        Alert.alert(
+          "Weight required",
+          "Please enter the parcel weight before saving. Couriers cannot accept a shipment without weight.",
+          [{ text: "OK" }]
+        );
+        return;
+      }
       if (!autoTracking && !trackingId.trim()) {
         Alert.alert(
           "Tracking ID required",
@@ -455,6 +528,7 @@ export default function AddShipment() {
           order_id: orderId.trim(),
           customer_name: customerName.trim(),
           customer_phone: customerPhone.trim(),
+          customer_alt_phone: customerAltPhone.trim(),
           address_line1: addr1.trim(),
           address_line2: addr2.trim(),
           city: city.trim(),
@@ -772,6 +846,19 @@ export default function AddShipment() {
                 style={styles.input}
               />
             </Field>
+            {labelFields.alt_phone && (
+              <Field label="Alternative Phone (optional)">
+                <TextInput
+                  testID="customer-alt-phone-input"
+                  value={customerAltPhone}
+                  onChangeText={setCustomerAltPhone}
+                  placeholder="Secondary 10-digit mobile"
+                  placeholderTextColor="#9CA3AF"
+                  keyboardType="phone-pad"
+                  style={styles.input}
+                />
+              </Field>
+            )}
           </Section>
 
           {/* Address */}
@@ -900,7 +987,7 @@ export default function AddShipment() {
                 style={styles.input}
               />
             </Field>
-            <Field label="Weight">
+            <Field label="Weight" required>
               <View style={{ flexDirection: "row", gap: 8, alignItems: "stretch" }}>
                 <TextInput
                   testID="weight-input"
@@ -1006,28 +1093,65 @@ export default function AddShipment() {
                 </Text>
               ) : null}
             </Field>
-            <Field label="Box Dimensions (optional)">
-              <TextInput
-                testID="box-dim-input"
-                value={boxDimensions}
-                onChangeText={setBoxDimensions}
-                placeholder="e.g. 30x20x10 cm"
-                placeholderTextColor="#9CA3AF"
-                style={styles.input}
-              />
-            </Field>
-            <Field label="Shipment Notes (optional)">
-              <TextInput
-                testID="shipment-notes-input"
-                value={shipmentNotes}
-                onChangeText={setShipmentNotes}
-                placeholder="Fragile / Handle with care / Any special instruction"
-                placeholderTextColor="#9CA3AF"
-                multiline
-                numberOfLines={2}
-                style={[styles.input, { minHeight: 56, textAlignVertical: "top" }]}
-              />
-            </Field>
+            {labelFields.box_dimensions && (
+              <Field label="Box Dimensions (optional)">
+                <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+                  <TextInput
+                    testID="box-dim-l-input"
+                    value={boxL}
+                    onChangeText={(v) => {
+                      setBoxL(v);
+                      setBoxDimensions(`${v}x${boxW}x${boxH}`.replace(/^x|x$|xx/g, ""));
+                    }}
+                    placeholder="L"
+                    placeholderTextColor="#9CA3AF"
+                    keyboardType="numeric"
+                    style={[styles.input, { flex: 1, textAlign: "center" }]}
+                  />
+                  <Text style={{ fontWeight: "800", color: "#6B7280" }}>×</Text>
+                  <TextInput
+                    testID="box-dim-w-input"
+                    value={boxW}
+                    onChangeText={(v) => {
+                      setBoxW(v);
+                      setBoxDimensions(`${boxL}x${v}x${boxH}`.replace(/^x|x$|xx/g, ""));
+                    }}
+                    placeholder="W"
+                    placeholderTextColor="#9CA3AF"
+                    keyboardType="numeric"
+                    style={[styles.input, { flex: 1, textAlign: "center" }]}
+                  />
+                  <Text style={{ fontWeight: "800", color: "#6B7280" }}>×</Text>
+                  <TextInput
+                    testID="box-dim-h-input"
+                    value={boxH}
+                    onChangeText={(v) => {
+                      setBoxH(v);
+                      setBoxDimensions(`${boxL}x${boxW}x${v}`.replace(/^x|x$|xx/g, ""));
+                    }}
+                    placeholder="H"
+                    placeholderTextColor="#9CA3AF"
+                    keyboardType="numeric"
+                    style={[styles.input, { flex: 1, textAlign: "center" }]}
+                  />
+                  <Text style={{ fontSize: 12, color: "#6B7280" }}>cm</Text>
+                </View>
+              </Field>
+            )}
+            {labelFields.shipment_notes && (
+              <Field label="Shipment Notes (optional)">
+                <TextInput
+                  testID="shipment-notes-input"
+                  value={shipmentNotes}
+                  onChangeText={setShipmentNotes}
+                  placeholder="Fragile / Handle with care / Any special instruction"
+                  placeholderTextColor="#9CA3AF"
+                  multiline
+                  numberOfLines={2}
+                  style={[styles.input, { minHeight: 56, textAlignVertical: "top" }]}
+                />
+              </Field>
+            )}
           </Section>
 
           {/* ---------- Per-Shipment Custom Fields (defined in Settings) ---------- */}
@@ -1251,13 +1375,18 @@ function Section({
 function Field({
   label,
   children,
+  required,
 }: {
   label: string;
   children: React.ReactNode;
+  required?: boolean;
 }) {
   return (
     <View style={{ marginBottom: 10 }}>
-      <Text style={styles.fieldLabel}>{label}</Text>
+      <Text style={styles.fieldLabel}>
+        {label}
+        {required ? <Text style={{ color: "#DC2626" }}> *</Text> : null}
+      </Text>
       {children}
     </View>
   );

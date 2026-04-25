@@ -1216,6 +1216,76 @@ frontend:
     status_history:
         -working: true
         -agent: "main"
+
+  - task: "Smart Paste — placeholder leak + alt-phone + form respects label settings"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py & /app/backend/smart_paste_ai.py & /app/frontend/app/(tabs)/add.tsx & /app/frontend/app/(tabs)/index.tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "main"
+        -comment: |
+            Critical bug fixes + UX upgrades reported by user:
+
+            1) PLACEHOLDER LEAK (BLOCKER)
+               * Old prompt used <angle> placeholders that the LLM was
+                 echoing literally into the form (NAME: <customer name in
+                 English>). Rewrote DEFAULT_SHIPBOT_PROMPT with
+                 example-based formatting + a real Gujarati example.
+               * Added defensive filter in `_parse_schema_block` that
+                 drops any value containing both `<` and `>`.
+               * One-shot DB cleanup script removed garbage placeholder
+                 records that had already leaked.
+
+            2) ALT_PHONE FIELD
+               * Backend: ALT_PHONE added to SCHEMA_FIELDS, ALT_PHONE
+                 line in prompt + example, regex parser keys
+                 ALT_PHONE/ALTERNATE/ALTERNATIVE → customer_alt_phone.
+               * Models: Shipment, ShipmentUpdate, PendingOrder all gained
+                 `customer_alt_phone`.
+               * Helper `_split_compound_phone()` auto-splits
+                 "9876543210 / 9988776655" or "+91-... or ..." into
+                 (primary, alt).
+               * LabelFields gained `alt_phone: bool = False` toggle.
+               * Settings UI added "Alternative / Secondary Phone" toggle.
+               * add.tsx renders Alt Phone TextInput only when toggle ON.
+
+            3) FORM RESPECTS LABEL SETTINGS (the user's main ask)
+               * add.tsx fetches `label_fields` and now hides Box Dimensions
+                 and Shipment Notes sections when their toggles are OFF.
+
+            4) BOX DIMENSIONS — 3 separate inputs
+               * Replaced single "30x20x10" textbox with three numeric
+                 inputs (L × W × H) for one-tap entry. Combines back to
+                 the legacy "LxWxH" string on save.
+
+            5) WEIGHT MANDATORY
+               * Field gets a red asterisk (Field component now accepts
+                 `required`).
+               * Save handler blocks with explicit alert if weight is
+                 empty.
+               * Smart-paste chat REQUIRED_FIELDS list gained "WEIGHT"
+                 (frontend + backend `_CHAT_REQUIRED`) so the AI asks
+                 "what's the parcel weight?" when missing.
+
+            6) TOKEN AUTO-FILL
+               * orders.tsx ship-now passes through `token_amount`,
+                 `box_dimensions`, `shipment_notes`, `notes`,
+                 `alt_phone`.
+               * add.tsx prefill logic auto-fills tokenAmount from the
+                 explicit field OR by regex-matching "Token <num>" inside
+                 NOTES.
+
+            7) ALT-PHONE NOTIFICATION
+               * runSmartPasteAI now reads /settings.label_fields.alt_phone
+                 and, if a second phone was extracted but the toggle is
+                 OFF, prepends a system bubble to the chat: "⚠️ Found a
+                 second phone … but Alt Phone field is OFF. Turn it ON to
+                 save & print this number."
+
         -comment: |
             Addressed the user's two UX pain-points with the chat flow:
 

@@ -356,6 +356,7 @@ class LabelFields(BaseModel):
     weight: bool = True
     item: bool = True
     phone: bool = True
+    alt_phone: bool = False  # secondary/alternative phone (off by default)
     customer_id: bool = True
     token_info: bool = False
     box_dimensions: bool = False
@@ -1898,7 +1899,7 @@ async def smart_paste_check_duplicate(
 # Labels / order used by the chat endpoint to build both the synthetic
 # structured block it feeds to the LLM and the natural-language AI
 # message returned to the client.
-_CHAT_REQUIRED = ["NAME", "PHONE", "ADDRESS_1", "CITY", "STATE", "PINCODE", "AMOUNT"]
+_CHAT_REQUIRED = ["NAME", "PHONE", "ADDRESS_1", "CITY", "STATE", "PINCODE", "AMOUNT", "WEIGHT"]
 _CHAT_LABEL = {
     "NAME": "Name",
     "PHONE": "Phone",

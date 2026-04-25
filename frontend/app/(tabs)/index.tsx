@@ -125,7 +125,7 @@ export default function Dashboard() {
 
   // Fields the app treats as REQUIRED — blocks Save until filled.
   const REQUIRED_FIELDS = [
-    "NAME", "PHONE", "ADDRESS_1", "CITY", "STATE", "PINCODE", "AMOUNT",
+    "NAME", "PHONE", "ADDRESS_1", "CITY", "STATE", "PINCODE", "AMOUNT", "WEIGHT",
   ];
 
   /** Derived: do we already have every required field? Controls the
@@ -139,6 +139,7 @@ export default function Dashboard() {
       STATE: "state",
       PINCODE: "pincode",
       AMOUNT: "amount",
+      WEIGHT: "weight",
     };
     return REQUIRED_FIELDS.every((k) => {
       const v = chatFields[keyMap[k]];
@@ -218,11 +219,31 @@ export default function Dashboard() {
       );
       const legacyFields = dup.fields || {};
 
+      // If AI detected an alternative phone but the user hasn't enabled
+      // the Alt-Phone field on the label, surface a one-line notification
+      // so they know it was found but won't print / save unless enabled.
+      let altPhoneWarning: string | null = null;
+      const altPhoneFound = (legacyFields.customer_alt_phone || "").trim();
+      if (altPhoneFound) {
+        try {
+          const settings = await Api.getSettings();
+          const altOn = !!(settings as any)?.label_fields?.alt_phone;
+          if (!altOn) {
+            altPhoneWarning =
+              `⚠️ Found a second phone (${altPhoneFound}) but "Alt Phone" ` +
+              `field is OFF in Settings → Label Fields. ` +
+              `Turn it ON to save & print this number.`;
+          }
+        } catch {
+          /* ignore — non-blocking */
+        }
+      }
+
       setPasting(false);
       setPasteStage("");
 
       // All required present + no duplicates → save directly, no UI.
-      if (missing.length === 0 && (dup.duplicates || []).length === 0) {
+      if (missing.length === 0 && (dup.duplicates || []).length === 0 && !altPhoneWarning) {
         await saveFromFields(legacyFields);
         return;
       }
@@ -236,7 +257,11 @@ export default function Dashboard() {
       setSuggestedCustomer(null);
       setChatInput("");
       const firstMsg = buildChatMessage(legacyFields, missing, true);
-      setChatMessages([{ role: "ai", text: firstMsg }]);
+      const initialMessages: ChatMsg[] = [{ role: "ai", text: firstMsg }];
+      if (altPhoneWarning) {
+        initialMessages.unshift({ role: "system", text: altPhoneWarning });
+      }
+      setChatMessages(initialMessages);
       setChatOpen(true);
 
       // Background phone lookup for repeat-customer suggestion.

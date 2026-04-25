@@ -53,6 +53,7 @@ export default function OrdersFromSheet() {
           order_id: order.order_id_hint || "",
           customer_name: order.customer_name,
           phone: order.customer_phone,
+          alt_phone: (order as any).customer_alt_phone || "",
           address:
             [order.address_line1, order.address_line2]
               .filter(Boolean)
@@ -64,6 +65,10 @@ export default function OrdersFromSheet() {
           amount: order.amount,
           payment_mode: order.payment_mode,
           weight: order.weight,
+          token_amount: (order as any).token_amount || "",
+          box_dimensions: (order as any).box_dimensions || "",
+          shipment_notes: (order as any).shipment_notes || "",
+          notes: (order as any).notes || "",
           pending_order_id: order.id,
           source: "paste",
         }),
