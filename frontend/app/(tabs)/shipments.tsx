@@ -8,6 +8,7 @@ import { Ionicons } from "@expo/vector-icons";
 import * as Clipboard from "expo-clipboard";
 import * as Print from "expo-print";
 import * as Sharing from "expo-sharing";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useFocusEffect, useRouter, useLocalSearchParams } from "expo-router";
 import DateTimePicker from "@react-native-community/datetimepicker";
 import { Api, Shipment, Settings, Courier } from "../../lib/api";
@@ -76,7 +77,34 @@ export default function Shipments() {
   // perPage matches what the LabelViewer accepts so we can route every
   // option (A4, A6, Thermal 4×6, Barcode 2×1) through the same printer.
   type BulkPerPage = 1 | 2 | 4 | "thermal" | "barcode";
-  const [bulkPerPage, setBulkPerPage] = useState<BulkPerPage>("thermal");
+  // null = no layout chosen yet → Preview/Print buttons stay hidden so
+  // first-time users aren't lost. As soon as a layout is picked, the
+  // action buttons reveal.
+  const [bulkPerPage, setBulkPerPage] = useState<BulkPerPage | null>(null);
+  // Persist the last-used layout so we can show a "Last used" hint above
+  // its card on the next bulk-print session.
+  const LS_LAST_PERPAGE = "@bulk_last_perpage";
+  const [lastUsedPerPage, setLastUsedPerPage] = useState<BulkPerPage | null>(null);
+
+  useEffect(() => {
+    AsyncStorage.getItem(LS_LAST_PERPAGE)
+      .then((v) => {
+        if (!v) return;
+        try {
+          const parsed = JSON.parse(v);
+          if (parsed === 1 || parsed === 2 || parsed === 4 ||
+              parsed === "thermal" || parsed === "barcode") {
+            setLastUsedPerPage(parsed);
+          }
+        } catch { /* ignore */ }
+      })
+      .catch(() => {});
+  }, []);
+
+  const persistLastUsedPerPage = (v: BulkPerPage) => {
+    setLastUsedPerPage(v);
+    AsyncStorage.setItem(LS_LAST_PERPAGE, JSON.stringify(v)).catch(() => {});
+  };
   const [refreshing, setRefreshing] = useState(false);
   const [settings, setSettings] = useState<Settings | null>(null);
   // Status picker state: when non-null, a bottom-sheet modal is shown for
@@ -171,11 +199,16 @@ export default function Shipments() {
   const clearSelection = () => {
     setSelectedIds(new Set());
     setSelectMode(false);
+    setBulkPerPage(null);  // reset so next session starts at "choose layout"
   };
 
   const bulkPrint = async () => {
     if (selectedIds.size === 0 || !settings) {
       Alert.alert("Select shipments", "Tap shipments to select first.");
+      return;
+    }
+    if (!bulkPerPage) {
+      Alert.alert("Choose layout", "Pick a print layout (Thermal / A4 / A6) first.");
       return;
     }
     try {
@@ -194,6 +227,8 @@ export default function Shipments() {
       });
       const dims = pageDimensionsFor(bulkPerPage);
       await Print.printAsync({ html, ...(dims || {}) });
+      // Remember this layout as the user's last-used choice.
+      persistLastUsedPerPage(bulkPerPage);
     } catch (e: any) {
       Alert.alert("Error", e?.message || "Failed");
     }
@@ -202,6 +237,10 @@ export default function Shipments() {
   const bulkPreviewPdf = async () => {
     if (selectedIds.size === 0 || !settings) {
       Alert.alert("Select shipments", "Tap shipments to select first.");
+      return;
+    }
+    if (!bulkPerPage) {
+      Alert.alert("Choose layout", "Pick a print layout (Thermal / A4 / A6) first.");
       return;
     }
     try {
@@ -224,6 +263,8 @@ export default function Shipments() {
       } else if (await Sharing.isAvailableAsync()) {
         await Sharing.shareAsync(uri, { mimeType: "application/pdf" });
       }
+      // Remember this layout for next time.
+      persistLastUsedPerPage(bulkPerPage);
     } catch (e: any) {
       Alert.alert("Error", e?.message || "Failed");
     }
@@ -498,11 +539,13 @@ export default function Shipments() {
           </View>
 
           {/* Right: layout choice cards. Horizontally scrollable so the
-              row never overlaps regardless of phone width. */}
+              row never overlaps regardless of phone width. After a layout
+              is picked, the Preview / Print buttons reveal next to it so
+              first-time users always see the next step. */}
           <ScrollView
             horizontal
             showsHorizontalScrollIndicator={false}
-            contentContainerStyle={{ gap: 6, alignItems: "center" }}
+            contentContainerStyle={{ gap: 6, alignItems: "flex-end" }}
             style={{ flexShrink: 1 }}
           >
             {([
@@ -512,55 +555,78 @@ export default function Shipments() {
               { k: 4 as BulkPerPage,         top: "A6",      sub: "",      icon: "document-outline" },
             ]).map((opt) => {
               const active = bulkPerPage === opt.k;
+              const isLastUsed = lastUsedPerPage === opt.k;
               return (
-                <TouchableOpacity
-                  key={String(opt.k)}
-                  testID={`bulk-layout-${opt.k}`}
-                  onPress={() => setBulkPerPage(opt.k)}
-                  style={[styles.bulkLayoutCard, active && styles.bulkLayoutCardActive]}
-                >
-                  <Ionicons
-                    name={opt.icon as any}
-                    size={20}
-                    color={active ? "#fff" : colors.primary}
-                  />
-                  <Text
-                    style={[
-                      styles.bulkLayoutTopText,
-                      active && { color: "#fff" },
-                    ]}
+                <View key={String(opt.k)} style={{ alignItems: "center" }}>
+                  {isLastUsed ? (
+                    <Text style={styles.bulkLastUsedHint}>Last used</Text>
+                  ) : (
+                    <View style={{ height: 14 }} />
+                  )}
+                  <TouchableOpacity
+                    testID={`bulk-layout-${opt.k}`}
+                    onPress={() => setBulkPerPage(opt.k)}
+                    style={[styles.bulkLayoutCard, active && styles.bulkLayoutCardActive]}
                   >
-                    {opt.top}
-                  </Text>
-                  {opt.sub ? (
+                    <Ionicons
+                      name={opt.icon as any}
+                      size={20}
+                      color={active ? "#fff" : colors.primary}
+                    />
                     <Text
                       style={[
-                        styles.bulkLayoutSubText,
+                        styles.bulkLayoutTopText,
                         active && { color: "#fff" },
                       ]}
                     >
-                      {opt.sub}
+                      {opt.top}
                     </Text>
-                  ) : null}
-                </TouchableOpacity>
+                    {opt.sub ? (
+                      <Text
+                        style={[
+                          styles.bulkLayoutSubText,
+                          active && { color: "#fff" },
+                        ]}
+                      >
+                        {opt.sub}
+                      </Text>
+                    ) : null}
+                  </TouchableOpacity>
+                </View>
               );
             })}
-            <TouchableOpacity
-              testID="bulk-preview-btn"
-              style={styles.bulkLayoutCard}
-              onPress={bulkPreviewPdf}
-            >
-              <Ionicons name="eye-outline" size={20} color={colors.text} />
-              <Text style={styles.bulkLayoutTopText}>Preview</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              testID="bulk-print-btn"
-              style={[styles.bulkLayoutCard, { backgroundColor: colors.primary, borderColor: colors.primary }]}
-              onPress={bulkPrint}
-            >
-              <Ionicons name="print" size={20} color="#fff" />
-              <Text style={[styles.bulkLayoutTopText, { color: "#fff" }]}>Print</Text>
-            </TouchableOpacity>
+            {/* Preview + Print only show AFTER a layout is picked so new
+                users have a clear, ordered flow: choose → preview/print. */}
+            {bulkPerPage !== null && (
+              <>
+                <View style={styles.bulkSeparator} />
+                <View style={{ alignItems: "center" }}>
+                  <View style={{ height: 14 }} />
+                  <TouchableOpacity
+                    testID="bulk-preview-btn"
+                    style={styles.bulkLayoutCard}
+                    onPress={bulkPreviewPdf}
+                  >
+                    <Ionicons name="eye-outline" size={20} color={colors.text} />
+                    <Text style={styles.bulkLayoutTopText}>Preview</Text>
+                  </TouchableOpacity>
+                </View>
+                <View style={{ alignItems: "center" }}>
+                  <View style={{ height: 14 }} />
+                  <TouchableOpacity
+                    testID="bulk-print-btn"
+                    style={[
+                      styles.bulkLayoutCard,
+                      { backgroundColor: colors.primary, borderColor: colors.primary },
+                    ]}
+                    onPress={bulkPrint}
+                  >
+                    <Ionicons name="print" size={20} color="#fff" />
+                    <Text style={[styles.bulkLayoutTopText, { color: "#fff" }]}>Print</Text>
+                  </TouchableOpacity>
+                </View>
+              </>
+            )}
           </ScrollView>
         </View>
       )}
@@ -1118,6 +1184,23 @@ const styles = StyleSheet.create({
     fontSize: 9,
     fontWeight: "700",
     color: "#6B7280",
+  },
+  /** Tiny green hint shown above the layout the user picked last time —
+      mirrors the courier-picker pattern so users have a familiar cue. */
+  bulkLastUsedHint: {
+    fontSize: 9,
+    fontWeight: "800",
+    color: "#10B981",
+    marginBottom: 2,
+    letterSpacing: 0.3,
+  },
+  /** Vertical divider between layout cards and the action buttons. */
+  bulkSeparator: {
+    width: 1,
+    height: 48,
+    backgroundColor: "#E5E7EB",
+    marginHorizontal: 4,
+    alignSelf: "center",
   },
 
   /* ----- Date Range Modal ----- */
