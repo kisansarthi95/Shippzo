@@ -18,7 +18,7 @@ import {
 import * as ImagePicker from "expo-image-picker";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
-import { useRouter, useFocusEffect } from "expo-router";
+import { useRouter, useFocusEffect, useLocalSearchParams } from "expo-router";
 import { Api, Courier, Settings as SettingsT, SenderAddress, SheetPreview, SHEET_FIELDS, api } from "../../lib/api";
 import { colors } from "../../lib/theme";
 import { useAuth } from "../../lib/auth";
@@ -118,6 +118,52 @@ function fillTemplate(tpl: string, brand?: string): string {
 export default function SettingsScreen() {
   const router = useRouter();
   const { user, signOut } = useAuth();
+  const params = useLocalSearchParams<{ section?: string }>();
+  // Section routing: empty = Hub view, otherwise show only the matching
+  // group of cards. Keeps the screen short, focused, and click-driven.
+  type Section =
+    | ""
+    | "account"
+    | "label"
+    | "orders"
+    | "integrations"
+    | "billing"
+    | "advanced";
+  const section: Section = (String(params?.section || "") as Section);
+  // Heading shown at the top of each section screen.
+  const SECTION_TITLES: Record<Section, string> = {
+    "": "Settings",
+    account: "My Account",
+    label: "Label & Shipping",
+    orders: "Orders & Forms",
+    integrations: "Integrations",
+    billing: "Billing & Credits",
+    advanced: "Advanced",
+  };
+  const SECTION_SUBTITLES: Record<Section, string> = {
+    "": "",
+    account: "Profile, plan, password and sign-out",
+    label: "Brand, sender address, label fields",
+    orders: "Smart Paste AI, customer messages",
+    integrations: "Google Sheets and courier partners",
+    billing: "Wallet, plans, and AI processing rates",
+    advanced: "Custom fields and developer-level settings",
+  };
+  // Hub cards — clicked to open each section.
+  const HUB_CARDS: Array<{
+    key: Section;
+    icon: any;
+    title: string;
+    sub: string;
+    color: string;
+  }> = [
+    { key: "account",      icon: "person-circle-outline", title: "My Account",        sub: "Profile · Plan · Password",       color: "#7C3AED" },
+    { key: "label",        icon: "pricetag-outline",      title: "Label & Shipping",  sub: "Brand · Sender · Label fields",   color: "#0EA5E9" },
+    { key: "orders",       icon: "sparkles-outline",      title: "Orders & Forms",    sub: "Smart Paste AI · Messages",       color: "#F59E0B" },
+    { key: "integrations", icon: "git-network-outline",   title: "Integrations",      sub: "Google Sheets · Couriers",        color: "#10B981" },
+    { key: "billing",      icon: "wallet-outline",        title: "Billing & Credits", sub: "Wallet · Plan · AI rates",        color: "#DC2626" },
+    { key: "advanced",     icon: "construct-outline",     title: "Advanced",          sub: "Custom fields · Developer",       color: "#475569" },
+  ];
 
   const [sender, setSender] = useState<SenderAddress>({
     name: "", phone: "", address_line1: "", address_line2: "",
@@ -397,7 +443,22 @@ export default function SettingsScreen() {
   return (
     <SafeAreaView style={styles.safe} edges={["top"]}>
       <View style={styles.header}>
-        <Text style={styles.title}>Settings</Text>
+        {section ? (
+          <TouchableOpacity
+            onPress={() => router.replace("/(tabs)/settings")}
+            hitSlop={10}
+            style={{ marginRight: 8 }}
+            testID="settings-back"
+          >
+            <Ionicons name="chevron-back" size={26} color={colors.text} />
+          </TouchableOpacity>
+        ) : null}
+        <View style={{ flex: 1 }}>
+          <Text style={styles.title}>{SECTION_TITLES[section]}</Text>
+          {section ? (
+            <Text style={styles.titleSub}>{SECTION_SUBTITLES[section]}</Text>
+          ) : null}
+        </View>
       </View>
 
       <KeyboardAvoidingView
@@ -409,6 +470,47 @@ export default function SettingsScreen() {
           contentContainerStyle={{ padding: 16, paddingBottom: 120 }}
           keyboardShouldPersistTaps="handled"
         >
+          {/* HUB: list of section cards. Click → /(tabs)/settings?section=key */}
+          {!section && (
+            <View>
+              {HUB_CARDS.map((c) => (
+                <TouchableOpacity
+                  key={c.key}
+                  testID={`settings-hub-${c.key}`}
+                  style={styles.hubCard}
+                  onPress={() =>
+                    router.push({ pathname: "/(tabs)/settings", params: { section: c.key } })
+                  }
+                  activeOpacity={0.7}
+                >
+                  <View style={[styles.hubIconWrap, { backgroundColor: c.color + "15" }]}>
+                    <Ionicons name={c.icon} size={22} color={c.color} />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.hubTitle}>{c.title}</Text>
+                    <Text style={styles.hubSub}>{c.sub}</Text>
+                  </View>
+                  <Ionicons name="chevron-forward" size={20} color="#94A3B8" />
+                </TouchableOpacity>
+              ))}
+              <TouchableOpacity
+                testID="settings-signout"
+                onPress={() =>
+                  Alert.alert("Sign out?", "You'll need to log in again.", [
+                    { text: "Cancel", style: "cancel" },
+                    { text: "Sign out", style: "destructive", onPress: () => signOut() },
+                  ])
+                }
+                style={styles.hubSignOutBtn}
+              >
+                <Ionicons name="log-out-outline" size={18} color="#DC2626" />
+                <Text style={styles.hubSignOutText}>Sign out</Text>
+              </TouchableOpacity>
+            </View>
+          )}
+
+          {/* === SECTION: My Account === */}
+          {section === "account" && (<>
           {/* Account (Phase-1 multi-tenant auth) */}
           <Section title="Account" icon="person-circle-outline">
             <View style={styles.accountRow}>
@@ -497,7 +599,9 @@ export default function SettingsScreen() {
               <Text style={styles.dangerBtnTxt}>Sign out</Text>
             </TouchableOpacity>
           </Section>
+          </>)}
 
+          {section === "orders" && (<>
           {/* Phase-4b+ Smart Paste AI */}
           <Section title="Smart Paste AI" icon="sparkles-outline">
             <View style={styles.spaiIntro}>
@@ -591,7 +695,9 @@ export default function SettingsScreen() {
               </View>
             ) : null}
           </Section>
+          </>)}
 
+          {section === "billing" && (<>
           {/* AI Processing Charges — per-user rate card */}
           <Section title="AI Processing Charges" icon="pricetags-outline">
             <Text style={styles.spaiHint}>
@@ -685,7 +791,9 @@ export default function SettingsScreen() {
               </TouchableOpacity>
             </View>
           </Section>
+          </>)}
 
+          {section === "integrations" && (<>
           {/* Google Sheet */}
           <Section title="Google Sheet (Orders source)" icon="logo-google">
             <View style={styles.sampleBox} testID="sheet-sample-box">
@@ -880,7 +988,9 @@ export default function SettingsScreen() {
               </View>
             </TouchableOpacity>
           </Modal>
+          </>)}
 
+          {section === "label" && (<>
           {/* Brand */}
           <Section title="Brand on Labels" icon="pricetag-outline">
             <Text style={styles.hint}>
