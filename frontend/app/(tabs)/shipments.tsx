@@ -77,10 +77,13 @@ export default function Shipments() {
   // perPage matches what the LabelViewer accepts so we can route every
   // option (A4, A6, Thermal 4×6, Barcode 2×1) through the same printer.
   type BulkPerPage = 1 | 2 | 4 | "thermal" | "barcode";
-  // null = no layout chosen yet → Preview/Print buttons stay hidden so
-  // first-time users aren't lost. As soon as a layout is picked, the
-  // action buttons reveal.
+  // null = no layout chosen yet → action popup stays closed so first-time
+  // users aren't lost. As soon as a layout is picked, a small popup opens
+  // with Preview + Print buttons.
   const [bulkPerPage, setBulkPerPage] = useState<BulkPerPage | null>(null);
+  // Controls the "Preview / Print" action popup that opens after a layout
+  // is picked.
+  const [actionPopupOpen, setActionPopupOpen] = useState(false);
   // Persist the last-used layout so we can show a "Last used" hint above
   // its card on the next bulk-print session.
   const LS_LAST_PERPAGE = "@bulk_last_perpage";
@@ -539,9 +542,9 @@ export default function Shipments() {
           </View>
 
           {/* Right: layout choice cards. Horizontally scrollable so the
-              row never overlaps regardless of phone width. After a layout
-              is picked, the Preview / Print buttons reveal next to it so
-              first-time users always see the next step. */}
+              row never overlaps regardless of phone width. Tapping any
+              card opens a small popup with Preview + Print buttons —
+              keeps the bar minimal and the next step crystal clear. */}
           <ScrollView
             horizontal
             showsHorizontalScrollIndicator={false}
@@ -565,7 +568,16 @@ export default function Shipments() {
                   )}
                   <TouchableOpacity
                     testID={`bulk-layout-${opt.k}`}
-                    onPress={() => setBulkPerPage(opt.k)}
+                    onPress={() => {
+                      // Pick the layout AND immediately open the action
+                      // popup — one tap, the next step pops in front.
+                      if (selectedIds.size === 0) {
+                        Alert.alert("Select shipments", "Tap shipments to select first.");
+                        return;
+                      }
+                      setBulkPerPage(opt.k);
+                      setActionPopupOpen(true);
+                    }}
                     style={[styles.bulkLayoutCard, active && styles.bulkLayoutCardActive]}
                   >
                     <Ionicons
@@ -595,41 +607,72 @@ export default function Shipments() {
                 </View>
               );
             })}
-            {/* Preview + Print only show AFTER a layout is picked so new
-                users have a clear, ordered flow: choose → preview/print. */}
-            {bulkPerPage !== null && (
-              <>
-                <View style={styles.bulkSeparator} />
-                <View style={{ alignItems: "center" }}>
-                  <View style={{ height: 14 }} />
-                  <TouchableOpacity
-                    testID="bulk-preview-btn"
-                    style={styles.bulkLayoutCard}
-                    onPress={bulkPreviewPdf}
-                  >
-                    <Ionicons name="eye-outline" size={20} color={colors.text} />
-                    <Text style={styles.bulkLayoutTopText}>Preview</Text>
-                  </TouchableOpacity>
-                </View>
-                <View style={{ alignItems: "center" }}>
-                  <View style={{ height: 14 }} />
-                  <TouchableOpacity
-                    testID="bulk-print-btn"
-                    style={[
-                      styles.bulkLayoutCard,
-                      { backgroundColor: colors.primary, borderColor: colors.primary },
-                    ]}
-                    onPress={bulkPrint}
-                  >
-                    <Ionicons name="print" size={20} color="#fff" />
-                    <Text style={[styles.bulkLayoutTopText, { color: "#fff" }]}>Print</Text>
-                  </TouchableOpacity>
-                </View>
-              </>
-            )}
           </ScrollView>
         </View>
       )}
+
+      {/* Bulk Action Popup — opens after the user taps a layout card.
+          Shows just two big buttons (Preview / Print) so the next step
+          is impossible to miss. Backdrop tap or Cancel dismisses. */}
+      <Modal
+        visible={actionPopupOpen}
+        animationType="fade"
+        transparent
+        onRequestClose={() => setActionPopupOpen(false)}
+      >
+        <TouchableOpacity
+          activeOpacity={1}
+          style={styles.bulkPopupBackdrop}
+          onPress={() => setActionPopupOpen(false)}
+        >
+          <TouchableOpacity activeOpacity={1} style={styles.bulkPopupCard}>
+            <View style={styles.bulkPopupHeaderRow}>
+              <Ionicons name="print" size={18} color={colors.primary} />
+              <Text style={styles.bulkPopupTitle}>
+                {selectedIds.size} shipment{selectedIds.size !== 1 ? "s" : ""} •{" "}
+                {bulkPerPage === "thermal" ? "Thermal 4×6" :
+                 bulkPerPage === "barcode" ? "Thermal 2×1" :
+                 bulkPerPage === 1 ? "A4" :
+                 bulkPerPage === 4 ? "A6" :
+                 bulkPerPage === 2 ? "½A4" : "Layout"}
+              </Text>
+              <TouchableOpacity onPress={() => setActionPopupOpen(false)} hitSlop={10}>
+                <Ionicons name="close" size={22} color={colors.text} />
+              </TouchableOpacity>
+            </View>
+            <Text style={styles.bulkPopupSub}>
+              Tap Preview to check the PDF before printing, or Print to send
+              directly to your printer.
+            </Text>
+            <View style={styles.bulkPopupActions}>
+              <TouchableOpacity
+                testID="bulk-preview-btn"
+                style={[styles.bulkPopupBtn, styles.bulkPopupBtnSecondary]}
+                onPress={() => {
+                  setActionPopupOpen(false);
+                  bulkPreviewPdf();
+                }}
+              >
+                <Ionicons name="eye-outline" size={20} color={colors.text} />
+                <Text style={[styles.bulkPopupBtnText, { color: colors.text }]}>
+                  Preview
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                testID="bulk-print-btn"
+                style={[styles.bulkPopupBtn, { backgroundColor: colors.primary }]}
+                onPress={() => {
+                  setActionPopupOpen(false);
+                  bulkPrint();
+                }}
+              >
+                <Ionicons name="print" size={20} color="#fff" />
+                <Text style={styles.bulkPopupBtnText}>Print</Text>
+              </TouchableOpacity>
+            </View>
+          </TouchableOpacity>
+        </TouchableOpacity>
+      </Modal>
 
       <FlatList
         testID="shipments-list"
@@ -1201,6 +1244,65 @@ const styles = StyleSheet.create({
     backgroundColor: "#E5E7EB",
     marginHorizontal: 4,
     alignSelf: "center",
+  },
+
+  /* Bulk Action Popup — Preview / Print step opened after a layout pick. */
+  bulkPopupBackdrop: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.45)",
+    justifyContent: "center",
+    alignItems: "center",
+    paddingHorizontal: 24,
+  },
+  bulkPopupCard: {
+    width: "100%",
+    maxWidth: 380,
+    backgroundColor: "#fff",
+    borderRadius: 16,
+    padding: 18,
+    elevation: 8,
+  },
+  bulkPopupHeaderRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    marginBottom: 6,
+  },
+  bulkPopupTitle: {
+    flex: 1,
+    fontSize: 15,
+    fontWeight: "800",
+    color: colors.text,
+  },
+  bulkPopupSub: {
+    fontSize: 12,
+    color: "#6B7280",
+    lineHeight: 17,
+    marginBottom: 14,
+  },
+  bulkPopupActions: {
+    flexDirection: "row",
+    gap: 10,
+  },
+  bulkPopupBtn: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    paddingVertical: 14,
+    borderRadius: 12,
+  },
+  bulkPopupBtnSecondary: {
+    backgroundColor: "#F3F4F6",
+    borderWidth: 1,
+    borderColor: "#E5E7EB",
+  },
+  bulkPopupBtnText: {
+    color: "#fff",
+    fontWeight: "800",
+    fontSize: 14,
+    letterSpacing: 0.3,
   },
 
   /* ----- Date Range Modal ----- */
