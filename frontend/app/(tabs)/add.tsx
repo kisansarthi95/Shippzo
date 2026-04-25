@@ -206,6 +206,81 @@ export default function AddShipment() {
   // customFields may load AFTER params.prefill arrives.
   const [prefillRaw, setPrefillRaw] = useState<Record<string, string> | null>(null);
 
+  // Edit mode: when navigated from Shipments tab with `?edit_id=...` we
+  // load the existing shipment, prefill every field, and switch the save
+  // button into "Update" mode (PUT /shipments/:id instead of POST).
+  const [editingShipmentId, setEditingShipmentId] = useState<string>("");
+
+  useEffect(() => {
+    const eid = String(params.edit_id || "").trim();
+    if (!eid) return;
+    setEditingShipmentId(eid);
+    let cancelled = false;
+    (async () => {
+      try {
+        const s = await Api.getShipment(eid);
+        if (cancelled || !s) return;
+        // Map every shipment field back into the form state.
+        setOrderId(s.order_id || "");
+        setCustomerName(s.customer_name || "");
+        setCustomerPhone(s.customer_phone || "");
+        setCustomerAltPhone((s as any).customer_alt_phone || "");
+        setAddr1(s.address_line1 || "");
+        setAddr2(s.address_line2 || "");
+        setCity(s.city || "");
+        setState(s.state || "");
+        setPincode(s.pincode || "");
+        const amt =
+          s.amount != null && (s.amount as any) !== ""
+            ? String(s.amount)
+            : "";
+        setAmount(amt);
+        // Items can be array or string.
+        const items = Array.isArray(s.items)
+          ? s.items
+          : String(s.items || "").split(/[,\n;|]/).map((x) => x.trim()).filter(Boolean);
+        setItemsText(items.join("\n"));
+        setPaymentMode(
+          s.payment_mode === "PAID" || (s.payment_mode as any) === "Prepaid"
+            ? "Prepaid"
+            : "COD"
+        );
+        if (s.weight) {
+          const wStr = String(s.weight);
+          const m = /^(\d+\.?\d*)\s*(g|kg|gm|gms|grams|kilogram)?/i.exec(wStr);
+          if (m) {
+            setWeight(m[1]);
+            const u = (m[2] || "g").toLowerCase();
+            setWeightUnit(u.startsWith("k") ? "kg" : "g");
+          } else {
+            setWeight(wStr);
+          }
+        }
+        if ((s as any).box_dimensions) {
+          const bd = String((s as any).box_dimensions);
+          const parts = bd.split(/x|×|\*/i).map((x) => x.replace(/[^\d.]/g, "")).filter(Boolean);
+          if (parts[0]) setBoxL(parts[0]);
+          if (parts[1]) setBoxW(parts[1]);
+          if (parts[2]) setBoxH(parts[2]);
+          setBoxDimensions(bd);
+        }
+        if ((s as any).shipment_notes) setShipmentNotes((s as any).shipment_notes);
+        if ((s as any).token_amount) setTokenAmount(String((s as any).token_amount));
+        if ((s as any).notes) setNotes((s as any).notes);
+        if (s.tracking_id) {
+          setTrackingId(s.tracking_id);
+          setAutoTracking(false);  // user clearly already has the ID
+        }
+        if (s.courier_id) setSelectedCourierId(s.courier_id);
+        if (s.dispatch_date) setDispatchDate(s.dispatch_date);
+      } catch (e: any) {
+        Alert.alert("Edit failed", e?.response?.data?.detail || e?.message || "Could not load shipment");
+      }
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [params.edit_id]);
+
   useEffect(() => {
     if (params.prefill) {
       try {
@@ -254,13 +329,10 @@ export default function AddShipment() {
           setBoxDimensions(bd);
         }
         if (o.shipment_notes) setShipmentNotes(String(o.shipment_notes));
-        // Token / advance amount may be in `token_amount` field or
-        // embedded in NOTES like "Token 200".
+        // Token / advance amount comes through as a dedicated field —
+        // never embedded inside notes.
         if (o.token_amount) {
           setTokenAmount(String(o.token_amount));
-        } else if (o.notes) {
-          const m = /token[^0-9]*([0-9]+(?:\.[0-9]+)?)/i.exec(String(o.notes));
-          if (m) setTokenAmount(m[1]);
         }
         // Stash raw row for per-shipment custom field auto-fill (runs in
         // separate effect once customFields load from Settings).
@@ -521,7 +593,7 @@ export default function AddShipment() {
           .split(/\n|,|;/)
           .map((s) => s.trim())
           .filter(Boolean);
-        const created = await Api.createShipment({
+        const payload = {
           tracking_id: finalTracking,
           courier_id: selectedCourier?.id,
           courier_name: selectedCourier?.name,
@@ -557,7 +629,11 @@ export default function AddShipment() {
             }
             return out;
           })(),
-        });
+        };
+        // Edit mode → PUT existing shipment, otherwise POST a new one.
+        const created = editingShipmentId
+          ? await Api.updateShipment(editingShipmentId, payload as any)
+          : await Api.createShipment(payload as any);
         // Persist last-used choices (hints for next entry, never defaults).
         try {
           await Promise.all([
@@ -627,7 +703,9 @@ export default function AddShipment() {
   return (
     <SafeAreaView style={styles.safe} edges={["top"]}>
       <View style={styles.header}>
-        <Text style={styles.title}>New Shipment</Text>
+        <Text style={styles.title}>
+          {editingShipmentId ? "Edit Shipment" : "New Shipment"}
+        </Text>
         <TouchableOpacity
           testID="scan-tracking-btn"
           onPress={() => router.push("/scanner?returnTo=add")}
@@ -1214,8 +1292,14 @@ export default function AddShipment() {
                 <ActivityIndicator color={colors.text} />
               ) : (
                 <>
-                  <Ionicons name="save-outline" size={18} color={colors.text} />
-                  <Text style={styles.secondaryBtnText}>Save</Text>
+                  <Ionicons
+                    name={editingShipmentId ? "checkmark-circle-outline" : "save-outline"}
+                    size={18}
+                    color={colors.text}
+                  />
+                  <Text style={styles.secondaryBtnText}>
+                    {editingShipmentId ? "Update" : "Save"}
+                  </Text>
                 </>
               )}
             </TouchableOpacity>
@@ -1226,7 +1310,9 @@ export default function AddShipment() {
               onPress={() => save(true)}
             >
               <Ionicons name="print" size={18} color="#fff" />
-              <Text style={styles.primaryBtnText}>Save & Print</Text>
+              <Text style={styles.primaryBtnText}>
+                {editingShipmentId ? "Update & Print" : "Save & Print"}
+              </Text>
             </TouchableOpacity>
           </View>
         </ScrollView>

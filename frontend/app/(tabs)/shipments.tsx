@@ -614,6 +614,16 @@ export default function Shipments() {
                   testID={`whatsapp-${item.tracking_id}`}
                 />
                 <ActionBtn
+                  icon="create-outline" color="#2563EB"
+                  onPress={() =>
+                    router.push({
+                      pathname: "/(tabs)/add",
+                      params: { edit_id: item.id },
+                    })
+                  }
+                  testID={`edit-${item.tracking_id}`}
+                />
+                <ActionBtn
                   icon="print-outline" color={colors.text}
                   onPress={() => router.push(`/label/${item.id}`)}
                   testID={`print-${item.tracking_id}`}
