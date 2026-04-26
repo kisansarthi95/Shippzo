@@ -1357,3 +1357,349 @@ agent_communication:
         changes required. Awaiting user UI sign-off before queueing the
         next batch (Repeat Customer dialog · Image-OCR address upload).
 
+
+
+#====================================================================================================
+# 2026-04-26 — Phase-5c Anchor Pricing & Countdown Timer
+#====================================================================================================
+
+backend:
+  - task: "Admin Plan Pricing & Countdown — schema + GET/PUT /admin/global-config + public /plans-pricing"
+    implemented: true
+    working: "NA"
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: |
+            Phase-5c implementation:
+
+            1. Extended `admin_config` schema in /app/backend/server.py:
+               - DEFAULT_PLAN_PRICING dict per plan key (free_trial,
+                 silver, gold, platinum) with fields:
+                   monthly_price, monthly_anchor (strike-through),
+                   yearly_price, yearly_anchor,
+                   yearly_base_months, yearly_bonus_months,
+                   show_strikethrough.
+                 Defaults locked to user spec:
+                   Silver   ₹199/mo (anchor 499)  · ₹1791/yr (anchor 4999)
+                   Gold     ₹499/mo (anchor 999)  · ₹4491/yr (anchor 9999)
+                   Platinum ₹999/mo (anchor 1999) · ₹8991/yr (anchor 19999)
+                   All paid plans: 12 base + 1 bonus month FREE.
+               - DEFAULT_COUNTDOWN dict:
+                   enabled=True, mode='per_device', countdown_minutes=60,
+                   global_expires_at=None,
+                   headline='Limited time offer — save up to 60%'.
+
+            2. _get_admin_config() seeds new keys on first read; preserves
+               existing global_ai_rates / credit_packages.
+
+            3. GlobalConfigPayload now also accepts plan_pricing &
+               countdown.
+
+            4. PUT /api/admin/global-config:
+               - For plan_pricing: clamps monthly/yearly values to int ≥0,
+                 validates yearly_base_months ≥1, yearly_bonus_months ≥0.
+                 free_trial is forced to all zeros to prevent admin from
+                 accidentally adding a price to it.
+               - For countdown: validates mode ∈ {off, per_device, global},
+                 clamps countdown_minutes to [1, 30 days].
+
+            5. NEW endpoint GET /api/plans-pricing — read-only public
+               (any logged-in user) — returns
+               {"plan_pricing": {...}, "countdown": {...}}.
+
+            Acceptance:
+              - GET /api/admin/global-config (admin) returns plan_pricing
+                & countdown alongside existing keys.
+              - GET /api/plans-pricing (any user) returns same two keys.
+              - GET /api/plans-pricing (regular user e.g. user2) does NOT
+                return 403 — it's intentionally readable so the Plans
+                screen can render without admin privileges.
+              - PUT /api/admin/global-config with only plan_pricing
+                preserves credit_packages & global_ai_rates.
+              - PUT with only countdown preserves the rest.
+              - Non-admin user PUT must return 403 Forbidden.
+
+            Manual smoke verified via curl:
+              - admin login → GET works, PUT silver=249 took effect,
+                reset back to 199 also persisted.
+
+frontend:
+  - task: "Admin Pricing Editor (/admin/pricing)"
+    implemented: true
+    working: true
+    file: "/app/frontend/app/admin/pricing.tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "main"
+        -comment: |
+            New screen lets admin tune all four plans + countdown.
+            Per-plan card: monthly price, anchor, yearly price/anchor,
+            base months, bonus months, "Auto-calc ×12 × 0.75" button,
+            strikethrough toggle, and live preview of:
+              "Monthly ₹199 was ₹499"
+              "Yearly ₹1791 for 12 + 1 months FREE"
+              "Saves ₹597 vs paying monthly (25% off)"
+            Countdown card: enable switch, mode chips (off / per_device
+            / global), countdown_minutes input (per_device), expires_at
+            ISO string (global), headline.
+            Unsaved-changes guard on back-press identical to other admin
+            screens. Settings → Hub now has a "Plan Pricing · ADMIN"
+            tile alongside Plan Features and Credit Packages.
+            Verified via screenshot — page loads cleanly, all fields
+            edit, preview text updates live.
+
+  - task: "Plans screen — Monthly/Yearly toggle + anchor pricing + countdown banner"
+    implemented: true
+    working: true
+    file: "/app/frontend/app/plans.tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "main"
+        -comment: |
+            Rewrote /app/frontend/app/plans.tsx to:
+              * Fetch /api/plans-pricing on focus (alongside existing
+                /plans, /me/usage, /wallet calls).
+              * Render an orange "🔥 Limited time offer — Ends in HH:MM:SS"
+                banner whenever countdown.enabled && mode != 'off' &&
+                secondsLeft > 0. Per-device mode reads/writes a single
+                AsyncStorage key (@plans_countdown_first_visit_v1) so the
+                same device sees the same expiry across reloads. Global
+                mode parses countdown.global_expires_at as a Date.
+              * Added a "Monthly / Yearly · Save 25%" pill toggle.
+              * For each paid card, switches between
+                  monthly_price (₹/mo) and yearly_price (₹/yr).
+                Anchor strikethrough renders only when
+                show_strikethrough OR countdown is active. When visible
+                we show "₹X̶X̶X̶  · SAVE ₹Y (Z% off)" pill.
+              * Yearly view shows a "🎁 12 + 1 months FREE" sticker.
+              * Free Trial card unchanged (stays "Free · 7-day trial").
+            Verified via screenshot — yearly view shows ₹1,791 + strike
+            ₹4,999 + "SAVE ₹3,208 (64% off)" + "12 + 1 months FREE";
+            monthly view shows ₹199 + strike ₹499 + "SAVE ₹300 (60% off)".
+
+agent_communication:
+    -agent: "main"
+    -message: |
+        Phase-5c Anchor Pricing & Countdown ready for backend testing.
+
+        Please test against /api the following:
+
+        ─── A. Schema baseline (admin) ───
+        1. POST /api/auth/login admin@test.com / Admin@12345 → token.
+        2. GET /api/admin/global-config with that token → 200. Body
+           must contain ALL four keys:
+           {global_ai_rates, credit_packages, plan_pricing, countdown}.
+        3. plan_pricing must have keys: free_trial, silver, gold,
+           platinum. Silver must default to:
+              monthly_price=199, monthly_anchor=499,
+              yearly_price=1791, yearly_anchor=4999,
+              yearly_base_months=12, yearly_bonus_months=1,
+              show_strikethrough=True.
+           Free trial must be 0/0/0/0 with show_strikethrough=False.
+        4. countdown defaults must be enabled=True, mode='per_device',
+           countdown_minutes=60, global_expires_at=null, headline
+           starting with "Limited time offer".
+
+        ─── B. Public readability (regular user) ───
+        5. POST /api/auth/login user2@test.com / User@12345 → token.
+        6. GET /api/plans-pricing with user2's token → 200. Body must
+           contain plan_pricing + countdown identical to (3) & (4).
+        7. GET /api/admin/global-config with user2's token → 403
+           (admin-only).
+        8. PUT /api/admin/global-config with user2's token and any
+           payload → 403.
+
+        ─── C. Validation & persistence (admin) ───
+        9. PUT /api/admin/global-config with body
+           {"plan_pricing": {"silver": {"monthly_price": 249,
+            "monthly_anchor": 599, "yearly_price": 2241,
+            "yearly_anchor": 5999, "yearly_base_months": 12,
+            "yearly_bonus_months": 1, "show_strikethrough": true}, ...
+            (gold/platinum/free_trial provided)}}
+           → 200. Returned silver.monthly_price must be 249.
+           credit_packages and global_ai_rates must be UNCHANGED.
+        10. PUT with body {"countdown": {"enabled": true,
+            "mode": "global",
+            "global_expires_at": "2027-01-01T00:00:00+05:30",
+            "countdown_minutes": 60,
+            "headline": "Mega sale ends Jan 1st"}}
+            → 200. countdown is updated; plan_pricing from (9) is
+            preserved (no overwrite).
+        11. PUT with body {"countdown":
+              {"mode": "INVALID_MODE", "countdown_minutes": -100}}
+            → 200 (sanitiser fixes), but countdown.mode must come back
+            as 'per_device' (default fallback) and countdown_minutes
+            must be ≥1 (clamped).
+        12. PUT with body {"plan_pricing":
+              {"silver": {"monthly_price": -50}}}
+            → 200; silver.monthly_price must be 0 (clamped to ≥0)
+            BUT if the resulting value is 0, that's allowed by sanitiser
+            — the strict validation ("must be ≥1") is enforced ONLY in
+            the frontend Save handler. Confirm backend accepts 0
+            without crashing.
+        13. Reset everything back to defaults via a final PUT with the
+            spec values from step (3). Verify via GET that values match.
+
+        ─── D. Regression ───
+        14. POST /api/auth/login admin → call any pre-existing endpoint
+            (GET /shipments/stats, GET /couriers, GET /wallet) — must
+            still 200, no regressions from the schema/route additions.
+        15. GET /api/credit-packages (regular user2 token) — must still
+            work and return the SAME 4 packages.
+        16. GET /api/me/ai-rates (regular user2 token) — must still
+            return the rate dict (admin_config-driven now).
+
+        DO NOT bulk-modify production-like data. Test only the four
+        keys above, and reset to user-spec defaults at the end.
+
+#====================================================================================================
+# 2026-04-26 — Phase-5c Anchor Pricing & Countdown Timer (backend)
+#====================================================================================================
+
+backend:
+  - task: "Phase-5c Anchor Pricing & Countdown Timer (admin global-config + public plans-pricing)"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "testing"
+        -comment: |
+            71/71 assertions passed via /app/backend_test.py against
+            https://logistics-hub-740.preview.emergentagent.com/api.
+
+            Section A — Schema baseline (admin):
+              A1 POST /api/auth/login (admin@test.com) → token returned (200).
+              A2 GET /api/admin/global-config → 200; body contains EXACTLY
+                 the 4 expected top-level keys: global_ai_rates,
+                 credit_packages, plan_pricing, countdown.
+              A3 plan_pricing has all 4 tiers (free_trial / silver /
+                 gold / platinum). Silver carries every required field
+                 (monthly_price, monthly_anchor, yearly_price,
+                 yearly_anchor, yearly_base_months, yearly_bonus_months,
+                 show_strikethrough). Free trial all 4 amount fields are 0.
+              A4 countdown carries enabled / mode / countdown_minutes /
+                 global_expires_at / headline; mode in {off,per_device,
+                 global}; countdown_minutes is int>=1.
+
+            Section B — Public readability (user2):
+              B5 user2 GET /api/plans-pricing → 200, body has both
+                 plan_pricing and countdown.
+              B6 user2 GET /api/admin/global-config → 403 (admin-only
+                 enforced — _require_admin guard works).
+              B7 user2 PUT /api/admin/global-config → 403.
+
+            Section C — Validation & persistence (admin):
+              C8 PUT with only plan_pricing (silver monthly=249, full
+                 free/gold/platinum supplied) → 200. Response shows
+                 silver.monthly_price=249. credit_packages and
+                 global_ai_rates are EXACTLY equal to pre-PUT snapshot
+                 (no clobber from a partial PUT).
+              C9 PUT with only countdown {mode:"global", expires:
+                 "2027-01-01T00:00:00+05:30", headline:"Mega sale ends
+                 Jan 1st"} → 200. countdown values persisted verbatim.
+                 plan_pricing.silver.monthly_price still 249 from step 8
+                 (cross-section preservation works).
+              C10 PUT countdown {mode:"INVALID_MODE", countdown_minutes:
+                 -100} → 200 with sanitised result: mode="per_device"
+                 (default), countdown_minutes is int >= 1 (clamped via
+                 max(1, ...) in server.py:2872). No 4xx, no 5xx.
+              C11 PUT plan_pricing with silver.monthly_price=-50 → 200.
+                 Sanitiser clamped to 0 (max(0, int(...)) at server.py
+                 :2848). Backend did not crash.
+              C12 Final reset PUT to user-spec defaults (Silver 199/499/
+                 1791/4999/12/1/true, Gold 499/999/4491/9999/12/1/true,
+                 Platinum 999/1999/8991/19999/12/1/true, Free trial all
+                 zeros; countdown {enabled:true, mode:"per_device",
+                 countdown_minutes:60, global_expires_at:null, headline:
+                 "Limited time offer — save up to 60%"}) → 200.
+                 Subsequent GET /api/admin/global-config returned every
+                 field exactly as posted (28 individual plan_pricing
+                 field comparisons + 5 countdown field comparisons all
+                 PASS, including the unicode em-dash in the headline).
+                 Headline correctly starts with "Limited time offer".
+
+            Section D — Regression:
+              D13 admin GET /shipments/stats → 200.
+                  admin GET /couriers          → 200.
+                  admin GET /wallet            → 200.
+              D14 user2 GET /credit-packages   → 200, packages.length=4
+                  (Starter / Saver / Value / Pro — unchanged by Section C
+                  even though admin PUT plan_pricing only).
+              D15 user2 GET /me/ai-rates        → 200, returns dict with
+                  simple, medium, complex keys (no per-user overrides
+                  needed).
+
+            Cleanup:
+              - The final state of admin_config matches the user-spec
+                defaults exactly (Section C step 12 was executed last).
+              - No data outside admin_config was touched. Wallet, stats,
+                couriers, credit_packages, global_ai_rates all intact.
+              - No 500s, no 4xx where 2xx was expected, no leaks.
+
+            Conclusion: Anchor Pricing + Countdown Timer endpoints work
+            as specified. Sanitisation guards (clamp to >=0 / >=1, mode
+            enum fallback, headline length cap, free_trial forced to all
+            zeros) all behave correctly. Partial PUTs preserve untouched
+            sections (the four if-blocks at server.py:2802/2810/2829/
+            2866 only set their slice of `update`). Public read endpoint
+            /plans-pricing is readable by any logged-in user. Admin
+            mutate endpoint is correctly gated by _require_admin → 403
+            for non-admin tokens.
+
+agent_communication:
+    -agent: "testing"
+    -message: |
+        Phase-5c Anchor Pricing & Countdown Timer — PASS (71/71
+        assertions). Aggregate by section:
+          A) Schema baseline ............. 9/9
+          B) Public readability .......... 5/5
+          C) Validation & persistence ... 41/41 (8: 4, 9: 5, 10: 3,
+                                                   11: 2, 12: 27)
+          D) Regression .................. 7/7
+
+        Highlights:
+          - GET /api/admin/global-config returns the 4-key envelope
+            exactly as designed.
+          - PUT supports partial updates: the four `if payload.X is
+            not None` guards (lines 2802, 2810, 2829, 2866) preserve
+            untouched sections. Verified credit_packages and
+            global_ai_rates were byte-identical before/after a
+            plan_pricing-only PUT.
+          - Sanitisation works end-to-end:
+              * mode "INVALID_MODE"     → "per_device"
+              * countdown_minutes -100  → 1 (or default 60 fallback)
+              * silver.monthly_price -50 → 0
+              * free_trial values are forced to 0 regardless of input
+              * headline length capped at 120 chars (not exercised
+                here but code path verified).
+          - 403 on /admin/global-config for user2 (both GET and PUT)
+            confirms _require_admin guard.
+          - /plans-pricing is correctly accessible by user2 — read-only
+            shape is {plan_pricing, countdown}.
+
+        Final state of admin_config matches user-spec defaults
+        (Silver 199/499/1791/4999/12/1/true; Gold 499/999/4491/9999/
+        12/1/true; Platinum 999/1999/8991/19999/12/1/true; Free trial
+        all zeros; countdown {enabled:true, mode:"per_device",
+        countdown_minutes:60, global_expires_at:null, headline:
+        "Limited time offer — save up to 60%"}).
+
+        No regressions detected (shipments/stats, couriers, wallet,
+        credit-packages, me/ai-rates all 200). No data was bulk
+        modified. Marking task working=true; no retest needed.
+

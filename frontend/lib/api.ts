@@ -211,6 +211,24 @@ export type SheetOrder = {
 
 export type PlanKey = "free_trial" | "silver" | "gold" | "platinum";
 
+export type PlanPricingEntry = {
+  monthly_price: number;
+  monthly_anchor: number;
+  yearly_price: number;
+  yearly_anchor: number;
+  yearly_base_months: number;
+  yearly_bonus_months: number;
+  show_strikethrough: boolean;
+};
+
+export type CountdownConfig = {
+  enabled: boolean;
+  mode: "off" | "per_device" | "global";
+  countdown_minutes: number;
+  global_expires_at: string | null;
+  headline: string;
+};
+
 export type PlanSpec = {
   key: PlanKey;
   name: string;
@@ -311,6 +329,15 @@ export const Api = {
       .get<{ plans: PlanSpec[]; current: PlanKey }>("/plans")
       .then((r) => r.data),
   myUsage: () => api.get<UsageSummary>("/me/usage").then((r) => r.data),
+
+  // Phase-5c Anchor pricing & countdown (admin tunable)
+  getPlansPricing: () =>
+    api
+      .get<{
+        plan_pricing: Record<PlanKey, PlanPricingEntry>;
+        countdown: CountdownConfig;
+      }>("/plans-pricing")
+      .then((r) => r.data),
   upgradePlan: (plan: PlanKey) =>
     api
       .post<{

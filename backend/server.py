@@ -2826,11 +2826,77 @@ async def admin_put_global_config(
         # Sort smallest amount first for predictable UI ordering.
         cleaned.sort(key=lambda x: x["amount_inr"])
         update["credit_packages"] = cleaned
+    if payload.plan_pricing is not None:
+        # Validate & sanitise plan pricing. Free trial is always 0/0.
+        cleaned_pp: Dict[str, Dict[str, Any]] = {}
+        defaults = DEFAULT_PLAN_PRICING
+        for k in ("free_trial", "silver", "gold", "platinum"):
+            src = payload.plan_pricing.get(k) or {}
+            base = defaults[k]
+            try:
+                if k == "free_trial":
+                    cleaned_pp[k] = {
+                        "monthly_price": 0,
+                        "monthly_anchor": 0,
+                        "yearly_price": 0,
+                        "yearly_anchor": 0,
+                        "yearly_base_months": 12,
+                        "yearly_bonus_months": 0,
+                        "show_strikethrough": False,
+                    }
+                    continue
+                mp = max(0, int(round(float(src.get("monthly_price", base["monthly_price"])))))
+                ma = max(0, int(round(float(src.get("monthly_anchor", base["monthly_anchor"])))))
+                yp = max(0, int(round(float(src.get("yearly_price", base["yearly_price"])))))
+                ya = max(0, int(round(float(src.get("yearly_anchor", base["yearly_anchor"])))))
+                yb = max(1, int(round(float(src.get("yearly_base_months", 12)))))
+                ybonus = max(0, int(round(float(src.get("yearly_bonus_months", 1)))))
+                cleaned_pp[k] = {
+                    "monthly_price": mp,
+                    "monthly_anchor": ma,
+                    "yearly_price": yp,
+                    "yearly_anchor": ya,
+                    "yearly_base_months": yb,
+                    "yearly_bonus_months": ybonus,
+                    "show_strikethrough": bool(src.get("show_strikethrough", base["show_strikethrough"])),
+                }
+            except (ValueError, TypeError):
+                cleaned_pp[k] = dict(base)
+        update["plan_pricing"] = cleaned_pp
+    if payload.countdown is not None:
+        c = payload.countdown
+        mode = str(c.get("mode", "per_device") or "per_device")
+        if mode not in ("off", "per_device", "global"):
+            mode = "per_device"
+        try:
+            mins = max(1, min(60 * 24 * 30, int(round(float(c.get("countdown_minutes", DEFAULT_COUNTDOWN["countdown_minutes"]))))))
+        except (ValueError, TypeError):
+            mins = DEFAULT_COUNTDOWN["countdown_minutes"]
+        update["countdown"] = {
+            "enabled": bool(c.get("enabled", True)),
+            "mode": mode,
+            "countdown_minutes": mins,
+            "global_expires_at": c.get("global_expires_at") or None,
+            "headline": str(c.get("headline", DEFAULT_COUNTDOWN["headline"]) or "")[:120],
+        }
     if update:
         await db.admin_config.update_one(
             {"_id": "default"}, {"$set": update}, upsert=True,
         )
     return await _get_admin_config()
+
+
+@api_router.get("/plans-pricing")
+async def get_plans_pricing_public(
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    """Public read of plan_pricing + countdown for the Plans screen.
+    Available to every logged-in user (not just admins)."""
+    cfg = await _get_admin_config()
+    return {
+        "plan_pricing": cfg["plan_pricing"],
+        "countdown": cfg["countdown"],
+    }
 
 
 @api_router.get("/credit-packages")

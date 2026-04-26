@@ -769,7 +769,7 @@ export default function SettingsScreen() {
                     </TouchableOpacity>
                     <TouchableOpacity
                       testID="settings-hub-admin-packages"
-                      style={[styles.hubRow, styles.hubRowLast]}
+                      style={styles.hubRow}
                       onPress={() => router.push("/admin/credit-packages")}
                       activeOpacity={0.6}
                     >
@@ -777,6 +777,21 @@ export default function SettingsScreen() {
                         <Ionicons name="gift-outline" size={22} color="#C2410C" />
                       </View>
                       <Text style={styles.hubTitle}>Credit Packages</Text>
+                      <View style={styles.adminPill}>
+                        <Text style={styles.adminPillTxt}>ADMIN</Text>
+                      </View>
+                      <Ionicons name="chevron-forward" size={22} color="#9CA3AF" />
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      testID="settings-hub-admin-pricing"
+                      style={[styles.hubRow, styles.hubRowLast]}
+                      onPress={() => router.push("/admin/pricing")}
+                      activeOpacity={0.6}
+                    >
+                      <View style={[styles.hubIconWrap, { backgroundColor: "#FCE7F3" }]}>
+                        <Ionicons name="pricetags-outline" size={22} color="#BE185D" />
+                      </View>
+                      <Text style={styles.hubTitle}>Plan Pricing</Text>
                       <View style={styles.adminPill}>
                         <Text style={styles.adminPillTxt}>ADMIN</Text>
                       </View>
