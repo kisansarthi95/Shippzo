@@ -19,7 +19,7 @@ import * as ImagePicker from "expo-image-picker";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter, useFocusEffect, useLocalSearchParams } from "expo-router";
-import { Api, Courier, Settings as SettingsT, SenderAddress, SheetPreview, SHEET_FIELDS, api } from "../../lib/api";
+import { Api, Courier, Settings as SettingsT, SenderAddress, SheetPreview, SHEET_FIELDS, api, PlanKey } from "../../lib/api";
 import { colors } from "../../lib/theme";
 import { useAuth } from "../../lib/auth";
 
@@ -104,6 +104,20 @@ const SAMPLE = {
   tracking_url: "https://nandancourier.com/track?id=ND00123",
   amount: "850",
   eta_days: "7",
+};
+
+// Plan tile theme + display labels (mirrors /plans screen)
+const PLAN_THEME: Record<PlanKey, { bg: string; border: string; accent: string; chipBg: string; chipTxt: string }> = {
+  free_trial: { bg: "#FAF5FF", border: "#DDD6FE", accent: "#7C3AED", chipBg: "#7C3AED", chipTxt: "#fff" },
+  silver:     { bg: "#F8FAFC", border: "#CBD5E1", accent: "#475569", chipBg: "#475569", chipTxt: "#fff" },
+  gold:       { bg: "#FFFBEB", border: "#F59E0B", accent: "#B45309", chipBg: "#F59E0B", chipTxt: "#fff" },
+  platinum:   { bg: "#EFF6FF", border: "#3B82F6", accent: "#1E3A8A", chipBg: "#1E3A8A", chipTxt: "#fff" },
+};
+const PLAN_LABEL: Record<PlanKey, string> = {
+  free_trial: "Free Trial",
+  silver: "Silver",
+  gold: "Gold",
+  platinum: "Platinum",
 };
 
 function fillTemplate(tpl: string, brand?: string): string {
@@ -233,6 +247,9 @@ export default function SettingsScreen() {
   const [aiCostComplex, setAiCostComplex] = useState("2.0");
   const [rateCardSaving, setRateCardSaving] = useState(false);
 
+  // Wallet balance for billing section
+  const [walletBal, setWalletBal] = useState<number | null>(null);
+
   const load = useCallback(async () => {
     const [s, cs] = await Promise.all([Api.getSettings(), Api.listCouriers()]);
     setSender(s.sender);
@@ -294,6 +311,21 @@ export default function SettingsScreen() {
       }
     })();
   }, []);
+
+  // Lazy-load wallet balance only when user is on the billing section.
+  useEffect(() => {
+    if (section !== "billing") return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const w = await Api.getWallet();
+        if (!cancelled) setWalletBal(typeof w?.balance === "number" ? w.balance : 0);
+      } catch {
+        if (!cancelled) setWalletBal(0);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [section]);
 
   const saveSmartPasteAI = async () => {
     try {
@@ -710,6 +742,107 @@ export default function SettingsScreen() {
           </>)}
 
           {section === "billing" && (<>
+          {/* Current Plan card */}
+          <TouchableOpacity
+            testID="billing-plans-card"
+            style={[
+              styles.planCard,
+              {
+                backgroundColor: PLAN_THEME[(user?.plan as PlanKey) || "free_trial"].bg,
+                borderColor: PLAN_THEME[(user?.plan as PlanKey) || "free_trial"].border,
+              },
+            ]}
+            onPress={() => router.push("/plans")}
+            activeOpacity={0.7}
+          >
+            <View style={styles.planCardHead}>
+              <View
+                style={[
+                  styles.planChip,
+                  { backgroundColor: PLAN_THEME[(user?.plan as PlanKey) || "free_trial"].chipBg },
+                ]}
+              >
+                <Ionicons
+                  name={user?.plan === "platinum" ? "rocket" : "ribbon"}
+                  size={12}
+                  color={PLAN_THEME[(user?.plan as PlanKey) || "free_trial"].chipTxt}
+                />
+                <Text
+                  style={[
+                    styles.planChipTxt,
+                    { color: PLAN_THEME[(user?.plan as PlanKey) || "free_trial"].chipTxt },
+                  ]}
+                >
+                  Current Plan
+                </Text>
+              </View>
+              <Ionicons name="chevron-forward" size={20} color="#94A3B8" />
+            </View>
+            <Text
+              style={[
+                styles.planName,
+                { color: PLAN_THEME[(user?.plan as PlanKey) || "free_trial"].accent },
+              ]}
+            >
+              {PLAN_LABEL[(user?.plan as PlanKey) || "free_trial"]}
+            </Text>
+            <Text style={styles.planSub}>Tap to upgrade or compare plans</Text>
+          </TouchableOpacity>
+
+          {/* All plan tiles */}
+          <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8, marginBottom: 12 }}>
+            {(["free_trial", "silver", "gold", "platinum"] as PlanKey[]).map((k) => {
+              const active = (user?.plan || "free_trial") === k;
+              const t = PLAN_THEME[k];
+              return (
+                <TouchableOpacity
+                  key={k}
+                  testID={`billing-plan-tile-${k}`}
+                  onPress={() => router.push("/plans")}
+                  activeOpacity={0.7}
+                  style={[
+                    styles.planTile,
+                    { backgroundColor: t.bg, borderColor: active ? t.chipBg : t.border },
+                    active && { borderWidth: 2 },
+                  ]}
+                >
+                  <Ionicons
+                    name={k === "platinum" ? "rocket" : k === "gold" ? "trophy" : k === "silver" ? "ribbon" : "rose"}
+                    size={18}
+                    color={t.accent}
+                  />
+                  <Text style={[styles.planTileName, { color: t.accent }]}>
+                    {PLAN_LABEL[k]}
+                  </Text>
+                  {active ? (
+                    <View style={[styles.planTileBadge, { backgroundColor: t.chipBg }]}>
+                      <Text style={[styles.planTileBadgeTxt, { color: t.chipTxt }]}>YOU</Text>
+                    </View>
+                  ) : null}
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+
+          {/* Wallet card */}
+          <TouchableOpacity
+            testID="billing-wallet-card"
+            style={styles.walletCard}
+            onPress={() => router.push("/wallet")}
+            activeOpacity={0.7}
+          >
+            <View style={styles.walletIconWrap}>
+              <Ionicons name="wallet-outline" size={22} color="#fff" />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.walletLabel}>Credit Wallet</Text>
+              <Text style={styles.walletBalance}>
+                {walletBal != null ? `₹${walletBal.toLocaleString("en-IN")}` : "Tap to view"}
+              </Text>
+            </View>
+            <Ionicons name="chevron-forward" size={22} color="#94A3B8" />
+          </TouchableOpacity>
+
           {/* AI Processing Charges — per-user rate card */}
           <Section title="AI Processing Charges" icon="pricetags-outline">
             <Text style={styles.spaiHint}>
@@ -2637,6 +2770,102 @@ const styles = StyleSheet.create({
     color: "#DC2626",
     fontWeight: "800",
     fontSize: 15,
+  },
+  /* ---- Plan & Wallet cards (Plan & Billing section) ---- */
+  planCard: {
+    borderRadius: 16,
+    borderWidth: 2,
+    padding: 16,
+    marginBottom: 12,
+  },
+  planCardHead: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: 8,
+  },
+  planChip: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 999,
+  },
+  planChipTxt: {
+    fontSize: 11,
+    fontWeight: "800",
+    letterSpacing: 0.4,
+  },
+  planName: {
+    fontSize: 26,
+    fontWeight: "800",
+    letterSpacing: -0.3,
+  },
+  planSub: {
+    fontSize: 12,
+    color: colors.textMuted,
+    marginTop: 4,
+    fontWeight: "500",
+  },
+  planTile: {
+    flexBasis: "48%",
+    flexGrow: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    paddingVertical: 12,
+    paddingHorizontal: 12,
+    borderRadius: 12,
+    borderWidth: 1.5,
+    position: "relative",
+  },
+  planTileName: {
+    fontSize: 14,
+    fontWeight: "800",
+    flex: 1,
+  },
+  planTileBadge: {
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 6,
+  },
+  planTileBadgeTxt: {
+    fontSize: 9,
+    fontWeight: "900",
+    letterSpacing: 0.5,
+  },
+  walletCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    padding: 14,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "#E5E7EB",
+    backgroundColor: colors.surface,
+    marginBottom: 14,
+  },
+  walletIconWrap: {
+    width: 44,
+    height: 44,
+    borderRadius: 12,
+    backgroundColor: "#10B981",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  walletLabel: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: colors.textMuted,
+    letterSpacing: 0.4,
+    textTransform: "uppercase",
+  },
+  walletBalance: {
+    fontSize: 20,
+    fontWeight: "800",
+    color: colors.text,
+    marginTop: 2,
   },
   titleSub: {
     fontSize: 13,
