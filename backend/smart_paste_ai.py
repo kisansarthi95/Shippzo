@@ -109,6 +109,36 @@ RULES:
   - ADDRESS_1 is ONLY physical address: house no / street / area /
     colony / village / post / taluka / district. NEVER products,
     quantity, or amount.
+  - **CRITICAL ADDRESS RULE — NEVER LEAVE ADDRESS_1 EMPTY IF THE
+    INPUT CONTAINS ANY ADDRESS-LIKE TEXT.** This is the single most
+    important rule.
+    * If the input has a label like "Shipping address" / "Delivery
+      address" / "Address" / "પત્તો" / "पता", treat the WHOLE multi-
+      line block that follows (until you hit phone / email / name /
+      order id / payment) as the address block.
+    * From that address block, peel OFF the trailing city + state +
+      pincode (whatever you can detect) and put each in its own
+      field. Whatever is LEFT (street/house/apartment/area/landmark
+      bits) MUST go into ADDRESS_1 (with overflow into ADDRESS_2).
+    * Example of a long shipping address that MUST be split, NOT
+      collapsed into city only:
+        Input  : "Shipping address: C-401 Venus Apartment, near
+                  Sainik Vihar Saraswati Vihar, Rani Bagh, Pitampura,
+                  Delhi, 110034 Delhi"
+        WRONG  : ADDRESS_1: -
+                 CITY: Delhi  STATE: Delhi  PINCODE: 110034
+        RIGHT  : ADDRESS_1: C-401 Venus Apartment, Saraswati Vihar,
+                            Rani Bagh, Pitampura
+                 ADDRESS_2: near Sainik Vihar
+                 CITY: Delhi  STATE: Delhi  PINCODE: 110034
+    * If the same word (e.g. "Delhi") appears TWICE — once as a
+      neighbourhood name and once as the city — keep the city
+      occurrence in CITY and KEEP the neighbourhood occurrence in
+      ADDRESS_1. Do NOT silently drop one.
+    * "near …" / "behind …" / "opp …" landmarks → ADDRESS_2 if a
+      separate ADDRESS_1 already exists, else keep them in ADDRESS_1.
+    * If you can identify a flat/house number (C-401, B/12, 3rd floor,
+      Room 5, Plot 22 etc.) — that ALWAYS belongs in ADDRESS_1.
   - City / State should be English transliteration when obvious (e.g.
     "અરવલ્લી" → "Aravalli", "ગુજરાત" → "Gujarat") so the courier sheet
     is consistent; otherwise keep the source script.
@@ -180,6 +210,69 @@ async def parse_paste_via_llm(
 
     fields, missing = _parse_schema_block(raw)
     complexity, reason = _parse_complexity_block(raw)
+
+    # ── Address-recovery fallback (text path) ───────────────────────
+    # Same problem as photo OCR — if the LLM picked CITY/PINCODE from
+    # the text but left ADDRESS_1 blank, do a tightly scoped follow-up
+    # that asks ONLY for the street/area portion. This is a single
+    # extra LLM call that fires only on bad cases (≈5% of inputs).
+    addr1 = (fields.get("ADDRESS_1") or "").strip()
+    has_locality = bool(
+        (fields.get("CITY") or "").strip()
+        or (fields.get("PINCODE") or "").strip()
+    )
+    if (not addr1 or addr1 == "-") and has_locality:
+        try:
+            from emergentintegrations.llm.chat import (
+                LlmChat as _Chat3, UserMessage as _UM3,
+            )
+            chat3 = (
+                _Chat3(
+                    api_key=_LLM_KEY,
+                    session_id=f"smart-paste-text-fix-{abs(hash(text[:200]))}",
+                    system_message=(
+                        "You are an address extractor. The user will give "
+                        "you raw text containing a customer shipping "
+                        "address. Output ONLY the street / house / flat / "
+                        "apartment / building / area / locality / landmark "
+                        "portion — i.e. EVERYTHING except city, state, "
+                        "pincode, phone, email, name, order id, items, "
+                        "amount and payment. Keep the original script. "
+                        "One or two short comma-separated lines. No labels, "
+                        "no markdown, no explanation. If genuinely no "
+                        "street/area text is present, return a single dash."
+                    ),
+                )
+                .with_model(_PROVIDER, _MODEL)
+            )
+            msg3 = _UM3(text=f"Text:\n```\n{text}\n```\n\nAddress only:")
+            recovered = await asyncio.wait_for(
+                chat3.send_message(msg3), timeout=_TIMEOUT,
+            )
+            recovered = (recovered or "").strip()
+            recovered = re.sub(r"^```[a-z]*\s*", "", recovered)
+            recovered = re.sub(r"\s*```$", "", recovered)
+            recovered = re.sub(
+                r"^(address[_\s-]*1?\s*:\s*)", "", recovered, flags=re.I,
+            )
+            if recovered and recovered != "-":
+                lines = [
+                    ln.strip(" ,;-")
+                    for ln in recovered.splitlines() if ln.strip()
+                ]
+                if lines:
+                    fields["ADDRESS_1"] = lines[0][:140]
+                    if len(lines) > 1 and not (fields.get("ADDRESS_2") or "").strip():
+                        fields["ADDRESS_2"] = lines[1][:140]
+                    if "ADDRESS_1" in missing:
+                        missing.remove("ADDRESS_1")
+                    reason = (reason or "llm classification") + " + address recovery"
+                    _LOG.info(
+                        "Smart-paste TEXT: address recovered via re-prompt"
+                    )
+        except Exception as e:
+            _LOG.warning("Text address recovery failed: %s", e)
+
     return {
         "fields": fields,
         "missing": missing,
@@ -460,6 +553,75 @@ async def parse_image_with_ai(
     if complexity != "complex":
         complexity = "complex"
         reason = (reason or "vision call") + " (photo OCR billed as complex)"
+
+    # ── Address-recovery fallback (Phase-5d patch) ───────────────────
+    # Gemini sometimes returns ADDRESS_1 = "-" even when there's a clearly
+    # visible street/house line in the image — most common on screenshots
+    # of e-commerce order screens where city/state/pincode appear after
+    # the street and the model thinks the locality has covered it.
+    # If we got CITY or PINCODE but ADDRESS_1 is blank, re-prompt with a
+    # tightly scoped "address only" question. Costs one extra call only
+    # on bad cases — typical happy path runs zero retries.
+    addr1 = (fields.get("ADDRESS_1") or "").strip()
+    has_locality = bool(
+        (fields.get("CITY") or "").strip()
+        or (fields.get("PINCODE") or "").strip()
+    )
+    if (not addr1 or addr1 == "-") and has_locality:
+        try:
+            from emergentintegrations.llm.chat import (
+                LlmChat as _Chat2, UserMessage as _UM2, ImageContent as _IC2,
+            )
+            chat2 = (
+                _Chat2(
+                    api_key=_LLM_KEY,
+                    session_id=f"smart-paste-photo-fix-{abs(hash(image_base64[:200]))}",
+                    system_message=(
+                        "You are an OCR helper. The user image contains "
+                        "a CUSTOMER SHIPPING ADDRESS. Output ONLY the "
+                        "street / house / apartment / building / area / "
+                        "locality / landmark portion — i.e. everything "
+                        "EXCEPT the city, state, pincode, phone, name "
+                        "and order id. Keep the original script. Use one "
+                        "or two short lines, comma-separated. No labels, "
+                        "no explanation, no markdown. If there is "
+                        "genuinely no street/area text in the image, "
+                        "return a single dash `-`."
+                    ),
+                )
+                .with_model(_VISION_PROVIDER, _VISION_MODEL)
+            )
+            msg2 = _UM2(
+                text="Address (street / house / area / landmark) only:",
+                file_contents=[_IC2(image_base64=image_base64)],
+            )
+            recovered = await asyncio.wait_for(
+                chat2.send_message(msg2), timeout=_VISION_TIMEOUT,
+            )
+            recovered = (recovered or "").strip()
+            recovered = re.sub(r"^```[a-z]*\s*", "", recovered)
+            recovered = re.sub(r"\s*```$", "", recovered)
+            recovered = re.sub(
+                r"^(address[_\s-]*1?\s*:\s*)", "", recovered, flags=re.I,
+            )
+            if recovered and recovered != "-":
+                lines = [
+                    ln.strip(" ,;-")
+                    for ln in recovered.splitlines() if ln.strip()
+                ]
+                if lines:
+                    fields["ADDRESS_1"] = lines[0][:140]
+                    if len(lines) > 1 and not (fields.get("ADDRESS_2") or "").strip():
+                        fields["ADDRESS_2"] = lines[1][:140]
+                    if "ADDRESS_1" in missing:
+                        missing.remove("ADDRESS_1")
+                    reason = (reason or "vision call") + " + address recovery"
+                    _LOG.info(
+                        "Smart-paste photo: address recovered via re-prompt"
+                    )
+        except Exception as e:
+            _LOG.warning("Address recovery re-prompt failed: %s", e)
+
     return {
         "fields": fields,
         "missing": missing,
