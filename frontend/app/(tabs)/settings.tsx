@@ -256,6 +256,9 @@ export default function SettingsScreen() {
   // back chevron while dirty, we prompt: Save / Discard / Cancel.
   const [originalSnap, setOriginalSnap] = useState<string | null>(null);
   const [savingFromAlert, setSavingFromAlert] = useState(false);
+  // Dedicated visible modal so the warning works identically on web + mobile
+  // (RN Web's Alert.alert with 3 buttons is unreliable).
+  const [unsavedOpen, setUnsavedOpen] = useState(false);
 
   // Compute the current "shape" of editable fields for the active section.
   // Order/keys must stay stable so JSON.stringify diff is reliable.
@@ -368,27 +371,7 @@ export default function SettingsScreen() {
       router.replace("/(tabs)/settings");
       return;
     }
-    Alert.alert(
-      "Unsaved changes",
-      "તમે કેટલાક ફેરફાર કર્યા છે પણ હજી save નથી કર્યા. શું કરશો?",
-      [
-        { text: "Cancel", style: "cancel" },
-        {
-          text: "Discard",
-          style: "destructive",
-          onPress: () => {
-            // Match snapshot to "current" so isDirty becomes false on remount,
-            // then force a fresh load to restore server values.
-            setOriginalSnap(getSectionSnapshot(section));
-            router.replace("/(tabs)/settings");
-          },
-        },
-        {
-          text: "Save",
-          onPress: () => saveSectionAndExit(section),
-        },
-      ],
-    );
+    setUnsavedOpen(true);
   };
 
   const load = useCallback(async () => {
@@ -2161,6 +2144,68 @@ export default function SettingsScreen() {
           </>)}
         </ScrollView>
       </KeyboardAvoidingView>
+
+      {/* ── Unsaved-changes Modal ──────────────────────────────────
+          Custom modal because RN Web's Alert.alert with 3 buttons
+          renders inconsistently. Looks identical on web + mobile. */}
+      <Modal
+        visible={unsavedOpen}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setUnsavedOpen(false)}
+      >
+        <View style={styles.unsavedBackdrop}>
+          <View style={styles.unsavedCard} testID="unsaved-modal">
+            <View style={styles.unsavedIconWrap}>
+              <Ionicons name="warning" size={26} color="#D97706" />
+            </View>
+            <Text style={styles.unsavedTitle}>Unsaved changes</Text>
+            <Text style={styles.unsavedBody}>
+              તમે કેટલાક ફેરફાર કર્યા છે પણ હજી save નથી કર્યા. શું કરવા માંગો છો?
+            </Text>
+
+            <TouchableOpacity
+              testID="unsaved-save-btn"
+              style={[styles.unsavedBtn, styles.unsavedBtnPrimary, savingFromAlert && { opacity: 0.6 }]}
+              disabled={savingFromAlert}
+              onPress={async () => {
+                setUnsavedOpen(false);
+                await saveSectionAndExit(section);
+              }}
+            >
+              {savingFromAlert ? (
+                <ActivityIndicator color="#fff" />
+              ) : (
+                <>
+                  <Ionicons name="save" size={16} color="#fff" />
+                  <Text style={styles.unsavedBtnPrimaryTxt}>Save changes</Text>
+                </>
+              )}
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              testID="unsaved-discard-btn"
+              style={[styles.unsavedBtn, styles.unsavedBtnDanger]}
+              onPress={() => {
+                setOriginalSnap(getSectionSnapshot(section));
+                setUnsavedOpen(false);
+                router.replace("/(tabs)/settings");
+              }}
+            >
+              <Ionicons name="trash-outline" size={16} color="#B91C1C" />
+              <Text style={styles.unsavedBtnDangerTxt}>Discard changes</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              testID="unsaved-cancel-btn"
+              style={[styles.unsavedBtn, styles.unsavedBtnGhost]}
+              onPress={() => setUnsavedOpen(false)}
+            >
+              <Text style={styles.unsavedBtnGhostTxt}>Keep editing</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -3045,5 +3090,82 @@ const styles = StyleSheet.create({
     fontWeight: "800",
     color: "#92400E",
     letterSpacing: 0.4,
+  },
+  /* ---- Unsaved-changes Modal ---- */
+  unsavedBackdrop: {
+    flex: 1,
+    backgroundColor: "rgba(15,23,42,0.55)",
+    justifyContent: "center",
+    alignItems: "center",
+    padding: 24,
+  },
+  unsavedCard: {
+    width: "100%",
+    maxWidth: 380,
+    backgroundColor: "#fff",
+    borderRadius: 18,
+    padding: 22,
+    alignItems: "center",
+    gap: 6,
+  },
+  unsavedIconWrap: {
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: "#FEF3C7",
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 6,
+  },
+  unsavedTitle: {
+    fontSize: 19,
+    fontWeight: "800",
+    color: colors.text,
+  },
+  unsavedBody: {
+    fontSize: 14,
+    color: colors.textMuted,
+    textAlign: "center",
+    lineHeight: 20,
+    marginTop: 4,
+    marginBottom: 14,
+  },
+  unsavedBtn: {
+    width: "100%",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    paddingVertical: 14,
+    borderRadius: 12,
+    marginBottom: 8,
+  },
+  unsavedBtnPrimary: {
+    backgroundColor: colors.primary,
+  },
+  unsavedBtnPrimaryTxt: {
+    color: "#fff",
+    fontWeight: "800",
+    fontSize: 15,
+  },
+  unsavedBtnDanger: {
+    backgroundColor: "#FEF2F2",
+    borderWidth: 1.5,
+    borderColor: "#FECACA",
+  },
+  unsavedBtnDangerTxt: {
+    color: "#B91C1C",
+    fontWeight: "800",
+    fontSize: 15,
+  },
+  unsavedBtnGhost: {
+    backgroundColor: "transparent",
+    paddingVertical: 10,
+    marginBottom: 0,
+  },
+  unsavedBtnGhostTxt: {
+    color: colors.textMuted,
+    fontWeight: "700",
+    fontSize: 14,
   },
 });
