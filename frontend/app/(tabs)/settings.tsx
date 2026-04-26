@@ -14,11 +14,12 @@ import {
   Modal,
   Linking,
   Image,
+  BackHandler,
 } from "react-native";
 import * as ImagePicker from "expo-image-picker";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
-import { useRouter, useFocusEffect, useLocalSearchParams } from "expo-router";
+import { useRouter, useFocusEffect, useLocalSearchParams, useNavigation } from "expo-router";
 import { Api, Courier, Settings as SettingsT, SenderAddress, SheetPreview, SHEET_FIELDS, api, PlanKey } from "../../lib/api";
 import { colors } from "../../lib/theme";
 import { useAuth } from "../../lib/auth";
@@ -131,6 +132,7 @@ function fillTemplate(tpl: string, brand?: string): string {
 
 export default function SettingsScreen() {
   const router = useRouter();
+  const navigation = useNavigation();
   const { user, signOut } = useAuth();
   const params = useLocalSearchParams<{ section?: string }>();
   // Section routing: empty = Hub view, otherwise show only the matching
@@ -250,6 +252,11 @@ export default function SettingsScreen() {
   // Wallet balance for billing section
   const [walletBal, setWalletBal] = useState<number | null>(null);
 
+  // Bumped each time load() finishes — drives reliable snapshot capture for
+  // the dirty-tracking logic below. Declared up here so the hooks that
+  // depend on it can reference it without TDZ errors.
+  const [loadVersion, setLoadVersion] = useState(0);
+
   // ── Unsaved-changes tracking ──────────────────────────────────────
   // Snapshot taken when a section is first opened. Compared against the
   // live state on every render to detect dirty fields. If user taps the
@@ -308,23 +315,25 @@ export default function SettingsScreen() {
   const getSnapRef = useRef(getSectionSnapshot);
   useEffect(() => { getSnapRef.current = getSectionSnapshot; }, [getSectionSnapshot]);
 
-  // (Re)capture the original snapshot whenever the active section changes.
-  // We watch the LIVE snapshot string: once it stops changing for ~600ms
-  // (i.e. load() has hydrated state), we lock it in as the baseline.
+  // (Re)capture the original snapshot:
+  //   • Hub view (no section): clear the baseline.
+  //   • Section view + data not yet loaded: clear and wait.
+  //   • Section view + data loaded: capture state as the baseline.
+  // This fires reliably on section change AND on first load — no debounce
+  // gymnastics, so fast typers can't slip past the dirty check.
   const liveSnap = section ? getSectionSnapshot(section) : "";
   useEffect(() => {
     if (!section) {
       setOriginalSnap(null);
       return;
     }
-    // Only capture the FIRST stable snapshot after section change.
-    if (originalSnap !== null) return;
-    const t = setTimeout(() => {
-      setOriginalSnap(getSnapRef.current(section));
-    }, 600);
-    return () => clearTimeout(t);
+    if (loadVersion === 0) {
+      setOriginalSnap(null);
+      return;
+    }
+    setOriginalSnap(getSnapRef.current(section));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [section, liveSnap, originalSnap]);
+  }, [section, loadVersion]);
 
   // Live "is the user mid-edit?" flag.
   const isDirty = !!section && originalSnap !== null
@@ -357,7 +366,15 @@ export default function SettingsScreen() {
       }
       // Reset snapshot so we don't double-prompt on the next mount
       setOriginalSnap(getSectionSnapshot(sec));
-      router.replace("/(tabs)/settings");
+      // Resume pending nav (hardware/swipe back) OR fall back to hub
+      const pending = pendingNavActionRef.current;
+      pendingNavActionRef.current = null;
+      if (pending) {
+        try { (navigation as any).dispatch(pending); }
+        catch { router.replace("/(tabs)/settings"); }
+      } else {
+        router.replace("/(tabs)/settings");
+      }
     } catch (e: any) {
       Alert.alert("Save failed", e?.response?.data?.detail || e?.message || "Please try again");
     } finally {
@@ -373,6 +390,51 @@ export default function SettingsScreen() {
     }
     setUnsavedOpen(true);
   };
+
+  // ── Hardware-back / swipe-back interception ───────────────────
+  // Reactive refs so the listeners always see the latest values
+  // without re-subscribing on every keystroke (which flickers).
+  const isDirtyRef = useRef(isDirty);
+  const sectionRef = useRef(section);
+  useEffect(() => { isDirtyRef.current = isDirty; }, [isDirty]);
+  useEffect(() => { sectionRef.current = section; }, [section]);
+
+  // Android hardware-back: intercept while we're on a section page so
+  // it shows our modal instead of silently popping the route.
+  useEffect(() => {
+    if (Platform.OS === "web") return;
+    const sub = BackHandler.addEventListener("hardwareBackPress", () => {
+      if (!sectionRef.current) return false;        // hub view → default behaviour
+      if (!isDirtyRef.current) {
+        router.replace("/(tabs)/settings");
+        return true;                                 // we navigated, swallow event
+      }
+      setUnsavedOpen(true);
+      return true;                                   // swallow – we'll wait for user
+    });
+    return () => sub.remove();
+  }, []);
+
+  // iOS swipe-back / generic navigation pop: react-navigation event.
+  // beforeRemove fires for ANY back navigation triggered by the framework
+  // (gesture, hardware back, header back, programmatic goBack).
+  // We DO NOT pre-empt navigation when isDirty is false so normal flow works.
+  const pendingNavActionRef = useRef<any>(null);
+  useEffect(() => {
+    const nav: any = navigation;
+    if (!nav?.addListener) return;
+    const handler = (e: any) => {
+      if (!sectionRef.current) return;        // hub view: allow
+      if (!isDirtyRef.current) return;        // no edits: allow
+      e.preventDefault();
+      pendingNavActionRef.current = e.data?.action;
+      setUnsavedOpen(true);
+    };
+    const unsub = nav.addListener("beforeRemove", handler);
+    return () => {
+      try { unsub?.(); } catch { /* ignore */ }
+    };
+  }, [navigation]);
 
   const load = useCallback(async () => {
     const [s, cs] = await Promise.all([Api.getSettings(), Api.listCouriers()]);
@@ -416,6 +478,9 @@ export default function SettingsScreen() {
       setConnectedHeaders(s.sheet.headers || []);
       setMapping(s.sheet.column_mapping || {});
     }
+    // Bump load-version so the dirty-tracking useEffect captures a fresh
+    // snapshot AFTER all the setters above have flushed into React state.
+    setLoadVersion((v) => v + 1);
   }, []);
 
   useEffect(() => {
@@ -2189,7 +2254,14 @@ export default function SettingsScreen() {
               onPress={() => {
                 setOriginalSnap(getSectionSnapshot(section));
                 setUnsavedOpen(false);
-                router.replace("/(tabs)/settings");
+                const pending = pendingNavActionRef.current;
+                pendingNavActionRef.current = null;
+                if (pending) {
+                  try { (navigation as any).dispatch(pending); }
+                  catch { router.replace("/(tabs)/settings"); }
+                } else {
+                  router.replace("/(tabs)/settings");
+                }
               }}
             >
               <Ionicons name="trash-outline" size={16} color="#B91C1C" />
@@ -2199,7 +2271,10 @@ export default function SettingsScreen() {
             <TouchableOpacity
               testID="unsaved-cancel-btn"
               style={[styles.unsavedBtn, styles.unsavedBtnGhost]}
-              onPress={() => setUnsavedOpen(false)}
+              onPress={() => {
+                pendingNavActionRef.current = null;
+                setUnsavedOpen(false);
+              }}
             >
               <Text style={styles.unsavedBtnGhostTxt}>Keep editing</Text>
             </TouchableOpacity>
