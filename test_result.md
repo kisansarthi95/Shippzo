@@ -1323,3 +1323,37 @@ agent_communication:
         passed (screenshot verified). No testing-agent run needed for this
         purely UI refactor; backend endpoints already covered by earlier
         Smart Paste tests.
+    -agent: "main"
+    -message: |
+        Settings Modular Restructure DONE (2026-04-26).
+
+        Settings tab now ships with a clean 8-section hub:
+          👤 My Account · 🏢 Business · 📦 Couriers · 💳 Plan & Billing
+          💬 WhatsApp · 🖨️ Print & Labels · 🔔 Notifications · ℹ️ About & Help
+
+        Hub view: rounded grouped card list, big 17pt titles, only icon +
+        title + chevron (subtitles removed per user request). Theme matches
+        Home tab (28pt header, #F4F5F7 bg, white surface cards).
+
+        Section detail screens use `?section=<key>` URL param. Each section
+        shows ONLY its own fields with a back chevron and section title at
+        top. Sections with editable fields end in a "Save Settings" button
+        wired to existing `saveSender` (saves brand, sender, templates,
+        labels, custom fields). Smart Paste AI / Google Sheet / AI Rates
+        keep their dedicated save buttons.
+
+        Field mapping:
+          - Business      → Smart Paste AI · Google Sheet · Brand on Labels · Sender Address
+          - Print & Labels→ Label Field toggles · Brand Tagline · Custom Fields (with budget)
+          - WhatsApp      → Customer message templates · ETA days
+          - Plan & Billing→ AI Processing Charges (rate card)
+          - Couriers      → Courier Partners list + Add new
+          - My Account    → Profile · Plan badge · Clear demo · Sign out
+          - Notifications → Coming-soon placeholder
+          - About & Help  → App info · Contact · Privacy · Terms
+
+        Verified end-to-end on localhost:3000 (admin@test.com): hub renders
+        cleanly, all 8 sections open, all save flows preserved. No backend
+        changes required. Awaiting user UI sign-off before queueing the
+        next batch (Repeat Customer dialog · Image-OCR address upload).
+

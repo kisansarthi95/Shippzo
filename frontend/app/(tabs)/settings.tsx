@@ -124,30 +124,36 @@ export default function SettingsScreen() {
   type Section =
     | ""
     | "account"
-    | "label"
-    | "orders"
-    | "integrations"
+    | "business"
+    | "couriers"
     | "billing"
-    | "advanced";
+    | "whatsapp"
+    | "print"
+    | "notifications"
+    | "about";
   const section: Section = (String(params?.section || "") as Section);
   // Heading shown at the top of each section screen.
   const SECTION_TITLES: Record<Section, string> = {
     "": "Settings",
     account: "My Account",
-    label: "Label & Shipping",
-    orders: "Orders & Forms",
-    integrations: "Integrations",
-    billing: "Billing & Credits",
-    advanced: "Advanced",
+    business: "Business",
+    couriers: "Couriers",
+    billing: "Plan & Billing",
+    whatsapp: "WhatsApp",
+    print: "Print & Labels",
+    notifications: "Notifications",
+    about: "About & Help",
   };
   const SECTION_SUBTITLES: Record<Section, string> = {
     "": "",
-    account: "Profile, plan, password and sign-out",
-    label: "Brand, sender address, label fields",
-    orders: "Smart Paste AI, customer messages",
-    integrations: "Google Sheets and courier partners",
-    billing: "Wallet, plans, and AI processing rates",
-    advanced: "Custom fields and developer-level settings",
+    account: "Profile, plan, and sign-out",
+    business: "Brand, sender, Smart Paste AI, Google Sheet",
+    couriers: "Manage courier partners",
+    billing: "Plan, wallet, and AI processing rates",
+    whatsapp: "Customer message templates and ETA",
+    print: "Label fields, tagline, custom fields",
+    notifications: "Push & email alerts",
+    about: "App info and support",
   };
   // Hub cards — clicked to open each section.
   const HUB_CARDS: Array<{
@@ -157,12 +163,14 @@ export default function SettingsScreen() {
     sub: string;
     color: string;
   }> = [
-    { key: "account",      icon: "person-circle-outline", title: "My Account",        sub: "Profile · Plan · Password",       color: "#7C3AED" },
-    { key: "label",        icon: "pricetag-outline",      title: "Label & Shipping",  sub: "Brand · Sender · Label fields",   color: "#0EA5E9" },
-    { key: "orders",       icon: "sparkles-outline",      title: "Orders & Forms",    sub: "Smart Paste AI · Messages",       color: "#F59E0B" },
-    { key: "integrations", icon: "git-network-outline",   title: "Integrations",      sub: "Google Sheets · Couriers",        color: "#10B981" },
-    { key: "billing",      icon: "wallet-outline",        title: "Billing & Credits", sub: "Wallet · Plan · AI rates",        color: "#DC2626" },
-    { key: "advanced",     icon: "construct-outline",     title: "Advanced",          sub: "Custom fields · Developer",       color: "#475569" },
+    { key: "account",       icon: "person-circle-outline", title: "My Account",      sub: "Profile · Plan · Sign out",          color: "#7C3AED" },
+    { key: "business",      icon: "business-outline",      title: "Business",        sub: "Brand · Sender · Smart Paste · Sheet", color: "#0EA5E9" },
+    { key: "couriers",      icon: "rocket-outline",        title: "Couriers",        sub: "Manage courier partners",            color: "#10B981" },
+    { key: "billing",       icon: "wallet-outline",        title: "Plan & Billing",  sub: "Plan · Wallet · AI rates",           color: "#DC2626" },
+    { key: "whatsapp",      icon: "logo-whatsapp",         title: "WhatsApp",        sub: "Templates & ETA",                    color: "#22C55E" },
+    { key: "print",         icon: "print-outline",         title: "Print & Labels",  sub: "Label fields · Custom · Tagline",    color: "#F59E0B" },
+    { key: "notifications", icon: "notifications-outline", title: "Notifications",   sub: "Push · Email alerts",                color: "#EC4899" },
+    { key: "about",         icon: "information-circle-outline", title: "About & Help", sub: "Version · Support · Legal",       color: "#475569" },
   ];
 
   const [sender, setSender] = useState<SenderAddress>({
@@ -473,26 +481,30 @@ export default function SettingsScreen() {
           {/* HUB: list of section cards. Click → /(tabs)/settings?section=key */}
           {!section && (
             <View>
-              {HUB_CARDS.map((c) => (
-                <TouchableOpacity
-                  key={c.key}
-                  testID={`settings-hub-${c.key}`}
-                  style={styles.hubCard}
-                  onPress={() =>
-                    router.push({ pathname: "/(tabs)/settings", params: { section: c.key } })
-                  }
-                  activeOpacity={0.7}
-                >
-                  <View style={[styles.hubIconWrap, { backgroundColor: c.color + "15" }]}>
-                    <Ionicons name={c.icon} size={22} color={c.color} />
-                  </View>
-                  <View style={{ flex: 1 }}>
+              <View style={styles.hubGroup}>
+                {HUB_CARDS.map((c, idx) => (
+                  <TouchableOpacity
+                    key={c.key}
+                    testID={`settings-hub-${c.key}`}
+                    style={[
+                      styles.hubRow,
+                      idx === 0 && styles.hubRowFirst,
+                      idx === HUB_CARDS.length - 1 && styles.hubRowLast,
+                    ]}
+                    onPress={() =>
+                      router.push({ pathname: "/(tabs)/settings", params: { section: c.key } })
+                    }
+                    activeOpacity={0.6}
+                  >
+                    <View style={[styles.hubIconWrap, { backgroundColor: c.color + "1A" }]}>
+                      <Ionicons name={c.icon} size={22} color={c.color} />
+                    </View>
                     <Text style={styles.hubTitle}>{c.title}</Text>
-                    <Text style={styles.hubSub}>{c.sub}</Text>
-                  </View>
-                  <Ionicons name="chevron-forward" size={20} color="#94A3B8" />
-                </TouchableOpacity>
-              ))}
+                    <Ionicons name="chevron-forward" size={22} color="#9CA3AF" />
+                  </TouchableOpacity>
+                ))}
+              </View>
+
               <TouchableOpacity
                 testID="settings-signout"
                 onPress={() =>
@@ -503,7 +515,7 @@ export default function SettingsScreen() {
                 }
                 style={styles.hubSignOutBtn}
               >
-                <Ionicons name="log-out-outline" size={18} color="#DC2626" />
+                <Ionicons name="log-out-outline" size={20} color="#DC2626" />
                 <Text style={styles.hubSignOutText}>Sign out</Text>
               </TouchableOpacity>
             </View>
@@ -601,7 +613,7 @@ export default function SettingsScreen() {
           </Section>
           </>)}
 
-          {section === "orders" && (<>
+          {section === "business" && (<>
           {/* Phase-4b+ Smart Paste AI */}
           <Section title="Smart Paste AI" icon="sparkles-outline">
             <View style={styles.spaiIntro}>
@@ -793,7 +805,7 @@ export default function SettingsScreen() {
           </Section>
           </>)}
 
-          {section === "integrations" && (<>
+          {section === "business" && (<>
           {/* Google Sheet */}
           <Section title="Google Sheet (Orders source)" icon="logo-google">
             <View style={styles.sampleBox} testID="sheet-sample-box">
@@ -990,7 +1002,7 @@ export default function SettingsScreen() {
           </Modal>
           </>)}
 
-          {section === "label" && (<>
+          {section === "business" && (<>
           {/* Brand */}
           <Section title="Brand on Labels" icon="pricetag-outline">
             <Text style={styles.hint}>
@@ -1122,7 +1134,9 @@ export default function SettingsScreen() {
               </Text>
             </Field>
           </Section>
+          </>)}
 
+          {section === "print" && (<>
           {/* Label Customization — field visibility toggles */}
           <Section title="Label Fields (Show / Hide)" icon="options-outline">
             <Text style={styles.hint}>
@@ -1544,6 +1558,13 @@ export default function SettingsScreen() {
             )}
           </Section>
 
+          <TouchableOpacity testID="save-print-btn" style={styles.saveBtn} onPress={saveSender}>
+            <Ionicons name="save" size={18} color="#fff" />
+            <Text style={styles.saveBtnText}>Save Print Settings</Text>
+          </TouchableOpacity>
+          </>)}
+
+          {section === "business" && (<>
           {/* Sender */}
           <Section title="Sender / From Address" icon="business-outline">
             <Field label="Business / Sender Name">
@@ -1633,6 +1654,13 @@ export default function SettingsScreen() {
             </View>
           </Section>
 
+          <TouchableOpacity testID="save-business-btn" style={styles.saveBtn} onPress={saveSender}>
+            <Ionicons name="save" size={18} color="#fff" />
+            <Text style={styles.saveBtnText}>Save Business Settings</Text>
+          </TouchableOpacity>
+          </>)}
+
+          {section === "whatsapp" && (<>
           {/* Templates */}
           <Section title="Customer Messages" icon="chatbubbles-outline">
             <View style={styles.infoBox} testID="messages-info-box">
@@ -1730,7 +1758,9 @@ export default function SettingsScreen() {
             <Ionicons name="save" size={18} color="#fff" />
             <Text style={styles.saveBtnText}>Save Settings</Text>
           </TouchableOpacity>
+          </>)}
 
+          {section === "couriers" && (<>
           {/* Couriers */}
           <Section title="Courier Partners" icon="rocket-outline">
             {couriers.map((c) => (
@@ -1764,6 +1794,89 @@ export default function SettingsScreen() {
               <Text style={styles.saveBtnText}>Add Courier Partner</Text>
             </TouchableOpacity>
           </Section>
+          </>)}
+
+          {/* === SECTION: Notifications (placeholder) === */}
+          {section === "notifications" && (<>
+          <Section title="Notifications" icon="notifications-outline">
+            <View style={styles.placeholderBox}>
+              <Ionicons name="notifications-off-outline" size={42} color="#94A3B8" />
+              <Text style={styles.placeholderTitle}>Coming soon</Text>
+              <Text style={styles.placeholderSub}>
+                Push notifications અને email alerts ની configuration જલ્દી ઉમેરાશે — અહીંથી તમે dispatch reminders, low credits warnings, અને daily summaries enable / disable કરી શકશો.
+              </Text>
+            </View>
+          </Section>
+          </>)}
+
+          {/* === SECTION: About & Help === */}
+          {section === "about" && (<>
+          <Section title="About" icon="information-circle-outline">
+            <View style={styles.aboutRow}>
+              <Text style={styles.aboutKey}>App</Text>
+              <Text style={styles.aboutVal}>Courier Label Manager</Text>
+            </View>
+            <View style={styles.aboutRow}>
+              <Text style={styles.aboutKey}>Version</Text>
+              <Text style={styles.aboutVal}>1.0.0</Text>
+            </View>
+            <View style={styles.aboutRow}>
+              <Text style={styles.aboutKey}>Build</Text>
+              <Text style={styles.aboutVal}>{Platform.OS}</Text>
+            </View>
+          </Section>
+
+          <Section title="Help & Support" icon="help-buoy-outline">
+            <TouchableOpacity
+              testID="about-contact-support"
+              style={styles.aboutLinkRow}
+              onPress={() => Linking.openURL("mailto:support@example.com?subject=Courier%20Label%20Manager%20Support")}
+            >
+              <Ionicons name="mail-outline" size={18} color={colors.primary} />
+              <Text style={styles.aboutLinkText}>Contact Support</Text>
+              <Ionicons name="open-outline" size={16} color="#94A3B8" />
+            </TouchableOpacity>
+            <TouchableOpacity
+              testID="about-whats-new"
+              style={styles.aboutLinkRow}
+              onPress={() => Alert.alert("What's New", "• Modular Settings UI\n• Smart Paste Chat-style flow\n• Edit Shipment\n• Bulk Print 2-step popup")}
+            >
+              <Ionicons name="sparkles-outline" size={18} color={colors.primary} />
+              <Text style={styles.aboutLinkText}>What's New</Text>
+              <Ionicons name="chevron-forward" size={16} color="#94A3B8" />
+            </TouchableOpacity>
+            <TouchableOpacity
+              testID="about-rate-app"
+              style={styles.aboutLinkRow}
+              onPress={() => Alert.alert("Thanks!", "Rating sheet will open when published to stores.")}
+            >
+              <Ionicons name="star-outline" size={18} color={colors.primary} />
+              <Text style={styles.aboutLinkText}>Rate this App</Text>
+              <Ionicons name="chevron-forward" size={16} color="#94A3B8" />
+            </TouchableOpacity>
+          </Section>
+
+          <Section title="Legal" icon="shield-checkmark-outline">
+            <TouchableOpacity
+              testID="about-privacy"
+              style={styles.aboutLinkRow}
+              onPress={() => Alert.alert("Privacy Policy", "Your data stays in your account. We don't sell or share with third parties.")}
+            >
+              <Ionicons name="lock-closed-outline" size={18} color={colors.primary} />
+              <Text style={styles.aboutLinkText}>Privacy Policy</Text>
+              <Ionicons name="chevron-forward" size={16} color="#94A3B8" />
+            </TouchableOpacity>
+            <TouchableOpacity
+              testID="about-terms"
+              style={styles.aboutLinkRow}
+              onPress={() => Alert.alert("Terms of Use", "By using this app you agree to our terms. AI features consume credits per the rate-card in Plan & Billing.")}
+            >
+              <Ionicons name="document-text-outline" size={18} color={colors.primary} />
+              <Text style={styles.aboutLinkText}>Terms of Use</Text>
+              <Ionicons name="chevron-forward" size={16} color="#94A3B8" />
+            </TouchableOpacity>
+          </Section>
+          </>)}
         </ScrollView>
       </KeyboardAvoidingView>
     </SafeAreaView>
@@ -1795,8 +1908,8 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: colors.background },
-  header: { paddingHorizontal: 20, paddingTop: 10, paddingBottom: 8 },
-  title: { fontSize: 24, fontWeight: "800", color: colors.text },
+  header: { paddingHorizontal: 20, paddingTop: 14, paddingBottom: 12, flexDirection: "row", alignItems: "center" },
+  title: { fontSize: 28, fontWeight: "800", color: colors.text, letterSpacing: -0.5 },
   // -- Account block ----
   accountRow: { flexDirection: "row", alignItems: "center", gap: 12 },
   accountAvatar: {
@@ -2407,5 +2520,128 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: "#064E3B",
     lineHeight: 20,
+  },
+  /* ---- Placeholder (Notifications coming soon) ---- */
+  placeholderBox: {
+    alignItems: "center",
+    paddingVertical: 28,
+    paddingHorizontal: 16,
+    backgroundColor: "#F8FAFC",
+    borderRadius: 12,
+    borderWidth: 1,
+    borderStyle: "dashed",
+    borderColor: "#CBD5E1",
+    gap: 8,
+  },
+  placeholderTitle: {
+    fontSize: 15,
+    fontWeight: "800",
+    color: "#334155",
+    marginTop: 4,
+  },
+  placeholderSub: {
+    fontSize: 12.5,
+    color: "#64748B",
+    textAlign: "center",
+    lineHeight: 18,
+  },
+  /* ---- About / Help rows ---- */
+  aboutRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: "#F1F5F9",
+  },
+  aboutKey: {
+    fontSize: 13,
+    color: "#64748B",
+    fontWeight: "700",
+  },
+  aboutVal: {
+    fontSize: 13,
+    color: colors.text,
+    fontWeight: "800",
+  },
+  aboutLinkRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: "#F1F5F9",
+  },
+  aboutLinkText: {
+    flex: 1,
+    fontSize: 14,
+    color: colors.text,
+    fontWeight: "700",
+  },
+  /* ---- Settings Hub cards (top-level) ---- */
+  hubGroup: {
+    backgroundColor: colors.surface,
+    borderRadius: 16,
+    overflow: "hidden",
+    borderWidth: 1,
+    borderColor: "#E5E7EB",
+    marginTop: 4,
+    marginBottom: 12,
+  },
+  hubRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 14,
+    paddingVertical: 16,
+    paddingHorizontal: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: "#F1F5F9",
+    backgroundColor: colors.surface,
+  },
+  hubRowFirst: {},
+  hubRowLast: {
+    borderBottomWidth: 0,
+  },
+  hubIconWrap: {
+    width: 44,
+    height: 44,
+    borderRadius: 12,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  hubTitle: {
+    flex: 1,
+    fontSize: 17,
+    fontWeight: "700",
+    color: colors.text,
+    letterSpacing: 0.1,
+  },
+  hubSub: {
+    fontSize: 12,
+    color: colors.textMuted,
+    marginTop: 2,
+  },
+  hubSignOutBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    marginTop: 4,
+    paddingVertical: 16,
+    borderRadius: 14,
+    borderWidth: 1.5,
+    borderColor: "#FECACA",
+    backgroundColor: "#FEF2F2",
+  },
+  hubSignOutText: {
+    color: "#DC2626",
+    fontWeight: "800",
+    fontSize: 15,
+  },
+  titleSub: {
+    fontSize: 13,
+    color: colors.textMuted,
+    marginTop: 2,
+    fontWeight: "500",
   },
 });
