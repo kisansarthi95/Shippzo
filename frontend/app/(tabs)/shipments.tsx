@@ -768,7 +768,8 @@ export default function Shipments() {
                     onPress={() => toggleDelivered(item)}
                     testID={`toggle-delivered-${item.tracking_id}`}
                   />
-                ) : null}                {flagCopy ? (
+                ) : null}
+                {flagCopy ? (
                   <ActionBtn
                     icon="copy-outline" color={colors.text}
                     onPress={() => copyAll(item)}

@@ -2709,6 +2709,52 @@ DEFAULT_CREDIT_PACKAGES = [
     {"amount_inr": 2000, "credits": 2200, "bonus": 200,"label": "Pro",       "popular": False},
 ]
 
+# Plan pricing matrix — admin tunable. Yearly = monthly × 12 × 0.75 + 1
+# bonus month included (so users get 12 + 1 months access). The frontend
+# displays the "+1 month FREE" sticker to make the bonus obvious instead
+# of just saying "13 months".
+DEFAULT_PLAN_PRICING = {
+    "free_trial": {
+        "monthly_price": 0,    "monthly_anchor": 0,
+        "yearly_price": 0,     "yearly_anchor": 0,
+        "yearly_base_months": 12, "yearly_bonus_months": 0,
+        "show_strikethrough": False,
+    },
+    "silver": {
+        # Existing plan in app: ₹199/month
+        "monthly_price": 199,  "monthly_anchor": 499,
+        # 199 × 12 × 0.75 = 1,791 → user pays 1,791 for 12 + 1 months
+        "yearly_price": 1791,  "yearly_anchor": 4999,
+        "yearly_base_months": 12, "yearly_bonus_months": 1,
+        "show_strikethrough": True,
+    },
+    "gold": {
+        # Existing plan: ₹499/month
+        "monthly_price": 499,  "monthly_anchor": 999,
+        # 499 × 12 × 0.75 = 4,491 → user pays 4,491 for 12 + 1 months
+        "yearly_price": 4491,  "yearly_anchor": 9999,
+        "yearly_base_months": 12, "yearly_bonus_months": 1,
+        "show_strikethrough": True,
+    },
+    "platinum": {
+        # Existing plan: ₹999/month
+        "monthly_price": 999,  "monthly_anchor": 1999,
+        # 999 × 12 × 0.75 = 8,991 → user pays 8,991 for 12 + 1 months
+        "yearly_price": 8991,  "yearly_anchor": 19999,
+        "yearly_base_months": 12, "yearly_bonus_months": 1,
+        "show_strikethrough": True,
+    },
+}
+
+# Countdown timer config — admin can choose mode.
+DEFAULT_COUNTDOWN = {
+    "enabled": True,
+    "mode": "per_device",        # "off" | "per_device" | "global"
+    "countdown_minutes": 60,     # used in per_device mode
+    "global_expires_at": None,   # ISO datetime for global mode
+    "headline": "Limited time offer — save up to 60%",
+}
+
 
 async def _get_admin_config() -> Dict[str, Any]:
     doc = await db.admin_config.find_one({"_id": "default"})
