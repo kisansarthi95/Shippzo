@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   View,
   Text,
@@ -250,6 +250,147 @@ export default function SettingsScreen() {
   // Wallet balance for billing section
   const [walletBal, setWalletBal] = useState<number | null>(null);
 
+  // ── Unsaved-changes tracking ──────────────────────────────────────
+  // Snapshot taken when a section is first opened. Compared against the
+  // live state on every render to detect dirty fields. If user taps the
+  // back chevron while dirty, we prompt: Save / Discard / Cancel.
+  const [originalSnap, setOriginalSnap] = useState<string | null>(null);
+  const [savingFromAlert, setSavingFromAlert] = useState(false);
+
+  // Compute the current "shape" of editable fields for the active section.
+  // Order/keys must stay stable so JSON.stringify diff is reliable.
+  const getSectionSnapshot = useCallback((sec: string): string => {
+    switch (sec) {
+      case "business":
+        return JSON.stringify({
+          sender,
+          brandName,
+          brandLogo,
+          preferLogo,
+          logoShape,
+          spaiEnabled,
+          spaiInstructions,
+        });
+      case "print":
+        return JSON.stringify({
+          labelFields,
+          customFields,
+          shipmentTagline,
+        });
+      case "whatsapp":
+        return JSON.stringify({
+          template,
+          copyTemplate,
+          etaDays,
+        });
+      case "billing":
+        return JSON.stringify({
+          aiCostSimple,
+          aiCostMedium,
+          aiCostComplex,
+        });
+      default:
+        return "";
+    }
+  }, [
+    sender, brandName, brandLogo, preferLogo, logoShape,
+    spaiEnabled, spaiInstructions,
+    labelFields, customFields, shipmentTagline,
+    template, copyTemplate, etaDays,
+    aiCostSimple, aiCostMedium, aiCostComplex,
+  ]);
+
+  // Keep a ref to the latest snapshot fn so timers / handlers can read fresh
+  // state without re-creating themselves on every render.
+  const getSnapRef = useRef(getSectionSnapshot);
+  useEffect(() => { getSnapRef.current = getSectionSnapshot; }, [getSectionSnapshot]);
+
+  // (Re)capture the original snapshot whenever the active section changes.
+  // We watch the LIVE snapshot string: once it stops changing for ~600ms
+  // (i.e. load() has hydrated state), we lock it in as the baseline.
+  const liveSnap = section ? getSectionSnapshot(section) : "";
+  useEffect(() => {
+    if (!section) {
+      setOriginalSnap(null);
+      return;
+    }
+    // Only capture the FIRST stable snapshot after section change.
+    if (originalSnap !== null) return;
+    const t = setTimeout(() => {
+      setOriginalSnap(getSnapRef.current(section));
+    }, 600);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [section, liveSnap, originalSnap]);
+
+  // Live "is the user mid-edit?" flag.
+  const isDirty = !!section && originalSnap !== null
+    && originalSnap !== liveSnap;
+
+  // Section-aware save: bundles all editable fields for that section into
+  // a single PUT /settings call. Smart Paste AI fields piggy-back on the
+  // business save, AI rate-card piggy-backs on the billing save.
+  const saveSectionAndExit = async (sec: string) => {
+    try {
+      setSavingFromAlert(true);
+      if (sec === "billing") {
+        await saveRateCard();
+      } else {
+        const payload: any = {
+          sender,
+          brand: { name: brandName, logo_base64: brandLogo },
+          whatsapp_template: template,
+          copy_template: copyTemplate,
+          default_eta_days: Number(etaDays) || 7,
+          prefer_logo: preferLogo,
+          logo_shape: logoShape,
+          shipment_tagline: shipmentTagline,
+          label_fields: labelFields,
+          custom_fields: customFields,
+          smart_paste_ai_enabled: spaiEnabled,
+          smart_paste_instructions: spaiInstructions,
+        };
+        await api.put("/settings", payload);
+      }
+      // Reset snapshot so we don't double-prompt on the next mount
+      setOriginalSnap(getSectionSnapshot(sec));
+      router.replace("/(tabs)/settings");
+    } catch (e: any) {
+      Alert.alert("Save failed", e?.response?.data?.detail || e?.message || "Please try again");
+    } finally {
+      setSavingFromAlert(false);
+    }
+  };
+
+  // Back-press handler with dirty-state guard.
+  const handleBackPress = () => {
+    if (!isDirty) {
+      router.replace("/(tabs)/settings");
+      return;
+    }
+    Alert.alert(
+      "Unsaved changes",
+      "તમે કેટલાક ફેરફાર કર્યા છે પણ હજી save નથી કર્યા. શું કરશો?",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Discard",
+          style: "destructive",
+          onPress: () => {
+            // Match snapshot to "current" so isDirty becomes false on remount,
+            // then force a fresh load to restore server values.
+            setOriginalSnap(getSectionSnapshot(section));
+            router.replace("/(tabs)/settings");
+          },
+        },
+        {
+          text: "Save",
+          onPress: () => saveSectionAndExit(section),
+        },
+      ],
+    );
+  };
+
   const load = useCallback(async () => {
     const [s, cs] = await Promise.all([Api.getSettings(), Api.listCouriers()]);
     setSender(s.sender);
@@ -485,7 +626,7 @@ export default function SettingsScreen() {
       <View style={styles.header}>
         {section ? (
           <TouchableOpacity
-            onPress={() => router.replace("/(tabs)/settings")}
+            onPress={handleBackPress}
             hitSlop={10}
             style={{ marginRight: 8 }}
             testID="settings-back"
@@ -494,7 +635,15 @@ export default function SettingsScreen() {
           </TouchableOpacity>
         ) : null}
         <View style={{ flex: 1 }}>
-          <Text style={styles.title}>{SECTION_TITLES[section]}</Text>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+            <Text style={styles.title}>{SECTION_TITLES[section]}</Text>
+            {section && isDirty ? (
+              <View style={styles.dirtyBadge} testID="dirty-badge">
+                <View style={styles.dirtyDot} />
+                <Text style={styles.dirtyBadgeTxt}>Unsaved</Text>
+              </View>
+            ) : null}
+          </View>
           {section ? (
             <Text style={styles.titleSub}>{SECTION_SUBTITLES[section]}</Text>
           ) : null}
@@ -2872,5 +3021,29 @@ const styles = StyleSheet.create({
     color: colors.textMuted,
     marginTop: 2,
     fontWeight: "500",
+  },
+  /* ---- Unsaved changes badge ---- */
+  dirtyBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    backgroundColor: "#FEF3C7",
+    borderWidth: 1,
+    borderColor: "#FCD34D",
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 999,
+  },
+  dirtyDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: "#D97706",
+  },
+  dirtyBadgeTxt: {
+    fontSize: 10.5,
+    fontWeight: "800",
+    color: "#92400E",
+    letterSpacing: 0.4,
   },
 });
