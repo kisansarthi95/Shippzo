@@ -576,19 +576,19 @@ export default function SettingsScreen() {
       const simple = clamp02(aiCostSimple, 0.5);
       const medium = clamp02(aiCostMedium, 1.0);
       const complex = clamp02(aiCostComplex, 2.0);
-      const r = await api.put("/settings", {
-        ai_cost_simple: simple,
-        ai_cost_medium: medium,
-        ai_cost_complex: complex,
+      // Phase-5b: persist to GLOBAL admin config so every user inherits
+      // the same rates. Per-user override is no longer used.
+      const r = await api.put("/admin/global-config", {
+        global_ai_rates: { simple, medium, complex },
       });
-      const d = r.data as any;
-      // Snap UI back to server-clamped values so the user sees what was saved.
-      setAiCostSimple(String(d.ai_cost_simple ?? simple));
-      setAiCostMedium(String(d.ai_cost_medium ?? medium));
-      setAiCostComplex(String(d.ai_cost_complex ?? complex));
+      const d = (r.data as any)?.global_ai_rates || {};
+      // Snap UI back to server-clamped values so admin sees what was saved.
+      setAiCostSimple(String(d.simple ?? simple));
+      setAiCostMedium(String(d.medium ?? medium));
+      setAiCostComplex(String(d.complex ?? complex));
       Alert.alert(
-        "Rate card saved",
-        `Simple ${d.ai_cost_simple ?? simple} · Medium ${d.ai_cost_medium ?? medium} · Complex ${d.ai_cost_complex ?? complex} credits per order.`,
+        "Global rate card saved",
+        `Simple ${d.simple ?? simple} · Medium ${d.medium ?? medium} · Complex ${d.complex ?? complex} credits per order. Applied to every user.`,
       );
     } catch (e: any) {
       Alert.alert("Save failed", e?.response?.data?.detail || e?.message || "Please try again");
@@ -751,21 +751,38 @@ export default function SettingsScreen() {
                 ))}
                 {/* Admin Panel — only for is_admin users */}
                 {(user as any)?.is_admin ? (
-                  <TouchableOpacity
-                    testID="settings-hub-admin"
-                    style={[styles.hubRow, styles.hubRowLast]}
-                    onPress={() => router.push("/admin/plan-features")}
-                    activeOpacity={0.6}
-                  >
-                    <View style={[styles.hubIconWrap, { backgroundColor: "#FECACA" + "AA" }]}>
-                      <Ionicons name="shield-checkmark-outline" size={22} color="#B91C1C" />
-                    </View>
-                    <Text style={styles.hubTitle}>Admin Panel</Text>
-                    <View style={styles.adminPill}>
-                      <Text style={styles.adminPillTxt}>ADMIN</Text>
-                    </View>
-                    <Ionicons name="chevron-forward" size={22} color="#9CA3AF" />
-                  </TouchableOpacity>
+                  <>
+                    <TouchableOpacity
+                      testID="settings-hub-admin"
+                      style={styles.hubRow}
+                      onPress={() => router.push("/admin/plan-features")}
+                      activeOpacity={0.6}
+                    >
+                      <View style={[styles.hubIconWrap, { backgroundColor: "#FECACA" + "AA" }]}>
+                        <Ionicons name="shield-checkmark-outline" size={22} color="#B91C1C" />
+                      </View>
+                      <Text style={styles.hubTitle}>Plan Features</Text>
+                      <View style={styles.adminPill}>
+                        <Text style={styles.adminPillTxt}>ADMIN</Text>
+                      </View>
+                      <Ionicons name="chevron-forward" size={22} color="#9CA3AF" />
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      testID="settings-hub-admin-packages"
+                      style={[styles.hubRow, styles.hubRowLast]}
+                      onPress={() => router.push("/admin/credit-packages")}
+                      activeOpacity={0.6}
+                    >
+                      <View style={[styles.hubIconWrap, { backgroundColor: "#FED7AA" }]}>
+                        <Ionicons name="gift-outline" size={22} color="#C2410C" />
+                      </View>
+                      <Text style={styles.hubTitle}>Credit Packages</Text>
+                      <View style={styles.adminPill}>
+                        <Text style={styles.adminPillTxt}>ADMIN</Text>
+                      </View>
+                      <Ionicons name="chevron-forward" size={22} color="#9CA3AF" />
+                    </TouchableOpacity>
+                  </>
                 ) : null}
               </View>
 
@@ -1077,7 +1094,10 @@ export default function SettingsScreen() {
             <Ionicons name="chevron-forward" size={22} color="#94A3B8" />
           </TouchableOpacity>
 
-          {/* AI Processing Charges — per-user rate card */}
+          {/* AI Processing Charges — admin-only. Regular users don't need
+              to see (or edit) the rate-card; their charges are dictated by
+              the admin via /admin/global-config. */}
+          {(user as any)?.is_admin ? (
           <Section title="AI Processing Charges" icon="pricetags-outline">
             <Text style={styles.spaiHint}>
               દરેક shipment પર AI એડ્રેસ check માટે જે credits કાપવા છે તે અહીં સેટ કરો. Max cap 2.0 credits/order (spec).

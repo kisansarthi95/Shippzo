@@ -104,6 +104,10 @@ export default function RootLayout() {
                 name="admin/plan-features"
                 options={{ headerShown: false }}
               />
+              <Stack.Screen
+                name="admin/credit-packages"
+                options={{ headerShown: false }}
+              />
             </Stack>
           </AuthGate>
         </SafeAreaProvider>

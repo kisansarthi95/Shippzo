@@ -26,10 +26,16 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Stack, useFocusEffect, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
-import { Api, CreditHistoryEntry, Wallet } from "../lib/api";
+import { Api, CreditHistoryEntry, Wallet, api } from "../lib/api";
 import { colors } from "../lib/theme";
 
-const PRESETS = [100, 500, 1000, 2000];
+type CreditPackage = {
+  amount_inr: number;
+  credits: number;
+  bonus: number;
+  label?: string;
+  popular?: boolean;
+};
 
 export default function WalletScreen() {
   const router = useRouter();
@@ -40,12 +46,25 @@ export default function WalletScreen() {
   const [purchaseOpen, setPurchaseOpen] = useState(false);
   const [amount, setAmount] = useState("100");
   const [busy, setBusy] = useState(false);
+  // Admin-configured credit packages. Falls back to a sensible default
+  // list while loading so the modal never appears empty.
+  const [packages, setPackages] = useState<CreditPackage[]>([
+    { amount_inr: 100,  credits: 100,  bonus: 0 },
+    { amount_inr: 500,  credits: 520,  bonus: 20, popular: true },
+    { amount_inr: 1000, credits: 1080, bonus: 80 },
+    { amount_inr: 2000, credits: 2200, bonus: 200 },
+  ]);
 
   const load = useCallback(async () => {
     try {
-      const [w, h] = await Promise.all([Api.getWallet(), Api.getWalletHistory(200)]);
+      const [w, h, p] = await Promise.all([
+        Api.getWallet(),
+        Api.getWalletHistory(200),
+        api.get<{ packages: CreditPackage[] }>("/credit-packages"),
+      ]);
       setWallet(w);
       setHistory(h.entries);
+      if (p.data?.packages?.length) setPackages(p.data.packages);
     } catch (e: any) {
       Alert.alert("Could not load wallet", e?.message || "Please try again");
     } finally {
@@ -188,6 +207,7 @@ export default function WalletScreen() {
         open={purchaseOpen}
         amount={amount}
         setAmount={setAmount}
+        packages={packages}
         busy={busy}
         onClose={() => setPurchaseOpen(false)}
         onSubmit={submitPurchase}
@@ -239,15 +259,20 @@ function HistoryRow({ entry }: { entry: CreditHistoryEntry }) {
 // ------------ Top-up Modal ------------------------------------------------
 
 function PurchaseModal({
-  open, amount, setAmount, busy, onClose, onSubmit,
+  open, amount, setAmount, packages, busy, onClose, onSubmit,
 }: {
   open: boolean;
   amount: string;
   setAmount: (s: string) => void;
+  packages: CreditPackage[];
   busy: boolean;
   onClose: () => void;
   onSubmit: () => void;
 }) {
+  const matchedPkg = packages.find((p) => Number(p.amount_inr) === Number(amount));
+  const creditsForCustom = Math.max(0, Number(amount) || 0);
+  const creditsToShow = matchedPkg ? matchedPkg.credits : creditsForCustom;
+  const bonusToShow = matchedPkg?.bonus || 0;
   return (
     <Modal visible={open} animationType="slide" transparent>
       <KeyboardAvoidingView
@@ -262,31 +287,50 @@ function PurchaseModal({
             </TouchableOpacity>
           </View>
           <Text style={styles.sheetHint}>
-            ₹ × 1 = credits × 1. No GST / fees on the mock flow.
+            Pick a package — bigger packs include bonus credits 🎁
           </Text>
 
-          <View style={styles.presetRow}>
-            {PRESETS.map((p) => (
-              <TouchableOpacity
-                key={p}
-                testID={`preset-${p}`}
-                style={[
-                  styles.preset,
-                  Number(amount) === p && styles.presetActive,
-                ]}
-                onPress={() => setAmount(String(p))}
-              >
-                <Text style={[
-                  styles.presetTxt,
-                  Number(amount) === p && styles.presetActiveTxt,
-                ]}>
-                  ₹{p}
-                </Text>
-              </TouchableOpacity>
-            ))}
+          {/* Package cards laid out as a 2-column grid for tappability */}
+          <View style={styles.pkgGrid}>
+            {packages.map((p) => {
+              const active = Number(amount) === p.amount_inr;
+              return (
+                <TouchableOpacity
+                  key={p.amount_inr}
+                  testID={`preset-${p.amount_inr}`}
+                  style={[styles.pkgCard, active && styles.pkgCardActive]}
+                  onPress={() => setAmount(String(p.amount_inr))}
+                >
+                  {p.popular ? (
+                    <View style={styles.popBadge}>
+                      <Text style={styles.popBadgeTxt}>POPULAR</Text>
+                    </View>
+                  ) : null}
+                  <Text style={[styles.pkgAmount, active && { color: "#fff" }]}>
+                    ₹{p.amount_inr}
+                  </Text>
+                  <Text style={[styles.pkgCredits, active && { color: "rgba(255,255,255,0.9)" }]}>
+                    {p.credits} credits
+                  </Text>
+                  {p.bonus > 0 ? (
+                    <View style={[styles.pkgBonusPill, active && { backgroundColor: "rgba(255,255,255,0.2)" }]}>
+                      <Ionicons name="gift" size={10} color={active ? "#fff" : "#047857"} />
+                      <Text style={[styles.pkgBonusTxt, active && { color: "#fff" }]}>
+                        +{p.bonus} bonus
+                      </Text>
+                    </View>
+                  ) : null}
+                  {p.label ? (
+                    <Text style={[styles.pkgLabel, active && { color: "rgba(255,255,255,0.85)" }]}>
+                      {p.label}
+                    </Text>
+                  ) : null}
+                </TouchableOpacity>
+              );
+            })}
           </View>
 
-          <Text style={styles.label}>Amount (₹)</Text>
+          <Text style={styles.label}>Or enter a custom amount (₹)</Text>
           <TextInput
             testID="purchase-amount"
             style={styles.input}
@@ -306,7 +350,7 @@ function PurchaseModal({
               <ActivityIndicator color="#fff" />
             ) : (
               <Text style={styles.confirmTxt}>
-                Add {Math.max(0, Number(amount) || 0)} credits
+                Add {creditsToShow} credits{bonusToShow ? ` (+${bonusToShow} bonus)` : ""}
               </Text>
             )}
           </TouchableOpacity>
@@ -406,4 +450,53 @@ const styles = StyleSheet.create({
     borderRadius: 10, paddingVertical: 13, alignItems: "center",
   },
   confirmTxt: { color: "#fff", fontWeight: "900", fontSize: 15, letterSpacing: 0.3 },
+  /* ---- Package grid (admin-configured) ---- */
+  pkgGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 10,
+    marginTop: 4,
+    marginBottom: 4,
+  },
+  pkgCard: {
+    flexBasis: "48%",
+    flexGrow: 1,
+    paddingVertical: 12,
+    paddingHorizontal: 12,
+    borderRadius: 14,
+    borderWidth: 1.5,
+    borderColor: "#E5E7EB",
+    backgroundColor: "#F8FAFC",
+    position: "relative",
+    minHeight: 96,
+  },
+  pkgCardActive: {
+    backgroundColor: colors.primary,
+    borderColor: colors.primary,
+  },
+  popBadge: {
+    position: "absolute",
+    top: 6,
+    right: 6,
+    backgroundColor: "#FBBF24",
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 6,
+  },
+  popBadgeTxt: { fontSize: 8.5, fontWeight: "900", color: "#78350F", letterSpacing: 0.5 },
+  pkgAmount: { fontSize: 22, fontWeight: "900", color: "#0F172A", letterSpacing: -0.4 },
+  pkgCredits: { fontSize: 13, color: "#475569", fontWeight: "700", marginTop: 2 },
+  pkgBonusPill: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 3,
+    alignSelf: "flex-start",
+    marginTop: 6,
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+    borderRadius: 999,
+    backgroundColor: "#D1FAE5",
+  },
+  pkgBonusTxt: { fontSize: 10, fontWeight: "800", color: "#047857" },
+  pkgLabel: { marginTop: 5, fontSize: 11, color: "#64748B", fontWeight: "700" },
 });

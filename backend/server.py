@@ -2501,7 +2501,7 @@ async def get_wallet_history(
 
 
 class PurchaseCreditsRequest(BaseModel):
-    amount_inr: float  # 100 INR = 100 credits (1:1 per spec)
+    amount_inr: float  # Validated against admin-configured packages below.
 
 
 @api_router.post("/wallet/purchase")
@@ -2509,23 +2509,32 @@ async def purchase_credits(
     payload: PurchaseCreditsRequest,
     current_user: Dict[str, Any] = Depends(get_current_user),
 ):
-    """MOCK credit top-up for Phase-4a.
+    """MOCK credit top-up for Phase-4a / 5b.
 
-    Razorpay wiring arrives in Phase-4c. For now this endpoint simply
-    credits the wallet at the ₹1 = 1 credit rate and stamps the history
-    entry with `type=purchase`. Returned receipt doubles as an audit
-    record until real payment webhooks start landing.
+    Razorpay wiring arrives in Phase-4c. The admin configures available
+    `credit_packages` in /admin/global-config; this endpoint matches the
+    request amount to a package and credits the user with the BONUSED
+    amount (not just 1:1). If no exact-match package is found we fall back
+    to a 1:1 conversion so custom amounts still work.
     """
     inr = float(payload.amount_inr or 0)
     if inr <= 0:
         raise HTTPException(status_code=400, detail="amount_inr must be > 0")
     if inr < 10 or inr > 100000:
         raise HTTPException(status_code=400, detail="Top-up must be between ₹10 and ₹1,00,000")
-    credits = round(inr, 2)  # 1:1 for the spec
+    cfg = await _get_admin_config()
+    pkg = next((p for p in cfg["credit_packages"] if int(p["amount_inr"]) == int(inr)), None)
+    if pkg:
+        credits = float(pkg["credits"])
+        bonus_str = f" (incl. {pkg['bonus']} bonus)" if pkg.get("bonus") else ""
+        desc = f"Top-up ₹{int(inr)} → {credits:g} credits{bonus_str} (mocked)"
+    else:
+        credits = round(inr, 2)  # custom amount → 1:1 fallback
+        desc = f"Top-up ₹{int(inr)} → {credits:g} credits (mocked)"
     res = await wallet_add_credits(
         db, current_user["id"], credits,
         ctype="purchase",
-        description=f"Top-up ₹{int(inr)} → {credits} credits (mocked)",
+        description=desc,
     )
     wallet = res["wallet"]
     return {
@@ -2533,6 +2542,7 @@ async def purchase_credits(
         "mocked": True,
         "amount_inr": inr,
         "credits_added": credits,
+        "bonus": (pkg or {}).get("bonus", 0),
         "balance": round(float(wallet.get("remaining_credits", 0.0)), 2),
         "history_id": res["history"]["id"],
     }
@@ -2677,6 +2687,117 @@ async def me_feature_flags(
     plans = await _get_plan_features_doc()
     allowed = plans.get(plan, plans.get("free_trial", []))
     return {"plan": plan, "features": list(allowed), "is_admin": False}
+
+
+# ──────────────────────────────────────────────────────────────────
+# Global Admin Config (Phase-5b)
+# ──────────────────────────────────────────────────────────────────
+# A single document `admin_config` stores config that the admin manages
+# for the WHOLE app — currently:
+#   - global_ai_rates  : per-complexity credits charged for Smart Paste
+#   - credit_packages  : configurable top-up bundles with bonus credits
+#
+# Regular users never see the editor; they only consume the values via
+# /api/credit-packages and /api/me/ai-rates (read-only).
+
+DEFAULT_AI_RATES = {"simple": 0.5, "medium": 1.0, "complex": 2.0}
+DEFAULT_CREDIT_PACKAGES = [
+    # amount_inr → credits credited (with bonus). label optional.
+    {"amount_inr": 100,  "credits": 100,  "bonus": 0,  "label": "Starter",   "popular": False},
+    {"amount_inr": 500,  "credits": 520,  "bonus": 20, "label": "Saver",     "popular": True},
+    {"amount_inr": 1000, "credits": 1080, "bonus": 80, "label": "Value",     "popular": False},
+    {"amount_inr": 2000, "credits": 2200, "bonus": 200,"label": "Pro",       "popular": False},
+]
+
+
+async def _get_admin_config() -> Dict[str, Any]:
+    doc = await db.admin_config.find_one({"_id": "default"})
+    if not doc:
+        seeded = {
+            "global_ai_rates": dict(DEFAULT_AI_RATES),
+            "credit_packages": list(DEFAULT_CREDIT_PACKAGES),
+        }
+        await db.admin_config.insert_one({"_id": "default", **seeded})
+        return seeded
+    # Patch missing keys when new fields are introduced.
+    out = {
+        "global_ai_rates": doc.get("global_ai_rates") or dict(DEFAULT_AI_RATES),
+        "credit_packages": doc.get("credit_packages") or list(DEFAULT_CREDIT_PACKAGES),
+    }
+    return out
+
+
+class GlobalConfigPayload(BaseModel):
+    global_ai_rates: Optional[Dict[str, float]] = None
+    credit_packages: Optional[List[Dict[str, Any]]] = None
+
+
+@api_router.get("/admin/global-config")
+async def admin_get_global_config(
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    _require_admin(current_user)
+    return await _get_admin_config()
+
+
+@api_router.put("/admin/global-config")
+async def admin_put_global_config(
+    payload: GlobalConfigPayload,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    _require_admin(current_user)
+    update: Dict[str, Any] = {}
+    if payload.global_ai_rates is not None:
+        # Clamp & sanitise so the admin can't accidentally store negatives.
+        rates = payload.global_ai_rates
+        update["global_ai_rates"] = {
+            "simple":  max(0.0, min(50.0, float(rates.get("simple",  DEFAULT_AI_RATES["simple"])))),
+            "medium":  max(0.0, min(50.0, float(rates.get("medium",  DEFAULT_AI_RATES["medium"])))),
+            "complex": max(0.0, min(50.0, float(rates.get("complex", DEFAULT_AI_RATES["complex"])))),
+        }
+    if payload.credit_packages is not None:
+        cleaned: List[Dict[str, Any]] = []
+        for p in payload.credit_packages or []:
+            try:
+                amount = max(1, int(round(float(p.get("amount_inr", 0)))))
+                credits = max(1, float(p.get("credits", amount)))
+                bonus = max(0.0, credits - amount)
+                cleaned.append({
+                    "amount_inr": amount,
+                    "credits": round(credits, 2),
+                    "bonus": round(bonus, 2),
+                    "label": str(p.get("label", "") or "")[:40],
+                    "popular": bool(p.get("popular")),
+                })
+            except (ValueError, TypeError):
+                continue
+        # Sort smallest amount first for predictable UI ordering.
+        cleaned.sort(key=lambda x: x["amount_inr"])
+        update["credit_packages"] = cleaned
+    if update:
+        await db.admin_config.update_one(
+            {"_id": "default"}, {"$set": update}, upsert=True,
+        )
+    return await _get_admin_config()
+
+
+@api_router.get("/credit-packages")
+async def get_credit_packages_public(
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    """Read-only list every logged-in user can fetch for the Wallet Top-up screen."""
+    cfg = await _get_admin_config()
+    return {"packages": cfg["credit_packages"]}
+
+
+@api_router.get("/me/ai-rates")
+async def me_ai_rates(
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    """Read-only: rates the user will be charged for Smart Paste calls.
+    These are admin-controlled now; per-user overrides are no longer used."""
+    cfg = await _get_admin_config()
+    return cfg["global_ai_rates"]
 
 
 # ---------------------- App setup ----------------------
