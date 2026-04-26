@@ -2149,7 +2149,12 @@ async def smart_paste_photo(
         )
     cfg = await _get_admin_config()
     global_rates = cfg.get("global_ai_rates") or DEFAULT_AI_RATES
-    photo_cost = float(global_rates.get("complex", 2.0))
+    # Photo OCR is its own tier (default 1.5 cr) — admin tunable.
+    # Falls back to "complex" rate if photo_ocr not configured.
+    photo_cost = float(
+        global_rates.get("photo_ocr",
+                         global_rates.get("complex", DEFAULT_AI_RATES["photo_ocr"]))
+    )
     bal = await wallet_balance(db, current_user["id"])
     if bal < photo_cost:
         raise HTTPException(
@@ -2186,11 +2191,11 @@ async def smart_paste_photo(
             except Exception:
                 pass
 
-    # 5. Charge wallet — single complex debit, regardless of plan.
+    # 5. Charge wallet — photo OCR debit (1.5 credits default).
     try:
         bd = LabelCostBreakdown(
             ai_credits=photo_cost,
-            ai_complexity="complex",
+            ai_complexity="photo_ocr",
             ai_applies=True,
             plan_has_room=True,
             shipment_credits=0.0,
@@ -2877,7 +2882,7 @@ async def me_feature_flags(
 # Regular users never see the editor; they only consume the values via
 # /api/credit-packages and /api/me/ai-rates (read-only).
 
-DEFAULT_AI_RATES = {"simple": 0.5, "medium": 1.0, "complex": 2.0}
+DEFAULT_AI_RATES = {"simple": 0.5, "medium": 1.0, "complex": 2.0, "photo_ocr": 1.5}
 DEFAULT_CREDIT_PACKAGES = [
     # amount_inr → credits credited (with bonus). label optional.
     {"amount_inr": 100,  "credits": 100,  "bonus": 0,  "label": "Starter",   "popular": False},
@@ -2980,9 +2985,10 @@ async def admin_put_global_config(
         # Clamp & sanitise so the admin can't accidentally store negatives.
         rates = payload.global_ai_rates
         update["global_ai_rates"] = {
-            "simple":  max(0.0, min(50.0, float(rates.get("simple",  DEFAULT_AI_RATES["simple"])))),
-            "medium":  max(0.0, min(50.0, float(rates.get("medium",  DEFAULT_AI_RATES["medium"])))),
-            "complex": max(0.0, min(50.0, float(rates.get("complex", DEFAULT_AI_RATES["complex"])))),
+            "simple":    max(0.0, min(50.0, float(rates.get("simple",    DEFAULT_AI_RATES["simple"])))),
+            "medium":    max(0.0, min(50.0, float(rates.get("medium",    DEFAULT_AI_RATES["medium"])))),
+            "complex":   max(0.0, min(50.0, float(rates.get("complex",   DEFAULT_AI_RATES["complex"])))),
+            "photo_ocr": max(0.0, min(50.0, float(rates.get("photo_ocr", DEFAULT_AI_RATES["photo_ocr"])))),
         }
     if payload.credit_packages is not None:
         cleaned: List[Dict[str, Any]] = []

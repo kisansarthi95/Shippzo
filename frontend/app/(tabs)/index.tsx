@@ -762,7 +762,7 @@ export default function Dashboard() {
                   Photo
                 </Text>
                 <View style={styles.tabPill}>
-                  <Text style={styles.tabPillTxt}>2 cr</Text>
+                  <Text style={styles.tabPillTxt}>1.5 cr</Text>
                 </View>
               </TouchableOpacity>
             </View>

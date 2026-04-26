@@ -431,7 +431,7 @@ def _split_compound_phone(value: str) -> Tuple[str, str]:
 
 # ---- Photo / Image OCR (Gemini Vision) ---------------------------------
 
-_VISION_MODEL = os.getenv("SMART_PASTE_VISION_MODEL", "gemini-2.5-pro")
+_VISION_MODEL = os.getenv("SMART_PASTE_VISION_MODEL", "gemini-2.5-flash")
 _VISION_PROVIDER = os.getenv("SMART_PASTE_VISION_PROVIDER", "gemini")
 _VISION_TIMEOUT = float(os.getenv("SMART_PASTE_VISION_TIMEOUT", "20.0"))
 
