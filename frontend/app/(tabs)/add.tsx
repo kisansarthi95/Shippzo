@@ -210,6 +210,21 @@ export default function AddShipment() {
   // load the existing shipment, prefill every field, and switch the save
   // button into "Update" mode (PUT /shipments/:id instead of POST).
   const [editingShipmentId, setEditingShipmentId] = useState<string>("");
+  // Holds the courier_id from a shipment we are editing so we can resolve
+  // it to the full Courier object once the couriers list finishes loading.
+  // (The fetch race meant we used to drop the user's saved courier on edit.)
+  const [pendingCourierId, setPendingCourierId] = useState<string>("");
+
+  // Resolve pendingCourierId → selectedCourier as soon as the couriers list
+  // is hydrated. Runs both on edit prefill and on prefill from pending orders.
+  useEffect(() => {
+    if (!pendingCourierId || couriers.length === 0) return;
+    const found = couriers.find((c) => c.id === pendingCourierId);
+    if (found) {
+      setSelectedCourier(found);
+      setPendingCourierId(""); // resolved
+    }
+  }, [pendingCourierId, couriers]);
 
   useEffect(() => {
     const eid = String(params.edit_id || "").trim();
@@ -271,7 +286,16 @@ export default function AddShipment() {
           setTrackingId(s.tracking_id);
           setAutoTracking(false);  // user clearly already has the ID
         }
-        if (s.courier_id) setSelectedCourierId(s.courier_id);
+        if (s.courier_id) {
+          // Try direct match first; if couriers list isn't loaded yet,
+          // queue it for the resolver useEffect above.
+          const found = couriers.find((c) => c.id === s.courier_id);
+          if (found) {
+            setSelectedCourier(found);
+          } else {
+            setPendingCourierId(s.courier_id);
+          }
+        }
         if (s.dispatch_date) setDispatchDate(s.dispatch_date);
       } catch (e: any) {
         Alert.alert("Edit failed", e?.response?.data?.detail || e?.message || "Could not load shipment");
