@@ -172,6 +172,7 @@ export default function SettingsScreen() {
     about: "App info and support",
   };
   // Hub cards — clicked to open each section.
+  // The `🛡 Admin Panel` card is appended at runtime below for is_admin users.
   const HUB_CARDS: Array<{
     key: Section;
     icon: any;
@@ -718,7 +719,7 @@ export default function SettingsScreen() {
                     style={[
                       styles.hubRow,
                       idx === 0 && styles.hubRowFirst,
-                      idx === HUB_CARDS.length - 1 && styles.hubRowLast,
+                      idx === HUB_CARDS.length - 1 && !((user as any)?.is_admin) && styles.hubRowLast,
                     ]}
                     onPress={() =>
                       router.push({ pathname: "/(tabs)/settings", params: { section: c.key } })
@@ -732,6 +733,24 @@ export default function SettingsScreen() {
                     <Ionicons name="chevron-forward" size={22} color="#9CA3AF" />
                   </TouchableOpacity>
                 ))}
+                {/* Admin Panel — only for is_admin users */}
+                {(user as any)?.is_admin ? (
+                  <TouchableOpacity
+                    testID="settings-hub-admin"
+                    style={[styles.hubRow, styles.hubRowLast]}
+                    onPress={() => router.push("/admin/plan-features")}
+                    activeOpacity={0.6}
+                  >
+                    <View style={[styles.hubIconWrap, { backgroundColor: "#FECACA" + "AA" }]}>
+                      <Ionicons name="shield-checkmark-outline" size={22} color="#B91C1C" />
+                    </View>
+                    <Text style={styles.hubTitle}>Admin Panel</Text>
+                    <View style={styles.adminPill}>
+                      <Text style={styles.adminPillTxt}>ADMIN</Text>
+                    </View>
+                    <Ionicons name="chevron-forward" size={22} color="#9CA3AF" />
+                  </TouchableOpacity>
+                ) : null}
               </View>
 
               <TouchableOpacity
@@ -3039,6 +3058,20 @@ const styles = StyleSheet.create({
     color: "#DC2626",
     fontWeight: "800",
     fontSize: 15,
+  },
+  /* ---- Admin pill (hub) ---- */
+  adminPill: {
+    paddingHorizontal: 7,
+    paddingVertical: 3,
+    borderRadius: 6,
+    backgroundColor: "#FEE2E2",
+    marginRight: 6,
+  },
+  adminPillTxt: {
+    fontSize: 9.5,
+    fontWeight: "900",
+    color: "#B91C1C",
+    letterSpacing: 0.5,
   },
   /* ---- Plan & Wallet cards (Plan & Billing section) ---- */
   planCard: {

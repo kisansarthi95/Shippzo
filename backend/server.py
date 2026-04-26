@@ -2579,6 +2579,106 @@ async def wallet_quote(
     }
 
 
+# ──────────────────────────────────────────────────────────────────
+# Plan-Feature Admin (Phase-5)
+# ──────────────────────────────────────────────────────────────────
+# An admin (the very first signed-up user; flag `is_admin=True`) can tick or
+# untick which features each plan should expose. The mapping is stored in a
+# tiny `plan_features` collection — one document with id="default" holding a
+# dict[plan_key -> list[feature_key]]. Every regular user fetches their own
+# plan's allowed list via /me/feature-flags and the frontend renders/hides
+# UI accordingly.
+from feature_registry import (
+    FEATURE_REGISTRY, ALL_KEYS, DEFAULT_PLAN_FEATURES, get_registry_payload
+)
+
+
+async def _get_plan_features_doc() -> Dict[str, List[str]]:
+    """Fetch (or seed) the plan->features mapping. Adds new registry keys
+    to Platinum automatically so admin doesn't have to re-tick on every
+    deploy.
+    """
+    doc = await db.plan_features.find_one({"_id": "default"})
+    if not doc:
+        seeded = {p: list(v) for p, v in DEFAULT_PLAN_FEATURES.items()}
+        await db.plan_features.insert_one({"_id": "default", "plans": seeded})
+        return seeded
+    plans = doc.get("plans", {}) or {}
+    # Auto-grant any newly-added registry keys to Platinum so power users
+    # always have the latest. Other plans stay opt-in (default OFF).
+    plat = set(plans.get("platinum", []))
+    plat.update(ALL_KEYS)
+    if plat != set(plans.get("platinum", [])):
+        plans["platinum"] = list(plat)
+        await db.plan_features.update_one(
+            {"_id": "default"}, {"$set": {"plans": plans}}
+        )
+    # Also ensure every plan key exists (free_trial, silver, gold, platinum)
+    for k in DEFAULT_PLAN_FEATURES.keys():
+        plans.setdefault(k, list(DEFAULT_PLAN_FEATURES[k]))
+    return plans
+
+
+def _require_admin(current_user: Dict[str, Any]) -> None:
+    if not current_user.get("is_admin"):
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+
+@api_router.get("/admin/plan-features")
+async def admin_get_plan_features(
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    """Returns the registry (all toggleable features + categories) AND the
+    current plan->features mapping so the admin UI can render checkboxes."""
+    _require_admin(current_user)
+    plans = await _get_plan_features_doc()
+    return {
+        "registry": get_registry_payload(),
+        "plans": plans,  # { "free_trial": [...], "silver": [...], ... }
+    }
+
+
+class PlanFeaturesPayload(BaseModel):
+    plans: Dict[str, List[str]]
+
+
+@api_router.put("/admin/plan-features")
+async def admin_put_plan_features(
+    payload: PlanFeaturesPayload,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    """Saves the full plan->features mapping. Unknown feature keys are
+    silently dropped so a stale frontend can't poison the data."""
+    _require_admin(current_user)
+    valid_keys = set(ALL_KEYS)
+    cleaned: Dict[str, List[str]] = {}
+    for plan_key in DEFAULT_PLAN_FEATURES.keys():
+        # Accept only known plan slugs; ignore unknown ones to keep schema tidy.
+        keys = payload.plans.get(plan_key, [])
+        cleaned[plan_key] = [k for k in keys if k in valid_keys]
+    await db.plan_features.update_one(
+        {"_id": "default"},
+        {"$set": {"plans": cleaned}},
+        upsert=True,
+    )
+    return {"ok": True, "plans": cleaned}
+
+
+@api_router.get("/me/feature-flags")
+async def me_feature_flags(
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    """Returns the list of feature keys the CURRENT user can use, based on
+    their plan. Admin users get every key automatically so they never lock
+    themselves out of the panel they administer."""
+    plan = (current_user.get("plan") or "free_trial").lower()
+    if current_user.get("is_admin"):
+        return {"plan": plan, "features": ALL_KEYS, "is_admin": True}
+    plans = await _get_plan_features_doc()
+    allowed = plans.get(plan, plans.get("free_trial", []))
+    return {"plan": plan, "features": list(allowed), "is_admin": False}
+
+
 # ---------------------- App setup ----------------------
 
 app.include_router(api_router)
