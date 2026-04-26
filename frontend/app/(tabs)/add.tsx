@@ -20,6 +20,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Api, Courier, SheetOrder } from "../../lib/api";
 import { scannerBridge } from "../../lib/scannerBridge";
 import { colors } from "../../lib/theme";
+import { useFeatureFlag } from "../../lib/feature_flags";
 
 // AsyncStorage keys for "last used" memory — shown as hints (not defaults).
 const LS_LAST_COURIER = "@csm/lastCourierId";
@@ -210,6 +211,17 @@ export default function AddShipment() {
   // load the existing shipment, prefill every field, and switch the save
   // button into "Update" mode (PUT /shipments/:id instead of POST).
   const [editingShipmentId, setEditingShipmentId] = useState<string>("");
+
+  // ── Form-field feature flags ───────────────────────────────────────
+  // These hide the optional inputs entirely on plans that don't include
+  // them. Settings' `label_fields` map is still consulted as a per-user
+  // override; the flag is the harder, plan-level gate.
+  const flagAltPhone   = useFeatureFlag("form_alt_phone");
+  const flagBoxDims    = useFeatureFlag("form_box_dimensions");
+  const flagTokenAmt   = useFeatureFlag("form_token_amount");
+  const flagShipNotes  = useFeatureFlag("form_shipment_notes");
+  const flagAutoTrack  = useFeatureFlag("auto_tracking");
+  const flagManualScan = useFeatureFlag("manual_tracking_scan");
   // Holds the courier_id from a shipment we are editing so we can resolve
   // it to the full Courier object once the couriers list finishes loading.
   // (The fetch race meant we used to drop the user's saved courier on edit.)
@@ -948,7 +960,7 @@ export default function AddShipment() {
                 style={styles.input}
               />
             </Field>
-            {labelFields.alt_phone && (
+            {flagAltPhone && labelFields.alt_phone && (
               <Field label="Alternative Phone (optional)">
                 <TextInput
                   testID="customer-alt-phone-input"
@@ -1127,6 +1139,7 @@ export default function AddShipment() {
             {/* Token / Advance — only meaningful for COD.
                 If user fills this while Prepaid is selected → we block Save
                 and show inline error (common typing-habit mistake). */}
+            {flagTokenAmt ? (
             <Field label="Token / Advance Paid (optional)">
               <View style={{ flexDirection: "row", gap: 8, alignItems: "center" }}>
                 <View style={{ flex: 1 }}>
@@ -1195,7 +1208,8 @@ export default function AddShipment() {
                 </Text>
               ) : null}
             </Field>
-            {labelFields.box_dimensions && (
+            ) : null}
+            {flagBoxDims && labelFields.box_dimensions && (
               <Field label="Box Dimensions (optional)">
                 <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
                   <TextInput
@@ -1240,7 +1254,7 @@ export default function AddShipment() {
                 </View>
               </Field>
             )}
-            {labelFields.shipment_notes && (
+            {flagShipNotes && labelFields.shipment_notes && (
               <Field label="Shipment Notes (optional)">
                 <TextInput
                   testID="shipment-notes-input"

@@ -15,6 +15,7 @@ import { Api, Shipment, Settings, Courier } from "../../lib/api";
 import { buildCopyText, buildWhatsAppText, cleanPhone } from "../../lib/format";
 import { buildLabelHtml, pageDimensionsFor } from "../../lib/label";
 import { colors } from "../../lib/theme";
+import { useFeatureFlag } from "../../lib/feature_flags";
 
 type StatusFilter =
   | "All"
@@ -63,6 +64,15 @@ function matchesStatusFilter(shipStatus: string, filter: StatusFilter): boolean 
 export default function Shipments() {
   const router = useRouter();
   const params = useLocalSearchParams<{ status?: string; select?: string }>();
+  // Per-row action visibility — feature flags wired from the admin panel.
+  // Admin users see everything; other plans render only what's enabled.
+  const flagCopy        = useFeatureFlag("shipment_copy_btn");
+  const flagWhatsapp    = useFeatureFlag("shipment_whatsapp_btn");
+  const flagEdit        = useFeatureFlag("shipment_edit_btn");
+  const flagDelete      = useFeatureFlag("shipment_delete_btn");
+  const flagPrint       = useFeatureFlag("shipment_print_btn");
+  const flagBulkPrint   = useFeatureFlag("bulk_print");
+  const flagMarkDeliv   = useFeatureFlag("shipment_mark_delivered");
   const [items, setItems] = useState<Shipment[]>([]);
   const [couriers, setCouriers] = useState<Courier[]>([]);
   const [search, setSearch] = useState("");
@@ -371,19 +381,21 @@ export default function Shipments() {
       <View style={styles.header}>
         <Text style={styles.title}>Shipments</Text>
         <View style={{ flexDirection: "row", gap: 8 }}>
-          <TouchableOpacity
-            testID="bulk-mode-toggle" style={[styles.iconBtn, selectMode && { backgroundColor: colors.primary, borderColor: colors.primary }]}
-            onPress={() => {
-              if (selectMode) clearSelection();
-              else setSelectMode(true);
-            }}
-          >
-            <Ionicons
-              name={selectMode ? "close" : "checkbox-outline"}
-              size={20}
-              color={selectMode ? "#fff" : colors.text}
-            />
-          </TouchableOpacity>
+          {flagBulkPrint ? (
+            <TouchableOpacity
+              testID="bulk-mode-toggle" style={[styles.iconBtn, selectMode && { backgroundColor: colors.primary, borderColor: colors.primary }]}
+              onPress={() => {
+                if (selectMode) clearSelection();
+                else setSelectMode(true);
+              }}
+            >
+              <Ionicons
+                name={selectMode ? "close" : "checkbox-outline"}
+                size={20}
+                color={selectMode ? "#fff" : colors.text}
+              />
+            </TouchableOpacity>
+          ) : null}
           <TouchableOpacity
             testID="export-csv-btn" style={styles.iconBtn}
             onPress={() => Linking.openURL(Api.csvUrl())}
@@ -749,42 +761,53 @@ export default function Shipments() {
             </TouchableOpacity>
             {!selectMode && (
               <View style={styles.actions}>
-                <ActionBtn
-                  icon={item.status === "Delivered" ? "checkmark-done-circle" : "checkmark-circle-outline"}
-                  color={item.status === "Delivered" ? colors.successText : colors.textMuted}
-                  onPress={() => toggleDelivered(item)}
-                  testID={`toggle-delivered-${item.tracking_id}`}
-                />
-                <ActionBtn
-                  icon="copy-outline" color={colors.text}
-                  onPress={() => copyAll(item)}
-                  testID={`copy-all-${item.tracking_id}`}
-                />
-                <ActionBtn
-                  icon="logo-whatsapp" color="#25D366"
-                  onPress={() => sendWhatsApp(item)}
-                  testID={`whatsapp-${item.tracking_id}`}
-                />
-                <ActionBtn
-                  icon="create-outline" color="#2563EB"
-                  onPress={() =>
-                    router.push({
-                      pathname: "/(tabs)/add",
-                      params: { edit_id: item.id },
-                    })
-                  }
-                  testID={`edit-${item.tracking_id}`}
-                />
-                <ActionBtn
-                  icon="print-outline" color={colors.text}
-                  onPress={() => router.push(`/label/${item.id}`)}
-                  testID={`print-${item.tracking_id}`}
-                />
-                <ActionBtn
-                  icon="trash-outline" color={colors.dangerText}
-                  onPress={() => remove(item)}
-                  testID={`delete-${item.tracking_id}`}
-                />
+                {flagMarkDeliv ? (
+                  <ActionBtn
+                    icon={item.status === "Delivered" ? "checkmark-done-circle" : "checkmark-circle-outline"}
+                    color={item.status === "Delivered" ? colors.successText : colors.textMuted}
+                    onPress={() => toggleDelivered(item)}
+                    testID={`toggle-delivered-${item.tracking_id}`}
+                  />
+                ) : null}                {flagCopy ? (
+                  <ActionBtn
+                    icon="copy-outline" color={colors.text}
+                    onPress={() => copyAll(item)}
+                    testID={`copy-all-${item.tracking_id}`}
+                  />
+                ) : null}
+                {flagWhatsapp ? (
+                  <ActionBtn
+                    icon="logo-whatsapp" color="#25D366"
+                    onPress={() => sendWhatsApp(item)}
+                    testID={`whatsapp-${item.tracking_id}`}
+                  />
+                ) : null}
+                {flagEdit ? (
+                  <ActionBtn
+                    icon="create-outline" color="#2563EB"
+                    onPress={() =>
+                      router.push({
+                        pathname: "/(tabs)/add",
+                        params: { edit_id: item.id },
+                      })
+                    }
+                    testID={`edit-${item.tracking_id}`}
+                  />
+                ) : null}
+                {flagPrint ? (
+                  <ActionBtn
+                    icon="print-outline" color={colors.text}
+                    onPress={() => router.push(`/label/${item.id}`)}
+                    testID={`print-${item.tracking_id}`}
+                  />
+                ) : null}
+                {flagDelete ? (
+                  <ActionBtn
+                    icon="trash-outline" color={colors.dangerText}
+                    onPress={() => remove(item)}
+                    testID={`delete-${item.tracking_id}`}
+                  />
+                ) : null}
               </View>
             )}
           </View>

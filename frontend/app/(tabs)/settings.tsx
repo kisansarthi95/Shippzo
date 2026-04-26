@@ -21,6 +21,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter, useFocusEffect, useLocalSearchParams, useNavigation } from "expo-router";
 import { Api, Courier, Settings as SettingsT, SenderAddress, SheetPreview, SHEET_FIELDS, api, PlanKey } from "../../lib/api";
+import { useFeatureFlag } from "../../lib/feature_flags";
 import { colors } from "../../lib/theme";
 import { useAuth } from "../../lib/auth";
 
@@ -134,6 +135,21 @@ export default function SettingsScreen() {
   const router = useRouter();
   const navigation = useNavigation();
   const { user, signOut } = useAuth();
+  // Settings-section feature flags. We don't gate the Hub itself (admin
+  // panel + accounts always show); we gate INTERNAL sections so users on
+  // limited plans don't see knobs they can't actually use.
+  const flagSmartPasteAi      = useFeatureFlag("smart_paste_ai");
+  const flagSmartPasteCustomP = useFeatureFlag("smart_paste_custom_prompt");
+  const flagSheetImport       = useFeatureFlag("sheet_import");
+  const flagSheetMapping      = useFeatureFlag("sheet_column_mapping");
+  const flagAiRateCustom      = useFeatureFlag("ai_rate_customization");
+  const flagBrandLogo         = useFeatureFlag("label_brand_logo");
+  const flagBrandTagline      = useFeatureFlag("label_brand_tagline");
+  const flagLabelCustomFields = useFeatureFlag("label_custom_fields");
+  const flagLabelFieldToggles = useFeatureFlag("label_field_toggles");
+  const flagWaTemplate        = useFeatureFlag("whatsapp_template_editor");
+  const flagWaCopy            = useFeatureFlag("whatsapp_copy_template");
+  const flagWaEta             = useFeatureFlag("whatsapp_eta_customization");
   const params = useLocalSearchParams<{ section?: string }>();
   // Section routing: empty = Hub view, otherwise show only the matching
   // group of cards. Keeps the screen short, focused, and click-driven.
@@ -863,6 +879,7 @@ export default function SettingsScreen() {
 
           {section === "business" && (<>
           {/* Phase-4b+ Smart Paste AI */}
+          {flagSmartPasteAi ? (
           <Section title="Smart Paste AI" icon="sparkles-outline">
             <View style={styles.spaiIntro}>
               <View style={styles.spaiBadge}>
@@ -955,6 +972,7 @@ export default function SettingsScreen() {
               </View>
             ) : null}
           </Section>
+          ) : null}
           </>)}
 
           {section === "billing" && (<>
@@ -1152,10 +1170,12 @@ export default function SettingsScreen() {
               </TouchableOpacity>
             </View>
           </Section>
+          ) : null}
           </>)}
 
           {section === "business" && (<>
           {/* Google Sheet */}
+          {flagSheetImport ? (
           <Section title="Google Sheet (Orders source)" icon="logo-google">
             <View style={styles.sampleBox} testID="sheet-sample-box">
               <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
@@ -1295,6 +1315,7 @@ export default function SettingsScreen() {
               </View>
             )}
           </Section>
+          ) : null}
 
           {/* Column picker modal */}
           <Modal
