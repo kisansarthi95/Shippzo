@@ -2762,6 +2762,8 @@ async def _get_admin_config() -> Dict[str, Any]:
         seeded = {
             "global_ai_rates": dict(DEFAULT_AI_RATES),
             "credit_packages": list(DEFAULT_CREDIT_PACKAGES),
+            "plan_pricing":    {k: dict(v) for k, v in DEFAULT_PLAN_PRICING.items()},
+            "countdown":       dict(DEFAULT_COUNTDOWN),
         }
         await db.admin_config.insert_one({"_id": "default", **seeded})
         return seeded
@@ -2769,13 +2771,17 @@ async def _get_admin_config() -> Dict[str, Any]:
     out = {
         "global_ai_rates": doc.get("global_ai_rates") or dict(DEFAULT_AI_RATES),
         "credit_packages": doc.get("credit_packages") or list(DEFAULT_CREDIT_PACKAGES),
+        "plan_pricing":    doc.get("plan_pricing")    or {k: dict(v) for k, v in DEFAULT_PLAN_PRICING.items()},
+        "countdown":       doc.get("countdown")       or dict(DEFAULT_COUNTDOWN),
     }
     return out
 
 
 class GlobalConfigPayload(BaseModel):
-    global_ai_rates: Optional[Dict[str, float]] = None
-    credit_packages: Optional[List[Dict[str, Any]]] = None
+    global_ai_rates:  Optional[Dict[str, float]]    = None
+    credit_packages:  Optional[List[Dict[str, Any]]] = None
+    plan_pricing:     Optional[Dict[str, Dict[str, Any]]] = None
+    countdown:        Optional[Dict[str, Any]]      = None
 
 
 @api_router.get("/admin/global-config")
