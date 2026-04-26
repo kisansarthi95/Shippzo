@@ -476,6 +476,19 @@ export const Api = {
       source: "llm" | "regex" | "fallback";
     }>("/smart-paste/chat", { fields, reply }).then((r) => r.data),
 
+  // Photo OCR — Gemini Vision.
+  smartPastePhoto: (image_base64: string, mime: string = "image/jpeg") =>
+    api.post<{
+      fields: Record<string, any>;
+      missing: string[];
+      complete: boolean;
+      ai_message: string;
+      complexity: "simple" | "medium" | "complex" | "";
+      reason: string;
+      source: "llm" | "regex" | "fallback";
+      credits_charged: number;
+    }>("/smart-paste/photo", { image_base64, mime }).then((r) => r.data),
+
   // Customer memory — look up past customer by phone for auto-suggest.
   lookupCustomerByPhone: (phone: string) =>
     api.get<{

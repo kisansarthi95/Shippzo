@@ -18,6 +18,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useFocusEffect, useRouter } from "expo-router";
 import * as Clipboard from "expo-clipboard";
+import * as ImagePicker from "expo-image-picker";
 import { Api, Shipment } from "../../lib/api";
 import { colors } from "../../lib/theme";
 import UsageMeter from "../../components/UsageMeter";
@@ -79,6 +80,11 @@ export default function Dashboard() {
   const [pasteText, setPasteText] = useState("");
   const [pasting, setPasting] = useState(false);
   const [pasteStage, setPasteStage] = useState<"" | "parsing" | "saving">("");
+  // Smart Paste tabs: text vs photo. Photo tab is feature-gated by
+  // `smart_paste_image_ocr` which is enabled in every plan by default.
+  const [pasteTab, setPasteTab] = useState<"text" | "photo">("text");
+  const [photoUri, setPhotoUri] = useState<string | null>(null);
+  const [photoUploading, setPhotoUploading] = useState(false);
 
   // Smart Paste Chat — conversational flow. AI asks for missing details
   // in natural language, user types/dictates replies (keyboard mic works
@@ -195,6 +201,122 @@ export default function Dashboard() {
         "Smart Paste failed",
         e?.response?.data?.detail || e?.message || "Please try again."
       );
+    }
+  };
+
+  /**
+   * Photo Smart Paste — runs Gemini Vision on a base64 image and feeds
+   * the parsed fields into the SAME chat flow the text path uses.
+   *
+   *   1. Pick from camera or gallery (caller supplies the source).
+   *   2. POST to /smart-paste/photo with base64 + mime.
+   *   3. If complete → save silently. Else → open chat modal.
+   *   4. Cost: 2 credits (complex tier). Trial users get 10 free credits
+   *      on signup so they can try it ~5 times.
+   */
+  const pickAndProcessPhoto = async (source: "camera" | "gallery") => {
+    try {
+      let result: ImagePicker.ImagePickerResult;
+      if (source === "camera") {
+        const perm = await ImagePicker.requestCameraPermissionsAsync();
+        if (!perm.granted) {
+          Alert.alert(
+            "Camera permission needed",
+            "Please allow camera access to scan addresses from photos.",
+          );
+          return;
+        }
+        result = await ImagePicker.launchCameraAsync({
+          mediaTypes: ImagePicker.MediaTypeOptions.Images,
+          allowsEditing: false,
+          quality: 0.6,
+          base64: true,
+          exif: false,
+        });
+      } else {
+        const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+        if (!perm.granted) {
+          Alert.alert(
+            "Gallery permission needed",
+            "Please allow gallery access to pick a photo.",
+          );
+          return;
+        }
+        result = await ImagePicker.launchImageLibraryAsync({
+          mediaTypes: ImagePicker.MediaTypeOptions.Images,
+          allowsEditing: false,
+          quality: 0.6,
+          base64: true,
+          exif: false,
+        });
+      }
+      if (result.canceled || !result.assets || result.assets.length === 0) {
+        return;
+      }
+      const asset = result.assets[0];
+      const b64 = asset.base64 || "";
+      if (!b64) {
+        Alert.alert("Photo error", "Could not read the selected image.");
+        return;
+      }
+      setPhotoUri(asset.uri);
+      setPhotoUploading(true);
+      // Determine MIME from URI extension (best-effort).
+      const lower = (asset.uri || "").toLowerCase();
+      const mime = lower.endsWith(".png")
+        ? "image/png"
+        : lower.endsWith(".webp")
+        ? "image/webp"
+        : "image/jpeg";
+      const resp = await Api.smartPastePhoto(b64, mime);
+      setPhotoUploading(false);
+      setPhotoUri(null);
+      setPasteModalOpen(false);
+      setPasteTab("text");
+
+      // Same merge logic as runSmartPasteAI:
+      const legacyFields = resp.fields || {};
+      const missing = (resp.missing || []).filter((k) =>
+        REQUIRED_FIELDS.includes(k),
+      );
+
+      if (resp.complete && missing.length === 0) {
+        await saveFromFields(legacyFields);
+        return;
+      }
+
+      // Open chat modal with photo-decoded fields pre-filled.
+      setChatFields(legacyFields);
+      setChatComplexity((resp.complexity as any) || "complex");
+      setChatReason(resp.reason || "photo OCR");
+      setDupFound([]);
+      setSuggestedCustomer(null);
+      setChatInput("");
+      const firstMsg = resp.ai_message || buildChatMessage(legacyFields, missing, true);
+      setChatMessages([
+        { role: "system", text: `📷 Photo decoded · cost ${resp.credits_charged ?? 2} credits` },
+        { role: "ai", text: firstMsg },
+      ]);
+      setChatOpen(true);
+
+      const phone = (legacyFields.customer_phone || "").toString();
+      if (phone && phone.replace(/\D/g, "").length >= 10) {
+        Api.lookupCustomerByPhone(phone)
+          .then((r) => {
+            if (r.found && r.customer) {
+              setSuggestedCustomer({ ...r.customer, _count: r.count });
+            }
+          })
+          .catch(() => {});
+      }
+    } catch (e: any) {
+      setPhotoUploading(false);
+      setPhotoUri(null);
+      const msg =
+        e?.response?.data?.detail ||
+        e?.message ||
+        "Could not read the photo. Try a brighter, clearer shot.";
+      Alert.alert("Photo OCR failed", msg);
     }
   };
 
@@ -581,7 +703,7 @@ export default function Dashboard() {
       </View>
 
       {/* Smart Paste Fallback Modal — clipboard was empty, user pastes raw
-          WhatsApp/SMS text here and the AI parses it on the backend. */}
+          WhatsApp/SMS text here OR uploads a photo (Phase-5d). */}
       <Modal
         visible={pasteModalOpen}
         animationType="slide"
@@ -598,64 +720,173 @@ export default function Dashboard() {
               </TouchableOpacity>
             </View>
 
-            <Text style={styles.modalHint}>
-              Paste any WhatsApp/SMS order text below. AI will auto-fill the form — no formatting needed.
-            </Text>
-
-            <View style={styles.modalQuickRow}>
-              <TouchableOpacity style={styles.modalQuickBtn} onPress={pasteFromClipboardToModal}>
-                <Ionicons name="clipboard-outline" size={14} color="#7C3AED" />
-                <Text style={styles.modalQuickBtnText}>Paste from Clipboard</Text>
-              </TouchableOpacity>
-            </View>
-
-            <TextInput
-              testID="smart-paste-input"
-              value={pasteText}
-              onChangeText={setPasteText}
-              multiline
-              placeholder={
-                "e.g. Ramesh Patel, 9876543210, 45 MG Road, Ahmedabad 380001, Saree 2 pcs, 1200 COD"
-              }
-              placeholderTextColor="#9CA3AF"
-              style={styles.modalInput}
-              autoFocus
-              editable={!pasting}
-            />
-
-            {pasting && (
-              <View style={styles.aiStatusRow}>
-                <ActivityIndicator size="small" color="#7C3AED" />
-                <Text style={styles.aiStatusText}>
-                  {pasteStage === "saving" ? "Saving order…" : "AI is parsing…"}
+            {/* Tabs: Text vs Photo */}
+            <View style={styles.tabRow}>
+              <TouchableOpacity
+                testID="smart-paste-tab-text"
+                onPress={() => setPasteTab("text")}
+                style={[styles.tabBtn, pasteTab === "text" && styles.tabBtnActive]}
+                disabled={pasting || photoUploading}
+              >
+                <Ionicons
+                  name="document-text-outline"
+                  size={14}
+                  color={pasteTab === "text" ? "#fff" : "#475569"}
+                />
+                <Text
+                  style={[
+                    styles.tabBtnTxt,
+                    pasteTab === "text" && styles.tabBtnTxtActive,
+                  ]}
+                >
+                  Text
                 </Text>
-              </View>
-            )}
-
-            <View style={styles.modalActions}>
-              <TouchableOpacity
-                style={[styles.modalBtn, { backgroundColor: "#E5E7EB" }]}
-                onPress={() => setPasteModalOpen(false)}
-                disabled={pasting}
-              >
-                <Text style={[styles.modalBtnText, { color: colors.text }]}>Cancel</Text>
               </TouchableOpacity>
               <TouchableOpacity
-                testID="smart-paste-submit"
-                style={[styles.modalBtn, { backgroundColor: "#7C3AED", opacity: pasting ? 0.7 : 1 }]}
-                onPress={submitPasteModal}
-                disabled={pasting}
+                testID="smart-paste-tab-photo"
+                onPress={() => setPasteTab("photo")}
+                style={[styles.tabBtn, pasteTab === "photo" && styles.tabBtnActive]}
+                disabled={pasting || photoUploading}
               >
-                {pasting ? (
-                  <ActivityIndicator size="small" color="#fff" />
-                ) : (
-                  <>
-                    <Ionicons name="sparkles" size={14} color="#fff" />
-                    <Text style={styles.modalBtnText}>AI Parse & Queue</Text>
-                  </>
-                )}
+                <Ionicons
+                  name="camera-outline"
+                  size={14}
+                  color={pasteTab === "photo" ? "#fff" : "#475569"}
+                />
+                <Text
+                  style={[
+                    styles.tabBtnTxt,
+                    pasteTab === "photo" && styles.tabBtnTxtActive,
+                  ]}
+                >
+                  Photo
+                </Text>
+                <View style={styles.tabPill}>
+                  <Text style={styles.tabPillTxt}>2 cr</Text>
+                </View>
               </TouchableOpacity>
             </View>
+
+            {pasteTab === "text" ? (
+              <>
+                <Text style={styles.modalHint}>
+                  Paste any WhatsApp/SMS order text below. AI will auto-fill the form — no formatting needed.
+                </Text>
+
+                <View style={styles.modalQuickRow}>
+                  <TouchableOpacity style={styles.modalQuickBtn} onPress={pasteFromClipboardToModal}>
+                    <Ionicons name="clipboard-outline" size={14} color="#7C3AED" />
+                    <Text style={styles.modalQuickBtnText}>Paste from Clipboard</Text>
+                  </TouchableOpacity>
+                </View>
+
+                <TextInput
+                  testID="smart-paste-input"
+                  value={pasteText}
+                  onChangeText={setPasteText}
+                  multiline
+                  placeholder={
+                    "e.g. Ramesh Patel, 9876543210, 45 MG Road, Ahmedabad 380001, Saree 2 pcs, 1200 COD"
+                  }
+                  placeholderTextColor="#9CA3AF"
+                  style={styles.modalInput}
+                  autoFocus
+                  editable={!pasting}
+                />
+
+                {pasting && (
+                  <View style={styles.aiStatusRow}>
+                    <ActivityIndicator size="small" color="#7C3AED" />
+                    <Text style={styles.aiStatusText}>
+                      {pasteStage === "saving" ? "Saving order…" : "AI is parsing…"}
+                    </Text>
+                  </View>
+                )}
+
+                <View style={styles.modalActions}>
+                  <TouchableOpacity
+                    style={[styles.modalBtn, { backgroundColor: "#E5E7EB" }]}
+                    onPress={() => setPasteModalOpen(false)}
+                    disabled={pasting}
+                  >
+                    <Text style={[styles.modalBtnText, { color: colors.text }]}>Cancel</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    testID="smart-paste-submit"
+                    style={[styles.modalBtn, { backgroundColor: "#7C3AED", opacity: pasting ? 0.7 : 1 }]}
+                    onPress={submitPasteModal}
+                    disabled={pasting}
+                  >
+                    {pasting ? (
+                      <ActivityIndicator size="small" color="#fff" />
+                    ) : (
+                      <>
+                        <Ionicons name="sparkles" size={14} color="#fff" />
+                        <Text style={styles.modalBtnText}>AI Parse & Queue</Text>
+                      </>
+                    )}
+                  </TouchableOpacity>
+                </View>
+              </>
+            ) : (
+              <>
+                <Text style={styles.modalHint}>
+                  📷 Take a photo (or pick from gallery) of any address —
+                  handwritten paper, visiting card, packing slip, screenshot.
+                  AI will read everything in Gujarati / Hindi / English.
+                </Text>
+
+                {photoUploading ? (
+                  <View style={styles.photoUploadCard}>
+                    <ActivityIndicator size="large" color="#7C3AED" />
+                    <Text style={styles.photoUploadTxt}>
+                      🤖 Reading the photo… (5–20 sec)
+                    </Text>
+                  </View>
+                ) : (
+                  <View style={styles.photoBtnGrid}>
+                    <TouchableOpacity
+                      testID="smart-paste-camera-btn"
+                      onPress={() => pickAndProcessPhoto("camera")}
+                      style={styles.photoBigBtn}
+                      activeOpacity={0.85}
+                    >
+                      <Ionicons name="camera" size={28} color="#7C3AED" />
+                      <Text style={styles.photoBigBtnTxt}>Camera</Text>
+                      <Text style={styles.photoBigBtnSub}>Live capture</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      testID="smart-paste-gallery-btn"
+                      onPress={() => pickAndProcessPhoto("gallery")}
+                      style={styles.photoBigBtn}
+                      activeOpacity={0.85}
+                    >
+                      <Ionicons name="images" size={28} color="#7C3AED" />
+                      <Text style={styles.photoBigBtnTxt}>Gallery</Text>
+                      <Text style={styles.photoBigBtnSub}>Pick existing</Text>
+                    </TouchableOpacity>
+                  </View>
+                )}
+
+                <View style={styles.photoTipBox}>
+                  <Ionicons name="bulb-outline" size={14} color="#92400E" />
+                  <Text style={styles.photoTipTxt}>
+                    Tip: bright light + flat surface = best results. Multiple
+                    phones? AI picks the first 2. No name? Shop name is used.
+                  </Text>
+                </View>
+
+                <View style={styles.modalActions}>
+                  <TouchableOpacity
+                    style={[styles.modalBtn, { backgroundColor: "#E5E7EB", flex: 1 }]}
+                    onPress={() => setPasteModalOpen(false)}
+                    disabled={photoUploading}
+                  >
+                    <Text style={[styles.modalBtnText, { color: colors.text }]}>Cancel</Text>
+                  </TouchableOpacity>
+                </View>
+              </>
+            )}
           </View>
         </View>
       </Modal>
@@ -1439,6 +1670,81 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: "700",
     color: "#6D28D9",
+  },
+
+  /* Phase-5d: Smart Paste tabs (Text vs Photo). */
+  tabRow: {
+    flexDirection: "row",
+    backgroundColor: "#F1F5F9",
+    borderRadius: 999,
+    padding: 4,
+    marginBottom: 12,
+  },
+  tabBtn: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    paddingVertical: 8,
+    borderRadius: 999,
+  },
+  tabBtnActive: { backgroundColor: "#7C3AED" },
+  tabBtnTxt: { fontSize: 12, fontWeight: "800", color: "#475569" },
+  tabBtnTxtActive: { color: "#fff" },
+  tabPill: {
+    backgroundColor: "rgba(255,255,255,0.25)",
+    paddingHorizontal: 6,
+    paddingVertical: 1,
+    borderRadius: 6,
+    marginLeft: 2,
+  },
+  tabPillTxt: { color: "#fff", fontSize: 9, fontWeight: "900" },
+
+  /* Photo capture buttons */
+  photoBtnGrid: {
+    flexDirection: "row",
+    gap: 12,
+    marginVertical: 14,
+  },
+  photoBigBtn: {
+    flex: 1,
+    backgroundColor: "#F5F3FF",
+    borderWidth: 1.5,
+    borderColor: "#DDD6FE",
+    borderRadius: 14,
+    paddingVertical: 22,
+    alignItems: "center",
+    gap: 6,
+  },
+  photoBigBtnTxt: { fontSize: 14, fontWeight: "800", color: "#5B21B6" },
+  photoBigBtnSub: { fontSize: 11, color: "#7C3AED" },
+
+  photoUploadCard: {
+    alignItems: "center",
+    paddingVertical: 36,
+    backgroundColor: "#F5F3FF",
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "#DDD6FE",
+    marginVertical: 14,
+    gap: 10,
+  },
+  photoUploadTxt: { fontSize: 13, fontWeight: "700", color: "#6D28D9" },
+
+  photoTipBox: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 6,
+    backgroundColor: "#FEF3C7",
+    borderColor: "#FCD34D",
+    borderWidth: 1,
+    padding: 10,
+    borderRadius: 10,
+    marginBottom: 12,
+  },
+  photoTipTxt: {
+    flex: 1, color: "#92400E", fontSize: 11.5, fontWeight: "600", lineHeight: 16,
   },
 
   /* Missing-Fields Modal — chips showing what AI already found. */

@@ -11,7 +11,8 @@
     "ios": {
       "supportsTablet": true,
       "infoPlist": {
-        "NSCameraUsageDescription": "Scan courier tracking barcodes quickly",
+        "NSCameraUsageDescription": "Scan addresses & barcodes from photos",
+        "NSPhotoLibraryUsageDescription": "Pick a photo to extract address details",
         "LSApplicationQueriesSchemes": [
           "chatgpt"
         ]
@@ -25,7 +26,9 @@
       "edgeToEdgeEnabled": true,
       "permissions": [
         "android.permission.CAMERA",
-        "android.permission.VIBRATE"
+        "android.permission.VIBRATE",
+        "android.permission.READ_MEDIA_IMAGES",
+        "android.permission.READ_EXTERNAL_STORAGE"
       ]
     },
     "web": {

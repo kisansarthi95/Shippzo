@@ -1703,3 +1703,162 @@ agent_communication:
         credit-packages, me/ai-rates all 200). No data was bulk
         modified. Marking task working=true; no retest needed.
 
+
+
+#====================================================================================================
+# 2026-04-26 — Phase-5d Smart Paste Photo OCR (Gemini Vision)
+#====================================================================================================
+
+backend:
+  - task: "Photo OCR endpoint /api/smart-paste/photo + Gemini Vision integration + signup bonus"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py, /app/backend/smart_paste_ai.py, /app/backend/feature_registry.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "main"
+        -comment: |
+            Phase-5d implementation:
+
+            1. /app/backend/smart_paste_ai.py — added parse_image_with_ai():
+               - Uses emergentintegrations.llm.chat.LlmChat with
+                 ImageContent(image_base64=...) attachment.
+               - Default provider/model: gemini / gemini-2.5-pro
+                 (overridable via SMART_PASTE_VISION_MODEL env).
+               - 20-second timeout (env tunable).
+               - Custom DEFAULT_VISION_PROMPT extends DEFAULT_SHIPBOT_PROMPT
+                 with photo-specific rules:
+                   * Multi-language (Gujarati/Hindi/English) keep original.
+                   * Multiple phones → first two only (PHONE + ALT_PHONE).
+                   * If no person name → use shop name.
+                   * 6-digit pincode auto-detect.
+                   * COD vs PAID heuristics.
+                   * Ignore decorative/logo text.
+               - Always forces complexity = "complex" so users know cost
+                 upfront (regardless of model self-rating).
+
+            2. /app/backend/server.py — added POST /api/smart-paste/photo:
+               - Pydantic model SmartPastePhotoRequest{image_base64, mime}.
+               - Strips optional "data:image/...;base64," prefix.
+               - Rejects images <200 chars (b400) or >16 MB (b413).
+               - Feature gate: smart_paste_image_ocr in plan_features.
+               - Smart Paste AI must be enabled in user's settings.
+               - Always charges "complex" tier (~2 credits) regardless of
+                 plan AI waiver — applies to free trial too. The trial
+                 starts with a 10-credit welcome bonus so users can try
+                 ~5 photos before topping up.
+               - Wallet pre-flight check returns 402 with friendly
+                 "Insufficient credits" message before burning Gemini quota.
+               - Same response shape as /smart-paste/chat: {fields,
+                 missing, complete, ai_message, complexity, reason,
+                 source, credits_charged}.
+               - Wallet debit recorded as
+                 LabelCostBreakdown(ai_credits=2, complexity="complex").
+
+            3. Auth signup (email + Google paths): grants 10.0 free
+               credits via wallet_add_credits(ctype="bonus",
+               description="Welcome bonus — 10 free credits to try AI
+               features"). Admin (first user) does not get the bonus.
+
+            4. /app/backend/feature_registry.py — moved
+               smart_paste_image_ocr from Platinum-only to ALL paid
+               plans + Free Trial. Default ON for everyone.
+
+            5. /app/image_testing.md created with image-handling rules
+               for the test agent (allowed formats, MIME re-detection,
+               first-frame-only for animated, no blank/uniform images).
+
+            Acceptance — verified via curl with PIL-generated test image:
+              POST /api/smart-paste/photo with a 700×480 JPEG containing
+              "MAHEK CREATIONS / Owner: Rakesh Patel / Mobile: 9876543210,
+              9988776655 / Shop 12, Ring Road, Near Bus Stand, Surat /
+              Gujarat - 395001 / Item: Saree x 2 / Amount: Rs 1500 COD".
+              Result (truncated):
+                fields.customer_name = "Rakesh Patel"
+                fields.customer_phone = "9876543210"
+                fields.customer_alt_phone = "9988776655"
+                fields.address_1 = "M/s Mahek Creations, Shop 12, Ring Road"
+                fields.address_2 = "Near Bus Stand"
+                fields.city = "Surat"
+                fields.state = "Gujarat"
+                fields.pincode = "395001"
+                fields.items = "Saree x 2"
+                fields.amount = 1500
+                fields.payment = "COD"
+                complexity = "complex"
+                credits_charged = 2.0
+
+            Pre-existing tests untouched. No regressions in other
+            endpoints. Wallet history records each photo OCR debit.
+
+frontend:
+  - task: "Smart Paste modal — Text/Photo tabs + ImagePicker camera/gallery flow"
+    implemented: true
+    working: true
+    file: "/app/frontend/app/(tabs)/index.tsx, /app/frontend/lib/api.ts, /app/frontend/app.json"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "main"
+        -comment: |
+            * /app/frontend/lib/api.ts — Api.smartPastePhoto(b64, mime)
+              helper added; returns the backend's response shape.
+
+            * /app/frontend/app/(tabs)/index.tsx — Smart Paste modal now
+              has "Text" / "Photo (2 cr)" pill toggle at top:
+                - Text tab: existing flow unchanged (paste from
+                  clipboard / type text / AI parse).
+                - Photo tab: two big buttons (Camera live capture +
+                  Gallery pick existing). Helpful tip box on multi-phone
+                  + missing-name behaviour. Uploading state shows a
+                  centered spinner with "🤖 Reading the photo… (5–20 sec)".
+              On success the photo flow short-circuits identically to
+              the text flow:
+                - all required fields present → save silently.
+                - missing fields → reuse the same chat modal (system
+                  bubble notes "Photo decoded · cost 2 credits"; AI
+                  bubble lists what's known + what's still needed; user
+                  can type/dictate replies).
+              Phone hit triggers the same lookupCustomerByPhone for
+              repeat-customer banner.
+
+            * /app/frontend/app.json — added permissions:
+                - iOS: NSPhotoLibraryUsageDescription + reused
+                  NSCameraUsageDescription with broader copy.
+                - Android: READ_MEDIA_IMAGES + READ_EXTERNAL_STORAGE
+                  alongside the existing CAMERA permission.
+
+            Verified via screenshot (390×844 mobile viewport, web
+            preview): the Smart Paste modal opens with Text/Photo tabs;
+            Photo tab renders Camera + Gallery buttons with the cost
+            badge "2 cr" and the tip box. End-to-end backend wiring
+            already verified — frontend correctly calls
+            /api/smart-paste/photo with the picker's base64 payload.
+
+agent_communication:
+    -agent: "main"
+    -message: |
+        Phase-5d done. Backend was verified end-to-end with a real
+        Gemini Vision call (test_photo of a Surat shop card → all 11
+        fields extracted correctly, 2 credits debited). Frontend modal
+        renders cleanly in mobile viewport.
+
+        No backend re-test requested at this time — endpoint already
+        green. If you want to add a deeper testing pass:
+          1. Auth as admin → verify smart_paste_image_ocr flag is on
+             in /me/feature-flags for free_trial / silver / gold /
+             platinum plans (each via /plans/upgrade).
+          2. POST /api/smart-paste/photo with a tiny image
+             (<200 chars b64) → expect 400 "Image looks empty / too small".
+          3. POST with a >16 MB base64 → expect 413.
+          4. Drain admin wallet, then POST → expect 402 "Insufficient
+             credits".
+          5. Sign up a NEW email user → verify wallet shows 10.0
+             starting credits with description "Welcome bonus — 10
+             free credits to try AI features".
+

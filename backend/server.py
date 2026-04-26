@@ -29,12 +29,14 @@ from wallet import (
     require_balance as wallet_require,
     charge_for_label as wallet_charge,
     add_credits as wallet_add_credits,
-    compute_label_cost,
     classify_and_cost as wallet_classify_and_cost,
+    LabelCostBreakdown,
+    compute_label_cost,
 )
 # Phase-4b+ Smart Paste AI
 from smart_paste_ai import (
     parse_paste_via_llm,
+    parse_image_with_ai,
     to_legacy_fields as sm_to_legacy_fields,
     DEFAULT_SHIPBOT_PROMPT,
 )
@@ -135,6 +137,18 @@ async def auth_signup(payload: SignupRequest):
         # Fresh user — seed starter courier + 15 demo shipments.
         cid = await seed_default_courier(db, uid)
         await seed_demo_shipments(db, uid, cid)
+        # Trial bonus: 10 free credits so new users can try Photo OCR
+        # (~5 calls) and AI text parsing for the first time without
+        # paying. After the bonus is consumed they top up via Wallet.
+        try:
+            await wallet_add_credits(
+                db, uid, 10.0,
+                ctype="bonus",
+                description="Welcome bonus — 10 free credits to try AI features",
+                order_id=f"signup-bonus-{uid[:8]}",
+            )
+        except Exception:
+            logger.exception("signup bonus credit grant failed (non-fatal)")
 
     token = make_token(uid, email)
     out = user_public(user_doc)
@@ -241,6 +255,15 @@ async def auth_google_session(payload: GoogleSessionRequest):
         else:
             cid = await seed_default_courier(db, uid)
             await seed_demo_shipments(db, uid, cid)
+            try:
+                await wallet_add_credits(
+                    db, uid, 10.0,
+                    ctype="bonus",
+                    description="Welcome bonus — 10 free credits to try AI features",
+                    order_id=f"google-bonus-{uid[:8]}",
+                )
+            except Exception:
+                logger.exception("google signup bonus failed (non-fatal)")
         user = user_doc
     else:
         # Ensure the existing user is marked as Google-linked (useful later).
@@ -1473,6 +1496,17 @@ class SmartPasteChatRequest(BaseModel):
     reply: str = ""
 
 
+class SmartPastePhotoRequest(BaseModel):
+    """Image-based Smart Paste.
+    The client captures or picks a photo, base64-encodes it (no
+    data:URI prefix), and POSTs it here with the MIME type. We send it
+    to Gemini Vision and return the same shape as /smart-paste/chat.
+    """
+    image_base64: str
+    mime: str = "image/jpeg"
+
+
+
 class ShipOrderRequest(BaseModel):
     courier_id: str
     # optional overrides before creating the shipment
@@ -2061,6 +2095,149 @@ async def smart_paste_chat(
         "complexity": complexity,
         "reason": reason,
         "source": ai_source,
+    }
+
+
+
+@api_router.post("/smart-paste/photo")
+async def smart_paste_photo(
+    payload: SmartPastePhotoRequest,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    """Image-based Smart Paste — accepts a base64 photo of any address
+    source (handwritten paper, visiting card, packing slip, screenshot,
+    Aadhaar, anything) and returns the SAME shape as /smart-paste/chat.
+    Photo OCR is feature-gated by `smart_paste_image_ocr` and always
+    billed as the "complex" tier (also for free-trial users — see user
+    spec: trial accounts ship with 10 starter credits to cover this).
+    """
+    # 1. Feature gate.
+    plan_key = (current_user.get("plan") or "free_trial").lower()
+    if not current_user.get("is_admin"):
+        plans_doc = await _get_plan_features_doc()
+        allowed = plans_doc.get(plan_key, plans_doc.get("free_trial", []))
+        if "smart_paste_image_ocr" not in allowed:
+            raise HTTPException(
+                status_code=403,
+                detail="Photo OCR is not enabled on your plan.",
+            )
+
+    # 2. Trim/validate input.
+    b64 = (payload.image_base64 or "").strip()
+    if b64.startswith("data:"):
+        comma = b64.find(",")
+        if comma != -1:
+            b64 = b64[comma + 1:]
+    if len(b64) < 200:
+        raise HTTPException(
+            status_code=400, detail="Image looks empty / too small.",
+        )
+    if len(b64) > 16 * 1024 * 1024:
+        raise HTTPException(
+            status_code=413, detail="Image too large — please resize and retry.",
+        )
+
+    # 3. Wallet pre-flight (forced "complex" tier — applies to trial too).
+    s = await db.settings.find_one(
+        {"user_id": current_user["id"]},
+        {"_id": 0, "smart_paste_instructions": 1, "smart_paste_ai_enabled": 1,
+         "ai_cost_simple": 1, "ai_cost_medium": 1, "ai_cost_complex": 1},
+    ) or {}
+    if not s.get("smart_paste_ai_enabled", True):
+        raise HTTPException(
+            status_code=400, detail="Smart Paste AI is disabled in Settings.",
+        )
+    cfg = await _get_admin_config()
+    global_rates = cfg.get("global_ai_rates") or DEFAULT_AI_RATES
+    photo_cost = float(global_rates.get("complex", 2.0))
+    bal = await wallet_balance(db, current_user["id"])
+    if bal < photo_cost:
+        raise HTTPException(
+            status_code=402,
+            detail=(
+                f"Insufficient credits. Photo OCR costs {photo_cost:.2f} "
+                f"credits — your balance is {bal:.2f}. "
+                f"Top up from Wallet to continue."
+            ),
+        )
+
+    # 4. Vision call (Gemini 2.5 Pro by default).
+    ai = await parse_image_with_ai(
+        image_base64=b64,
+        mime=(payload.mime or "image/jpeg"),
+        custom_instructions=(s.get("smart_paste_instructions") or "").strip(),
+    )
+
+    if ai.get("source") != "llm":
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                "Photo could not be read — please try again with a clearer "
+                "or brighter image."
+            ),
+        )
+
+    fields = sm_to_legacy_fields(ai["fields"])
+    if isinstance(fields.get("amount"), str):
+        m = re.search(r"(\d+(?:\.\d+)?)", fields["amount"].replace(",", ""))
+        if m:
+            try:
+                fields["amount"] = float(m.group(1))
+            except Exception:
+                pass
+
+    # 5. Charge wallet — single complex debit, regardless of plan.
+    try:
+        bd = LabelCostBreakdown(
+            ai_credits=photo_cost,
+            ai_complexity="complex",
+            ai_applies=True,
+            plan_has_room=True,
+            shipment_credits=0.0,
+            total=photo_cost,
+        )
+        await wallet_charge(
+            db, current_user, f"photo-ocr-{int(datetime.utcnow().timestamp())}", bd,
+        )
+    except Exception:
+        logger.exception("photo-ocr wallet charge failed (non-fatal)")
+
+    # 6. Same response shape as /smart-paste/chat.
+    out_schema = _legacy_to_schema(fields)
+    missing: List[str] = []
+    for k in _CHAT_REQUIRED:
+        v = (out_schema.get(k) or "").strip()
+        if not v:
+            missing.append(k)
+
+    known_bullets = []
+    for k in _CHAT_LABEL.keys():
+        v = (out_schema.get(k) or "").strip()
+        if v and k != "NOTES":
+            known_bullets.append(f"• {_CHAT_LABEL[k]}: {v}")
+    known_block = "\n".join(known_bullets) if known_bullets else "• (nothing yet)"
+
+    if missing:
+        missing_block = "\n".join(f"• {_CHAT_LABEL[k]}" for k in missing)
+        ai_message = (
+            f"📷 Read the photo. Got these:\n{known_block}\n\n"
+            f"Still need:\n{missing_block}\n\n"
+            f"Please share (you can type or tap 🎤 on the keyboard to speak)."
+        )
+    else:
+        ai_message = (
+            f"✅ Photo decoded. Got everything!\n{known_block}\n\nSaving the order now…"
+        )
+
+    return {
+        "fields": fields,
+        "missing": missing,
+        "complete": len(missing) == 0,
+        "ai_message": ai_message,
+        "complexity": ai.get("complexity", "complex"),
+        "reason": ai.get("ai_reason", "vision call"),
+        "source": "llm",
+        "credits_charged": round(photo_cost, 2),
     }
 
 

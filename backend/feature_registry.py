@@ -106,7 +106,8 @@ ALL_KEYS: List[str] = list(FEATURE_REGISTRY.keys())
 # coverage. Admin can later tighten or loosen per plan.
 DEFAULT_PLAN_FEATURES: Dict[str, List[str]] = {
     "free_trial": [
-        "smart_paste_ai", "smart_paste_voice", "smart_paste_chat_refine",
+        "smart_paste_ai", "smart_paste_voice", "smart_paste_image_ocr",
+        "smart_paste_chat_refine",
         "shipment_copy_btn", "shipment_whatsapp_btn", "shipment_edit_btn",
         "shipment_delete_btn", "shipment_print_btn", "shipment_mark_delivered",
         "label_brand_name", "label_field_toggles",
@@ -118,7 +119,8 @@ DEFAULT_PLAN_FEATURES: Dict[str, List[str]] = {
         "form_alt_phone",
     ],
     "silver": [
-        "smart_paste_ai", "smart_paste_voice", "smart_paste_chat_refine",
+        "smart_paste_ai", "smart_paste_voice", "smart_paste_image_ocr",
+        "smart_paste_chat_refine",
         "shipment_copy_btn", "shipment_whatsapp_btn", "shipment_edit_btn",
         "shipment_delete_btn", "shipment_print_btn", "shipment_mark_delivered",
         "label_brand_logo", "label_brand_name", "label_brand_tagline",

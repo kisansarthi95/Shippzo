@@ -333,3 +333,138 @@ def _split_compound_phone(value: str) -> Tuple[str, str]:
     primary = parts[0][-10:]
     alt = parts[1][-10:] if len(parts) > 1 else ""
     return (primary, alt)
+
+
+
+# ---- Photo / Image OCR (Gemini Vision) ---------------------------------
+
+_VISION_MODEL = os.getenv("SMART_PASTE_VISION_MODEL", "gemini-2.5-pro")
+_VISION_PROVIDER = os.getenv("SMART_PASTE_VISION_PROVIDER", "gemini")
+_VISION_TIMEOUT = float(os.getenv("SMART_PASTE_VISION_TIMEOUT", "20.0"))
+
+# Vision-specific prompt — same 15-line schema, extra rules for image OCR.
+DEFAULT_VISION_PROMPT = (
+    DEFAULT_SHIPBOT_PROMPT
+    + """
+
+## EXTRA RULES FOR IMAGE INPUTS (handwritten paper, visiting card, screenshot, packing slip, ID card, ANYTHING):
+
+1. Read EVERY language present — Gujarati, Hindi, Marathi, English. Keep
+   each text in its ORIGINAL script. Do NOT transliterate.
+2. PHONE NUMBERS:
+   - If the image shows MULTIPLE phone numbers, take the FIRST TWO
+     (in reading order, top-to-bottom, left-to-right).
+   - First → PHONE, second → ALT_PHONE.
+   - Strip +91 / 0 prefixes; keep last 10 digits only.
+3. NAME RULES:
+   - Prefer a person's name. If only a SHOP NAME is visible (no person),
+     use the shop name as NAME.
+   - If both shop name + person are visible, prefer the person's name
+     and append the shop name into ADDRESS_1 (e.g.
+     "M/s Mahek Creations, Shop 12, …").
+4. ADDRESS:
+   - Combine all address-like text into ADDRESS_1 and ADDRESS_2.
+   - Treat any trailing landmark / "near …" / "behind …" line as ADDRESS_2.
+5. PINCODE:
+   - Always pick the 6-digit number that LOOKS like a postal code
+     (often near the end of the address, often after city/state).
+   - If only 5 or fewer digits are visible, leave PINCODE blank.
+6. AMOUNT / COD / PAID:
+   - Words like "Cash", "COD", "Cash On Delivery" → PAYMENT: COD.
+   - Words like "Paid", "Online", "Advance Paid" → PAYMENT: PAID.
+   - If you can't tell, default PAYMENT: COD.
+7. ITEMS:
+   - Pull product / SKU words. Append "x QTY" if quantity is visible.
+8. NOISE FILTER:
+   - Ignore decorative text (logos, slogans, watermarks).
+   - Ignore phone-number listings that are clearly the SHOP's helpline
+     (printed at the top of a visiting card) — but if those are the
+     only numbers visible, still use them.
+9. NEVER invent missing values — leave them as `-`.
+"""
+)
+
+
+async def parse_image_with_ai(
+    *,
+    image_base64: str,
+    mime: str,
+    custom_instructions: str = "",
+) -> Dict[str, Any]:
+    """Vision parse — accepts a base64 image (no data: prefix) and returns
+    the same shape as parse_with_ai().
+
+    Pipeline:
+      1. Build vision-specific system prompt.
+      2. Send to Gemini with the base64 attachment.
+      3. Parse the same 15-line schema block + complexity tag.
+      4. Return {fields, missing, complexity, ai_reason, raw, source}.
+
+    On any error we return an empty result with source='fallback' so the
+    caller can decide whether to surface the error or recover.
+    """
+    if not image_base64:
+        return _empty_result(source="fallback")
+    if not _LLM_KEY:
+        return _empty_result(source="fallback")
+
+    # Sanity-check the MIME type — Gemini supports JPEG/PNG/WEBP.
+    mime = (mime or "").lower().strip() or "image/jpeg"
+    if mime not in {"image/jpeg", "image/jpg", "image/png", "image/webp"}:
+        # Coerce odd MIME types onto JPEG (the most common camera output).
+        mime = "image/jpeg"
+
+    system = DEFAULT_VISION_PROMPT
+    if custom_instructions.strip():
+        system = (
+            "## USER CUSTOMISATION (honour these first when not conflicting "
+            "with the output format rules below):\n"
+            + custom_instructions.strip()
+            + "\n\n-- BASE RULES --\n"
+            + DEFAULT_VISION_PROMPT
+        )
+
+    try:
+        from emergentintegrations.llm.chat import (
+            LlmChat, UserMessage, ImageContent,
+        )
+        chat = (
+            LlmChat(
+                api_key=_LLM_KEY,
+                # Use a hash of the base64 head as session id so repeated
+                # uploads of the same image hit the same session bucket.
+                session_id=f"smart-paste-photo-{abs(hash(image_base64[:200]))}",
+                system_message=system,
+            )
+            .with_model(_VISION_PROVIDER, _VISION_MODEL)
+        )
+        msg = UserMessage(
+            text=(
+                "Read this image and extract the shipment / address details "
+                "into the strict 15-line schema. Then add the JSON complexity "
+                "tag at the end."
+            ),
+            file_contents=[ImageContent(image_base64=image_base64)],
+        )
+        raw = await asyncio.wait_for(
+            chat.send_message(msg), timeout=_VISION_TIMEOUT,
+        )
+    except Exception as e:
+        _LOG.warning("Smart-paste VISION failed (%s) — caller should fall back", e)
+        return _empty_result(source="fallback")
+
+    fields, missing = _parse_schema_block(raw)
+    complexity, reason = _parse_complexity_block(raw)
+    # Photo OCR is ALWAYS billed as 'complex' regardless of model output —
+    # vision calls cost more and we want a predictable price for users.
+    if complexity != "complex":
+        complexity = "complex"
+        reason = (reason or "vision call") + " (photo OCR billed as complex)"
+    return {
+        "fields": fields,
+        "missing": missing,
+        "complexity": complexity,
+        "ai_reason": reason,
+        "raw": raw,
+        "source": "llm",
+    }
