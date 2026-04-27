@@ -229,6 +229,32 @@ async def ensure_can_create_label(db, user: Dict[str, Any]) -> PlanSpec:
         return plan
 
     # Monthly plans
+    # 1) Subscription validity check (paid plans). Once expired, we
+    #    block label creation with a 402 + suggest renewal — but DO
+    #    NOT auto-downgrade because the user may have used way more
+    #    than the free-trial cap. They simply renew to keep going.
+    exp_iso = user.get("plan_expires_at")
+    if exp_iso:
+        try:
+            exp = datetime.fromisoformat(exp_iso)
+            if exp.tzinfo is None:
+                exp = exp.replace(tzinfo=timezone.utc)
+            if now > exp:
+                raise HTTPException(
+                    status_code=402,
+                    detail=(
+                        f"Your {plan.name} subscription expired on "
+                        f"{exp.strftime('%d %b %Y')}. Renew to keep "
+                        "creating labels."
+                    ),
+                )
+        except HTTPException:
+            raise
+        except Exception:
+            # Malformed expiry stamp — fall through; better to allow
+            # than to block. The Plans screen will surface the issue.
+            pass
+
     mkey = _month_key(now)
     used_month = await _get_count(db, uid, mkey)
     if used_month >= plan.label_cap:
@@ -347,6 +373,27 @@ async def usage_summary(db, user: Dict[str, Any]) -> Dict[str, Any]:
         "labels_remaining": max(0, plan.label_cap - used_m),
         "period_key": mkey,
         "can_create_label": used_m < plan.label_cap,
+    })
+    # Surface paid-plan validity so the Plans / Home screens can
+    # show "Renews on …", "Expires in N days", and badge expired plans.
+    exp_iso = user.get("plan_expires_at")
+    expired = False
+    days_left: Optional[int] = None
+    if exp_iso:
+        try:
+            exp = datetime.fromisoformat(exp_iso)
+            if exp.tzinfo is None:
+                exp = exp.replace(tzinfo=timezone.utc)
+            expired = now > exp
+            days_left = max(0, (exp - now).days)
+        except Exception:
+            pass
+    out.update({
+        "plan_expires_at": exp_iso,
+        "plan_days_left": days_left,
+        "plan_expired": expired,
+        "plan_billing_cycle": user.get("plan_billing_cycle"),
+        "can_create_label": out["can_create_label"] and not expired,
     })
     if plan.daily_cap is not None:
         dkey = _day_key(now)

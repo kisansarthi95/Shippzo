@@ -22,6 +22,7 @@ import * as ImagePicker from "expo-image-picker";
 import { Api, Shipment } from "../../lib/api";
 import { colors } from "../../lib/theme";
 import UsageMeter from "../../components/UsageMeter";
+import HomeAlerts from "../../components/HomeAlerts";
 
 type Stats = {
   total: number;
@@ -448,7 +449,10 @@ export default function Dashboard() {
 
   const applySuggestedCustomer = () => {
     if (!suggestedCustomer) return;
-    const updated = {
+
+    // Compute the address-only fill payload up-front. We may apply it
+    // immediately (no past items) or wait for the user's items decision.
+    const addressOnlyUpdate = {
       ...chatFields,
       customer_name: suggestedCustomer.customer_name || chatFields.customer_name,
       customer_phone: suggestedCustomer.customer_phone || chatFields.customer_phone,
@@ -458,32 +462,103 @@ export default function Dashboard() {
       state: suggestedCustomer.state || chatFields.state,
       pincode: suggestedCustomer.pincode || chatFields.pincode,
     };
-    setChatFields(updated);
-    // Recompute missing from updated fields.
-    const stillMissing = REQUIRED_FIELDS.filter((k) => {
-      const snakeKey: Record<string, string> = {
-        NAME: "customer_name",
-        PHONE: "customer_phone",
-        ADDRESS_1: "address_line1",
-        CITY: "city",
-        STATE: "state",
-        PINCODE: "pincode",
-        AMOUNT: "amount",
-      };
-      const v = updated[snakeKey[k]];
-      return !v || !String(v).trim();
-    });
-    const msg = buildChatMessage(updated, stillMissing, false);
-    setChatMessages((prev) => [
-      ...prev,
-      { role: "system", text: `Used past address for ${suggestedCustomer.customer_name}.` },
-      { role: "ai", text: msg },
-    ]);
-    setSuggestedCustomer(null);
-    // If nothing more is needed, auto-save.
-    if (stillMissing.length === 0 && dupFound.length === 0) {
-      saveFromFields(updated);
+
+    // Helper to commit the fill (with or without past items) and continue.
+    const commit = (
+      updated: Record<string, any>,
+      addedItemsLabel?: string,
+    ) => {
+      setChatFields(updated);
+      const stillMissing = REQUIRED_FIELDS.filter((k) => {
+        const snakeKey: Record<string, string> = {
+          NAME: "customer_name",
+          PHONE: "customer_phone",
+          ADDRESS_1: "address_line1",
+          CITY: "city",
+          STATE: "state",
+          PINCODE: "pincode",
+          AMOUNT: "amount",
+        };
+        const v = updated[snakeKey[k]];
+        return !v || !String(v).trim();
+      });
+      const msg = buildChatMessage(updated, stillMissing, false);
+      const usedNote = addedItemsLabel
+        ? `Used past address + items for ${suggestedCustomer.customer_name}.${addedItemsLabel}`
+        : `Used past address for ${suggestedCustomer.customer_name}.`;
+      setChatMessages((prev) => [
+        ...prev,
+        { role: "system", text: usedNote },
+        { role: "ai", text: msg },
+      ]);
+      setSuggestedCustomer(null);
+      if (stillMissing.length === 0 && dupFound.length === 0) {
+        saveFromFields(updated);
+      }
+    };
+
+    // Repeat-customer dialog: if the past order had items, ask whether
+    // to copy them over too. Skip the dialog when no past items exist
+    // OR when the user has already typed items in this draft.
+    const pastItems = Array.isArray(suggestedCustomer.last_items)
+      ? suggestedCustomer.last_items
+      : [];
+    const userItemsRaw = (chatFields.items || chatFields.item || "") as string;
+    const userTypedItems = String(userItemsRaw).trim().length > 0;
+
+    if (pastItems.length === 0 || userTypedItems) {
+      commit(addressOnlyUpdate);
+      return;
     }
+
+    // Build a friendly preview of past items.
+    const itemsPreview = pastItems
+      .slice(0, 3)
+      .map((it: any) =>
+        typeof it === "string"
+          ? it
+          : `${it?.name || ""}${it?.qty ? ` × ${it.qty}` : ""}`.trim(),
+      )
+      .filter(Boolean)
+      .join(", ");
+    const more = pastItems.length > 3 ? ` +${pastItems.length - 3} more` : "";
+    const lastAmt = suggestedCustomer.last_amount
+      ? ` · ₹${suggestedCustomer.last_amount}`
+      : "";
+    const dlgMsg =
+      `Last order had: ${itemsPreview}${more}${lastAmt}.\n\n` +
+      `Reuse the same items, or start fresh?`;
+
+    const reuseItems = () => {
+      const itemsString = pastItems
+        .map((it: any) =>
+          typeof it === "string"
+            ? it
+            : `${it?.name || ""}${it?.qty ? ` × ${it.qty}` : ""}`.trim(),
+        )
+        .filter(Boolean)
+        .join("\n");
+      const updated = { ...addressOnlyUpdate } as Record<string, any>;
+      if (itemsString) updated.items = itemsString;
+      if (suggestedCustomer.last_amount && !updated.amount) {
+        updated.amount = String(suggestedCustomer.last_amount);
+      }
+      commit(updated, ` (${pastItems.length} item${pastItems.length === 1 ? "" : "s"} copied)`);
+    };
+    const startFresh = () => commit(addressOnlyUpdate);
+
+    if (Platform.OS === "web") {
+      const yes =
+        typeof window !== "undefined" &&
+        window.confirm &&
+        window.confirm(`${dlgMsg}\n\nOK = reuse items, Cancel = start fresh.`);
+      if (yes) reuseItems(); else startFresh();
+      return;
+    }
+    Alert.alert("Repeat customer", dlgMsg, [
+      { text: "Start fresh", onPress: startFresh, style: "cancel" },
+      { text: "Reuse items", onPress: reuseItems },
+    ]);
   };
 
   /**
@@ -1113,6 +1188,7 @@ export default function Dashboard() {
           <>
             {/* Plan + usage meter (Phase 3b) */}
             <UsageMeter />
+            <HomeAlerts />
 
             <View style={styles.statsGrid}>
               <StatCard

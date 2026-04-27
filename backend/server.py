@@ -1212,6 +1212,8 @@ async def get_customer_by_phone(
 
     if ships:
         s = ships[0]
+        last_items = s.get("items") or []
+        last_amount = s.get("amount")
         return {
             "found": True,
             "count": len(ships),
@@ -1223,6 +1225,8 @@ async def get_customer_by_phone(
                 "city": s.get("city", ""),
                 "state": s.get("state", ""),
                 "pincode": s.get("pincode", ""),
+                "last_items": last_items,
+                "last_amount": last_amount,
                 "source": "shipment",
                 "last_tracking_id": s.get("tracking_id", ""),
                 "last_date": s.get("created_at", ""),
@@ -2644,6 +2648,102 @@ async def list_plans(current_user: Dict[str, Any] = Depends(get_current_user)):
 async def my_usage(current_user: Dict[str, Any] = Depends(get_current_user)):
     """Current plan + live usage counters. Safe to poll on screen focus."""
     return await usage_summary(db, current_user)
+
+
+# ---------------------- Phase-4d Notification Prefs + Subscription mgmt ----
+
+DEFAULT_NOTIFICATION_PREFS = {
+    "trial_ending":     True,   # 3-day-before alert when on trial
+    "plan_expiring":    True,   # 7-day-before alert for paid plans
+    "low_credits":      True,   # ≤ 5 credits remaining warning
+    "payment_success":  True,   # receipt after successful Razorpay payment
+    "daily_summary":    False,  # opt-in daily digest
+    "channel_push":     True,   # delivery channel — push (default)
+    "channel_email":    True,   # delivery channel — email (default)
+}
+
+
+def _coerce_notif_prefs(raw: Optional[Dict[str, Any]]) -> Dict[str, bool]:
+    raw = raw or {}
+    out: Dict[str, bool] = {}
+    for k, default in DEFAULT_NOTIFICATION_PREFS.items():
+        out[k] = bool(raw.get(k, default))
+    return out
+
+
+@api_router.get("/me/notification-prefs")
+async def get_notification_prefs(
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    """Per-user notification toggles. Surfaced from Settings → Notifications."""
+    fresh = await db.users.find_one({"id": current_user["id"]}, {"_id": 0}) or {}
+    return _coerce_notif_prefs(fresh.get("notification_prefs"))
+
+
+class NotificationPrefsRequest(BaseModel):
+    trial_ending:    Optional[bool] = None
+    plan_expiring:   Optional[bool] = None
+    low_credits:     Optional[bool] = None
+    payment_success: Optional[bool] = None
+    daily_summary:   Optional[bool] = None
+    channel_push:    Optional[bool] = None
+    channel_email:   Optional[bool] = None
+
+
+@api_router.put("/me/notification-prefs")
+async def put_notification_prefs(
+    payload: NotificationPrefsRequest,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    fresh = await db.users.find_one({"id": current_user["id"]}, {"_id": 0}) or {}
+    current = _coerce_notif_prefs(fresh.get("notification_prefs"))
+    incoming = payload.model_dump(exclude_none=True)
+    merged = {**current, **{k: bool(v) for k, v in incoming.items()}}
+    await db.users.update_one(
+        {"id": current_user["id"]},
+        {"$set": {"notification_prefs": merged}},
+    )
+    return merged
+
+
+@api_router.post("/me/cancel-subscription")
+async def cancel_subscription(
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    """User-initiated cancellation. Currently we use Razorpay Orders
+    (one-time charges, NOT recurring subscriptions) so there is nothing
+    to cancel mid-cycle — the user simply doesn't pay next time. The
+    paid plan stays active until plan_expires_at, after which
+    ensure_can_create_label blocks label creation.
+
+    This endpoint flips an `auto_renew=false` flag (forward-compatible
+    with future Razorpay Subscriptions integration) and stamps a
+    cancellation timestamp the Settings UI shows.
+    """
+    fresh = await db.users.find_one({"id": current_user["id"]}, {"_id": 0}) or {}
+    plan = fresh.get("plan") or "free_trial"
+    if plan == "free_trial":
+        raise HTTPException(
+            status_code=400,
+            detail="You're on the free trial — there's nothing to cancel.",
+        )
+    await db.users.update_one(
+        {"id": current_user["id"]},
+        {"$set": {
+            "auto_renew": False,
+            "cancelled_at": datetime.utcnow().isoformat() + "+00:00",
+        }},
+    )
+    return {
+        "ok": True,
+        "plan": plan,
+        "plan_expires_at": fresh.get("plan_expires_at"),
+        "message": (
+            "Auto-renewal cancelled. Your plan stays active until "
+            f"{fresh.get('plan_expires_at') or 'expiry'}, after which "
+            "you'll be moved to the free trial."
+        ),
+    }
 
 
 class UpgradePlanRequest(BaseModel):

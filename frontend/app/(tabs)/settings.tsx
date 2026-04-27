@@ -2201,16 +2201,10 @@ export default function SettingsScreen() {
           </Section>
           </>)}
 
-          {/* === SECTION: Notifications (placeholder) === */}
+          {/* === SECTION: Notifications === */}
           {section === "notifications" && (<>
           <Section title="Notifications" icon="notifications-outline">
-            <View style={styles.placeholderBox}>
-              <Ionicons name="notifications-off-outline" size={42} color="#94A3B8" />
-              <Text style={styles.placeholderTitle}>Coming soon</Text>
-              <Text style={styles.placeholderSub}>
-                Push notifications અને email alerts ની configuration જલ્દી ઉમેરાશે — અહીંથી તમે dispatch reminders, low credits warnings, અને daily summaries enable / disable કરી શકશો.
-              </Text>
-            </View>
+            <NotificationsPanel />
           </Section>
           </>)}
 
@@ -2274,10 +2268,28 @@ export default function SettingsScreen() {
             <TouchableOpacity
               testID="about-terms"
               style={styles.aboutLinkRow}
-              onPress={() => Alert.alert("Terms of Use", "By using this app you agree to our terms. AI features consume credits per the rate-card in Plan & Billing.")}
+              onPress={() => router.push("/refund-policy?tab=terms" as any)}
             >
               <Ionicons name="document-text-outline" size={18} color={colors.primary} />
-              <Text style={styles.aboutLinkText}>Terms of Use</Text>
+              <Text style={styles.aboutLinkText}>Terms of Service</Text>
+              <Ionicons name="chevron-forward" size={16} color="#94A3B8" />
+            </TouchableOpacity>
+            <TouchableOpacity
+              testID="about-refund"
+              style={styles.aboutLinkRow}
+              onPress={() => router.push("/refund-policy" as any)}
+            >
+              <Ionicons name="refresh-circle-outline" size={18} color={colors.primary} />
+              <Text style={styles.aboutLinkText}>Refund & Cancellation Policy</Text>
+              <Ionicons name="chevron-forward" size={16} color="#94A3B8" />
+            </TouchableOpacity>
+            <TouchableOpacity
+              testID="about-cancel-sub"
+              style={styles.aboutLinkRow}
+              onPress={() => router.push("/cancel-subscription" as any)}
+            >
+              <Ionicons name="close-circle-outline" size={18} color="#DC2626" />
+              <Text style={[styles.aboutLinkText, { color: "#DC2626" }]}>Cancel Subscription</Text>
               <Ionicons name="chevron-forward" size={16} color="#94A3B8" />
             </TouchableOpacity>
           </Section>
@@ -2379,6 +2391,152 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
     <View style={{ marginBottom: 10 }}>
       <Text style={styles.fieldLabel}>{label}</Text>
       {children}
+    </View>
+  );
+}
+
+// ───────────── Notifications panel ─────────────
+//
+// Settings → Notifications hosts these toggles. Backend stores them
+// on users.notification_prefs. Delivery engine (push via Expo + email
+// via SMTP) is wired in a follow-up; preferences saved here remain
+// the source of truth.
+type NotifKey =
+  | "trial_ending" | "plan_expiring" | "low_credits"
+  | "payment_success" | "daily_summary"
+  | "channel_push" | "channel_email";
+
+const NOTIF_ROWS: Array<{
+  key: NotifKey; title: string; sub: string; icon: string; color: string;
+}> = [
+  { key: "trial_ending",    title: "Trial ending alert",   sub: "3 days before trial expires",       icon: "time-outline",        color: "#F59E0B" },
+  { key: "plan_expiring",   title: "Plan renewal reminder",sub: "7 days before paid plan expires",   icon: "calendar-outline",    color: "#3B82F6" },
+  { key: "low_credits",     title: "Low credits warning",  sub: "When wallet ≤ 5 credits",           icon: "battery-half-outline",color: "#EF4444" },
+  { key: "payment_success", title: "Payment receipt",      sub: "After successful Razorpay payment", icon: "receipt-outline",     color: "#10B981" },
+  { key: "daily_summary",   title: "Daily summary",        sub: "End-of-day digest of dispatches",   icon: "newspaper-outline",   color: "#8B5CF6" },
+];
+
+function NotificationsPanel() {
+  const [prefs, setPrefs] = useState<Record<NotifKey, boolean> | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+
+  const load = useCallback(async () => {
+    try {
+      const r = await Api.getNotificationPrefs();
+      setPrefs(r as any);
+    } catch (e: any) {
+      Alert.alert("Couldn't load preferences", e?.message || "Try again later");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    load().catch(() => {});
+  }, [load]);
+
+  const toggle = async (k: NotifKey, val: boolean) => {
+    if (!prefs) return;
+    const next = { ...prefs, [k]: val };
+    setPrefs(next);
+    setSaving(true);
+    try {
+      await Api.updateNotificationPrefs({ [k]: val } as any);
+    } catch (e: any) {
+      // revert on failure
+      setPrefs(prefs);
+      Alert.alert("Save failed", e?.response?.data?.detail || e?.message || "Try again");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (loading || !prefs) {
+    return (
+      <View style={{ paddingVertical: 30, alignItems: "center" }}>
+        <ActivityIndicator color={colors.primary} />
+      </View>
+    );
+  }
+
+  return (
+    <>
+      <Text style={styles.notifGroupHead}>Delivery Channels</Text>
+      <View style={styles.notifCard}>
+        <NotifRowSwitch
+          icon="phone-portrait-outline"
+          color="#0EA5E9"
+          title="Push notifications"
+          sub="In-app + push to your device"
+          value={prefs.channel_push}
+          onChange={(v) => toggle("channel_push", v)}
+          disabled={saving}
+        />
+        <View style={styles.notifDivider} />
+        <NotifRowSwitch
+          icon="mail-outline"
+          color="#475569"
+          title="Email alerts"
+          sub="Sent to your registered email"
+          value={prefs.channel_email}
+          onChange={(v) => toggle("channel_email", v)}
+          disabled={saving}
+        />
+      </View>
+
+      <Text style={styles.notifGroupHead}>Alert Types</Text>
+      <View style={styles.notifCard}>
+        {NOTIF_ROWS.map((row, i) => (
+          <React.Fragment key={row.key}>
+            <NotifRowSwitch
+              icon={row.icon}
+              color={row.color}
+              title={row.title}
+              sub={row.sub}
+              value={prefs[row.key]}
+              onChange={(v) => toggle(row.key, v)}
+              disabled={saving}
+            />
+            {i < NOTIF_ROWS.length - 1 ? <View style={styles.notifDivider} /> : null}
+          </React.Fragment>
+        ))}
+      </View>
+
+      <View style={styles.notifNote}>
+        <Ionicons name="information-circle-outline" size={14} color="#64748B" />
+        <Text style={styles.notifNoteTxt}>
+          Preferences are saved instantly. In-app banners on the Home
+          screen always respect these settings. Push & email delivery
+          will roll out in the next update.
+        </Text>
+      </View>
+    </>
+  );
+}
+
+function NotifRowSwitch({
+  icon, color, title, sub, value, onChange, disabled,
+}: {
+  icon: string; color: string; title: string; sub: string;
+  value: boolean; onChange: (v: boolean) => void; disabled?: boolean;
+}) {
+  return (
+    <View style={styles.notifRow}>
+      <View style={[styles.notifIcon, { backgroundColor: `${color}1A` }]}>
+        <Ionicons name={icon as any} size={18} color={color} />
+      </View>
+      <View style={{ flex: 1 }}>
+        <Text style={styles.notifTitle}>{title}</Text>
+        <Text style={styles.notifSub}>{sub}</Text>
+      </View>
+      <Switch
+        value={value}
+        onValueChange={onChange}
+        disabled={disabled}
+        trackColor={{ true: colors.primary, false: "#E5E7EB" }}
+        thumbColor="#fff"
+      />
     </View>
   );
 }
@@ -3041,6 +3199,47 @@ const styles = StyleSheet.create({
     color: colors.text,
     fontWeight: "800",
   },
+  /* ---- Notifications panel ---- */
+  notifGroupHead: {
+    fontSize: 11,
+    fontWeight: "800",
+    color: "#64748B",
+    letterSpacing: 0.6,
+    textTransform: "uppercase",
+    marginTop: 14,
+    marginBottom: 8,
+  },
+  notifCard: {
+    backgroundColor: "#fff",
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#E5E7EB",
+    paddingHorizontal: 14,
+    paddingVertical: 4,
+  },
+  notifRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    paddingVertical: 12,
+  },
+  notifIcon: {
+    width: 36, height: 36, borderRadius: 10,
+    alignItems: "center", justifyContent: "center",
+  },
+  notifTitle: { color: "#0F172A", fontSize: 14, fontWeight: "800" },
+  notifSub:   { color: "#64748B", fontSize: 12, marginTop: 2 },
+  notifDivider: { height: 1, backgroundColor: "#F1F5F9" },
+  notifNote: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 8,
+    backgroundColor: "#F8FAFC",
+    borderRadius: 10,
+    padding: 12,
+    marginTop: 14,
+  },
+  notifNoteTxt: { flex: 1, color: "#64748B", fontSize: 12, lineHeight: 17 },
   aboutLinkRow: {
     flexDirection: "row",
     alignItems: "center",

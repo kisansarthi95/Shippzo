@@ -2182,3 +2182,272 @@ agent_communication:
                          {$unset:{plan_expires_at:"", plan_billing_cycle:""},
                           $set:{plan:"free_trial"}}).
 
+
+---
+
+## Backend Test Run: Phase 4d Notification Prefs / Cancel Subscription / Usage Plan-Expiry / Customer Memory (2026-04-27)
+
+backend:
+  - task: "GET/PUT /api/me/notification-prefs"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "testing"
+        -comment: |
+            All 28 assertions passed via /app/backend_test.py against
+            https://logistics-hub-740.preview.emergentagent.com/api.
+            Verified:
+            1. GET on a fresh user (notification_prefs unset in Mongo)
+               returns the default object with channel_push=true,
+               channel_email=true, trial_ending=true, plan_expiring=true,
+               low_credits=true, payment_success=true, daily_summary=false.
+               All 7 values are real Python booleans.
+            2. PUT {"low_credits": false, "daily_summary": true} returns
+               the full merged prefs with low_credits=False, daily_summary=
+               True, all other defaults preserved. GET-after-PUT confirms
+               persistence (Mongo doc carries the merged map).
+            3. Reset back to defaults via PUT {"low_credits":true,
+               "daily_summary":false} returns 200. State is clean.
+
+  - task: "POST /api/me/cancel-subscription"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "testing"
+        -comment: |
+            7/7 assertions passed.
+            1. On free_trial admin -> HTTP 400 with detail
+               "You're on the free trial — there's nothing to cancel."
+               (substrings 'free trial' and 'nothing to cancel' both present).
+            2. After flipping admin to plan='silver' with
+               plan_expires_at=now+30d via direct Mongo write, POST
+               /api/me/cancel-subscription returned 200 with body:
+                 {"ok": true, "plan": "silver",
+                  "plan_expires_at": "<echoed ISO>",
+                  "message": "Auto-renewal cancelled. Your plan stays
+                              active until <iso>, after which you'll be
+                              moved to the free trial."}
+               Mongo db.users now has auto_renew=False and a
+               cancelled_at ISO timestamp. Both verified via direct
+               PyMongo read after the call.
+            3. Admin reset to plan='free_trial', plan_mocked=false,
+               plan_expires_at=now+7d, and the auto_renew/cancelled_at/
+               plan_billing_cycle fields were $unset. DB clean.
+
+  - task: "GET /api/me/usage — new plan-expiry fields"
+    implemented: true
+    working: false
+    file: "/app/backend/plans.py (usage_summary)"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+        -working: false
+        -agent: "testing"
+        -comment: |
+            18/19 assertions passed; 1 FAILED — see below.
+
+            PASS — Free Trial branch:
+              period == "trial" ✅
+              plan_expires_at is None ✅ (key absent in the response)
+              plan_days_left   is None ✅ (absent)
+              plan_billing_cycle is None ✅ (absent)
+              label_cap, labels_used, can_create_label, trial_days_left
+                all present ✅
+
+            FAIL — Free Trial branch:
+              `plan_expired` field is NOT present in the trial response
+              (the code returns `trial_expired` instead and exits early).
+              Review spec explicitly requires
+                `plan_expired: false`
+              for free_trial users. Currently the trial branch in
+              plans.py:usage_summary returns at line 366 BEFORE the
+              `plan_expires_at / plan_days_left / plan_expired /
+              plan_billing_cycle` block at lines 391-397 ever runs.
+              Result body for free_trial currently lacks the
+              `plan_expired` key; consumers checking
+              `body.plan_expired === false` will instead see undefined.
+
+              Suggested 1-line fix: in plans.py around line 364, add
+                "plan_expired": expired,
+              to the trial out.update({...}) so the response includes
+              plan_expired (mirroring trial_expired). The other 3 keys
+              (plan_expires_at, plan_days_left, plan_billing_cycle) are
+              acceptable as `null`/missing per the spec, but
+              plan_expired=false should be explicit.
+
+            PASS — Paid Active (silver, plan_expires_at=now+30d,
+            plan_billing_cycle="monthly"):
+              period=="month" ✅
+              plan_expires_at == future ISO ✅
+              plan_days_left == 29 (>=1 int) ✅
+              plan_expired == False ✅
+              plan_billing_cycle == "monthly" ✅
+              can_create_label == True ✅
+
+            PASS — Paid Expired (silver, plan_expires_at=now-2d):
+              plan_expired == True ✅
+              plan_days_left == 0 ✅
+              can_create_label == False ✅ (KEY CHECK — plans.py
+              correctly toggles can_create_label off via the
+              `out["can_create_label"] and not expired` guard at
+              line 396).
+
+            DB state restored to free_trial after the test.
+
+  - task: "POST /api/shipments — paid-plan expiry enforcement"
+    implemented: false
+    working: false
+    file: "/app/backend/server.py (create_shipment), /app/backend/plans.py (plan_room_status)"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+        -working: false
+        -agent: "testing"
+        -comment: |
+            CRITICAL — 0/2 assertions passed for this case.
+
+            Repro:
+              1) PUT users(admin).plan='silver',
+                 plan_expires_at = now-2 days (past), plan_mocked=true.
+              2) POST /api/shipments with a minimal valid payload.
+              Expected: HTTP 402 with detail mentioning "expired" and
+                        the date; shipment NOT created.
+              Actual: HTTP 200; shipment doc created in db.shipments
+                      with id=81d2a67a-…; tracking_id=EXP-TEST-001
+                      (tester deleted it manually after the run).
+
+            RCA: server.py:create_shipment uses
+                room = await plan_room_status(db, current_user)
+            and only checks room["trial_expired"], room["daily_blocked"],
+            and the "free_trial + no plan room" combo. plans.py's
+            plan_room_status() (lines 149-187) checks expiry only for
+            trial plans — for monthly plans it just looks at usage_count
+            < label_cap and returns. The ACTUAL paid-plan expiry guard
+            lives in plans.py:ensure_can_create_label() (line 236-256),
+            but that function is not called from create_shipment.
+            Therefore an expired silver/gold/platinum user can keep
+            creating labels indefinitely until they hit the monthly cap.
+
+            Note: GET /api/me/usage CORRECTLY reports
+            plan_expired=true and can_create_label=false for the same
+            user — so the UI can disable the create button — but the
+            backend itself does not refuse the request, which is a
+            bypass.
+
+            Suggested fixes (pick one):
+              A) In plans.py:plan_room_status, after the trial branch,
+                 also check user["plan_expires_at"] for non-trial plans
+                 and surface a new flag (e.g. out["plan_expired"]=True).
+                 Then have create_shipment raise 402 with the
+                 ensure_can_create_label-style detail when that flag is
+                 set.
+              B) Replace the plan_room_status call in create_shipment
+                 with `await ensure_can_create_label(db, current_user)`
+                 and use its return-value PlanSpec; then derive
+                 plan_has_room from a separate counter check.
+              C) Cheapest: add ~5 lines in create_shipment that re-read
+                 user.plan_expires_at and raise the same 402 message
+                 as ensure_can_create_label when expired and plan != trial.
+
+            The cancel-subscription endpoint already promises that the
+            paid plan stays active "until plan_expires_at" — without
+            this enforcement, that promise is meaningless because there
+            is nothing to fall over to after expiry.
+
+            Cleanup: tester removed the stray EXP-TEST-001 shipment
+            via direct Mongo delete after the run (1 row deleted).
+            Admin restored to plan='free_trial', plan_mocked=false,
+            plan_expires_at=now+7d.
+
+  - task: "GET /api/customers/by-phone/{phone} — last_items / last_amount"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "testing"
+        -comment: |
+            16/16 assertions passed.
+            1. POST /api/shipments with phone="9999988888",
+               items=["TestItem x 2"], amount=199, payment_mode="Prepaid"
+               returned 200 with the new shipment.
+            2. GET /api/customers/by-phone/9999988888 returned 200 with:
+                 found=true, count=1,
+                 customer={
+                   customer_name="Customer Phone Test",
+                   customer_phone="9999988888",
+                   address_line1="12 Test Street",
+                   address_line2="", city="Surat", state="Gujarat",
+                   pincode="395001",
+                   last_items=["TestItem x 2"],   ← NEW (list, contains item)
+                   last_amount=199.0,             ← NEW (float)
+                   source="shipment",
+                   last_tracking_id="CST-TEST-…",
+                   last_date="2026-04-27T18:04:32…+00:00"
+                 }
+               Old fields (customer_name, customer_phone, address_line1,
+               address_line2, city, state, pincode) all present and
+               correct. New fields populated as expected. last_items
+               is a real Python list, last_amount is a real float.
+            3. Cleanup: tester deleted the test shipment for phone
+               9999988888 via Mongo (1 row removed).
+
+agent_communication:
+    -agent: "testing"
+    -message: |
+        Phase-4d backend test run — 69/72 assertions PASS.
+
+        All-green tasks (4):
+          - GET/PUT /api/me/notification-prefs (28/28)
+          - POST /api/me/cancel-subscription (7/7)
+          - GET /api/customers/by-phone/{phone} new fields (16/16)
+          - GET /api/me/usage paid active + paid expired branches (15/15)
+
+        Issues to fix:
+          1. CRITICAL — POST /api/shipments does NOT enforce paid-plan
+             expiry. With users.plan='silver' and plan_expires_at in the
+             past, the shipment is still created (HTTP 200) instead of
+             returning 402 "expired". RCA: plan_room_status (called from
+             create_shipment) only checks trial expiry; the paid-plan
+             expiry guard in ensure_can_create_label is never invoked
+             on the shipment path. Frontend usage endpoint already
+             reports plan_expired=true / can_create_label=false for the
+             same user, so the UI can hide the button — but a direct
+             API call bypasses the gate. See the task block above for
+             the suggested 3 fix options.
+
+          2. MINOR — GET /api/me/usage on free_trial user does NOT
+             include `plan_expired: false` (the trial branch uses
+             `trial_expired` and returns early before the paid-plan
+             block runs). Spec explicitly required `plan_expired: false`
+             on the trial response. 1-line fix in plans.py
+             usage_summary trial branch — add `"plan_expired": expired`
+             to the trial out.update().
+
+        DB state after run is clean:
+          - admin restored to plan='free_trial', plan_mocked=false,
+            plan_expires_at=now+7d.
+          - auto_renew, cancelled_at, plan_billing_cycle keys are
+            $unset.
+          - notification_prefs reset to defaults via PUT.
+          - Test shipments for phone 9999988888 and tracking
+            EXP-TEST-001 removed.
+
+        No regressions on existing endpoints touched by the suite.
+        Ready for main agent to apply the 2 fixes above; only the
+        affected endpoints need re-testing afterward.

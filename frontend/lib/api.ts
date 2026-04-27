@@ -262,10 +262,25 @@ export type UsageSummary = {
   trial_expired?: boolean;
   // monthly-only
   period_key?: string;
+  // Paid-plan validity (Phase-4d Razorpay Subscriptions)
+  plan_expires_at?: string | null;
+  plan_days_left?: number | null;
+  plan_expired?: boolean;
+  plan_billing_cycle?: "monthly" | "yearly" | null;
   // Platinum-only
   today_used?: number;
   today_remaining?: number;
   daily_key?: string;
+};
+
+export type NotificationPrefs = {
+  trial_ending: boolean;
+  plan_expiring: boolean;
+  low_credits: boolean;
+  payment_success: boolean;
+  daily_summary: boolean;
+  channel_push: boolean;
+  channel_email: boolean;
 };
 
 // Phase-4a Credit Wallet ----------------------------------------------------
@@ -437,6 +452,18 @@ export const Api = {
       razorpay_payment_id,
       razorpay_signature,
     }).then((r) => r.data),
+  // Phase-4d notification prefs + subscription mgmt
+  getNotificationPrefs: () =>
+    api.get<NotificationPrefs>("/me/notification-prefs").then((r) => r.data),
+  updateNotificationPrefs: (prefs: Partial<NotificationPrefs>) =>
+    api.put<NotificationPrefs>("/me/notification-prefs", prefs).then((r) => r.data),
+  cancelSubscription: () =>
+    api.post<{
+      ok: true;
+      plan: PlanKey;
+      plan_expires_at: string | null;
+      message: string;
+    }>("/me/cancel-subscription").then((r) => r.data),
   quoteLabel: (address: string = "") =>
     api
       .get<WalletQuote>("/wallet/quote", { params: { address } })

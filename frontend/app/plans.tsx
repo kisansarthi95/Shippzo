@@ -51,6 +51,16 @@ type BillingMode = "monthly" | "yearly";
 
 const COUNTDOWN_STORAGE_KEY = "@plans_countdown_first_visit_v1";
 
+function formatExpiryDate(iso?: string | null): string {
+  if (!iso) return "—";
+  try {
+    const d = new Date(iso);
+    return d.toLocaleDateString("en-IN", {
+      year: "numeric", month: "short", day: "numeric",
+    });
+  } catch { return "—"; }
+}
+
 export default function PlansScreen() {
   const router = useRouter();
   const { refresh } = useAuth();
@@ -311,6 +321,45 @@ export default function PlansScreen() {
                 Today: <Text style={styles.usageStrong}>{usage.today_used ?? 0}</Text> of <Text style={styles.usageStrong}>{usage.daily_cap}</Text>
               </Text>
             ) : null}
+            {/* Paid plan validity row */}
+            {usage.period === "month" && usage.plan_expires_at ? (
+              <View style={[
+                styles.validityRow,
+                usage.plan_expired
+                  ? styles.validityExpired
+                  : (usage.plan_days_left != null && usage.plan_days_left <= 7)
+                    ? styles.validityWarn
+                    : styles.validityOk,
+              ]}>
+                <Ionicons
+                  name={usage.plan_expired ? "alert-circle" : "calendar-outline"}
+                  size={14}
+                  color={
+                    usage.plan_expired ? "#B91C1C"
+                    : (usage.plan_days_left != null && usage.plan_days_left <= 7) ? "#B45309"
+                    : "#065F46"
+                  }
+                />
+                <Text style={[
+                  styles.validityTxt,
+                  usage.plan_expired
+                    ? { color: "#B91C1C" }
+                    : (usage.plan_days_left != null && usage.plan_days_left <= 7)
+                      ? { color: "#B45309" }
+                      : { color: "#065F46" },
+                ]}>
+                  {usage.plan_expired
+                    ? `Expired on ${formatExpiryDate(usage.plan_expires_at)} — renew now`
+                    : usage.plan_billing_cycle === "yearly"
+                      ? `Yearly · Renews on ${formatExpiryDate(usage.plan_expires_at)}${
+                          usage.plan_days_left != null ? ` (${usage.plan_days_left} days left)` : ""
+                        }`
+                      : `Monthly · Renews on ${formatExpiryDate(usage.plan_expires_at)}${
+                          usage.plan_days_left != null ? ` (${usage.plan_days_left} days left)` : ""
+                        }`}
+                </Text>
+              </View>
+            ) : null}
           </View>
         ) : null}
 
@@ -359,6 +408,21 @@ export default function PlansScreen() {
         <Text style={styles.footnote}>
           Need a custom volume plan? Write to us at support@your-brand.app.
         </Text>
+
+        {/* Refund + cancellation links (Razorpay merchant policy) */}
+        <View style={styles.policyRow}>
+          <TouchableOpacity onPress={() => router.push("/refund-policy" as any)} hitSlop={6}>
+            <Text style={styles.policyLink}>Refund Policy</Text>
+          </TouchableOpacity>
+          <Text style={styles.policySep}>·</Text>
+          <TouchableOpacity onPress={() => router.push("/cancel-subscription" as any)} hitSlop={6}>
+            <Text style={styles.policyLink}>Cancel Subscription</Text>
+          </TouchableOpacity>
+          <Text style={styles.policySep}>·</Text>
+          <TouchableOpacity onPress={() => router.push("/refund-policy?tab=terms" as any)} hitSlop={6}>
+            <Text style={styles.policyLink}>Terms</Text>
+          </TouchableOpacity>
+        </View>
       </ScrollView>
     </SafeAreaView>
   );
@@ -619,6 +683,20 @@ const styles = StyleSheet.create({
   usageTitle: { fontSize: 11, fontWeight: "800", color: "#64748B", letterSpacing: 0.6 },
   usageLine: { fontSize: 14, color: "#334155" },
   usageStrong: { fontWeight: "800", color: "#0F172A" },
+  validityRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 5,
+    borderRadius: 8,
+    marginTop: 6,
+    alignSelf: "flex-start",
+  },
+  validityOk:      { backgroundColor: "#D1FAE5" },
+  validityWarn:    { backgroundColor: "#FEF3C7" },
+  validityExpired: { backgroundColor: "#FEE2E2" },
+  validityTxt: { fontSize: 11.5, fontWeight: "800", letterSpacing: 0.2 },
   toggleWrap: {
     flexDirection: "row",
     backgroundColor: "#F1F5F9",
@@ -750,6 +828,22 @@ const styles = StyleSheet.create({
     fontSize: 12,
     marginTop: 8,
   },
+  policyRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    flexWrap: "wrap",
+    gap: 8,
+    marginTop: 12,
+    paddingHorizontal: 8,
+  },
+  policyLink: {
+    color: "#475569",
+    fontSize: 12,
+    fontWeight: "700",
+    textDecorationLine: "underline",
+  },
+  policySep: { color: "#CBD5E1", fontSize: 12, fontWeight: "700" },
   walletCard: {
     flexDirection: "row", alignItems: "center", gap: 12,
     backgroundColor: "#0F172A",
