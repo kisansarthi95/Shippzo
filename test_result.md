@@ -2451,3 +2451,109 @@ agent_communication:
         No regressions on existing endpoints touched by the suite.
         Ready for main agent to apply the 2 fixes above; only the
         affected endpoints need re-testing afterward.
+
+---
+
+## Backend Retest: Plan-expiry enforcement + /me/usage trial branch (2026-04-27)
+
+backend:
+  - task: "Plan-expiry 402 on POST /api/shipments + /me/usage trial branch returns plan_expired=false"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py, /app/backend/plans.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "testing"
+        -comment: |
+            Both targeted fixes VERIFIED via /app/backend_test.py against
+            https://logistics-hub-740.preview.emergentagent.com/api.
+
+            ===== TEST 1: POST /api/shipments on expired paid plan =====
+            Setup: admin@test.com patched in Mongo to
+              plan=silver,
+              plan_started_at=2023-12-01T00:00:00+00:00,
+              plan_expires_at=2024-01-01T00:00:00+00:00
+            Request: POST /api/shipments with minimal valid payload
+              (tracking_id=RTEST-EXP-0001, Retest Expiry User, 9000001111,
+              "12 MG Road, Surat, Gujarat 395001", Nandan Courier, COD).
+            Result: HTTP 402
+              body.detail = "Your Silver subscription expired on 01 Jan 2024.
+                             Renew from Plans to keep creating labels."
+              - contains word "expired" ✅
+              - mentions formatted date "01 Jan 2024" ✅
+            DB verification: shipment count before=50, after=50 — the
+            shipment was NOT created. The shipments.find_one for
+            tracking_id="RTEST-EXP-0001" was absent. The 402 guard
+            (server.py create_shipment lines 1293-1307) fires correctly
+            off of plan_room_status.plan_expired.
+
+            ===== TEST 2: GET /api/me/usage on free_trial without dates =====
+            Setup: admin restored to
+              {plan: "free_trial", plan_mocked: false}
+              with plan_expires_at / plan_billing_cycle / auto_renew /
+              cancelled_at all $unset in Mongo.
+            Result: HTTP 200, body =
+              {
+                "plan": "free_trial",
+                "plan_name": "Free Trial",
+                "price_inr": 0,
+                "bulk_max": 0,
+                "can_bulk": false,
+                "daily_cap": null,
+                "period": "trial",
+                "label_cap": 10,
+                "labels_used": 1,
+                "labels_remaining": 9,
+                "trial_expires_at": null,
+                "trial_days_left": null,
+                "trial_expired": false,
+                "plan_expires_at": null,
+                "plan_days_left": null,
+                "plan_expired": false,          ← KEY FIX verified ✅
+                "plan_billing_cycle": null,
+                "can_create_label": true
+              }
+            All 7 required assertions passed:
+              period == "trial"                ✅
+              plan_expired is false            ✅ (the headline fix)
+              plan_expires_at is null          ✅
+              plan_days_left is null           ✅
+              plan_billing_cycle is null       ✅
+              trial_expired is false           ✅
+              can_create_label is true         ✅
+
+            ===== CLEANUP =====
+            Admin user restored to clean free_trial state:
+              plan=free_trial, plan_mocked=false,
+              plan_expires_at=None, plan_billing_cycle=None,
+              auto_renew=None, cancelled_at=None.
+            Any stray test shipment with tracking_id=RTEST-EXP-0001 was
+            also deleted (none were actually created because the 402
+            blocked it — defensive cleanup only).
+
+            Both fixes pass. Task marked working=true.
+
+agent_communication:
+    -agent: "testing"
+    -message: |
+        Retest of the 2 targeted fixes — BOTH PASS.
+
+        Test 1 (plan-expiry 402 on POST /api/shipments):
+          HTTP 402, detail = "Your Silver subscription expired on
+          01 Jan 2024. Renew from Plans to keep creating labels."
+          Shipment count unchanged (50 → 50); no row created.
+
+        Test 2 (GET /api/me/usage trial branch):
+          plan_expired: false (the headline fix), plus
+          period: "trial", plan_expires_at: null, plan_days_left: null,
+          plan_billing_cycle: null, trial_expired: false,
+          can_create_label: true — all exactly as specified.
+
+        Admin user restored to clean free_trial state after the run
+        (plan_mocked=false, all expiry/billing/cancel fields unset).
+
+        Both fixes are good to ship. Please summarise and finish.
+

@@ -1290,6 +1290,21 @@ async def create_shipment(
             status_code=402,
             detail="Your 7-day free trial has expired. Upgrade to continue.",
         )
+    if room.get("plan_expired"):
+        # Paid subscription past plan_expires_at — block until renewal.
+        exp = room.get("plan_expires_at")
+        try:
+            exp_dt = datetime.fromisoformat(str(exp))
+            exp_str = exp_dt.strftime("%d %b %Y")
+        except Exception:
+            exp_str = str(exp) or "the renewal date"
+        raise HTTPException(
+            status_code=402,
+            detail=(
+                f"Your {room.get('plan_name','plan')} subscription expired on "
+                f"{exp_str}. Renew from Plans to keep creating labels."
+            ),
+        )
     if room["daily_blocked"]:
         raise HTTPException(
             status_code=402,

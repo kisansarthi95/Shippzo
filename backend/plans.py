@@ -160,6 +160,8 @@ async def plan_room_status(db, user: Dict[str, Any]) -> Dict[str, Any]:
         "plan": plan.key,
         "plan_name": plan.name,
         "trial_expired": False,
+        "plan_expired": False,
+        "plan_expires_at": user.get("plan_expires_at"),
         "plan_has_room": True,  # default optimistic
         "daily_blocked": False,
         "period": plan.period,
@@ -178,9 +180,19 @@ async def plan_room_status(db, user: Dict[str, Any]) -> Dict[str, Any]:
         out["plan_has_room"] = (not out["trial_expired"]) and (used < plan.label_cap)
         return out
 
-    # Monthly
+    # Monthly — paid plans. Also surface paid-plan validity for the
+    # caller (create_shipment) to enforce 402 on expired subscriptions.
+    exp_iso = user.get("plan_expires_at")
+    if exp_iso:
+        try:
+            exp = datetime.fromisoformat(exp_iso)
+            if exp.tzinfo is None:
+                exp = exp.replace(tzinfo=timezone.utc)
+            out["plan_expired"] = now > exp
+        except Exception:
+            pass
     used_month = await _get_count(db, uid, _month_key(now))
-    out["plan_has_room"] = used_month < plan.label_cap
+    out["plan_has_room"] = (not out["plan_expired"]) and (used_month < plan.label_cap)
     if plan.daily_cap is not None:
         used_day = await _get_count(db, uid, _day_key(now))
         out["daily_blocked"] = used_day >= plan.daily_cap
@@ -361,6 +373,12 @@ async def usage_summary(db, user: Dict[str, Any]) -> Dict[str, Any]:
             "trial_expires_at": exp_iso,
             "trial_days_left": days_left,
             "trial_expired": expired,
+            # Mirror these on the trial branch too so the frontend
+            # can use the same null-checks regardless of period.
+            "plan_expires_at": None,
+            "plan_days_left": None,
+            "plan_expired": False,
+            "plan_billing_cycle": None,
             "can_create_label": (not expired) and used < plan.label_cap,
         })
         return out
