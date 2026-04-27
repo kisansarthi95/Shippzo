@@ -510,8 +510,23 @@ def _ensure_address_completeness(
         cn = _norm_for_compare(c)
         if not cn or len(cn) < 3:
             continue
-        if cn not in captured_n:
-            missing.append(c)
+        # Strict substring match first.
+        if cn in captured_n:
+            continue
+        # Token-wise fallback — handles cases where the chunk is
+        # "<pincode> <state>" but our captured fields hold them in a
+        # different order. We consider the chunk "represented" if
+        # EVERY non-trivial token (≥ 3 chars) appears somewhere in
+        # captured_n.
+        tokens = [
+            _norm_for_compare(t)
+            for t in re.split(r"\s+", c)
+            if len(t.strip()) >= 2
+        ]
+        tokens = [t for t in tokens if len(t) >= 3]
+        if tokens and all(t in captured_n for t in tokens):
+            continue
+        missing.append(c)
 
     if not missing:
         return
