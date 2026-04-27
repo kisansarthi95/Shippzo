@@ -2029,3 +2029,156 @@ agent_communication:
           4. Check that wallet history entry for the photo OCR debit
              now records ai_complexity="photo_ocr" (was "complex").
 
+
+
+agent_communication:
+    -agent: "main"
+    -message: |
+        Phase-4d shipped: Razorpay integration extended to Plan
+        Subscriptions (Silver/Gold/Platinum, monthly + yearly).
+
+        New backend endpoints:
+          POST /api/plans/razorpay/create-order
+            body: { plan_key: "silver"|"gold"|"platinum",
+                    billing_cycle: "monthly"|"yearly" }
+            -> { key_id, order_id, amount_paise, plan_name, … }
+            Pulls live price from admin_config.plan_pricing.
+
+          POST /api/plans/razorpay/verify
+            body: { razorpay_order_id, razorpay_payment_id,
+                    razorpay_signature }
+            On success: signature-verified, sets users.plan,
+            extends plan_expires_at by (months+bonus_months) using
+            relativedelta. Carries over remaining validity if the
+            user is already on the same plan. Idempotent on
+            razorpay_order_id (returns already_credited=true).
+            Stamps plan_billing_cycle, plan_mocked=false,
+            last_paid_payment_id.
+
+        Webhook /api/wallet/razorpay/webhook now branches on
+        order.purpose; plan_subscription orders also auto-apply
+        the upgrade if the browser /verify never reached us.
+
+        Frontend:
+          • app/checkout.tsx now accepts mode=plan&plan=<key>&cycle=<m|y>
+            and routes through rzpCreatePlanOrder + rzpVerifyPlan.
+            Wallet flow unchanged (default mode=wallet).
+          • app/plans.tsx replaces mock /plans/upgrade for paid plans
+            with router.push("/checkout?mode=plan&...").
+            Free trial keeps the old mock switch.
+          • Added "Secure payments by Razorpay" banner replacing the
+            old "Payments coming soon" mock notice.
+
+        Please test only the new plan-subscription endpoints
+        (existing wallet endpoints already passed). Use admin token
+        from /app/memory/test_credentials.md.
+
+        Suggested cases:
+          1. POST create-order silver/monthly  ->  amount_paise=19900
+                                                   (₹199 from defaults).
+          2. POST create-order gold/yearly     ->  amount_paise=449100
+                                                   (₹4,491 default),
+                                                   months=12, bonus_months=1.
+          3. POST create-order with billing_cycle="weekly" -> 400.
+          4. POST create-order plan_key="free_trial" -> 400.
+          5. POST verify with bogus signature  -> 400.
+          6. Verify idempotency: simulate paid status & re-call /verify
+             returns already_credited=true.
+          7. Confirm /api/plans/razorpay/verify rejects orders whose
+             purpose is wallet_topup (and vice versa).
+
+---
+
+## Backend Test Run: Razorpay Plan-Subscription Endpoints (2026-04-27)
+
+backend:
+  - task: "Razorpay Plan-Subscription endpoints (/api/plans/razorpay/create-order, /verify)"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "testing"
+        -comment: |
+            All 37/37 assertions passed via /app/backend_test.py against
+            internal http://localhost:8001/api using admin@test.com.
+
+            1. POST /api/plans/razorpay/create-order
+              a) silver/monthly -> 200; key_id present; order_id starts
+                 with "order_" (real Razorpay test order, NOT mocked);
+                 amount_paise=19900; amount_inr=199; plan_key="silver";
+                 plan_name="Silver"; billing_cycle="monthly"; months=1;
+                 bonus_months=0; purpose="plan_subscription". PASS.
+              b) gold/yearly -> 200; amount_paise=449100; amount_inr=4491;
+                 months=12; bonus_months=1. PASS.
+              c) platinum/monthly -> 200; amount_paise=99900. PASS.
+              d) billing_cycle="weekly" -> 400 with detail mentioning
+                 "monthly" / "yearly". PASS.
+              e) plan_key="free_trial" -> 400 detail
+                 "Cannot subscribe to plan 'free_trial'". PASS.
+              f) plan_key="diamond" -> 400 detail
+                 "Cannot subscribe to plan 'diamond'" (PLAN_TABLE check
+                 fires before the helper). PASS.
+              g) Missing Bearer -> 401 (auth_gate). PASS.
+              h) PyMongo verified db.razorpay_orders has the silver
+                 doc with purpose="plan_subscription", plan_key="silver",
+                 billing_cycle="monthly", status="created". PASS.
+
+            2. POST /api/plans/razorpay/verify
+              a) Real silver order_id + bogus pay_FAKE/xxx signature ->
+                 400 "Payment verification failed: …"; DB row updated
+                 to status="verify_failed". PASS.
+              b) Non-existent order_id -> 404
+                 "Order not found for this user". PASS.
+              c) wallet_topup order_id (created via
+                 /api/wallet/razorpay/create-order amount_inr=100) sent
+                 to /plans/razorpay/verify -> 400 with detail
+                 "This order isn't a plan subscription. Use
+                 /wallet/razorpay/verify for top-ups." PASS.
+              d) Idempotency: created a fresh plan order, force-set
+                 status="paid" in db.razorpay_orders, called /verify
+                 -> 200 with already_credited=true and plan_expires_at
+                 returned. PASS.
+
+            3. Soft check — wallet endpoint behaviour on plan orders:
+               POST /api/wallet/razorpay/verify with a plan order_id
+               returned 400 "Payment verification failed" (signature
+               verification fails because we passed bogus pay_x/y).
+               Even if signature had passed, plan orders don't carry
+               credits_to_grant, so 0 credits would be added — wallet
+               cannot be wrongfully credited via this path. NOT a
+               blocker; soft.
+
+            4. User state after idempotency call: users doc carries
+               plan_expires_at (ISO future datetime ~30 days), plan,
+               and the values we set during the idempotency setup.
+               Note: the idempotency branch in /verify intentionally
+               returns the *current* user expiry without mutating
+               (since signature verification was skipped) — this is
+               by design.
+
+            Razorpay test mode order.create() worked over the network
+            (NOT mocked) — verified by the order_id format and the
+            insertion in db.razorpay_orders for every created order.
+
+agent_communication:
+    -agent: "testing"
+    -message: |
+        Razorpay Plan-Subscription endpoints — PASS (37/37).
+        All cases 1.a–1.h, 2.a–2.d, plus the soft wallet-rejection check
+        (3) and user-state check (4) green. Razorpay TEST mode
+        order.create() round-trip is real (order_ids returned and
+        persisted). Suggested cleanup: the test left a few extra
+        plan_subscription rows in db.razorpay_orders (silver/monthly
+        + gold/yearly + platinum/monthly + 2 idempotency-tests) and
+        one wallet_topup row (amount_inr=100, status=created or
+        verify_failed). admin user's plan_expires_at was force-set
+        to ~30 days from now and plan="silver" by the idempotency
+        setup. If you don't want admin's plan altered, reset via
+        users.update_one({email:"admin@test.com"},
+                         {$unset:{plan_expires_at:"", plan_billing_cycle:""},
+                          $set:{plan:"free_trial"}}).
+

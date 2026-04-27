@@ -52,13 +52,15 @@ import os
 import io
 import csv
 import re
+import json
 import logging
 import httpx
 from pathlib import Path
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
+from dateutil.relativedelta import relativedelta
 
 # Google Sheets writer (Service Account)
 try:
@@ -3131,20 +3133,308 @@ async def rzp_webhook(request: Request):
         payment_id = pay.get("id")
         order = await db.razorpay_orders.find_one({"razorpay_order_id": order_id})
         if order and order.get("status") != "paid":
-            credits = float(order.get("credits_to_grant", 0))
-            bonus = int(order.get("bonus_credits", 0))
-            bonus_str = f" (incl. {bonus} bonus)" if bonus else ""
-            desc = f"Top-up ₹{int(order['amount_inr'])} → {credits:g} credits{bonus_str} (webhook)"
-            await wallet_add_credits(
-                db, order["user_id"], credits,
-                ctype="purchase", description=desc, order_id=payment_id,
-            )
-            await db.razorpay_orders.update_one(
-                {"_id": order["_id"]},
-                {"$set": {"status": "paid", "razorpay_payment_id": payment_id,
-                          "paid_at": datetime.utcnow().isoformat() + "+00:00"}},
-            )
+            purpose = order.get("purpose") or "wallet_topup"
+            if purpose == "plan_subscription":
+                # Plan subscription: switch plan + extend validity.
+                plan_key = order.get("plan_key")
+                months = int(order.get("months", 1))
+                bonus_months = int(order.get("bonus_months", 0))
+                user_doc = await db.users.find_one({"id": order["user_id"]}, {"_id": 0}) or {}
+                same_plan = (user_doc.get("plan") == plan_key)
+                new_expiry = _extend_plan_expiry(
+                    user_doc.get("plan_expires_at") if same_plan else None,
+                    months, bonus_months,
+                )
+                await db.users.update_one(
+                    {"id": order["user_id"]},
+                    {"$set": {
+                        "plan": plan_key,
+                        "plan_started_at": user_doc.get("plan_started_at") if same_plan else (datetime.utcnow().isoformat() + "+00:00"),
+                        "plan_expires_at": new_expiry,
+                        "plan_billing_cycle": order.get("billing_cycle"),
+                        "plan_mocked": False,
+                        "last_paid_payment_id": payment_id,
+                        "last_paid_at": datetime.utcnow().isoformat() + "+00:00",
+                    }},
+                )
+                await db.razorpay_orders.update_one(
+                    {"_id": order["_id"]},
+                    {"$set": {"status": "paid", "razorpay_payment_id": payment_id,
+                              "applied_expires_at": new_expiry,
+                              "paid_at": datetime.utcnow().isoformat() + "+00:00"}},
+                )
+            else:
+                # Wallet top-up (legacy default).
+                credits = float(order.get("credits_to_grant", 0))
+                bonus = int(order.get("bonus_credits", 0))
+                bonus_str = f" (incl. {bonus} bonus)" if bonus else ""
+                desc = f"Top-up ₹{int(order['amount_inr'])} → {credits:g} credits{bonus_str} (webhook)"
+                await wallet_add_credits(
+                    db, order["user_id"], credits,
+                    ctype="purchase", description=desc, order_id=payment_id,
+                )
+                await db.razorpay_orders.update_one(
+                    {"_id": order["_id"]},
+                    {"$set": {"status": "paid", "razorpay_payment_id": payment_id,
+                              "paid_at": datetime.utcnow().isoformat() + "+00:00"}},
+                )
     return {"ok": True}
+
+
+# ───────────── Razorpay — Plan Subscriptions (Phase-4d) ─────────────
+#
+# Reuses the same Razorpay infra as wallet top-ups but stores
+# `purpose: plan_subscription` in the order doc so the verify and
+# webhook handlers can branch on intent.
+#
+# Pricing is read live from admin_config.plan_pricing so the admin
+# can change prices any time (the source of truth is the same as the
+# /plans-pricing payload the frontend reads).
+
+class PlanRazorpayCreateOrderRequest(BaseModel):
+    """Body for /api/plans/razorpay/create-order."""
+    plan_key: str           # silver | gold | platinum
+    billing_cycle: str      # monthly | yearly
+
+
+def _plan_billing_meta(
+    plan_pricing: Dict[str, Any],
+    plan_key: str,
+    billing_cycle: str,
+) -> Dict[str, Any]:
+    """Resolve price + duration for a plan + cycle pair against
+    admin_config.plan_pricing. Raises 400 if invalid combo."""
+    if plan_key not in ("silver", "gold", "platinum"):
+        raise HTTPException(status_code=400, detail=f"Cannot subscribe to plan '{plan_key}'")
+    if billing_cycle not in ("monthly", "yearly"):
+        raise HTTPException(status_code=400, detail="billing_cycle must be 'monthly' or 'yearly'")
+    pp = (plan_pricing or {}).get(plan_key) or {}
+    if billing_cycle == "monthly":
+        price = int(pp.get("monthly_price") or 0)
+        months = 1
+        bonus_months = 0
+    else:
+        price = int(pp.get("yearly_price") or 0)
+        months = int(pp.get("yearly_base_months") or 12)
+        bonus_months = int(pp.get("yearly_bonus_months") or 0)
+    if price <= 0:
+        raise HTTPException(
+            status_code=400,
+            detail="This plan/cycle is not priced. Please contact support.",
+        )
+    return {
+        "price_inr": price,
+        "months": months,
+        "bonus_months": bonus_months,
+        "total_months": months + bonus_months,
+    }
+
+
+@api_router.post("/plans/razorpay/create-order")
+async def rzp_create_plan_order(
+    payload: PlanRazorpayCreateOrderRequest,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    """Step 1 of Plan Subscription Razorpay flow.
+
+    Creates a Razorpay order keyed to a plan/cycle and persists the
+    intent so the verify endpoint can extend the user's plan validity
+    correctly on success.
+    """
+    if not _rzp_client:
+        raise HTTPException(
+            status_code=503, detail="Razorpay is not configured on the server.",
+        )
+    if payload.plan_key not in PLAN_TABLE:
+        raise HTTPException(status_code=400, detail=f"Unknown plan '{payload.plan_key}'")
+
+    cfg = await _get_admin_config()
+    meta = _plan_billing_meta(cfg["plan_pricing"], payload.plan_key, payload.billing_cycle)
+    inr = int(meta["price_inr"])
+
+    # Razorpay receipt: 40-char limit. Encode plan + cycle for ops debugging.
+    cycle_short = "y" if payload.billing_cycle == "yearly" else "m"
+    receipt = f"plan-{payload.plan_key[:6]}-{cycle_short}-{current_user['id'][:6]}-{int(datetime.utcnow().timestamp())}"
+    receipt = receipt[:40]
+
+    try:
+        rzp_order = _rzp_client.order.create({
+            "amount": inr * 100,  # paise
+            "currency": "INR",
+            "receipt": receipt,
+            "payment_capture": 1,
+            "notes": {
+                "user_id": current_user["id"],
+                "user_email": current_user.get("email", ""),
+                "purpose": "plan_subscription",
+                "plan_key": payload.plan_key,
+                "billing_cycle": payload.billing_cycle,
+                "months": meta["months"],
+                "bonus_months": meta["bonus_months"],
+            },
+        })
+    except Exception as e:
+        logger.exception("rzp create plan order failed")
+        raise HTTPException(status_code=502, detail=f"Razorpay error: {e}")
+
+    await db.razorpay_orders.insert_one({
+        "id": str(uuid.uuid4()),
+        "user_id": current_user["id"],
+        "razorpay_order_id": rzp_order["id"],
+        "amount_inr": inr,
+        "amount_paise": inr * 100,
+        "purpose": "plan_subscription",
+        "plan_key": payload.plan_key,
+        "billing_cycle": payload.billing_cycle,
+        "months": meta["months"],
+        "bonus_months": meta["bonus_months"],
+        "status": "created",
+        "created_at": datetime.utcnow().isoformat() + "+00:00",
+    })
+
+    plan_meta = PLAN_TABLE.get(payload.plan_key)
+    return {
+        "key_id":   _RZP_KEY_ID,
+        "order_id": rzp_order["id"],
+        "amount_paise": rzp_order["amount"],
+        "amount_inr":   inr,
+        "currency":     rzp_order["currency"],
+        "receipt":      rzp_order["receipt"],
+        "purpose":      "plan_subscription",
+        "plan_key":     payload.plan_key,
+        "plan_name":    getattr(plan_meta, "name", payload.plan_key.title()) if plan_meta else payload.plan_key.title(),
+        "billing_cycle": payload.billing_cycle,
+        "months":       meta["months"],
+        "bonus_months": meta["bonus_months"],
+        "user_email":   current_user.get("email", ""),
+        "user_name":    current_user.get("name", current_user.get("email", "User")),
+    }
+
+
+def _extend_plan_expiry(
+    current_expires_at: Optional[str],
+    months: int,
+    bonus_months: int,
+) -> str:
+    """Compute the new plan_expires_at after a successful subscription
+    payment. If the user is already on a paid plan that hasn't expired,
+    we extend FROM the current expiry (carry-over). Otherwise from now.
+    Result is an ISO-8601 string.
+    """
+    now = datetime.now(timezone.utc)
+    base = now
+    if current_expires_at:
+        try:
+            existing = datetime.fromisoformat(str(current_expires_at).replace("Z", "+00:00"))
+            if existing.tzinfo is None:
+                existing = existing.replace(tzinfo=timezone.utc)
+            if existing > now:
+                base = existing
+        except (ValueError, TypeError):
+            base = now
+    new_expiry = base + relativedelta(months=int(months) + int(bonus_months))
+    return new_expiry.isoformat()
+
+
+@api_router.post("/plans/razorpay/verify")
+async def rzp_verify_plan_subscription(
+    payload: RazorpayVerifyRequest,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    """Step 2 of Plan Subscription Razorpay flow.
+
+    Verifies the payment signature, switches the user's plan, and
+    extends plan_expires_at by (months + bonus_months) — carrying over
+    any unused validity if the user is already on a paid plan.
+    """
+    if not _rzp_client:
+        raise HTTPException(status_code=503, detail="Razorpay not configured")
+
+    order = await db.razorpay_orders.find_one({
+        "razorpay_order_id": payload.razorpay_order_id,
+        "user_id": current_user["id"],
+    })
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found for this user")
+    if order.get("purpose") != "plan_subscription":
+        raise HTTPException(
+            status_code=400,
+            detail="This order isn't a plan subscription. Use /wallet/razorpay/verify for top-ups.",
+        )
+
+    # Idempotency
+    if order.get("status") == "paid":
+        fresh = await db.users.find_one({"id": current_user["id"]}, {"_id": 0})
+        return {
+            "ok": True,
+            "already_credited": True,
+            "plan": order.get("plan_key"),
+            "billing_cycle": order.get("billing_cycle"),
+            "plan_expires_at": (fresh or {}).get("plan_expires_at"),
+        }
+
+    # Verify signature
+    try:
+        _rzp_client.utility.verify_payment_signature({
+            "razorpay_order_id":   payload.razorpay_order_id,
+            "razorpay_payment_id": payload.razorpay_payment_id,
+            "razorpay_signature":  payload.razorpay_signature,
+        })
+    except Exception as e:
+        await db.razorpay_orders.update_one(
+            {"_id": order["_id"]},
+            {"$set": {
+                "status": "verify_failed",
+                "error": str(e),
+                "razorpay_payment_id": payload.razorpay_payment_id,
+            }},
+        )
+        raise HTTPException(status_code=400, detail=f"Payment verification failed: {e}")
+
+    # Switch the plan + extend validity
+    plan_key = order.get("plan_key")
+    months = int(order.get("months", 1))
+    bonus_months = int(order.get("bonus_months", 0))
+    fresh = await db.users.find_one({"id": current_user["id"]}, {"_id": 0}) or {}
+    same_plan = (fresh.get("plan") == plan_key)
+    new_expiry = _extend_plan_expiry(
+        fresh.get("plan_expires_at") if same_plan else None,
+        months, bonus_months,
+    )
+
+    set_payload = {
+        "plan": plan_key,
+        "plan_started_at": fresh.get("plan_started_at") if same_plan else (datetime.utcnow().isoformat() + "+00:00"),
+        "plan_expires_at": new_expiry,
+        "plan_billing_cycle": order.get("billing_cycle"),
+        "plan_mocked": False,
+        "last_paid_payment_id": payload.razorpay_payment_id,
+        "last_paid_at": datetime.utcnow().isoformat() + "+00:00",
+    }
+    await db.users.update_one({"id": current_user["id"]}, {"$set": set_payload})
+
+    await db.razorpay_orders.update_one(
+        {"_id": order["_id"]},
+        {"$set": {
+            "status": "paid",
+            "razorpay_payment_id": payload.razorpay_payment_id,
+            "razorpay_signature":  payload.razorpay_signature,
+            "paid_at": datetime.utcnow().isoformat() + "+00:00",
+            "applied_expires_at": new_expiry,
+        }},
+    )
+
+    return {
+        "ok": True,
+        "already_credited": False,
+        "plan": plan_key,
+        "billing_cycle": order.get("billing_cycle"),
+        "amount_inr": int(order.get("amount_inr", 0)),
+        "months": months,
+        "bonus_months": bonus_months,
+        "plan_expires_at": new_expiry,
+    }
+
 
 DEFAULT_CREDIT_PACKAGES = [
     # amount_inr → credits credited (with bonus). label optional.

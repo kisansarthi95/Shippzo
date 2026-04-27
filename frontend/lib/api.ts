@@ -400,6 +400,43 @@ export const Api = {
       razorpay_payment_id,
       razorpay_signature,
     }).then((r) => r.data),
+  // Phase-4d Razorpay Plan Subscriptions
+  rzpCreatePlanOrder: (plan_key: PlanKey, billing_cycle: "monthly" | "yearly") =>
+    api.post<{
+      key_id: string;
+      order_id: string;
+      amount_paise: number;
+      amount_inr: number;
+      currency: string;
+      receipt: string;
+      purpose: "plan_subscription";
+      plan_key: PlanKey;
+      plan_name: string;
+      billing_cycle: "monthly" | "yearly";
+      months: number;
+      bonus_months: number;
+      user_email: string;
+      user_name: string;
+    }>("/plans/razorpay/create-order", { plan_key, billing_cycle }).then((r) => r.data),
+  rzpVerifyPlan: (
+    razorpay_order_id: string,
+    razorpay_payment_id: string,
+    razorpay_signature: string,
+  ) =>
+    api.post<{
+      ok: true;
+      already_credited: boolean;
+      plan: PlanKey;
+      billing_cycle: "monthly" | "yearly";
+      amount_inr?: number;
+      months?: number;
+      bonus_months?: number;
+      plan_expires_at: string | null;
+    }>("/plans/razorpay/verify", {
+      razorpay_order_id,
+      razorpay_payment_id,
+      razorpay_signature,
+    }).then((r) => r.data),
   quoteLabel: (address: string = "") =>
     api
       .get<WalletQuote>("/wallet/quote", { params: { address } })

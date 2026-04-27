@@ -155,26 +155,64 @@ export default function PlansScreen() {
   const doUpgrade = async (key: PlanKey) => {
     const plan = plans.find((p) => p.key === key);
     if (!plan) return;
-    const billText = billing === "yearly" ? "yearly" : "monthly";
-    const confirmMsg =
-      Platform.OS === "web"
-        ? `Switch to ${plan.name} (${billText})? Payment integration is coming in Phase 4 — no charge for now.`
-        : `This will switch your plan to ${plan.name} (${billText}). Payment integration is not yet live — no money will be charged.`;
-    const proceed = async () => {
-      try {
-        setBusyKey(key);
-        await Api.upgradePlan(key);
-        await refresh().catch(() => {});
-        await load();
-        Alert.alert(
-          "Plan updated",
-          `You're now on the ${plan.name} plan. Razorpay payment will be wired up in the next phase.`,
-        );
-      } catch (e: any) {
-        Alert.alert("Upgrade failed", e?.response?.data?.detail || e?.message || "Please try again");
-      } finally {
-        setBusyKey(null);
+
+    // Free trial — keep the existing local-switch flow (no payment).
+    if (key === "free_trial") {
+      const proceedFree = async () => {
+        try {
+          setBusyKey(key);
+          await Api.upgradePlan(key);
+          await refresh().catch(() => {});
+          await load();
+          Alert.alert("Plan updated", `You're now on the ${plan.name} plan.`);
+        } catch (e: any) {
+          Alert.alert("Switch failed", e?.response?.data?.detail || e?.message || "Please try again");
+        } finally {
+          setBusyKey(null);
+        }
+      };
+      const msg = `Switch to ${plan.name}? You won't be charged.`;
+      if (Platform.OS === "web") {
+        if (typeof window !== "undefined" && window.confirm && window.confirm(msg)) {
+          proceedFree();
+        }
+        return;
       }
+      Alert.alert(`Switch to ${plan.name}?`, msg, [
+        { text: "Cancel", style: "cancel" },
+        { text: "Confirm", onPress: proceedFree },
+      ]);
+      return;
+    }
+
+    // Paid plans — route to Razorpay checkout with chosen billing cycle.
+    const planPricing = pricing?.[key];
+    if (!planPricing) {
+      Alert.alert("Pricing unavailable", "Could not load pricing. Pull to refresh and try again.");
+      return;
+    }
+    const price =
+      billing === "yearly"
+        ? planPricing.yearly_price || planPricing.monthly_price * 12
+        : planPricing.monthly_price;
+    if (!price || price <= 0) {
+      Alert.alert("Not available", "This plan/cycle isn't priced yet.");
+      return;
+    }
+    const cycleLbl = billing === "yearly" ? "Yearly" : "Monthly";
+    const bonusTxt =
+      billing === "yearly" && planPricing.yearly_bonus_months > 0
+        ? ` (${planPricing.yearly_base_months} + ${planPricing.yearly_bonus_months} months FREE)`
+        : "";
+    const confirmMsg =
+      `Pay ₹${price.toLocaleString("en-IN")} for ${plan.name} ${cycleLbl}` +
+      `${bonusTxt}.\nYou'll be redirected to Razorpay's secure payment page.`;
+
+    const proceed = () => {
+      router.push({
+        pathname: "/checkout",
+        params: { mode: "plan", plan: key, cycle: billing },
+      });
     };
     if (Platform.OS === "web") {
       if (typeof window !== "undefined" && window.confirm && window.confirm(confirmMsg)) {
@@ -182,9 +220,9 @@ export default function PlansScreen() {
       }
       return;
     }
-    Alert.alert(`Switch to ${plan.name}?`, confirmMsg, [
+    Alert.alert(`Upgrade to ${plan.name}?`, confirmMsg, [
       { text: "Cancel", style: "cancel" },
-      { text: "Confirm", onPress: proceed },
+      { text: "Pay now", onPress: proceed },
     ]);
   };
 
@@ -224,11 +262,11 @@ export default function PlansScreen() {
           </View>
         ) : null}
 
-        {/* Mock-payment banner */}
+        {/* Razorpay live-payments banner */}
         <View style={styles.mockBanner}>
-          <Ionicons name="information-circle-outline" size={16} color="#92400E" />
+          <Ionicons name="shield-checkmark" size={16} color="#065F46" />
           <Text style={styles.mockBannerTxt}>
-            Payments coming soon. All plan switches are free for now.
+            Secure payments by Razorpay · Cards, UPI, Netbanking & Wallets
           </Text>
         </View>
 
@@ -561,14 +599,14 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
-    backgroundColor: "#FEF3C7",
-    borderColor: "#FCD34D",
+    backgroundColor: "#D1FAE5",
+    borderColor: "#86EFAC",
     borderWidth: 1,
     padding: 10,
     borderRadius: 10,
     marginBottom: 14,
   },
-  mockBannerTxt: { flex: 1, color: "#92400E", fontSize: 12, fontWeight: "600" },
+  mockBannerTxt: { flex: 1, color: "#065F46", fontSize: 12, fontWeight: "700" },
   usageBox: {
     backgroundColor: "#fff",
     borderRadius: 12,

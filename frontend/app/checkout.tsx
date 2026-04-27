@@ -1,16 +1,21 @@
 /**
- * Razorpay Checkout screen (Phase-4c).
+ * Razorpay Checkout screen (Phase-4c / 4d).
+ *
+ * Supports TWO modes via query params:
+ *   • mode=wallet  (default) — query: amount=<INR>
+ *       Tops up the user's credit wallet by the given INR amount.
+ *   • mode=plan — query: plan=<plan_key>&cycle=<monthly|yearly>
+ *       Buys a plan subscription. plan_key ∈ silver | gold | platinum.
  *
  * Flow:
- *   1. Receive `amount` query param from /wallet.
- *   2. Call /api/wallet/razorpay/create-order → get the signed
- *      Razorpay order_id + key_id.
- *   3. Render a WebView pointing at a tiny inline HTML page that loads
+ *   1. Compute mode from params.
+ *   2. Hit the appropriate /create-order endpoint.
+ *   3. Render a WebView pointing at an inline HTML page that loads
  *      Razorpay's Checkout JS and opens it with the order details.
  *   4. WebView posts the result back to RN via
  *      `window.ReactNativeWebView.postMessage(JSON.stringify({...}))`.
- *   5. On success → call /verify, show a success alert, route back.
- *      On failure / cancel → show a friendly error and route back.
+ *   5. On success → call the matching /verify, show a success alert,
+ *      route back. On failure / cancel → friendly alert + back.
  *
  * Why WebView instead of `react-native-razorpay`? The SDK requires a
  * native module which Expo Go doesn't ship. WebView works in Go and
@@ -24,30 +29,60 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { Stack, useLocalSearchParams, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { WebView } from "react-native-webview";
-import { Api } from "../lib/api";
+import { Api, PlanKey } from "../lib/api";
 import { colors } from "../lib/theme";
+import { useAuth } from "../lib/auth";
 
-type OrderResp = Awaited<ReturnType<typeof Api.rzpCreateOrder>>;
+type CheckoutMode = "wallet" | "plan";
+
+type WalletOrder = Awaited<ReturnType<typeof Api.rzpCreateOrder>>;
+type PlanOrder   = Awaited<ReturnType<typeof Api.rzpCreatePlanOrder>>;
+
+type AnyOrder =
+  | (WalletOrder & { mode: "wallet" })
+  | (PlanOrder   & { mode: "plan" });
 
 export default function CheckoutScreen() {
-  const params = useLocalSearchParams<{ amount?: string }>();
+  const params = useLocalSearchParams<{
+    amount?: string;
+    mode?: string;
+    plan?: string;
+    cycle?: string;
+  }>();
   const router = useRouter();
-  const [order, setOrder] = useState<OrderResp | null>(null);
+  const { refresh } = useAuth();
+
+  const mode: CheckoutMode = (params.mode === "plan" ? "plan" : "wallet");
+  const amount = useMemo(
+    () => Math.max(0, Number(params.amount || 0)),
+    [params.amount],
+  );
+  const planKey = (params.plan || "") as PlanKey;
+  const cycle = (params.cycle === "yearly" ? "yearly" : "monthly") as "monthly" | "yearly";
+
+  const [order, setOrder] = useState<AnyOrder | null>(null);
   const [loading, setLoading] = useState(true);
   const [verifying, setVerifying] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const handledRef = useRef(false);
 
-  const amount = useMemo(() => Math.max(0, Number(params.amount || 0)), [params.amount]);
-
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
-        if (!amount || amount < 10) throw new Error("Amount must be at least ₹10");
-        const r = await Api.rzpCreateOrder(amount);
-        if (cancelled) return;
-        setOrder(r);
+        if (mode === "wallet") {
+          if (!amount || amount < 10) throw new Error("Amount must be at least ₹10");
+          const r = await Api.rzpCreateOrder(amount);
+          if (cancelled) return;
+          setOrder({ ...r, mode: "wallet" });
+        } else {
+          if (!planKey || !["silver", "gold", "platinum"].includes(planKey)) {
+            throw new Error("Invalid plan selected");
+          }
+          const r = await Api.rzpCreatePlanOrder(planKey, cycle);
+          if (cancelled) return;
+          setOrder({ ...r, mode: "plan" });
+        }
       } catch (e: any) {
         setError(e?.response?.data?.detail || e?.message || "Could not start payment");
       } finally {
@@ -55,17 +90,21 @@ export default function CheckoutScreen() {
       }
     })();
     return () => { cancelled = true; };
-  }, [amount]);
+  }, [mode, amount, planKey, cycle]);
 
   const html = useMemo(() => {
     if (!order) return "";
+    const description =
+      order.mode === "wallet"
+        ? `${order.credits_to_grant} credits top-up`
+        : `${order.plan_name} ${order.billing_cycle === "yearly" ? "Yearly" : "Monthly"} subscription`;
     const payload = {
       key: order.key_id,
       order_id: order.order_id,
       amount: order.amount_paise,
       currency: order.currency,
       name: "Courier Manager",
-      description: `${order.credits_to_grant} credits top-up`,
+      description,
       prefill: {
         name: order.user_name || "",
         email: order.user_email || "",
@@ -131,7 +170,12 @@ export default function CheckoutScreen() {
 
     if (msg.type === "dismissed") {
       handledRef.current = true;
-      Alert.alert("Payment cancelled", "You can try again anytime from your wallet.");
+      Alert.alert(
+        "Payment cancelled",
+        order?.mode === "plan"
+          ? "You can try the upgrade again anytime from the Plans screen."
+          : "You can try again anytime from your wallet.",
+      );
       router.back();
       return;
     }
@@ -146,21 +190,42 @@ export default function CheckoutScreen() {
       handledRef.current = true;
       try {
         setVerifying(true);
-        const v = await Api.rzpVerify(
-          msg.razorpay_order_id,
-          msg.razorpay_payment_id,
-          msg.razorpay_signature,
-        );
-        Alert.alert(
-          "Payment successful 🎉",
-          `${v.credits_added} credits added. New balance: ${v.balance.toFixed(2)} cr.`,
-        );
-        router.back();
+        if (order?.mode === "plan") {
+          const v = await Api.rzpVerifyPlan(
+            msg.razorpay_order_id,
+            msg.razorpay_payment_id,
+            msg.razorpay_signature,
+          );
+          await refresh().catch(() => {});
+          const expiry = v.plan_expires_at
+            ? new Date(v.plan_expires_at).toLocaleDateString("en-IN", {
+                year: "numeric", month: "short", day: "numeric",
+              })
+            : "—";
+          const planLabel = String(v.plan).charAt(0).toUpperCase() + String(v.plan).slice(1);
+          const cycleLabel = v.billing_cycle === "yearly" ? "Yearly" : "Monthly";
+          Alert.alert(
+            "Subscription active 🎉",
+            `Welcome to ${planLabel} (${cycleLabel}). Valid until ${expiry}.`,
+          );
+          router.back();
+        } else {
+          const v = await Api.rzpVerify(
+            msg.razorpay_order_id,
+            msg.razorpay_payment_id,
+            msg.razorpay_signature,
+          );
+          Alert.alert(
+            "Payment successful 🎉",
+            `${v.credits_added} credits added. New balance: ${v.balance.toFixed(2)} cr.`,
+          );
+          router.back();
+        }
       } catch (e: any) {
         Alert.alert(
           "Verification failed",
           e?.response?.data?.detail || e?.message ||
-            "Your payment was captured but we couldn't verify it. We'll retry via webhook — your wallet will update shortly.",
+            "Your payment was captured but we couldn't verify it. We'll retry via webhook — please refresh the app shortly.",
         );
         router.back();
       } finally {
@@ -200,12 +265,18 @@ export default function CheckoutScreen() {
     );
   }
 
+  // Header title reflects mode
+  const headerTitle =
+    order.mode === "plan"
+      ? `Pay for ${order.plan_name}`
+      : "Razorpay Payment";
+
   // WebView happy path
   return (
     <SafeAreaView edges={["top"]} style={styles.safe}>
       <Stack.Screen
         options={{
-          title: "Razorpay Payment",
+          title: headerTitle,
           headerStyle: { backgroundColor: colors.background },
           headerRight: () => (
             <TouchableOpacity onPress={() => router.back()} hitSlop={10}>

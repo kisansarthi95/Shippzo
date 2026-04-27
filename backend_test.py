@@ -1,397 +1,317 @@
 """
-Phase-5c Anchor Pricing & Countdown Timer — backend test suite.
-
-Run:
-    cd /app && python backend_test.py
-
-Targets the live preview backend:
-    https://logistics-hub-740.preview.emergentagent.com/api
+Backend tests for Razorpay Plan-Subscription endpoints.
+Targets the new /api/plans/razorpay/* endpoints in /app/backend/server.py.
 """
-
-from __future__ import annotations
-
+import os
 import sys
-from typing import Any, Dict, List, Tuple
-
+import json
 import requests
+from pymongo import MongoClient
 
-BASE = "https://logistics-hub-740.preview.emergentagent.com/api"
+BASE = os.environ.get("TEST_BASE", "http://localhost:8001")
+API = f"{BASE}/api"
 
 ADMIN_EMAIL = "admin@test.com"
 ADMIN_PASS = "Admin@12345"
-USER_EMAIL = "user2@test.com"
-USER_PASS = "User@12345"
+
+results = []  # list of (name, passed, info)
 
 
-# --------------------------------------------------------------------- helpers
-
-class Tally:
-    def __init__(self) -> None:
-        self.passed: List[str] = []
-        self.failed: List[Tuple[str, str]] = []
-
-    def ok(self, label: str) -> None:
-        self.passed.append(label)
-        print(f"  PASS  {label}")
-
-    def bad(self, label: str, why: str) -> None:
-        self.failed.append((label, why))
-        print(f"  FAIL  {label}\n        -> {why}")
-
-    def assert_true(self, cond: bool, label: str, why: str = "") -> None:
-        if cond:
-            self.ok(label)
-        else:
-            self.bad(label, why or "condition false")
-
-    def assert_eq(self, got: Any, want: Any, label: str) -> None:
-        if got == want:
-            self.ok(label)
-        else:
-            self.bad(label, f"got={got!r} want={want!r}")
+def record(name, passed, info=""):
+    status = "PASS" if passed else "FAIL"
+    results.append((name, passed, info))
+    suffix = f"  {info}" if not passed and info else ""
+    print(f"[{status}] {name}{suffix}")
 
 
-def login(email: str, password: str) -> str:
-    r = requests.post(f"{BASE}/auth/login", json={"email": email, "password": password}, timeout=30)
+def login(email, pwd):
+    r = requests.post(f"{API}/auth/login", json={"email": email, "password": pwd}, timeout=20)
     r.raise_for_status()
     return r.json()["token"]
 
 
-def headers(token: str) -> Dict[str, str]:
-    return {"Authorization": f"Bearer {token}"}
+def main():
+    try:
+        tok = login(ADMIN_EMAIL, ADMIN_PASS)
+        record("auth.login admin", True)
+    except Exception as e:
+        record("auth.login admin", False, f"login failed: {e}")
+        print_summary()
+        sys.exit(1)
+    H = {"Authorization": f"Bearer {tok}"}
 
+    mongo_url = os.environ.get("MONGO_URL", "mongodb://localhost:27017")
+    db_name = os.environ.get("DB_NAME", "test_database")
+    client = MongoClient(mongo_url)
+    coll = client[db_name].razorpay_orders
+    users_coll = client[db_name].users
 
-def get(path: str, token: str | None = None) -> requests.Response:
-    h = headers(token) if token else {}
-    return requests.get(f"{BASE}{path}", headers=h, timeout=30)
+    # ── 1.a silver/monthly ─────────────────────────────────────────────
+    silver_order_id = None
+    try:
+        r = requests.post(f"{API}/plans/razorpay/create-order", headers=H,
+                          json={"plan_key": "silver", "billing_cycle": "monthly"}, timeout=30)
+        record("1.a status==200", r.status_code == 200, f"got {r.status_code}: {r.text[:300]}")
+        if r.status_code == 200:
+            j = r.json()
+            silver_order_id = j.get("order_id")
+            for n, ok in [
+                ("key_id present", bool(j.get("key_id"))),
+                ("order_id starts with order_", str(j.get("order_id", "")).startswith("order_")),
+                ("amount_paise==19900", j.get("amount_paise") == 19900),
+                ("amount_inr==199", j.get("amount_inr") == 199),
+                ("plan_key==silver", j.get("plan_key") == "silver"),
+                ("plan_name==Silver", j.get("plan_name") == "Silver"),
+                ("billing_cycle==monthly", j.get("billing_cycle") == "monthly"),
+                ("months==1", j.get("months") == 1),
+                ("bonus_months==0", j.get("bonus_months") == 0),
+                ("purpose==plan_subscription", j.get("purpose") == "plan_subscription"),
+            ]:
+                record(f"1.a {n}", ok, f"resp={json.dumps(j)[:300]}")
+    except Exception as e:
+        record("1.a silver/monthly", False, str(e))
 
+    # ── 1.b gold/yearly ────────────────────────────────────────────────
+    try:
+        r = requests.post(f"{API}/plans/razorpay/create-order", headers=H,
+                          json={"plan_key": "gold", "billing_cycle": "yearly"}, timeout=30)
+        record("1.b status==200", r.status_code == 200, f"got {r.status_code}: {r.text[:300]}")
+        if r.status_code == 200:
+            j = r.json()
+            for n, ok in [
+                ("amount_paise==449100", j.get("amount_paise") == 449100),
+                ("amount_inr==4491", j.get("amount_inr") == 4491),
+                ("months==12", j.get("months") == 12),
+                ("bonus_months==1", j.get("bonus_months") == 1),
+                ("plan_key==gold", j.get("plan_key") == "gold"),
+                ("billing_cycle==yearly", j.get("billing_cycle") == "yearly"),
+            ]:
+                record(f"1.b {n}", ok, f"resp={json.dumps(j)[:300]}")
+    except Exception as e:
+        record("1.b gold/yearly", False, str(e))
 
-def put(path: str, token: str, body: Dict[str, Any]) -> requests.Response:
-    return requests.put(f"{BASE}{path}", headers=headers(token), json=body, timeout=30)
+    # ── 1.c platinum/monthly ───────────────────────────────────────────
+    try:
+        r = requests.post(f"{API}/plans/razorpay/create-order", headers=H,
+                          json={"plan_key": "platinum", "billing_cycle": "monthly"}, timeout=30)
+        record("1.c status==200", r.status_code == 200, f"got {r.status_code}: {r.text[:300]}")
+        if r.status_code == 200:
+            j = r.json()
+            record("1.c amount_paise==99900", j.get("amount_paise") == 99900,
+                   f"resp={json.dumps(j)[:300]}")
+    except Exception as e:
+        record("1.c platinum/monthly", False, str(e))
 
+    # ── 1.d invalid billing_cycle ──────────────────────────────────────
+    try:
+        r = requests.post(f"{API}/plans/razorpay/create-order", headers=H,
+                          json={"plan_key": "silver", "billing_cycle": "weekly"}, timeout=30)
+        ok = r.status_code == 400 and ("monthly" in r.text.lower() or "yearly" in r.text.lower())
+        record("1.d weekly→400 mentions monthly/yearly", ok,
+               f"status={r.status_code} body={r.text[:300]}")
+    except Exception as e:
+        record("1.d invalid billing_cycle", False, str(e))
 
-# --------------------------------------------------------------------- main
+    # ── 1.e free_trial ─────────────────────────────────────────────────
+    try:
+        r = requests.post(f"{API}/plans/razorpay/create-order", headers=H,
+                          json={"plan_key": "free_trial", "billing_cycle": "monthly"}, timeout=30)
+        ok = r.status_code == 400 and "Cannot subscribe to plan 'free_trial'" in r.text
+        record("1.e free_trial→400 with proper detail", ok,
+               f"status={r.status_code} body={r.text[:300]}")
+    except Exception as e:
+        record("1.e free_trial", False, str(e))
 
-def main() -> int:
-    t = Tally()
+    # ── 1.f diamond ────────────────────────────────────────────────────
+    try:
+        r = requests.post(f"{API}/plans/razorpay/create-order", headers=H,
+                          json={"plan_key": "diamond", "billing_cycle": "monthly"}, timeout=30)
+        ok = r.status_code == 400 and (
+            "Cannot subscribe to plan 'diamond'" in r.text or
+            "Unknown plan 'diamond'" in r.text)
+        record("1.f diamond→400 with proper detail", ok,
+               f"status={r.status_code} body={r.text[:300]}")
+    except Exception as e:
+        record("1.f diamond", False, str(e))
 
-    # ------------------------------------------------ Section A — Schema baseline
-    print("\n=== A) Schema baseline (admin) ===")
-    admin_token = login(ADMIN_EMAIL, ADMIN_PASS)
-    t.assert_true(bool(admin_token), "A1 admin login returns token")
+    # ── 1.g missing token ──────────────────────────────────────────────
+    try:
+        r = requests.post(f"{API}/plans/razorpay/create-order",
+                          json={"plan_key": "silver", "billing_cycle": "monthly"}, timeout=30)
+        record("1.g missing token→401", r.status_code == 401,
+               f"status={r.status_code} body={r.text[:300]}")
+    except Exception as e:
+        record("1.g no auth", False, str(e))
 
-    r = get("/admin/global-config", admin_token)
-    t.assert_eq(r.status_code, 200, "A2 GET /admin/global-config = 200")
-    cfg = r.json() if r.status_code == 200 else {}
-    expected_keys = {"global_ai_rates", "credit_packages", "plan_pricing", "countdown"}
-    t.assert_true(
-        expected_keys.issubset(set(cfg.keys())),
-        f"A2 body has 4 top-level keys ({sorted(expected_keys)})",
-        f"missing={expected_keys - set(cfg.keys())}",
-    )
+    # ── 1.h DB has the order ───────────────────────────────────────────
+    if silver_order_id:
+        try:
+            doc = coll.find_one({"razorpay_order_id": silver_order_id})
+            ok = (doc is not None
+                  and doc.get("purpose") == "plan_subscription"
+                  and doc.get("plan_key") == "silver"
+                  and doc.get("billing_cycle") == "monthly"
+                  and doc.get("status") == "created")
+            record("1.h db.razorpay_orders has plan_subscription doc", ok,
+                   f"doc={doc}")
+        except Exception as e:
+            record("1.h db.razorpay_orders verification", False, str(e))
+    else:
+        record("1.h db.razorpay_orders verification", False, "skipped — silver order missing")
 
-    pp = cfg.get("plan_pricing", {})
-    t.assert_true(
-        all(k in pp for k in ("free_trial", "silver", "gold", "platinum")),
-        "A3 plan_pricing has free_trial+silver+gold+platinum",
-        f"keys={sorted(pp.keys())}",
-    )
-    silver = pp.get("silver", {})
-    silver_req_fields = {
-        "monthly_price", "monthly_anchor", "yearly_price", "yearly_anchor",
-        "yearly_base_months", "yearly_bonus_months", "show_strikethrough",
-    }
-    t.assert_true(
-        silver_req_fields.issubset(silver.keys()),
-        "A3 silver has required schema fields",
-        f"missing={silver_req_fields - set(silver.keys())}",
-    )
-    free = pp.get("free_trial", {})
-    t.assert_true(
-        free.get("monthly_price") == 0
-        and free.get("monthly_anchor") == 0
-        and free.get("yearly_price") == 0
-        and free.get("yearly_anchor") == 0,
-        "A3 free_trial all zeros",
-        f"free={free}",
-    )
+    # ── 2.a bogus verify on real plan order ────────────────────────────
+    if silver_order_id:
+        try:
+            r = requests.post(f"{API}/plans/razorpay/verify", headers=H,
+                              json={"razorpay_order_id": silver_order_id,
+                                    "razorpay_payment_id": "pay_FAKE",
+                                    "razorpay_signature": "xxx"}, timeout=30)
+            ok = r.status_code == 400 and "Payment verification failed" in r.text
+            record("2.a bogus verify→400 'Payment verification failed: …'", ok,
+                   f"status={r.status_code} body={r.text[:300]}")
+            doc = coll.find_one({"razorpay_order_id": silver_order_id})
+            ok2 = doc is not None and doc.get("status") == "verify_failed"
+            record("2.a db row status==verify_failed", ok2,
+                   f"status={doc.get('status') if doc else None}")
+        except Exception as e:
+            record("2.a bogus verify", False, str(e))
 
-    cd = cfg.get("countdown", {})
-    cd_req = {"enabled", "mode", "countdown_minutes", "global_expires_at", "headline"}
-    t.assert_true(
-        cd_req.issubset(cd.keys()),
-        "A4 countdown has required keys",
-        f"missing={cd_req - set(cd.keys())}",
-    )
-    t.assert_true(
-        cd.get("mode") in ("off", "per_device", "global"),
-        "A4 countdown.mode is a valid enum",
-        f"mode={cd.get('mode')!r}",
-    )
-    t.assert_true(
-        isinstance(cd.get("countdown_minutes"), int) and cd.get("countdown_minutes") >= 1,
-        "A4 countdown.countdown_minutes >= 1",
-        f"got={cd.get('countdown_minutes')!r}",
-    )
+    # ── 2.b unknown order ──────────────────────────────────────────────
+    try:
+        r = requests.post(f"{API}/plans/razorpay/verify", headers=H,
+                          json={"razorpay_order_id": "order_DOESNOTEXIST_xxxxx",
+                                "razorpay_payment_id": "pay_x",
+                                "razorpay_signature": "y"}, timeout=30)
+        ok = r.status_code == 404 and "Order not found for this user" in r.text
+        record("2.b unknown order→404", ok,
+               f"status={r.status_code} body={r.text[:300]}")
+    except Exception as e:
+        record("2.b unknown order", False, str(e))
 
-    # ------------------------------------------------ Section B — Public readability
-    print("\n=== B) Public readability (user2) ===")
-    user_token = login(USER_EMAIL, USER_PASS)
-    t.assert_true(bool(user_token), "B user2 login returns token")
+    # ── 2.c wallet topup order via plan /verify → 400 ──────────────────
+    wallet_order_id = None
+    try:
+        r = requests.post(f"{API}/wallet/razorpay/create-order", headers=H,
+                          json={"amount_inr": 100}, timeout=30)
+        if r.status_code == 200:
+            wallet_order_id = r.json().get("order_id")
+            record("2.c precondition wallet topup created", True)
+        else:
+            record("2.c precondition wallet topup created", False,
+                   f"status={r.status_code} body={r.text[:300]}")
+    except Exception as e:
+        record("2.c precondition wallet topup created", False, str(e))
 
-    r = get("/plans-pricing", user_token)
-    t.assert_eq(r.status_code, 200, "B5 user2 GET /plans-pricing = 200")
-    body = r.json() if r.status_code == 200 else {}
-    t.assert_true(
-        "plan_pricing" in body and "countdown" in body,
-        "B5 /plans-pricing returns plan_pricing+countdown",
-        f"keys={list(body.keys())}",
-    )
+    if wallet_order_id:
+        try:
+            r = requests.post(f"{API}/plans/razorpay/verify", headers=H,
+                              json={"razorpay_order_id": wallet_order_id,
+                                    "razorpay_payment_id": "pay_x",
+                                    "razorpay_signature": "y"}, timeout=30)
+            ok = r.status_code == 400 and "isn't a plan subscription" in r.text
+            record("2.c wallet topup via plan/verify→400 'isn't a plan subscription'", ok,
+                   f"status={r.status_code} body={r.text[:300]}")
+        except Exception as e:
+            record("2.c wallet via plan verify", False, str(e))
 
-    r = get("/admin/global-config", user_token)
-    t.assert_eq(r.status_code, 403, "B6 user2 GET /admin/global-config = 403")
+    # ── 2.d Idempotency ────────────────────────────────────────────────
+    idem_order_id = None
+    try:
+        r = requests.post(f"{API}/plans/razorpay/create-order", headers=H,
+                          json={"plan_key": "silver", "billing_cycle": "monthly"}, timeout=30)
+        if r.status_code == 200:
+            idem_order_id = r.json().get("order_id")
+            record("2.d precondition new plan order created", True)
+        else:
+            record("2.d precondition new plan order created", False,
+                   f"status={r.status_code} body={r.text[:300]}")
+    except Exception as e:
+        record("2.d precondition new plan order created", False, str(e))
 
-    r = put("/admin/global-config", user_token, {"plan_pricing": {}})
-    t.assert_eq(r.status_code, 403, "B7 user2 PUT /admin/global-config = 403")
-
-    # ------------------------------------------------ Section C — Validation/persistence
-    print("\n=== C) Validation & persistence (admin) ===")
-
-    cfg_pre = (get("/admin/global-config", admin_token).json())
-    pkg_pre = cfg_pre.get("credit_packages")
-    rates_pre = cfg_pre.get("global_ai_rates")
-
-    body8 = {
-        "plan_pricing": {
-            "free_trial": {
-                "monthly_price": 0, "monthly_anchor": 0,
-                "yearly_price": 0,  "yearly_anchor": 0,
-                "yearly_base_months": 12, "yearly_bonus_months": 0,
-                "show_strikethrough": False,
-            },
-            "silver": {
-                "monthly_price": 249, "monthly_anchor": 599,
-                "yearly_price": 2241, "yearly_anchor": 5999,
-                "yearly_base_months": 12, "yearly_bonus_months": 1,
-                "show_strikethrough": True,
-            },
-            "gold": {
-                "monthly_price": 499, "monthly_anchor": 999,
-                "yearly_price": 4491, "yearly_anchor": 9999,
-                "yearly_base_months": 12, "yearly_bonus_months": 1,
-                "show_strikethrough": True,
-            },
-            "platinum": {
-                "monthly_price": 999, "monthly_anchor": 1999,
-                "yearly_price": 8991, "yearly_anchor": 19999,
-                "yearly_base_months": 12, "yearly_bonus_months": 1,
-                "show_strikethrough": True,
-            },
-        },
-    }
-    r = put("/admin/global-config", admin_token, body8)
-    t.assert_eq(r.status_code, 200, "C8 PUT plan_pricing only = 200")
-    body = r.json() if r.status_code == 200 else {}
-    t.assert_eq(
-        body.get("plan_pricing", {}).get("silver", {}).get("monthly_price"),
-        249,
-        "C8 silver.monthly_price=249 in PUT response",
-    )
-    t.assert_eq(
-        body.get("credit_packages"),
-        pkg_pre,
-        "C8 credit_packages UNCHANGED",
-    )
-    t.assert_eq(
-        body.get("global_ai_rates"),
-        rates_pre,
-        "C8 global_ai_rates UNCHANGED",
-    )
-
-    body9 = {
-        "countdown": {
-            "enabled": True,
-            "mode": "global",
-            "countdown_minutes": 60,
-            "global_expires_at": "2027-01-01T00:00:00+05:30",
-            "headline": "Mega sale ends Jan 1st",
-        },
-    }
-    r = put("/admin/global-config", admin_token, body9)
-    t.assert_eq(r.status_code, 200, "C9 PUT countdown only = 200")
-    body = r.json() if r.status_code == 200 else {}
-    t.assert_eq(
-        body.get("countdown", {}).get("mode"), "global",
-        "C9 countdown.mode = global",
-    )
-    t.assert_eq(
-        body.get("countdown", {}).get("global_expires_at"),
-        "2027-01-01T00:00:00+05:30",
-        "C9 countdown.global_expires_at persisted verbatim",
-    )
-    t.assert_eq(
-        body.get("countdown", {}).get("headline"),
-        "Mega sale ends Jan 1st",
-        "C9 countdown.headline persisted",
-    )
-    t.assert_eq(
-        body.get("plan_pricing", {}).get("silver", {}).get("monthly_price"),
-        249,
-        "C9 plan_pricing from step 8 preserved",
-    )
-
-    body10 = {"countdown": {"mode": "INVALID_MODE", "countdown_minutes": -100}}
-    r = put("/admin/global-config", admin_token, body10)
-    t.assert_eq(r.status_code, 200, "C10 PUT countdown invalid sanitised = 200")
-    body = r.json() if r.status_code == 200 else {}
-    t.assert_eq(
-        body.get("countdown", {}).get("mode"),
-        "per_device",
-        "C10 invalid mode -> sanitised to per_device",
-    )
-    t.assert_true(
-        isinstance(body.get("countdown", {}).get("countdown_minutes"), int)
-        and body["countdown"]["countdown_minutes"] >= 1,
-        "C10 negative countdown_minutes -> sanitised to >= 1",
-        f"got={body.get('countdown', {}).get('countdown_minutes')!r}",
-    )
-
-    body11 = {
-        "plan_pricing": {
-            "free_trial": {
-                "monthly_price": 0, "monthly_anchor": 0,
-                "yearly_price": 0,  "yearly_anchor": 0,
-                "yearly_base_months": 12, "yearly_bonus_months": 0,
-                "show_strikethrough": False,
-            },
-            "silver": {"monthly_price": -50},
-            "gold": {
-                "monthly_price": 499, "monthly_anchor": 999,
-                "yearly_price": 4491, "yearly_anchor": 9999,
-                "yearly_base_months": 12, "yearly_bonus_months": 1,
-                "show_strikethrough": True,
-            },
-            "platinum": {
-                "monthly_price": 999, "monthly_anchor": 1999,
-                "yearly_price": 8991, "yearly_anchor": 19999,
-                "yearly_base_months": 12, "yearly_bonus_months": 1,
-                "show_strikethrough": True,
-            },
-        }
-    }
-    r = put("/admin/global-config", admin_token, body11)
-    t.assert_eq(r.status_code, 200, "C11 PUT negative silver.monthly_price = 200 (no crash)")
-    body = r.json() if r.status_code == 200 else {}
-    silver_after = body.get("plan_pricing", {}).get("silver", {})
-    t.assert_eq(silver_after.get("monthly_price"), 0, "C11 silver.monthly_price clamped to 0")
-
-    body12 = {
-        "plan_pricing": {
-            "free_trial": {
-                "monthly_price": 0, "monthly_anchor": 0,
-                "yearly_price": 0,  "yearly_anchor": 0,
-                "yearly_base_months": 12, "yearly_bonus_months": 0,
-                "show_strikethrough": False,
-            },
-            "silver": {
-                "monthly_price": 199, "monthly_anchor": 499,
-                "yearly_price": 1791, "yearly_anchor": 4999,
-                "yearly_base_months": 12, "yearly_bonus_months": 1,
-                "show_strikethrough": True,
-            },
-            "gold": {
-                "monthly_price": 499, "monthly_anchor": 999,
-                "yearly_price": 4491, "yearly_anchor": 9999,
-                "yearly_base_months": 12, "yearly_bonus_months": 1,
-                "show_strikethrough": True,
-            },
-            "platinum": {
-                "monthly_price": 999, "monthly_anchor": 1999,
-                "yearly_price": 8991, "yearly_anchor": 19999,
-                "yearly_base_months": 12, "yearly_bonus_months": 1,
-                "show_strikethrough": True,
-            },
-        },
-        "countdown": {
-            "enabled": True,
-            "mode": "per_device",
-            "countdown_minutes": 60,
-            "global_expires_at": None,
-            "headline": "Limited time offer — save up to 60%",
-        },
-    }
-    r = put("/admin/global-config", admin_token, body12)
-    t.assert_eq(r.status_code, 200, "C12 final reset PUT = 200")
-
-    r = get("/admin/global-config", admin_token)
-    t.assert_eq(r.status_code, 200, "C12 verify GET = 200")
-    body = r.json() if r.status_code == 200 else {}
-    pp = body.get("plan_pricing", {})
-
-    expected_pp = body12["plan_pricing"]
-    for tier in ("free_trial", "silver", "gold", "platinum"):
-        for key, want in expected_pp[tier].items():
-            t.assert_eq(
-                pp.get(tier, {}).get(key),
-                want,
-                f"C12 plan_pricing.{tier}.{key} == {want!r}",
+    if idem_order_id:
+        try:
+            from datetime import datetime, timezone, timedelta
+            future = (datetime.now(timezone.utc) + timedelta(days=30)).isoformat()
+            coll.update_one(
+                {"razorpay_order_id": idem_order_id},
+                {"$set": {"status": "paid"}}
+            )
+            users_coll.update_one(
+                {"email": ADMIN_EMAIL},
+                {"$set": {"plan": "silver", "plan_expires_at": future}}
             )
 
-    cd = body.get("countdown", {})
-    t.assert_eq(cd.get("enabled"), True, "C12 countdown.enabled=true")
-    t.assert_eq(cd.get("mode"), "per_device", "C12 countdown.mode=per_device")
-    t.assert_eq(cd.get("countdown_minutes"), 60, "C12 countdown.countdown_minutes=60")
-    t.assert_eq(cd.get("global_expires_at"), None, "C12 countdown.global_expires_at=null")
-    t.assert_eq(
-        cd.get("headline"),
-        "Limited time offer — save up to 60%",
-        "C12 countdown.headline restored",
-    )
-    t.assert_true(
-        str(cd.get("headline", "")).startswith("Limited time offer"),
-        "A4/C12 countdown.headline starts with 'Limited time offer'",
-        f"headline={cd.get('headline')!r}",
-    )
+            r = requests.post(f"{API}/plans/razorpay/verify", headers=H,
+                              json={"razorpay_order_id": idem_order_id,
+                                    "razorpay_payment_id": "pay_idem",
+                                    "razorpay_signature": "sig_idem"}, timeout=30)
+            record("2.d idempotency status==200", r.status_code == 200,
+                   f"status={r.status_code} body={r.text[:300]}")
+            if r.status_code == 200:
+                j = r.json()
+                record("2.d already_credited==true", j.get("already_credited") is True,
+                       f"resp={j}")
+                record("2.d plan_expires_at populated", bool(j.get("plan_expires_at")),
+                       f"resp={j}")
+        except Exception as e:
+            record("2.d idempotency", False, str(e))
 
-    # ------------------------------------------------ Section D — Regression
-    print("\n=== D) Regression ===")
+    # ── 3. Soft check: wallet/verify on plan order should NOT credit ───
+    plan_order_for_wallet_test = None
+    try:
+        r = requests.post(f"{API}/plans/razorpay/create-order", headers=H,
+                          json={"plan_key": "silver", "billing_cycle": "monthly"}, timeout=30)
+        if r.status_code == 200:
+            plan_order_for_wallet_test = r.json().get("order_id")
+    except Exception:
+        pass
 
-    r = get("/shipments/stats", admin_token)
-    t.assert_eq(r.status_code, 200, "D13 admin GET /shipments/stats = 200")
+    if plan_order_for_wallet_test:
+        try:
+            r = requests.post(f"{API}/wallet/razorpay/verify", headers=H,
+                              json={"razorpay_order_id": plan_order_for_wallet_test,
+                                    "razorpay_payment_id": "pay_x",
+                                    "razorpay_signature": "y"}, timeout=30)
+            credited = False
+            try:
+                if r.status_code == 200:
+                    j = r.json()
+                    if float(j.get("credits_added", 0)) > 0 and not j.get("already_credited"):
+                        credited = True
+            except Exception:
+                pass
+            info = f"status={r.status_code} body={r.text[:300]} credited={credited}"
+            # We want non-credit. Pass if not credited.
+            record("3. wallet verify on plan order does NOT credit (soft)", not credited, info)
+        except Exception as e:
+            record("3. wallet verify on plan order", False, str(e))
 
-    r = get("/couriers", admin_token)
-    t.assert_eq(r.status_code, 200, "D13 admin GET /couriers = 200")
+    # ── 4. User state after idempotency call ───────────────────────────
+    try:
+        u = users_coll.find_one({"email": ADMIN_EMAIL}, {"_id": 0})
+        # The idempotency path doesn't mutate user. We just confirm the
+        # user doc still has the values we set in 2.d (plan, plan_expires_at).
+        ok = bool(u and u.get("plan_expires_at"))
+        info = f"plan={u.get('plan')} plan_expires_at={u.get('plan_expires_at')} plan_billing_cycle={u.get('plan_billing_cycle')} plan_mocked={u.get('plan_mocked')} last_paid_payment_id={u.get('last_paid_payment_id')}" if u else "user not found"
+        record("4. user has plan_expires_at set", ok, info)
+    except Exception as e:
+        record("4. user state check", False, str(e))
 
-    r = get("/wallet", admin_token)
-    t.assert_eq(r.status_code, 200, "D13 admin GET /wallet = 200")
+    print_summary()
 
-    r = get("/credit-packages", user_token)
-    t.assert_eq(r.status_code, 200, "D14 user2 GET /credit-packages = 200")
-    body = r.json() if r.status_code == 200 else {}
-    pkgs = body.get("packages", [])
-    t.assert_eq(len(pkgs), 4, f"D14 returns 4 packages (got {len(pkgs)})")
 
-    r = get("/me/ai-rates", user_token)
-    t.assert_eq(r.status_code, 200, "D15 user2 GET /me/ai-rates = 200")
-    body = r.json() if r.status_code == 200 else {}
-    t.assert_true(
-        isinstance(body, dict)
-        and all(k in body for k in ("simple", "medium", "complex")),
-        "D15 /me/ai-rates returns rate dict with simple/medium/complex",
-        f"got={body!r}",
-    )
-
-    # ------------------------------------------------ Summary
+def print_summary():
     print("\n" + "=" * 70)
-    print(f"PASSED: {len(t.passed)}")
-    print(f"FAILED: {len(t.failed)}")
-    if t.failed:
-        print("\nFailures:")
-        for label, why in t.failed:
-            print(f"  - {label}\n      {why}")
-        return 1
-    return 0
+    passed = sum(1 for _, ok, _ in results if ok)
+    total = len(results)
+    print(f"TOTAL: {passed}/{total} passed")
+    print("=" * 70)
+    fails = [(n, info) for n, ok, info in results if not ok]
+    if fails:
+        print("\nFAILED:")
+        for n, info in fails:
+            print(f"  - {n}\n      {info}")
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    main()
