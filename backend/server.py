@@ -4,6 +4,12 @@ from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 
+# CRITICAL: load .env BEFORE importing any module that reads
+# os.environ at module-load time (auth.py reads JWT_SECRET).
+# Otherwise the JWT secret would be regenerated on every restart and
+# all sessions would be invalidated.
+load_dotenv()
+
 # Phase-1 auth (email+password, JWT, per-user data isolation)
 from auth import (
     SignupRequest, LoginRequest, UserPublic,
