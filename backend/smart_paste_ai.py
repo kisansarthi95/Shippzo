@@ -107,97 +107,149 @@ NOTES: -
 ```
 
 RULES:
-  - NEVER output angle brackets `<` or `>` in a value. They are only used
-    as description markers in this prompt — a value must be a real word
-    or the single character `-`.
-  - Convert Gujarati (૧૨૩) & Hindi (१२३) digits to English (123).
-  - If any field is missing or unclear → write EXACTLY: -
-  - NEVER guess, invent or assume data.
-  - When two phone numbers appear (e.g. "8128949387 / 7874786098" or
-    "call 98765 43210 or 99887 76655"), the FIRST goes in PHONE and the
-    SECOND goes in ALT_PHONE.
-  - ITEMS MUST NEVER appear in ADDRESS fields. Products (saree, kurti,
-    dress, shoes, toy, book, ODC, gm/kg weight codes, etc.) always go
-    in ITEMS — NEVER in ADDRESS_1 or ADDRESS_2.
-  - QUANTITY rules for ITEMS:
-    * "Saree 2 pcs" → "Saree x 2"
-    * "Saree 2" → "Saree x 2"
-    * "2 saree" → "Saree x 2"
-    * "Saree" (no qty mentioned) → "Saree x 1"
-    * Multiple items: "Saree x 2, Kurti x 1"
-    * A weight-only item like "20gm ODC3" → "ODC3 x 1" (weight goes in WEIGHT)
-  - ADDRESS_1 is ONLY physical address: house no / street / area /
-    colony / village / post / taluka / district. NEVER products,
-    quantity, or amount.
-  - **CRITICAL ADDRESS RULE — NEVER LEAVE ADDRESS_1 EMPTY IF THE
-    INPUT CONTAINS ANY ADDRESS-LIKE TEXT.** This is the single most
-    important rule.
-    * If the input has a label like "Shipping address" / "Delivery
-      address" / "Address" / "પત્તો" / "पता", treat the WHOLE multi-
-      line block that follows (until you hit phone / email / name /
-      order id / payment) as the address block.
-    * From that address block, peel OFF the trailing city + state +
-      pincode (whatever you can detect) and put each in its own
-      field. Whatever is LEFT (street/house/apartment/area/landmark
-      bits) MUST go into ADDRESS_1 (with overflow into ADDRESS_2).
-    * Example of a long shipping address that MUST be split, NOT
-      collapsed into city only:
-        Input  : "Shipping address: C-401 Venus Apartment, near
-                  Sainik Vihar Saraswati Vihar, Rani Bagh, Pitampura,
-                  Delhi, 110034 Delhi"
-        WRONG  : ADDRESS_1: -
-                 CITY: Delhi  STATE: Delhi  PINCODE: 110034
-        RIGHT  : ADDRESS_1: C-401 Venus Apartment, Saraswati Vihar,
-                            Rani Bagh, Pitampura
-                 ADDRESS_2: near Sainik Vihar
-                 CITY: Delhi  STATE: Delhi  PINCODE: 110034
-    * If the same word (e.g. "Delhi") appears TWICE — once as a
-      neighbourhood name and once as the city — keep the city
-      occurrence in CITY and KEEP the neighbourhood occurrence in
-      ADDRESS_1. Do NOT silently drop one.
-    * "near …" / "behind …" / "opp …" landmarks → ADDRESS_2 if a
-      separate ADDRESS_1 already exists, else keep them in ADDRESS_1.
-    * If you can identify a flat/house number (C-401, B/12, 3rd floor,
-      Room 5, Plot 22 etc.) — that ALWAYS belongs in ADDRESS_1.
-  - City / State should be English transliteration when obvious (e.g.
-    "અરવલ્લી" → "Aravalli", "ગુજરાત" → "Gujarat") so the courier sheet
-    is consistent; otherwise keep the source script.
-  - AMOUNT = COD amount (only if explicitly COD).
-  - Token-paid amounts go in NOTES as "Token <value>".
-  - PAYMENT: COD only if "COD/Cash on Delivery" is mentioned;
-    PAID only if "Paid/Online/UPI/Prepaid" is mentioned;
-    LEAVE BLANK (`-`) if no payment info is present in the input.
-    DO NOT guess. The user will set it later if needed.
-  - **ITEMS RULE — capture the FULL product description verbatim:**
-    * Include quantity, weight, size, colour, material — DO NOT
-      shorten to a single word.
-    * Examples:
-        Input  : "તમારો ઓર્ડર: 3 Kg Natural Honey"
-        WRONG  : ITEMS: Honey
-        RIGHT  : ITEMS: 3 Kg Natural Honey
-        Input  : "Order: 2 Cotton Sarees Red Free-size"
-        WRONG  : ITEMS: Saree
-        RIGHT  : ITEMS: 2 Cotton Sarees Red Free-size x 2
-        Input  : "1 ODC3 Drone Kit + 5 spare batteries"
-        RIGHT  : ITEMS: ODC3 Drone Kit x 1, Spare Battery x 5
-    * Multiple distinct products → comma-separate, each with its own
-      "x QTY" suffix when quantity is known.
-    * If the input has a label like "ઓર્ડર / Order / Items / Product",
-      copy EVERYTHING after that label (until you hit a different
-      field) into ITEMS.
-  - **NAME RULE — shop name is acceptable as customer name:**
-    * Prefer a person's name when present.
-    * If ONLY a shop / business / company name is visible (no
-      personal name anywhere in the input), put the SHOP NAME into
-      NAME. NEVER leave NAME blank when a shop/business name is
-      clearly identifiable. Examples that should populate NAME:
-        "GREY GENTS"           → NAME: GREY GENTS
-        "Mahek Creations"      → NAME: Mahek Creations
-        "Balaji Developers"    → NAME: Balaji Developers
-        "Iscon Balaji M/s"     → NAME: Iscon Balaji
-    * If both person + shop are visible, person → NAME and shop name
-      can be appended to ADDRESS_1 (e.g. "M/s Mahek Creations,
-      Shop 12, …").
+
+**Rule 1 — No angle brackets:**
+NEVER output angle brackets `<` or `>` in a value. They are only used
+as description markers in this prompt — a value must be a real word
+or the single character `-`.
+
+**Rule 2 — Digit normalisation:**
+Convert Gujarati (૧૨૩) & Hindi (१२३) digits to English (123).
+
+**Rule 3 — Missing fields:**
+If any field is missing or unclear → write EXACTLY: `-`. NEVER guess,
+invent or assume data.
+
+**Rule 4 — Two phone numbers:**
+When two phone numbers appear (e.g. "8128949387 / 7874786098" or
+"call 98765 43210 or 99887 76655"), the FIRST goes in PHONE and the
+SECOND goes in ALT_PHONE.
+
+**Rule 5 — Items vs Address separation:**
+ITEMS MUST NEVER appear in ADDRESS fields. Products (saree, kurti,
+dress, shoes, toy, book, ODC, gm/kg weight codes, etc.) always go
+in ITEMS — NEVER in ADDRESS_1 or ADDRESS_2.
+
+**Rule 6 — Quantity rules for ITEMS:**
+  * "Saree 2 pcs" → "Saree x 2"
+  * "Saree 2" → "Saree x 2"
+  * "2 saree" → "Saree x 2"
+  * "Saree" (no qty mentioned) → "Saree x 1"
+  * Multiple items: "Saree x 2, Kurti x 1"
+  * A weight-only item like "20gm ODC3" → "ODC3 x 1" (weight goes in WEIGHT)
+
+**Rule 7 — ADDRESS_1 content:**
+ADDRESS_1 is ONLY physical address: house no / street / area /
+colony / village / post / taluka / district. NEVER products,
+quantity, or amount.
+
+**Rule 8 — CRITICAL ADDRESS RULE: never blank, split correctly:**
+NEVER LEAVE ADDRESS_1 EMPTY IF THE INPUT CONTAINS ANY ADDRESS-LIKE
+TEXT. This is the single most important rule.
+  * If the input has a label like "Shipping address" / "Delivery
+    address" / "Address" / "પત્તો" / "पता", treat the WHOLE multi-
+    line block that follows (until you hit phone / email / name /
+    order id / payment) as the address block.
+  * From that address block, peel OFF the trailing city + state +
+    pincode (whatever you can detect) and put each in its own
+    field. Whatever is LEFT (street/house/apartment/area/landmark
+    bits) MUST go into ADDRESS_1 (with overflow into ADDRESS_2).
+  * Example of a long shipping address that MUST be split, NOT
+    collapsed into city only:
+      Input  : "Shipping address: C-401 Venus Apartment, near
+                Sainik Vihar Saraswati Vihar, Rani Bagh, Pitampura,
+                Delhi, 110034 Delhi"
+      WRONG  : ADDRESS_1: -
+               CITY: Delhi  STATE: Delhi  PINCODE: 110034
+      RIGHT  : ADDRESS_1: C-401 Venus Apartment, Saraswati Vihar,
+                          Rani Bagh, Pitampura
+               ADDRESS_2: near Sainik Vihar
+               CITY: Delhi  STATE: Delhi  PINCODE: 110034
+  * If the same word (e.g. "Delhi") appears TWICE — once as a
+    neighbourhood name and once as the city — keep the city
+    occurrence in CITY and KEEP the neighbourhood occurrence in
+    ADDRESS_1. Do NOT silently drop one.
+  * "near …" / "behind …" / "opp …" landmarks → ADDRESS_2 if a
+    separate ADDRESS_1 already exists, else keep them in ADDRESS_1.
+  * If you can identify a flat/house number (C-401, B/12, 3rd floor,
+    Room 5, Plot 22 etc.) — that ALWAYS belongs in ADDRESS_1.
+
+**Rule 9 — City / State translation:**
+City / State should be English transliteration when obvious (e.g.
+"અરવલ્લી" → "Aravalli", "ગુજરાત" → "Gujarat") so the courier sheet
+is consistent; otherwise keep the source script.
+
+**Rule 10 — Amount & token:**
+AMOUNT = COD amount (only if explicitly COD).
+Token-paid amounts go in NOTES as "Token <value>".
+
+**Rule 11 — Payment field:**
+PAYMENT: COD only if "COD/Cash on Delivery" is mentioned;
+PAID only if "Paid/Online/UPI/Prepaid" is mentioned;
+LEAVE BLANK (`-`) if no payment info is present in the input.
+DO NOT guess. The user will set it later if needed.
+
+**Rule 12 — ITEMS: capture FULL product description verbatim:**
+  * Include quantity, weight, size, colour, material — DO NOT
+    shorten to a single word.
+  * Examples:
+      Input  : "તમારો ઓર્ડર: 3 Kg Natural Honey"
+      WRONG  : ITEMS: Honey
+      RIGHT  : ITEMS: 3 Kg Natural Honey
+      Input  : "Order: 2 Cotton Sarees Red Free-size"
+      WRONG  : ITEMS: Saree
+      RIGHT  : ITEMS: 2 Cotton Sarees Red Free-size x 2
+      Input  : "1 ODC3 Drone Kit + 5 spare batteries"
+      RIGHT  : ITEMS: ODC3 Drone Kit x 1, Spare Battery x 5
+  * Multiple distinct products → comma-separate, each with its own
+    "x QTY" suffix when quantity is known.
+  * If the input has a label like "ઓર્ડર / Order / Items / Product",
+    copy EVERYTHING after that label (until you hit a different
+    field) into ITEMS.
+
+**Rule 13 — NEVER LEAVE ADDRESS PARTIAL — capture EVERY line:**
+The user has TWO address lines (ADDRESS_1 + ADDRESS_2) precisely so
+that long multi-clause addresses can fit completely. NEVER drop any
+part of the visible street/area/landmark text.
+  * Procedure when the address block has 3+ comma-separated parts:
+      1. Last 2-3 parts → CITY / STATE / PINCODE.
+      2. The remaining parts MUST be split between ADDRESS_1 and
+         ADDRESS_2 such that NOTHING is dropped. ADDRESS_1 holds
+         the first ~half, ADDRESS_2 holds the rest. Both lines may
+         hold up to ~140 characters.
+  * Example showing the bug to AVOID:
+      Input  : "20 \"Dev Atelier\", Nr RK Enterprise, Hiran Circle,
+                Ramdevnagar Road, Prahladnagar, Ahmedabad,
+                380015 Gujarat"
+      WRONG  : ADDRESS_1: 20 "Dev Atelier"
+               ADDRESS_2: Nr RK Enterprise
+               (Hiran Circle, Ramdevnagar Road, Prahladnagar got
+               silently DROPPED — this is FORBIDDEN.)
+      RIGHT  : ADDRESS_1: 20 "Dev Atelier", Nr RK Enterprise,
+                          Hiran Circle
+               ADDRESS_2: Ramdevnagar Road, Prahladnagar
+               CITY: Ahmedabad  STATE: Gujarat  PINCODE: 380015
+  * If even after splitting you have leftover address parts that
+    do not fit, append them to ADDRESS_2 separated by ", ". Never
+    drop them.
+  * "Near / Opp / Behind / Landmark / etc." preferentially go into
+    ADDRESS_2 only IF ADDRESS_1 is already full of street/house
+    text. Otherwise keep them in ADDRESS_1 and use ADDRESS_2 for
+    the next overflow.
+
+**Rule 14 — NAME: shop / business name is acceptable as customer name:**
+  * Prefer a person's name when present.
+  * If ONLY a shop / business / company name is visible (no
+    personal name anywhere in the input), put the SHOP NAME into
+    NAME. NEVER leave NAME blank when a shop/business name is
+    clearly identifiable. Examples that should populate NAME:
+      "GREY GENTS"           → NAME: GREY GENTS
+      "Mahek Creations"      → NAME: Mahek Creations
+      "Balaji Developers"    → NAME: Balaji Developers
+      "Iscon Balaji M/s"     → NAME: Iscon Balaji
+  * If both person + shop are visible, person → NAME and shop name
+    can be appended to ADDRESS_1 (e.g. "M/s Mahek Creations,
+    Shop 12, …").
 
 After the 15-line block, on a NEW line, output one JSON object describing
 the address complexity:
@@ -674,9 +726,13 @@ async def parse_image_with_ai(
                     for ln in recovered.splitlines() if ln.strip()
                 ]
                 if lines:
+                    # Rule 13: NEVER drop address parts. If recovery
+                    # returns 3+ lines, line 1 → ADDRESS_1 and the rest
+                    # are merged (comma-joined) into ADDRESS_2.
                     fields["ADDRESS_1"] = lines[0][:140]
-                    if len(lines) > 1 and not (fields.get("ADDRESS_2") or "").strip():
-                        fields["ADDRESS_2"] = lines[1][:140]
+                    rest = ", ".join(lines[1:])[:140] if len(lines) > 1 else ""
+                    if rest and not (fields.get("ADDRESS_2") or "").strip():
+                        fields["ADDRESS_2"] = rest
                     if "ADDRESS_1" in missing:
                         missing.remove("ADDRESS_1")
                     reason = (reason or "vision call") + " + address recovery"
