@@ -168,6 +168,36 @@ RULES:
     PAID only if "Paid/Online/UPI/Prepaid" is mentioned;
     LEAVE BLANK (`-`) if no payment info is present in the input.
     DO NOT guess. The user will set it later if needed.
+  - **ITEMS RULE — capture the FULL product description verbatim:**
+    * Include quantity, weight, size, colour, material — DO NOT
+      shorten to a single word.
+    * Examples:
+        Input  : "તમારો ઓર્ડર: 3 Kg Natural Honey"
+        WRONG  : ITEMS: Honey
+        RIGHT  : ITEMS: 3 Kg Natural Honey
+        Input  : "Order: 2 Cotton Sarees Red Free-size"
+        WRONG  : ITEMS: Saree
+        RIGHT  : ITEMS: 2 Cotton Sarees Red Free-size x 2
+        Input  : "1 ODC3 Drone Kit + 5 spare batteries"
+        RIGHT  : ITEMS: ODC3 Drone Kit x 1, Spare Battery x 5
+    * Multiple distinct products → comma-separate, each with its own
+      "x QTY" suffix when quantity is known.
+    * If the input has a label like "ઓર્ડર / Order / Items / Product",
+      copy EVERYTHING after that label (until you hit a different
+      field) into ITEMS.
+  - **NAME RULE — shop name is acceptable as customer name:**
+    * Prefer a person's name when present.
+    * If ONLY a shop / business / company name is visible (no
+      personal name anywhere in the input), put the SHOP NAME into
+      NAME. NEVER leave NAME blank when a shop/business name is
+      clearly identifiable. Examples that should populate NAME:
+        "GREY GENTS"           → NAME: GREY GENTS
+        "Mahek Creations"      → NAME: Mahek Creations
+        "Balaji Developers"    → NAME: Balaji Developers
+        "Iscon Balaji M/s"     → NAME: Iscon Balaji
+    * If both person + shop are visible, person → NAME and shop name
+      can be appended to ADDRESS_1 (e.g. "M/s Mahek Creations,
+      Shop 12, …").
 
 After the 15-line block, on a NEW line, output one JSON object describing
 the address complexity:
