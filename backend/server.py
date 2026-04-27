@@ -40,6 +40,7 @@ from smart_paste_ai import (
     to_legacy_fields as sm_to_legacy_fields,
     DEFAULT_SHIPBOT_PROMPT,
 )
+from pincode_lookup import enrich_with_pincode
 from fastapi import Depends as _AuthDepends  # noqa: F401
 import os
 import io
@@ -93,6 +94,20 @@ db = client[os.environ['DB_NAME']]
 
 # Bind the auth dependency now that `db` exists.
 get_current_user = get_current_user_factory(db)
+
+
+async def _legacy_with_pincode_enrich(schema):
+    """Run pincode → state/district enrichment on the SCHEMA-key dict
+    (PINCODE/STATE/CITY) before converting to legacy keys (pincode/
+    state/city). Used by every Smart Paste path so the user always
+    gets state/district auto-filled when a valid pincode is present.
+    """
+    try:
+        await enrich_with_pincode(db, schema)
+    except Exception:
+        # Pincode lookup is best-effort — never fail the whole request.
+        pass
+    return sm_to_legacy_fields(schema)
 
 
 # --- Auth endpoints ---------------------------------------------------
@@ -1708,7 +1723,7 @@ async def smart_paste_parse(
         custom = (s.get("smart_paste_instructions") or "").strip()
         ai = await parse_paste_via_llm(text, custom_instructions=custom)
         if ai["source"] == "llm":
-            mapped = sm_to_legacy_fields(ai["fields"])
+            mapped = await _legacy_with_pincode_enrich(ai["fields"])
             # Merge: LLM fields WIN over regex where they have a non-empty value.
             merged_fields: Dict[str, Any] = dict(legacy.get("fields", {}))
             for k, v in mapped.items():
@@ -1881,7 +1896,7 @@ async def smart_paste_check_duplicate(
                 custom_instructions=(s.get("smart_paste_instructions") or "").strip(),
             )
             if ai.get("source") == "llm":
-                mapped = sm_to_legacy_fields(ai["fields"])
+                mapped = await _legacy_with_pincode_enrich(ai["fields"])
                 for k, v in mapped.items():
                     if v:
                         fields[k] = v
@@ -2039,7 +2054,7 @@ async def smart_paste_chat(
                 custom_instructions=(s.get("smart_paste_instructions") or "").strip(),
             )
             if ai.get("source") == "llm":
-                mapped = sm_to_legacy_fields(ai["fields"])
+                mapped = await _legacy_with_pincode_enrich(ai["fields"])
                 for k, v in mapped.items():
                     if v:
                         fields[k] = v
@@ -2182,7 +2197,7 @@ async def smart_paste_photo(
             ),
         )
 
-    fields = sm_to_legacy_fields(ai["fields"])
+    fields = await _legacy_with_pincode_enrich(ai["fields"])
     if isinstance(fields.get("amount"), str):
         m = re.search(r"(\d+(?:\.\d+)?)", fields["amount"].replace(",", ""))
         if m:
@@ -2281,7 +2296,7 @@ async def smart_paste_create(
                 custom_instructions=(s.get("smart_paste_instructions") or "").strip(),
             )
             if ai.get("source") == "llm":
-                mapped = sm_to_legacy_fields(ai["fields"])
+                mapped = await _legacy_with_pincode_enrich(ai["fields"])
                 for k, v in mapped.items():
                     if v:
                         fields[k] = v

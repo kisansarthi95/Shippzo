@@ -61,7 +61,7 @@ STATE: (state — keep original script)
 PINCODE: (6 digits only)
 ITEMS: (item + quantity like "Saree x 2"; comma-separated for multiple)
 AMOUNT: (number only, no ₹ symbol)
-PAYMENT: (COD or PAID)
+PAYMENT: (COD or PAID — leave blank if not stated)
 COURIER: (courier name or -)
 ORDER_ID: (order number or -)
 WEIGHT: (weight with unit or -)
@@ -78,11 +78,31 @@ CITY: Aravalli
 STATE: Gujarat
 PINCODE: 383246
 ITEMS: ODC3 x 1
-AMOUNT: -
+AMOUNT: 1500
 PAYMENT: COD
 COURIER: -
 ORDER_ID: -
 WEIGHT: 20gm
+NOTES: -
+```
+
+EXAMPLE of a GOOD response when NO payment info is mentioned (only
+address + name was provided — leave AMOUNT and PAYMENT blank):
+```
+NAME: Dr. Kagathara
+PHONE: 7405304899
+ALT_PHONE: -
+ADDRESS_1: C-25, Prarambh Complex
+ADDRESS_2: Nr. Parivar Char Rasta, Waghodhiya Road
+CITY: Vadodara
+STATE: Gujarat
+PINCODE: 390019
+ITEMS: -
+AMOUNT: -
+PAYMENT: -
+COURIER: -
+ORDER_ID: -
+WEIGHT: -
 NOTES: -
 ```
 
@@ -142,9 +162,12 @@ RULES:
   - City / State should be English transliteration when obvious (e.g.
     "અરવલ્લી" → "Aravalli", "ગુજરાત" → "Gujarat") so the courier sheet
     is consistent; otherwise keep the source script.
-  - AMOUNT = COD amount (never PAID/token unless explicitly COD).
+  - AMOUNT = COD amount (only if explicitly COD).
   - Token-paid amounts go in NOTES as "Token <value>".
-  - PAYMENT = COD if a COD number is present, else PAID.
+  - PAYMENT: COD only if "COD/Cash on Delivery" is mentioned;
+    PAID only if "Paid/Online/UPI/Prepaid" is mentioned;
+    LEAVE BLANK (`-`) if no payment info is present in the input.
+    DO NOT guess. The user will set it later if needed.
 
 After the 15-line block, on a NEW line, output one JSON object describing
 the address complexity:
@@ -392,7 +415,7 @@ def to_legacy_fields(ai_fields: Dict[str, str]) -> Dict[str, str]:
         "pincode":        ai_fields.get("PINCODE", ""),
         "items":          ai_fields.get("ITEMS", ""),
         "amount":         ai_fields.get("AMOUNT", ""),
-        "payment_mode":   (ai_fields.get("PAYMENT", "") or "COD").upper(),
+        "payment_mode":   (ai_fields.get("PAYMENT", "") or "").upper(),
         "courier_name":   ai_fields.get("COURIER", ""),
         "order_id":       ai_fields.get("ORDER_ID", ""),
         "weight":         ai_fields.get("WEIGHT", ""),
@@ -464,8 +487,10 @@ DEFAULT_VISION_PROMPT = (
    - If only 5 or fewer digits are visible, leave PINCODE blank.
 6. AMOUNT / COD / PAID:
    - Words like "Cash", "COD", "Cash On Delivery" → PAYMENT: COD.
-   - Words like "Paid", "Online", "Advance Paid" → PAYMENT: PAID.
-   - If you can't tell, default PAYMENT: COD.
+   - Words like "Paid", "Online", "Advance Paid", "UPI Done",
+     "Prepaid" → PAYMENT: PAID.
+   - **If NO payment info is visible — leave PAYMENT EMPTY (`-`).
+     DO NOT guess or default to COD. The user will fill it later.**
 7. ITEMS:
    - Pull product / SKU words. Append "x QTY" if quantity is visible.
 8. NOISE FILTER:
@@ -473,7 +498,16 @@ DEFAULT_VISION_PROMPT = (
    - Ignore phone-number listings that are clearly the SHOP's helpline
      (printed at the top of a visiting card) — but if those are the
      only numbers visible, still use them.
-9. NEVER invent missing values — leave them as `-`.
+9. **STRIKETHROUGH / CROSSED-OUT NUMBERS:**
+   - If a phone number has a visible STRIKETHROUGH line drawn through
+     it (a horizontal pen/marker stroke crossing the digits), treat
+     it as INVALID and SKIP it entirely.
+   - Same rule for any text the customer has manually crossed out
+     with pen/pencil/marker — it's a "cancel this" signal.
+   - Pick the next available un-crossed number as PHONE / ALT_PHONE.
+   - If only ONE valid (un-crossed) number remains, that's PHONE and
+     ALT_PHONE stays empty.
+10. NEVER invent missing values — leave them as `-`.
 """
 )
 
