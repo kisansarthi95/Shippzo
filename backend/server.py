@@ -3043,6 +3043,11 @@ async def rzp_verify_and_credit(
     })
     if not order:
         raise HTTPException(status_code=404, detail="Order not found for this user")
+    if (order.get("purpose") or "wallet_topup") != "wallet_topup":
+        raise HTTPException(
+            status_code=400,
+            detail="This order isn't a wallet top-up. Use /plans/razorpay/verify for plan subscriptions.",
+        )
 
     # 2. Idempotency: if already paid + credited, just return the wallet.
     if order.get("status") == "paid":
