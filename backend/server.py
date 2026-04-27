@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, HTTPException, Depends
+from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request
 from fastapi.responses import PlainTextResponse
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
@@ -2904,6 +2904,248 @@ async def me_feature_flags(
 # /api/credit-packages and /api/me/ai-rates (read-only).
 
 DEFAULT_AI_RATES = {"simple": 0.5, "medium": 1.0, "complex": 2.0, "photo_ocr": 1.5}
+
+
+# ───────────── Razorpay (Phase-4c real payments) ─────────────
+import razorpay as _razorpay  # noqa: E402
+
+_RZP_KEY_ID = os.environ.get("RAZORPAY_KEY_ID", "").strip()
+_RZP_KEY_SECRET = os.environ.get("RAZORPAY_KEY_SECRET", "").strip()
+_RZP_WEBHOOK_SECRET = os.environ.get("RAZORPAY_WEBHOOK_SECRET", "").strip()
+_rzp_client = (
+    _razorpay.Client(auth=(_RZP_KEY_ID, _RZP_KEY_SECRET))
+    if _RZP_KEY_ID and _RZP_KEY_SECRET
+    else None
+)
+
+
+class RazorpayCreateOrderRequest(BaseModel):
+    """Request to create a Razorpay order for wallet top-up.
+
+    `amount_inr` is the rupee value the user wants to top up — we
+    multiply by 100 internally to send paise to Razorpay.
+    """
+    amount_inr: int
+
+
+class RazorpayVerifyRequest(BaseModel):
+    """Three values returned by Razorpay Checkout on success that we
+    need to verify against our server-side secret before crediting the
+    wallet."""
+    razorpay_order_id: str
+    razorpay_payment_id: str
+    razorpay_signature: str
+
+
+@api_router.post("/wallet/razorpay/create-order")
+async def rzp_create_order(
+    payload: RazorpayCreateOrderRequest,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    """Step 1 of Razorpay top-up flow.
+
+    Creates a Razorpay order on the server (so the order_id is signed
+    by Razorpay, not by us). We persist the order locally so the
+    /verify endpoint can match the signed payment back to the user
+    even before Razorpay sends a webhook.
+
+    Returns the data the client needs to invoke Razorpay Checkout:
+        {key_id, order_id, amount (paise), currency, receipt}
+    """
+    if not _rzp_client:
+        raise HTTPException(
+            status_code=503,
+            detail="Razorpay is not configured on the server.",
+        )
+    inr = int(payload.amount_inr or 0)
+    if inr < 10 or inr > 100000:
+        raise HTTPException(
+            status_code=400, detail="Amount must be between ₹10 and ₹1,00,000",
+        )
+    # Find the package that matches (so we know how many credits to grant
+    # on success) — fallback to 1:1 if user picked a custom amount.
+    cfg = await _get_admin_config()
+    pkg = next(
+        (p for p in cfg["credit_packages"] if int(p["amount_inr"]) == inr),
+        None,
+    )
+    credits = float(pkg["credits"]) if pkg else float(inr)
+    bonus = int(pkg["bonus"]) if pkg else 0
+
+    # Razorpay receipt has a 40-char limit.
+    receipt = f"wallet-{current_user['id'][:8]}-{int(datetime.utcnow().timestamp())}"
+    try:
+        rzp_order = _rzp_client.order.create({
+            "amount": inr * 100,  # paise
+            "currency": "INR",
+            "receipt": receipt,
+            "payment_capture": 1,
+            "notes": {
+                "user_id": current_user["id"],
+                "user_email": current_user.get("email", ""),
+                "credits": credits,
+                "bonus": bonus,
+                "purpose": "wallet_topup",
+            },
+        })
+    except Exception as e:
+        logger.exception("rzp create order failed")
+        raise HTTPException(status_code=502, detail=f"Razorpay error: {e}")
+
+    # Persist locally — used during /verify and for reconciliation.
+    await db.razorpay_orders.insert_one({
+        "id": str(uuid.uuid4()),
+        "user_id": current_user["id"],
+        "razorpay_order_id": rzp_order["id"],
+        "amount_inr": inr,
+        "amount_paise": inr * 100,
+        "credits_to_grant": credits,
+        "bonus_credits": bonus,
+        "status": "created",
+        "created_at": datetime.utcnow().isoformat() + "+00:00",
+    })
+
+    return {
+        "key_id":  _RZP_KEY_ID,
+        "order_id": rzp_order["id"],
+        "amount_paise": rzp_order["amount"],
+        "amount_inr": inr,
+        "currency": rzp_order["currency"],
+        "receipt": rzp_order["receipt"],
+        "credits_to_grant": credits,
+        "bonus_credits": bonus,
+        "user_email": current_user.get("email", ""),
+        "user_name": current_user.get("name", current_user.get("email", "User")),
+    }
+
+
+@api_router.post("/wallet/razorpay/verify")
+async def rzp_verify_and_credit(
+    payload: RazorpayVerifyRequest,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    """Step 2 of Razorpay top-up flow.
+
+    Razorpay Checkout calls this endpoint with the three signed
+    values. We verify the signature server-side using our key secret,
+    then credit the wallet exactly once (idempotent on
+    razorpay_payment_id).
+    """
+    if not _rzp_client:
+        raise HTTPException(status_code=503, detail="Razorpay not configured")
+
+    # 1. Look up our local order record.
+    order = await db.razorpay_orders.find_one({
+        "razorpay_order_id": payload.razorpay_order_id,
+        "user_id": current_user["id"],
+    })
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found for this user")
+
+    # 2. Idempotency: if already paid + credited, just return the wallet.
+    if order.get("status") == "paid":
+        bal = await wallet_balance(db, current_user["id"])
+        return {
+            "ok": True,
+            "already_credited": True,
+            "credits_added": order.get("credits_to_grant", 0),
+            "balance": bal,
+        }
+
+    # 3. Verify signature with Razorpay's util.
+    try:
+        _rzp_client.utility.verify_payment_signature({
+            "razorpay_order_id":   payload.razorpay_order_id,
+            "razorpay_payment_id": payload.razorpay_payment_id,
+            "razorpay_signature":  payload.razorpay_signature,
+        })
+    except Exception as e:
+        await db.razorpay_orders.update_one(
+            {"_id": order["_id"]},
+            {"$set": {"status": "verify_failed",
+                      "error": str(e),
+                      "razorpay_payment_id": payload.razorpay_payment_id}},
+        )
+        raise HTTPException(status_code=400, detail=f"Payment verification failed: {e}")
+
+    # 4. Credit the wallet (single source of truth).
+    credits = float(order.get("credits_to_grant", 0))
+    bonus = int(order.get("bonus_credits", 0))
+    bonus_str = f" (incl. {bonus} bonus)" if bonus else ""
+    desc = f"Top-up ₹{int(order['amount_inr'])} → {credits:g} credits{bonus_str}"
+
+    res = await wallet_add_credits(
+        db, current_user["id"], credits,
+        ctype="purchase",
+        description=desc,
+        order_id=payload.razorpay_payment_id,
+    )
+
+    # 5. Mark the order paid (so re-submits are idempotent).
+    await db.razorpay_orders.update_one(
+        {"_id": order["_id"]},
+        {"$set": {
+            "status": "paid",
+            "razorpay_payment_id": payload.razorpay_payment_id,
+            "razorpay_signature":  payload.razorpay_signature,
+            "paid_at": datetime.utcnow().isoformat() + "+00:00",
+        }},
+    )
+
+    wallet = res["wallet"]
+    return {
+        "ok": True,
+        "already_credited": False,
+        "amount_inr": int(order["amount_inr"]),
+        "credits_added": credits,
+        "bonus": bonus,
+        "balance": round(float(wallet.get("remaining_credits", 0.0)), 2),
+        "history_id": res["history"]["id"],
+    }
+
+
+@api_router.post("/wallet/razorpay/webhook")
+async def rzp_webhook(request: Request):
+    """Optional safety net — Razorpay calls this independently of the
+    browser-side /verify call. Useful if the user closes the app
+    mid-flow. Verifies signature against RAZORPAY_WEBHOOK_SECRET
+    (set this in Razorpay dashboard + .env).
+    """
+    if not _RZP_WEBHOOK_SECRET or not _rzp_client:
+        return {"ok": True, "skipped": "webhook not configured"}
+    body = await request.body()
+    sig = request.headers.get("x-razorpay-signature", "")
+    try:
+        _rzp_client.utility.verify_webhook_signature(
+            body.decode("utf-8"), sig, _RZP_WEBHOOK_SECRET,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Webhook verify failed: {e}")
+    try:
+        evt = json.loads(body)
+    except Exception:
+        return {"ok": True}
+    if evt.get("event") == "payment.captured":
+        pay = evt.get("payload", {}).get("payment", {}).get("entity", {})
+        order_id = pay.get("order_id")
+        payment_id = pay.get("id")
+        order = await db.razorpay_orders.find_one({"razorpay_order_id": order_id})
+        if order and order.get("status") != "paid":
+            credits = float(order.get("credits_to_grant", 0))
+            bonus = int(order.get("bonus_credits", 0))
+            bonus_str = f" (incl. {bonus} bonus)" if bonus else ""
+            desc = f"Top-up ₹{int(order['amount_inr'])} → {credits:g} credits{bonus_str} (webhook)"
+            await wallet_add_credits(
+                db, order["user_id"], credits,
+                ctype="purchase", description=desc, order_id=payment_id,
+            )
+            await db.razorpay_orders.update_one(
+                {"_id": order["_id"]},
+                {"$set": {"status": "paid", "razorpay_payment_id": payment_id,
+                          "paid_at": datetime.utcnow().isoformat() + "+00:00"}},
+            )
+    return {"ok": True}
+
 DEFAULT_CREDIT_PACKAGES = [
     # amount_inr → credits credited (with bonus). label optional.
     {"amount_inr": 100,  "credits": 100,  "bonus": 0,  "label": "Starter",   "popular": False},

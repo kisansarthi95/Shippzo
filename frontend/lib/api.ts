@@ -369,6 +369,37 @@ export const Api = {
         history_id: string;
       }>("/wallet/purchase", { amount_inr })
       .then((r) => r.data),
+  // Phase-4c Razorpay live payments
+  rzpCreateOrder: (amount_inr: number) =>
+    api.post<{
+      key_id: string;
+      order_id: string;
+      amount_paise: number;
+      amount_inr: number;
+      currency: string;
+      receipt: string;
+      credits_to_grant: number;
+      bonus_credits: number;
+      user_email: string;
+      user_name: string;
+    }>("/wallet/razorpay/create-order", { amount_inr }).then((r) => r.data),
+  rzpVerify: (
+    razorpay_order_id: string,
+    razorpay_payment_id: string,
+    razorpay_signature: string,
+  ) =>
+    api.post<{
+      ok: true;
+      already_credited: boolean;
+      amount_inr?: number;
+      credits_added: number;
+      bonus?: number;
+      balance: number;
+    }>("/wallet/razorpay/verify", {
+      razorpay_order_id,
+      razorpay_payment_id,
+      razorpay_signature,
+    }).then((r) => r.data),
   quoteLabel: (address: string = "") =>
     api
       .get<WalletQuote>("/wallet/quote", { params: { address } })

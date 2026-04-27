@@ -90,20 +90,11 @@ export default function WalletScreen() {
       Alert.alert("Amount must be between ₹10 and ₹1,00,000");
       return;
     }
-    try {
-      setBusy(true);
-      const r = await Api.purchaseCredits(inr);
-      Alert.alert(
-        "Credits added",
-        `₹${inr} → ${r.credits_added} credits. New balance: ${r.balance}.`,
-      );
-      setPurchaseOpen(false);
-      await load();
-    } catch (e: any) {
-      Alert.alert("Purchase failed", e?.response?.data?.detail || e?.message || "Please try again");
-    } finally {
-      setBusy(false);
-    }
+    // Phase-4c: route to Razorpay Checkout. The mocked purchase
+    // endpoint (/wallet/purchase) is no longer used from the UI; it
+    // stays in the backend purely for reconciliation tools.
+    setPurchaseOpen(false);
+    router.push({ pathname: "/checkout", params: { amount: String(Math.round(inr)) } });
   };
 
   const headerRight = useMemo(
@@ -129,11 +120,11 @@ export default function WalletScreen() {
         testID="wallet-scroll"
         contentContainerStyle={{ padding: 16, paddingBottom: 48 }}
       >
-        {/* Mocked banner */}
+        {/* Razorpay live banner */}
         <View style={styles.mockBanner}>
-          <Ionicons name="information-circle-outline" size={16} color="#92400E" />
+          <Ionicons name="shield-checkmark-outline" size={16} color="#065F46" />
           <Text style={styles.mockBannerTxt}>
-            Payments are mocked for now. Top-ups are added instantly with no charge.
+            Payments are powered by Razorpay (test mode). Use card 4111 1111 1111 1111, any CVV, future expiry to test.
           </Text>
         </View>
 
