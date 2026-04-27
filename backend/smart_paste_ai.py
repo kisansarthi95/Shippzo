@@ -45,27 +45,31 @@ shipment details into a fixed 15-line structured block.
 
 CRITICAL: Every line must be a real parsed value OR a single dash `-`.
 NEVER output template placeholders like "<customer name>", "<phone>",
-"<6 digits>" etc. — those are descriptions, NOT values. If the text
-doesn't contain the info, write `-` only.
+"<6 digits>", "<real customer name, keep original script>" or anything
+that starts with `(` and ends with `)`. Those are descriptions, NOT
+values. If the input text doesn't contain the info, write `-` only.
 
 OUTPUT FORMAT (STRICT) — return ONE code block with EXACTLY 15 lines,
-in this exact order, with no emoji / no explanation / no extra lines:
+in this exact order, with no emoji / no explanation / no extra lines.
+Each value MUST be the actual data from the input or `-`. The `<…>`
+placeholders below are descriptions only and MUST NEVER appear in
+your output:
 
-NAME: (real customer name, keep original script — Gujarati stays Gujarati, English stays English)
-PHONE: (primary 10 digits only, strip +91 or 0)
-ALT_PHONE: (second / alternative 10-digit number if message has TWO phones, else -)
-ADDRESS_1: (primary address line — street / house / area / village ONLY, keep original script)
-ADDRESS_2: (secondary address / landmark, else -)
-CITY: (city / town — keep original script)
-STATE: (state — keep original script)
-PINCODE: (6 digits only)
-ITEMS: (item + quantity like "Saree x 2"; comma-separated for multiple)
-AMOUNT: (number only, no ₹ symbol)
-PAYMENT: (COD or PAID — leave blank if not stated)
-COURIER: (courier name or -)
-ORDER_ID: (order number or -)
-WEIGHT: (weight with unit or -)
-NOTES: (special instruction or -)
+NAME: <real customer name, keep original script — Gujarati stays Gujarati, English stays English>
+PHONE: <primary 10 digits only, strip +91 or 0>
+ALT_PHONE: <second / alternative 10-digit number if message has TWO phones, else ->
+ADDRESS_1: <primary address line — street / house / area / village ONLY, keep original script>
+ADDRESS_2: <secondary address / landmark, else ->
+CITY: <city / town — keep original script>
+STATE: <state — keep original script>
+PINCODE: <6 digits only>
+ITEMS: <item + quantity like "Saree x 2"; comma-separated for multiple>
+AMOUNT: <number only, no ₹ symbol>
+PAYMENT: <COD or PAID — leave blank if not stated>
+COURIER: <courier name or ->
+ORDER_ID: <order number or ->
+WEIGHT: <weight with unit or ->
+NOTES: <special instruction or ->
 
 EXAMPLE of a GOOD response (for a Gujarati message):
 ```
@@ -413,11 +417,43 @@ def _parse_schema_block(raw: str) -> Tuple[Dict[str, str], List[str]]:
         ):
             val = ""
         # Defensive: if the LLM copied our template placeholder
-        # verbatim (e.g. "<customer name in English>", "<6 digits only>")
-        # treat it as missing. Without this, the broken value would leak
-        # into the Orders list and Google Sheet.
-        if val and "<" in val and ">" in val:
-            val = ""
+        # verbatim (e.g. "<customer name in English>", "(6 digits only)",
+        # "(real customer name, keep original script)") treat it as
+        # missing. Without this, the broken value would leak into the
+        # Orders list and Google Sheet.
+        if val:
+            if "<" in val and ">" in val:
+                val = ""
+            else:
+                # Round-bracket placeholders: any value that LOOKS like
+                # a description rather than data — starts with "(" or
+                # contains diagnostic phrases we use in the prompt.
+                stripped = val.strip()
+                low = stripped.lower()
+                placeholder_signals = (
+                    "keep original script",
+                    "real customer name",
+                    "primary 10 digits",
+                    "second / alternative",
+                    "alternative 10-digit",
+                    "primary address line",
+                    "secondary address",
+                    "city / town",
+                    "6 digits only",
+                    "comma-separated for multiple",
+                    "no ₹ symbol",
+                    "courier name or",
+                    "order number or",
+                    "weight with unit or",
+                    "special instruction or",
+                    "leave blank if not stated",
+                )
+                if (
+                    stripped.startswith("(")
+                    or stripped.endswith(")")
+                    or any(sig in low for sig in placeholder_signals)
+                ):
+                    val = ""
         out[key] = _digits_to_en(val)
 
     missing = [k for k in SCHEMA_FIELDS if not out[k]]
