@@ -177,31 +177,23 @@ export default function Dashboard() {
   };
 
   const handleSmartPaste = async () => {
+    // Phase-5d UX fix: ALWAYS open the Smart Paste modal first so the
+    // user can choose between Text and Photo. Previously the clipboard
+    // would be auto-parsed and the user had no way to switch to Photo
+    // without manually clearing the clipboard.
+    //
+    // We still pre-fill the Text input from clipboard (if any) so a
+    // single "AI Parse & Queue" tap still works for the common case.
+    let text = "";
     try {
-      setPasting(true);
-      let text = "";
-      try {
-        text = (await Clipboard.getStringAsync()) || "";
-      } catch {
-        text = "";
-      }
-      if (!text.trim()) {
-        // Clipboard empty → open modal so the user can paste manually.
-        setPasteText("");
-        setPasteModalOpen(true);
-        setPasting(false);
-        return;
-      }
-      // Happy path: AI parses raw text → ALWAYS open preview to confirm.
-      await runSmartPasteAI(text);
-    } catch (e: any) {
-      setPasting(false);
-      setPasteStage("");
-      Alert.alert(
-        "Smart Paste failed",
-        e?.response?.data?.detail || e?.message || "Please try again."
-      );
+      text = (await Clipboard.getStringAsync()) || "";
+    } catch {
+      text = "";
     }
+    setPasteText(text.trim());
+    setPasteTab("text");
+    setPhotoUri(null);
+    setPasteModalOpen(true);
   };
 
   /**
@@ -744,7 +736,10 @@ export default function Dashboard() {
               </TouchableOpacity>
               <TouchableOpacity
                 testID="smart-paste-tab-photo"
-                onPress={() => setPasteTab("photo")}
+                onPress={() => {
+                  setPasteTab("photo");
+                  setPasteText(""); // forget clipboard text — user is going photo
+                }}
                 style={[styles.tabBtn, pasteTab === "photo" && styles.tabBtnActive]}
                 disabled={pasting || photoUploading}
               >
