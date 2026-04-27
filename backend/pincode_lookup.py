@@ -125,3 +125,73 @@ async def enrich_with_pincode(db, fields: Dict[str, Any]) -> Dict[str, Any]:
     if district and not (fields.get("CITY") or "").strip():
         fields["CITY"] = district
     return fields
+
+
+async def validate_pincode_consistency(
+    db,
+    fields: Dict[str, Any],
+) -> list:
+    """Compare AI-extracted CITY/STATE against the canonical
+    state/district returned by India Post for the given PINCODE.
+
+    Returns a list of human-readable warning strings the frontend
+    can surface as a banner / alert. Empty list = all consistent
+    (or pincode unresolvable — silent).
+
+    Does NOT mutate fields. Run AFTER enrich_with_pincode so we
+    don't false-flag the gap-fill case.
+    """
+    warnings: list = []
+    pin = (fields.get("PINCODE") or "").strip()
+    if not _PINCODE_RE.match(pin):
+        return warnings
+    info = await resolve_pincode(db, pin)
+    if not info:
+        return warnings
+
+    canonical_state    = (info.get("state") or "").strip().lower()
+    canonical_district = (info.get("district") or "").strip().lower()
+    user_state = (fields.get("STATE") or "").strip().lower()
+    user_city  = (fields.get("CITY") or "").strip().lower()
+
+    # State mismatch is a strong signal — different state means a
+    # completely different region; almost certainly the pincode is
+    # wrong.
+    if canonical_state and user_state and canonical_state != user_state:
+        warnings.append(
+            f"⚠️ Pincode {pin} belongs to {info.get('state')} — but "
+            f"address says {fields.get('STATE','').strip() or '—'}. "
+            f"Please verify the pincode."
+        )
+        return warnings  # don't double-warn on city if state is wrong
+
+    # City vs district: India Post returns the district name; the
+    # AI may have extracted a sub-locality / town within that
+    # district instead. A mismatch here is suggestive but not
+    # certain — surface as a soft note.
+    if (
+        canonical_district
+        and user_city
+        and canonical_district != user_city
+        and not _is_locality_within(canonical_district, user_city)
+    ):
+        warnings.append(
+            f"ℹ️ Pincode {pin} is registered under "
+            f"{info.get('district')} district. You entered city "
+            f"\"{fields.get('CITY','').strip()}\" — please double-"
+            f"check (it may be a locality within the district)."
+        )
+    return warnings
+
+
+def _is_locality_within(district: str, city: str) -> bool:
+    """Heuristic: is `city` plausibly a locality of `district`?
+    Returns True when one contains the other (token-wise) so we
+    don't false-flag legitimate sub-locality names."""
+    d = (district or "").strip().lower()
+    c = (city or "").strip().lower()
+    if not d or not c:
+        return False
+    # Exact / containment match (e.g. district "Ahmedabad" vs
+    # city "Ahmedabad city" or vice versa).
+    return d in c or c in d

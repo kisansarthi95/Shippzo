@@ -272,8 +272,15 @@ export default function Dashboard() {
       const missing = (resp.missing || []).filter((k) =>
         REQUIRED_FIELDS.includes(k),
       );
+      const photoWarnings: string[] = Array.isArray((resp as any)?.warnings)
+        ? ((resp as any).warnings as string[])
+        : [];
+      const hasPincodeWarning = photoWarnings.some(
+        (w) => /pincode/i.test(w) || /pin\s*code/i.test(w),
+      );
 
-      if (resp.complete && missing.length === 0) {
+      // Force-open chat if there's a pincode mismatch — user must verify.
+      if (resp.complete && missing.length === 0 && !hasPincodeWarning) {
         await saveFromFields(legacyFields);
         return;
       }
@@ -286,10 +293,15 @@ export default function Dashboard() {
       setSuggestedCustomer(null);
       setChatInput("");
       const firstMsg = resp.ai_message || buildChatMessage(legacyFields, missing, true);
-      setChatMessages([
+      const messages: ChatMsg[] = [
         { role: "system", text: `📷 Photo decoded · cost ${resp.credits_charged ?? 2} credits` },
-        { role: "ai", text: firstMsg },
-      ]);
+      ];
+      // Surface AI-side warnings (address completeness, pincode mismatch).
+      for (const w of photoWarnings) {
+        messages.push({ role: "system", text: w });
+      }
+      messages.push({ role: "ai", text: firstMsg });
+      setChatMessages(messages);
       setChatOpen(true);
 
       const phone = (legacyFields.customer_phone || "").toString();
@@ -354,11 +366,26 @@ export default function Dashboard() {
         }
       }
 
+      // Collect any address-completeness / pincode-mismatch warnings
+      // surfaced by the backend. Pincode warnings (mismatch) MUST
+      // force the chat modal open so the user can verify before save.
+      const aiWarnings: string[] = Array.isArray((dup as any)?.warnings)
+        ? ((dup as any).warnings as string[])
+        : [];
+      const hasPincodeWarning = aiWarnings.some(
+        (w) => /pincode/i.test(w) || /pin\s*code/i.test(w),
+      );
+
       setPasting(false);
       setPasteStage("");
 
-      // All required present + no duplicates → save directly, no UI.
-      if (missing.length === 0 && (dup.duplicates || []).length === 0 && !altPhoneWarning) {
+      // All required present + no duplicates + no pincode warnings → save direct.
+      if (
+        missing.length === 0 &&
+        (dup.duplicates || []).length === 0 &&
+        !altPhoneWarning &&
+        !hasPincodeWarning
+      ) {
         await saveFromFields(legacyFields);
         return;
       }
@@ -373,6 +400,11 @@ export default function Dashboard() {
       setChatInput("");
       const firstMsg = buildChatMessage(legacyFields, missing, true);
       const initialMessages: ChatMsg[] = [{ role: "ai", text: firstMsg }];
+      // Pincode-mismatch warnings shown FIRST so the user spots them
+      // before answering the AI's "still need" prompt.
+      for (const w of aiWarnings) {
+        initialMessages.unshift({ role: "system", text: w });
+      }
       if (altPhoneWarning) {
         initialMessages.unshift({ role: "system", text: altPhoneWarning });
       }

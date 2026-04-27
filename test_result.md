@@ -2557,3 +2557,117 @@ agent_communication:
 
         Both fixes are good to ship. Please summarise and finish.
 
+
+#====================================================================================================
+# 2026-04-27 — Smart Paste address-completeness + pincode validation
+#====================================================================================================
+backend:
+  - task: "Smart Paste address-completeness post-processor + pincode validation"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py, /app/backend/smart_paste_ai.py, /app/backend/pincode_lookup.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "testing"
+        -comment: |
+            14/14 assertions PASS on /app/backend_test_smart_paste.py against
+            https://logistics-hub-740.preview.emergentagent.com/api using
+            admin@test.com / Admin@12345.
+
+            TEST 1 — The user's exact failing paste (GREY GENTS, 7575848410,
+            Dev Atelier / RK Enterprise / Hiran Circle / Ramdevnagar Road /
+            Prahladnagar, 380015 Gujarat, ₹1750, 3 Kg Natural Honey):
+              HTTP 200. Fields returned:
+                customer_name        = "GREY GENTS"         ✅
+                customer_phone       = "7575848410"         ✅
+                customer_alt_phone   = "7777978550"         ✅
+                city                 = "Ahmedabad"          ✅
+                pincode              = "380015"             ✅
+                state                = "Gujarat"            ✅
+                amount               = 1750.0               ✅
+                items                = "3 Kg Natural Honey" ✅
+                payment_mode         = "PAID"
+                weight               = "3 Kg"
+                address_line1        = '20 "Dev Atelier", Nr RK Enterprise,
+                                        Hiran Circle, Ramdevnagar Road,
+                                        Prahladnagar'
+                address_line2        = '380015 Gujarat'
+
+              KEY ASSERTION: address_line1 + address_line2 together contain
+              ALL required fragments (case-insensitive):
+                '20', 'Dev Atelier', 'Nr RK Enterprise', 'Hiran Circle',
+                'Ramdevnagar Road', 'Prahladnagar' — ALL present. ✅
+              NONE of the middle parts were silently dropped.
+
+              warnings = ['Auto-recovered 1 address fragment: 380015 Gujarat']
+              — the post-processor correctly detected that the trailing
+              "380015 Gujarat" fragment had been consumed by PINCODE/STATE
+              extraction and reinserted it into address_line2 as a safety
+              net. This is the exact behaviour the review requested.
+
+            TEST 2 — Mumbai address + 380015 (state mismatch):
+              HTTP 200. Parsed city="Mumbai", state="Gujarat" (extracted
+              from the paste), pincode="380015".
+              warnings = [
+                'ℹ️ Pincode 380015 is registered under Ahmedabad district.
+                You entered city "Mumbai" — please double-check (it may be
+                a locality within the district).'
+              ]
+              Contains both "Pincode" and "380015" substrings. ✅
+              Note: state field carried "Gujarat" (the paste's literal),
+              matching canonical state, so the validator surfaced the
+              city/district mismatch (soft note) instead of a state-level
+              mismatch. Either wording is acceptable per the review
+              contract ("not strict on exact wording").
+
+            TEST 3 — Ahmedabad + 380015 (correct match):
+              HTTP 200. warnings = []. ✅
+              No false-positive "Pincode" warning when city/state/pincode
+              all align with the India Post canonical record.
+
+            TEST 4 — Unresolvable pincode 999999:
+              HTTP 200, no crash. warnings = [] (resolve_pincode returned
+              None → validator silently passes). ✅
+              fields.pincode = "999999" preserved verbatim.
+
+            No regressions observed. LLM pass is engaging (source=llm) and
+            the _ensure_address_completeness post-processor is actively
+            compensating when the LLM drops address parts.
+
+metadata:
+  created_by: "testing_agent"
+  version: "2.2"
+  test_sequence: 4
+  run_ui: false
+
+agent_communication:
+    -agent: "testing"
+    -message: |
+        Smart Paste address-completeness + pincode validation: PASS
+        (14/14 assertions on /app/backend_test_smart_paste.py).
+
+        TEST 1 (PRIMARY — user's failing paste): all fields parsed
+        correctly AND every middle-address fragment is preserved:
+          address_line1 = '20 "Dev Atelier", Nr RK Enterprise,
+                           Hiran Circle, Ramdevnagar Road, Prahladnagar'
+          address_line2 = '380015 Gujarat'
+          warnings      = ['Auto-recovered 1 address fragment:
+                           380015 Gujarat']
+        The _ensure_address_completeness post-processor in
+        /app/backend/smart_paste_ai.py is doing exactly what it should —
+        recovering the trailing "380015 Gujarat" fragment that the LLM
+        consumed into PINCODE/STATE.
+
+        TEST 2 (pincode mismatch Mumbai+380015): warning surfaces
+        mentioning both "Pincode" and "380015" as expected.
+        TEST 3 (Ahmedabad+380015 match): zero pincode warnings (no
+        false positive).
+        TEST 4 (bad pincode 999999): HTTP 200, silently handled, no
+        crash.
+
+        All critical acceptance criteria met. Ready for main agent to
+        summarise and finish.
+

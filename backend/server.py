@@ -46,7 +46,7 @@ from smart_paste_ai import (
     to_legacy_fields as sm_to_legacy_fields,
     DEFAULT_SHIPBOT_PROMPT,
 )
-from pincode_lookup import enrich_with_pincode
+from pincode_lookup import enrich_with_pincode, validate_pincode_consistency
 from fastapi import Depends as _AuthDepends  # noqa: F401
 import os
 import io
@@ -109,13 +109,33 @@ async def _legacy_with_pincode_enrich(schema):
     (PINCODE/STATE/CITY) before converting to legacy keys (pincode/
     state/city). Used by every Smart Paste path so the user always
     gets state/district auto-filled when a valid pincode is present.
+
+    Returns just the legacy fields dict — same as before. For
+    pincode-mismatch warnings use `_legacy_with_pincode_enrich_v2`.
     """
     try:
         await enrich_with_pincode(db, schema)
     except Exception:
-        # Pincode lookup is best-effort — never fail the whole request.
         pass
     return sm_to_legacy_fields(schema)
+
+
+async def _legacy_with_pincode_enrich_v2(schema):
+    """Like `_legacy_with_pincode_enrich`, but ALSO collects pincode-vs-
+    address consistency warnings via `validate_pincode_consistency`.
+    Returns (legacy_fields, warnings).
+    """
+    warnings: List[str] = []
+    try:
+        await enrich_with_pincode(db, schema)
+    except Exception:
+        pass
+    try:
+        warnings = await validate_pincode_consistency(db, schema)
+    except Exception:
+        # Validation must never break smart-paste.
+        warnings = []
+    return sm_to_legacy_fields(schema), warnings
 
 
 # --- Auth endpoints ---------------------------------------------------
@@ -1912,6 +1932,8 @@ async def smart_paste_check_duplicate(
     ai_complexity = ""
     ai_reason = ""
     ai_source = "regex"
+    ai_warnings: List[str] = []
+    pincode_warnings: List[str] = []
     try:
         s = await db.settings.find_one(
             {"user_id": current_user["id"]},
@@ -1923,7 +1945,8 @@ async def smart_paste_check_duplicate(
                 custom_instructions=(s.get("smart_paste_instructions") or "").strip(),
             )
             if ai.get("source") == "llm":
-                mapped = await _legacy_with_pincode_enrich(ai["fields"])
+                ai_warnings = list(ai.get("warnings") or [])
+                mapped, pincode_warnings = await _legacy_with_pincode_enrich_v2(ai["fields"])
                 for k, v in mapped.items():
                     if v:
                         fields[k] = v
@@ -1956,10 +1979,14 @@ async def smart_paste_check_duplicate(
         order_id=fields.get("order_id", "") or fields.get("order_id_hint", ""),
         user_id=current_user["id"],
     )
+    # Combine all warnings from regex + AI + pincode validation.
+    all_warnings = list(parsed.get("warnings", []) or [])
+    all_warnings.extend(ai_warnings)
+    all_warnings.extend(pincode_warnings)
     return {
         "fields": fields,
         "confidence": parsed.get("confidence", {}),
-        "warnings": parsed.get("warnings", []),
+        "warnings": all_warnings,
         "duplicates": duplicates,
         "ai": {
             "used": ai_source == "llm",
@@ -2224,7 +2251,7 @@ async def smart_paste_photo(
             ),
         )
 
-    fields = await _legacy_with_pincode_enrich(ai["fields"])
+    fields, pincode_warnings = await _legacy_with_pincode_enrich_v2(ai["fields"])
     if isinstance(fields.get("amount"), str):
         m = re.search(r"(\d+(?:\.\d+)?)", fields["amount"].replace(",", ""))
         if m:
@@ -2232,6 +2259,9 @@ async def smart_paste_photo(
                 fields["amount"] = float(m.group(1))
             except Exception:
                 pass
+    # Combine AI's own warnings (e.g. address auto-recovery) with
+    # the pincode-mismatch warnings.
+    photo_warnings = list(ai.get("warnings") or []) + list(pincode_warnings)
 
     # 5. Charge wallet — photo OCR debit (1.5 credits default).
     try:
@@ -2285,6 +2315,7 @@ async def smart_paste_photo(
         "reason": ai.get("ai_reason", "vision call"),
         "source": "llm",
         "credits_charged": round(photo_cost, 2),
+        "warnings": photo_warnings,
     }
 
 

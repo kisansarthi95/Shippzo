@@ -319,6 +319,7 @@ async def parse_paste_via_llm(
 
     fields, missing = _parse_schema_block(raw)
     complexity, reason = _parse_complexity_block(raw)
+    warnings: List[str] = []
 
     # ── Address-recovery fallback (text path) ───────────────────────
     # Same problem as photo OCR — if the LLM picked CITY/PINCODE from
@@ -382,6 +383,15 @@ async def parse_paste_via_llm(
         except Exception as e:
             _LOG.warning("Text address recovery failed: %s", e)
 
+    # ── Address-completeness post-processor (deterministic safety net) ──
+    # Even with explicit Rule 13 in the prompt, gpt-4.1-nano sometimes
+    # silently drops middle parts of long multi-clause addresses. This
+    # appends any dropped chunks to ADDRESS_2 so nothing is lost.
+    try:
+        _ensure_address_completeness(text, fields, warnings)
+    except Exception as e:
+        _LOG.warning("Address completeness check failed: %s", e)
+
     return {
         "fields": fields,
         "missing": missing,
@@ -389,7 +399,142 @@ async def parse_paste_via_llm(
         "ai_reason": reason,
         "raw": raw,
         "source": "llm",
+        "warnings": warnings,
     }
+
+
+# ─────────── Address-completeness post-processor ───────────
+#
+# Even with explicit prompt rules, gpt-4.1-nano sometimes silently drops
+# middle parts of long multi-clause addresses (e.g. "Hiran Circle,
+# Ramdevnagar Road, Prahladnagar" missing while it kept "20 Dev Atelier"
+# + "Nr RK Enterprise" + city/state/pincode).
+#
+# This deterministic post-processor:
+#   1. Locates the address block in the raw text using header keywords.
+#   2. Tokenises by commas / newlines.
+#   3. For each chunk, checks if it's already represented in
+#      ADDRESS_1/ADDRESS_2/CITY/STATE/PINCODE (alnum-normalised compare).
+#   4. Appends every dropped chunk to ADDRESS_2 (or ADDRESS_1 if A2 is
+#      empty), keeping original order.
+#   5. Conservative — only ADDS, never modifies/removes existing data.
+
+_ADDR_HEADER_RE = re.compile(
+    r"^\s*(?:shipping\s*address|delivery\s*address|address|"
+    r"પત્તા|સરનામું|ઠેકાણું|पता|ठिकाना)\s*[:\-]?\s*$",
+    re.I,
+)
+_BLOCK_END_RE = re.compile(
+    r"^\s*(?:items?|order|payment|amount|qty|quantity|"
+    r"તમારો\s*ઓર્ડર|ઓર્ડર|"
+    r"\d+\s*(?:rs|inr|₹)|\u20b9|@|tel|phone|mob)",
+    re.I,
+)
+
+
+def _norm_for_compare(s: str) -> str:
+    """Lowercase + keep only letters/digits/Devanagari/Gujarati."""
+    if not s:
+        return ""
+    return re.sub(r"[^a-z0-9\u0900-\u097F\u0A80-\u0AFF]+", "", s.lower())
+
+
+def _find_address_block(text: str) -> List[str]:
+    """Return the lines that make up the address block, or [] if none."""
+    lines = text.splitlines()
+    addr_block: List[str] = []
+    in_addr = False
+    consumed = 0
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            if in_addr:
+                break
+            continue
+        if not in_addr and _ADDR_HEADER_RE.match(stripped):
+            in_addr = True
+            continue
+        if in_addr:
+            if _BLOCK_END_RE.match(stripped):
+                break
+            addr_block.append(stripped)
+            consumed += 1
+            if consumed >= 4:
+                break
+    return addr_block
+
+
+def _ensure_address_completeness(
+    text: str,
+    fields: Dict[str, str],
+    warnings: List[str],
+) -> None:
+    """Mutates `fields` in place — appends any dropped address fragments
+    to ADDRESS_2 (or ADDRESS_1 if A2 is empty) so nothing the user
+    typed is silently lost."""
+    addr_block = _find_address_block(text)
+    if not addr_block:
+        return
+
+    full_addr = ", ".join(addr_block)
+    chunks_raw = [
+        c.strip(' ,.;\n\t-"\'')
+        for c in re.split(r"[,\n]+", full_addr)
+    ]
+    chunks: List[str] = []
+    for c in chunks_raw:
+        if len(c) < 3:
+            continue
+        # Skip pure-digit chunks (pincode handled by PINCODE field).
+        if re.fullmatch(r"\d{4,7}", c.strip()):
+            continue
+        # Must contain at least one letter.
+        if not re.search(r"[A-Za-z\u0900-\u097F\u0A80-\u0AFF]", c):
+            continue
+        chunks.append(c)
+
+    if not chunks:
+        return
+
+    captured = " | ".join([
+        fields.get("ADDRESS_1") or "",
+        fields.get("ADDRESS_2") or "",
+        fields.get("CITY") or "",
+        fields.get("STATE") or "",
+        fields.get("PINCODE") or "",
+    ])
+    captured_n = _norm_for_compare(captured)
+
+    missing: List[str] = []
+    for c in chunks:
+        cn = _norm_for_compare(c)
+        if not cn or len(cn) < 3:
+            continue
+        if cn not in captured_n:
+            missing.append(c)
+
+    if not missing:
+        return
+
+    addn = ", ".join(missing)
+    a2 = (fields.get("ADDRESS_2") or "").strip().rstrip(",").strip()
+    if a2 and a2 != "-":
+        fields["ADDRESS_2"] = (a2 + ", " + addn)[:280]
+    else:
+        a1 = (fields.get("ADDRESS_1") or "").strip().rstrip(",").strip()
+        if a1 and a1 != "-":
+            fields["ADDRESS_2"] = addn[:280]
+        else:
+            fields["ADDRESS_1"] = addn[:280]
+
+    warnings.append(
+        f"Auto-recovered {len(missing)} address fragment"
+        f"{'s' if len(missing) > 1 else ''}: {', '.join(missing)[:140]}"
+    )
+    _LOG.info(
+        "Address completeness: appended %d missing chunk(s): %s",
+        len(missing), missing,
+    )
 
 
 # ---- Parsers ------------------------------------------------------------
