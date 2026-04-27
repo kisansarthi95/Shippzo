@@ -476,7 +476,11 @@ export const Api = {
       source: "llm" | "regex" | "fallback";
     }>("/smart-paste/chat", { fields, reply }).then((r) => r.data),
 
-  // Photo OCR — Gemini Vision.
+  // Photo OCR — Gemini Vision. Uses an extended 90 s timeout because
+  // vision calls + the address-recovery follow-up can take up to ~45 s
+  // on a slow mobile connection. The default 25 s axios timeout would
+  // surface as "Network Error" on the client even though the backend
+  // is still happily processing.
   smartPastePhoto: (image_base64: string, mime: string = "image/jpeg") =>
     api.post<{
       fields: Record<string, any>;
@@ -487,7 +491,11 @@ export const Api = {
       reason: string;
       source: "llm" | "regex" | "fallback";
       credits_charged: number;
-    }>("/smart-paste/photo", { image_base64, mime }).then((r) => r.data),
+    }>(
+      "/smart-paste/photo",
+      { image_base64, mime },
+      { timeout: 90000 },
+    ).then((r) => r.data),
 
   // Customer memory — look up past customer by phone for auto-suggest.
   lookupCustomerByPhone: (phone: string) =>
