@@ -151,6 +151,23 @@ async def generate_master_order_id() -> str:
     return f"{yymmdd}{seq_str}"
 
 
+async def peek_next_master_order_id() -> str:
+    """Read the counter WITHOUT incrementing — returns the ID that the
+    NEXT generate_master_order_id() call will produce. Used for live
+    preview in the New Shipment form so we don't waste sequences when
+    the user opens the form but doesn't save.
+
+    Note: there's an inherent TOCTOU window — by the time the user hits
+    Save another shipment may have been created. The actual saved ID
+    is always whatever generate_master_order_id() returns at save time.
+    """
+    doc = await db.counters.find_one({"_id": "master_order_id"})
+    seq = int((doc or {}).get("seq", 0)) + 1
+    seq_str = str(seq).zfill(5)
+    yymmdd = datetime.utcnow().strftime("%y%m%d")
+    return f"{yymmdd}{seq_str}"
+
+
 def _user_q(user: Dict[str, Any], extra: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Return a Mongo filter scoped to this user's data. Prevents users
     from reading/writing each other's shipments/couriers/settings."""
@@ -758,6 +775,11 @@ class Settings(BaseModel):
     # sequence). User Order ID stays optional — if blank, master is copied.
     # When OFF, the user MUST provide their own order ID at save time.
     order_id_auto_generate: bool = True
+    # Phase-7e: When auto-generate is ON, also auto-fill the Order ID
+    # in the New Shipment form (manual entry) so the user doesn't have
+    # to type it. Users with their own custom numbering can turn this
+    # OFF independently.
+    order_id_autofill_in_new_shipment: bool = True
 
 
 class SettingsUpdate(BaseModel):
@@ -778,6 +800,7 @@ class SettingsUpdate(BaseModel):
     ai_cost_medium: Optional[float] = None
     ai_cost_complex: Optional[float] = None
     order_id_auto_generate: Optional[bool] = None
+    order_id_autofill_in_new_shipment: Optional[bool] = None
 
 
 class Shipment(BaseModel):
@@ -785,6 +808,10 @@ class Shipment(BaseModel):
     tracking_id: str
     courier_id: Optional[str] = None
     courier_name: str = ""
+    # Phase-7d Order ID System
+    # master_order_id → server-generated, immutable, YYMMDD + 5-digit seq.
+    # order_id        → user's own optional reference. Falls back to master.
+    master_order_id: str = ""
     order_id: str = ""
     customer_name: str
     customer_phone: str = ""
@@ -821,6 +848,7 @@ class ShipmentCreate(BaseModel):
     tracking_id: str
     courier_id: Optional[str] = None
     courier_name: Optional[str] = ""
+    master_order_id: Optional[str] = ""
     order_id: Optional[str] = ""
     customer_name: str
     customer_phone: Optional[str] = ""
@@ -1098,6 +1126,11 @@ async def update_settings(
     # Phase-7d: Master Order ID auto-generate flag.
     if payload.order_id_auto_generate is not None:
         update["order_id_auto_generate"] = bool(payload.order_id_auto_generate)
+    # Phase-7e: New-Shipment auto-fill flag.
+    if payload.order_id_autofill_in_new_shipment is not None:
+        update["order_id_autofill_in_new_shipment"] = bool(
+            payload.order_id_autofill_in_new_shipment
+        )
     # Phase-4b+: AI credit rate card — clamp 0 ≤ x ≤ 2 (spec cap).
     for _f in ("ai_cost_simple", "ai_cost_medium", "ai_cost_complex"):
         _v = getattr(payload, _f)
@@ -1776,6 +1809,46 @@ async def create_shipment(
         data["items"] = []
     if data.get("custom_values") is None:
         data["custom_values"] = {}
+
+    # ---- Phase-7d/e: Master Order ID + User Order ID for manual create ----
+    settings_doc = await db.settings.find_one(
+        {"user_id": current_user["id"]},
+        {"_id": 0, "order_id_auto_generate": 1},
+    ) or {}
+    auto_gen = bool(settings_doc.get("order_id_auto_generate", True))
+    incoming_master = str(data.get("master_order_id") or "").strip()
+    user_order_id = str(data.get("order_id") or "").strip()
+    if auto_gen:
+        if incoming_master and re.match(r"^\d{6}\d{5,}$", incoming_master):
+            # Frontend sent a pre-allocated master ID — trust it (atomic
+            # peek/consume already happened upstream).
+            master_oid = incoming_master
+        else:
+            master_oid = await generate_master_order_id()
+        # uniqueness guard
+        retries = 0
+        while await db.shipments.find_one({"master_order_id": master_oid, "user_id": current_user["id"]}, {"_id": 1}):
+            master_oid = await generate_master_order_id()
+            retries += 1
+            if retries > 5:
+                raise HTTPException(
+                    status_code=500,
+                    detail="Could not allocate a unique Master Order ID — retry.",
+                )
+        data["master_order_id"] = master_oid
+        if not user_order_id:
+            user_order_id = master_oid
+        data["order_id"] = user_order_id
+    else:
+        if not user_order_id:
+            raise HTTPException(
+                status_code=422,
+                detail="Order ID is required when Auto-Generate is OFF. "
+                       "Enter your own Order ID or enable Auto-Generate in Settings.",
+            )
+        data["master_order_id"] = ""
+        data["order_id"] = user_order_id
+
     shipment = Shipment(**data)
     doc = shipment.model_dump()
     doc["user_id"] = current_user["id"]
@@ -2315,6 +2388,46 @@ async def find_duplicate_matches(
     # Sort newest first, cap at `limit` overall.
     results.sort(key=lambda r: r.get("created_at") or "", reverse=True)
     return results[:limit]
+
+
+@api_router.get("/orders/peek-master-id")
+async def peek_master_id_endpoint(
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    """Phase-7e: Live preview of the next Master Order ID for the
+    New Shipment form. Returns BOTH the predicted master_order_id AND
+    the user's two related Settings flags so the frontend can decide
+    whether to auto-fill the Order ID input.
+
+    Note: The returned master_order_id is a BEST-GUESS preview. The
+    counter is NOT incremented here. The actual ID is allocated only
+    when the shipment is saved — so if another user creates a shipment
+    in between, the saved ID may differ. Frontend MAY pass the previewed
+    value back via `master_order_id` in POST /shipments to avoid
+    sequence drift in the common single-user case.
+    """
+    settings_doc = await db.settings.find_one(
+        {"user_id": current_user["id"]},
+        {
+            "_id": 0,
+            "order_id_auto_generate": 1,
+            "order_id_autofill_in_new_shipment": 1,
+        },
+    ) or {}
+    auto_gen = bool(settings_doc.get("order_id_auto_generate", True))
+    autofill = bool(settings_doc.get("order_id_autofill_in_new_shipment", True))
+    if not auto_gen:
+        return {
+            "master_order_id": "",
+            "auto_generate": False,
+            "autofill_in_new_shipment": autofill,
+        }
+    next_id = await peek_next_master_order_id()
+    return {
+        "master_order_id": next_id,
+        "auto_generate": True,
+        "autofill_in_new_shipment": autofill,
+    }
 
 
 @api_router.post("/smart-paste/check-duplicate")

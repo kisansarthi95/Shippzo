@@ -262,6 +262,8 @@ export default function SettingsScreen() {
   const [spaiEnabled, setSpaiEnabled] = useState(true);
   // Phase-7d Order ID auto-generate toggle (Master Order ID system).
   const [orderIdAutoGen, setOrderIdAutoGen] = useState(true);
+  // Phase-7e: When auto-gen is ON, also auto-fill in the New Shipment form.
+  const [orderIdAutofillNew, setOrderIdAutofillNew] = useState(true);
   const [spaiInstructions, setSpaiInstructions] = useState("");
   const [spaiDefaultPrompt, setSpaiDefaultPrompt] = useState("");
   const [spaiShowDefault, setSpaiShowDefault] = useState(false);
@@ -305,6 +307,7 @@ export default function SettingsScreen() {
           spaiEnabled,
           spaiInstructions,
           orderIdAutoGen,
+          orderIdAutofillNew,
         });
       case "print":
         return JSON.stringify({
@@ -329,7 +332,7 @@ export default function SettingsScreen() {
     }
   }, [
     sender, brandName, brandLogo, preferLogo, logoShape,
-    spaiEnabled, spaiInstructions, orderIdAutoGen,
+    spaiEnabled, spaiInstructions, orderIdAutoGen, orderIdAutofillNew,
     labelFields, customFields, shipmentTagline,
     template, copyTemplate, etaDays,
     aiCostSimple, aiCostMedium, aiCostComplex,
@@ -387,6 +390,7 @@ export default function SettingsScreen() {
           smart_paste_ai_enabled: spaiEnabled,
           smart_paste_instructions: spaiInstructions,
           order_id_auto_generate: orderIdAutoGen,
+          order_id_autofill_in_new_shipment: orderIdAutofillNew,
         };
         await api.put("/settings", payload);
       }
@@ -483,6 +487,7 @@ export default function SettingsScreen() {
     setSpaiInstructions(String((s as any).smart_paste_instructions || ""));
     // Phase-7d: Master Order ID auto-generate (default ON)
     setOrderIdAutoGen((s as any).order_id_auto_generate !== false);
+    setOrderIdAutofillNew((s as any).order_id_autofill_in_new_shipment !== false);
     // Phase-4b+ AI rate card (fall back to spec defaults)
     setAiCostSimple(
       String(
@@ -557,6 +562,7 @@ export default function SettingsScreen() {
         smart_paste_ai_enabled: spaiEnabled,
         smart_paste_instructions: spaiInstructions,
         order_id_auto_generate: orderIdAutoGen,
+        order_id_autofill_in_new_shipment: orderIdAutofillNew,
       });
       Alert.alert("Saved", "Smart Paste AI settings updated.");
     } catch (e: any) {
@@ -992,6 +998,28 @@ export default function SettingsScreen() {
                 testID="order-id-auto-gen-toggle"
                 value={orderIdAutoGen}
                 onValueChange={setOrderIdAutoGen}
+              />
+            </View>
+
+            {/* Phase-7e: Auto-fill in New Shipment toggle (only relevant
+                when Auto-Generate is ON). */}
+            <View
+              style={[
+                styles.toggleRow,
+                !orderIdAutoGen && { opacity: 0.5 },
+              ]}
+            >
+              <View style={{ flex: 1 }}>
+                <Text style={styles.toggleLbl}>Auto-fill in New Shipment</Text>
+                <Text style={styles.toggleSub}>
+                  ON: New Shipment form ખુલતા જ Order ID input માં Master ID auto-fill થશે. OFF: ID system માં generate થશે પણ form input ખાલી રહેશે — તમે પોતાનો custom ID ટાઇપ કરો.
+                </Text>
+              </View>
+              <Switch
+                testID="order-id-autofill-new-toggle"
+                value={orderIdAutofillNew}
+                onValueChange={setOrderIdAutofillNew}
+                disabled={!orderIdAutoGen}
               />
             </View>
 

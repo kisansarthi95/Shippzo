@@ -3812,3 +3812,104 @@ agent_communication:
         Test pending orders were cleaned up. No regressions observed.
         Task can be marked complete.
 
+
+
+---
+
+## Backend Test Run: Phase-7e New Shipment Auto-fill (2026-04-28)
+
+backend:
+  - task: "Phase-7e — peek-master-id endpoint + POST /shipments master_order_id/order_id flow"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "testing"
+        -comment: |
+            All 23/23 assertions PASSED via /app/backend_test.py against
+            http://localhost:8001/api using admin@test.com / Admin@12345.
+
+            Test 1 — peek-master-id with auto-gen ON (6/6 PASS)
+              • PUT /api/settings {order_id_auto_generate:true,
+                order_id_autofill_in_new_shipment:true} → 200
+              • GET /api/orders/peek-master-id → 200 with
+                master_order_id="26042800010" (matches ^\d{6}\d{5,}$),
+                auto_generate=true, autofill_in_new_shipment=true.
+              • Calling peek a second time returned the SAME
+                master_order_id ("26042800010"). Counter is NOT
+                incremented by peek — confirmed.
+
+            Test 2 — peek with auto-gen OFF (3/3 PASS)
+              • PUT /api/settings {order_id_auto_generate:false} → 200
+              • GET /api/orders/peek-master-id → 200 with
+                master_order_id="" and auto_generate=false.
+
+            Test 3 — POST /shipments with master_order_id provided,
+                     auto-gen ON (5/5 PASS)
+              • PUT auto-gen=ON → 200
+              • Peek returned previewId="26042800010"
+              • Used existing courier "Nandan Courier"
+              • POST /api/shipments with master_order_id=previewId,
+                order_id="ABC-PHASE7E", tracking_id="TST-001",
+                customer "Phase7e Test", phone 9777777777, COD ₹100 →
+                200. Response shipment.master_order_id == "26042800010"
+                (frontend-supplied honoured, no re-allocation), and
+                order_id == "ABC-PHASE7E" (user value preserved).
+
+            Test 4 — POST /shipments WITHOUT master_order_id, auto-gen
+                     ON (4/4 PASS)
+              • Same body as Test 3 but master_order_id removed,
+                tracking_id="TST-002", phone 9888888888.
+              • Response: master_order_id="26042800011" — server
+                allocated a fresh ID (different from previewId
+                "26042800010"), and order_id stayed "ABC-PHASE7E".
+
+            Test 5 — POST /shipments WITHOUT order_id, auto-gen OFF
+                     (3/3 PASS)
+              • PUT auto-gen=OFF → 200
+              • POST /api/shipments without order_id, tracking_id
+                "TST-003", phone 9999999999 → 422.
+              • detail message: "Order ID is required when Auto-Generate
+                is OFF. Enter your own Order ID or enable Auto-Generate
+                in Settings." Matches contract.
+
+            Cleanup
+              • Settings reset to {order_id_auto_generate:true,
+                order_id_autofill_in_new_shipment:true}.
+              • DELETE /api/shipments/{TST-001 id} → 200.
+              • DELETE /api/shipments/{TST-002 id} → 200.
+              • TST-003 was rejected (422) so nothing to clean up.
+
+            All Phase-7e behavioural contracts verified end-to-end. The
+            peek endpoint does not consume the global master-order
+            sequence; the create endpoint trusts a frontend-supplied
+            master_order_id (when it matches ^\d{6}\d{5,}$) so the
+            previewed ID is the saved ID in the common single-user
+            case, and falls back to a fresh allocation if absent. The
+            auto-gen OFF guard returns the documented 422 with the
+            exact required message fragment.
+
+agent_communication:
+    -agent: "testing"
+    -message: |
+        Phase-7e New Shipment Auto-fill — FULL PASS (23/23 assertions).
+        Tests covered:
+          • Test 1: peek-master-id (auto-gen ON) — returns proper
+            master_order_id, both flags surfaced, second peek is
+            idempotent (counter not bumped). PASS
+          • Test 2: peek-master-id (auto-gen OFF) — returns empty
+            master_order_id, auto_generate=false. PASS
+          • Test 3: POST /shipments with master_order_id + order_id
+            (auto-gen ON) — frontend-supplied master honoured, user
+            order_id preserved. PASS
+          • Test 4: POST /shipments without master_order_id (auto-gen
+            ON) — server allocates fresh master, user order_id
+            preserved. PASS
+          • Test 5: POST /shipments without order_id (auto-gen OFF) —
+            422 with required detail message. PASS
+        Cleanup performed (settings reset, two test shipments deleted).
+        No regressions observed; ready for main agent to summarise/finish.

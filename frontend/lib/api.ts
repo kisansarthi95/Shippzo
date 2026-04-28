@@ -574,6 +574,17 @@ export const Api = {
   smartPasteCreate: (text: string, skipLlm: boolean = false) =>
     api.post<PendingOrder>("/smart-paste", { text, skip_llm: skipLlm }).then((r) => r.data),
 
+  // Phase-7e: Live preview of the next Master Order ID for the New
+  // Shipment form. Does NOT consume the counter — actual ID is allocated
+  // at save time. Frontend may pass the previewed value back via
+  // `master_order_id` in POST /shipments to lock it in.
+  peekMasterOrderId: () =>
+    api.get<{
+      master_order_id: string;
+      auto_generate: boolean;
+      autofill_in_new_shipment: boolean;
+    }>("/orders/peek-master-id").then((r) => r.data),
+
   // Conversational Smart Paste (chat UI).
   smartPasteChat: (fields: Record<string, any>, reply: string) =>
     api.post<{

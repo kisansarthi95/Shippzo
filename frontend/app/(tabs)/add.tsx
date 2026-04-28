@@ -87,6 +87,13 @@ export default function AddShipment() {
 
   const [trackingId, setTrackingId] = useState("");
   const [orderId, setOrderId] = useState("");
+  // Phase-7d/e: Master Order ID preview + frontend-known auto-gen flags.
+  // Populated from GET /orders/peek-master-id when the form opens (and
+  // when the user hasn't explicitly typed in the Order ID input).
+  const [previewMasterId, setPreviewMasterId] = useState<string>("");
+  const [orderIdAutoGen, setOrderIdAutoGen] = useState<boolean>(true);
+  const [orderIdAutofillNew, setOrderIdAutofillNew] = useState<boolean>(true);
+  const [userTouchedOrderId, setUserTouchedOrderId] = useState<boolean>(false);
   const [customerName, setCustomerName] = useState("");
   const [customerPhone, setCustomerPhone] = useState("");
   const [addr1, setAddr1] = useState("");
@@ -177,8 +184,48 @@ export default function AddShipment() {
       setLastCourierId(lc || null);
       if (lp === "COD" || lp === "Prepaid") setLastPaymentMode(lp);
       if (lt === "auto" || lt === "manual") setLastTrackMode(lt);
+      // Phase-7d/e: track flags for downstream save logic.
+      setOrderIdAutoGen((settings as any).order_id_auto_generate !== false);
+      setOrderIdAutofillNew(
+        (settings as any).order_id_autofill_in_new_shipment !== false,
+      );
     })();
   }, []);
+
+  // Phase-7e: Fetch a fresh Master Order ID preview when the form opens.
+  // Auto-fills the Order ID input ONLY when:
+  //   - User is creating a NEW shipment (no edit_id)
+  //   - Auto-Generate Order ID is ON
+  //   - Auto-fill in New Shipment is ON
+  //   - User hasn't already typed in the Order ID input
+  useEffect(() => {
+    const eid = String(params.edit_id || "").trim();
+    if (eid) return;          // edit mode → leave existing value alone
+    let cancelled = false;
+    (async () => {
+      try {
+        const r = await Api.peekMasterOrderId();
+        if (cancelled) return;
+        setPreviewMasterId(r.master_order_id || "");
+        setOrderIdAutoGen(!!r.auto_generate);
+        setOrderIdAutofillNew(!!r.autofill_in_new_shipment);
+        if (
+          r.auto_generate &&
+          r.autofill_in_new_shipment &&
+          r.master_order_id &&
+          !userTouchedOrderId
+        ) {
+          setOrderId(r.master_order_id);
+        }
+      } catch {
+        /* offline / fresh user — silently skip preview */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [params.edit_id]);
 
   // Peek next tracking preview — ONLY for display/hint.
   // We never consume it until user explicitly chose "Auto" AND clicks Save.
@@ -708,6 +755,11 @@ export default function AddShipment() {
           tracking_id: finalTracking,
           courier_id: selectedCourier?.id,
           courier_name: selectedCourier?.name,
+          // Phase-7e: pass the previewed master ID so backend uses
+          // exactly THIS value (no surprise drift if other shipments
+          // were saved between form-open and Save). Empty string when
+          // auto-gen is OFF — backend will then require user order_id.
+          master_order_id: previewMasterId,
           order_id: orderId.trim(),
           customer_name: customerName.trim(),
           customer_phone: customerPhone.trim(),
@@ -1024,12 +1076,27 @@ export default function AddShipment() {
               <TextInput
                 testID="order-id-input"
                 value={orderId}
-                onChangeText={setOrderId}
-                placeholder="Order ID / Invoice #"
+                onChangeText={(t) => {
+                  setUserTouchedOrderId(true);
+                  setOrderId(t);
+                }}
+                placeholder={
+                  orderIdAutoGen && orderIdAutofillNew
+                    ? "Auto-filled from Master Order ID"
+                    : "Order ID / Invoice #"
+                }
                 placeholderTextColor="#9CA3AF"
                 style={styles.input}
               />
             </Field>
+            {orderIdAutoGen && previewMasterId ? (
+              <Text style={styles.hint}>
+                Master ID (system): {previewMasterId}
+                {orderId && orderId !== previewMasterId
+                  ? "  ·  Your ID kept separately"
+                  : ""}
+              </Text>
+            ) : null}
             <Field label="Items / Products">
               <TextInput
                 testID="items-input"
