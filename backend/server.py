@@ -2999,6 +2999,176 @@ async def admin_get_plan_features(
     }
 
 
+# ───────────── Admin — Users directory (Phase-4d) ─────────────
+#
+# The admin needs a "who are my users" view — how many, what plans,
+# when did they sign up, how active are they. This powers the
+# /admin/users screen.
+
+@api_router.get("/admin/users")
+async def admin_list_users(
+    current_user: Dict[str, Any] = Depends(get_current_user),
+    q: str = "",
+    plan: str = "",
+    limit: int = 200,
+    skip: int = 0,
+):
+    """List all users with aggregated usage stats.
+
+    Query params:
+      q     — case-insensitive search across email, name, shop_name
+      plan  — filter by plan key (free_trial | silver | gold | platinum)
+      limit — max rows (1..500, default 200)
+      skip  — offset for pagination
+    """
+    _require_admin(current_user)
+    limit = max(1, min(int(limit or 200), 500))
+    skip = max(0, int(skip or 0))
+
+    match: Dict[str, Any] = {}
+    if plan and plan.strip():
+        match["plan"] = plan.strip()
+    if q and q.strip():
+        needle = re.escape(q.strip())
+        regex = {"$regex": needle, "$options": "i"}
+        match["$or"] = [
+            {"email": regex},
+            {"name": regex},
+            {"shop_name": regex},
+        ]
+
+    total = await db.users.count_documents(match or {})
+    cursor = (
+        db.users.find(match or {}, {"_id": 0, "password_hash": 0})
+        .sort("created_at", -1)
+        .skip(skip)
+        .limit(limit)
+    )
+    docs = await cursor.to_list(length=limit)
+
+    # Aggregated plan counts — always on full collection (not filtered)
+    # so the admin sees the global split even while filtering.
+    plan_counts: Dict[str, int] = {}
+    admin_count = 0
+    async for doc in db.users.aggregate([
+        {"$group": {"_id": "$plan", "n": {"$sum": 1}}},
+    ]):
+        plan_counts[doc["_id"] or "free_trial"] = int(doc["n"])
+    admin_count = await db.users.count_documents({"is_admin": True})
+
+    # Decorate each row with wallet balance + last-30-day label count.
+    uid_list = [d["id"] for d in docs if d.get("id")]
+    wallets = {}
+    if uid_list:
+        async for w in db.wallets.find({"user_id": {"$in": uid_list}}, {"_id": 0}):
+            wallets[w["user_id"]] = float(w.get("remaining_credits", 0))
+
+    # Labels this month (YYYY-MM) — cheap count via shipments.
+    from datetime import datetime as _dt
+    now = datetime.now(timezone.utc)
+    month_start = _dt(now.year, now.month, 1, tzinfo=timezone.utc).isoformat()
+    label_counts: Dict[str, int] = {}
+    if uid_list:
+        pipeline = [
+            {"$match": {
+                "user_id": {"$in": uid_list},
+                "created_at": {"$gte": month_start},
+            }},
+            {"$group": {"_id": "$user_id", "n": {"$sum": 1}}},
+        ]
+        async for doc in db.shipments.aggregate(pipeline):
+            label_counts[doc["_id"]] = int(doc["n"])
+
+    rows: List[Dict[str, Any]] = []
+    for d in docs:
+        uid = d.get("id", "")
+        # Compute plan expiry status bucket.
+        plan_expires_at = d.get("plan_expires_at")
+        plan_expired = False
+        plan_days_left: Optional[int] = None
+        if plan_expires_at:
+            try:
+                exp = datetime.fromisoformat(str(plan_expires_at))
+                if exp.tzinfo is None:
+                    exp = exp.replace(tzinfo=timezone.utc)
+                plan_expired = now > exp
+                plan_days_left = max(0, (exp - now).days)
+            except Exception:
+                pass
+        rows.append({
+            "id":              uid,
+            "email":           d.get("email", ""),
+            "name":            d.get("name", "") or "",
+            "shop_name":       d.get("shop_name", "") or "",
+            "phone":           d.get("phone", "") or "",
+            "plan":            d.get("plan", "free_trial"),
+            "is_admin":        bool(d.get("is_admin")),
+            "plan_mocked":     bool(d.get("plan_mocked", False)),
+            "plan_billing_cycle": d.get("plan_billing_cycle"),
+            "plan_started_at": d.get("plan_started_at"),
+            "plan_expires_at": plan_expires_at,
+            "plan_expired":    plan_expired,
+            "plan_days_left":  plan_days_left,
+            "auto_renew":      d.get("auto_renew") is not False,
+            "cancelled_at":    d.get("cancelled_at"),
+            "created_at":      d.get("created_at", ""),
+            "last_login_at":   d.get("last_login_at") or d.get("updated_at", ""),
+            "wallet_balance":  wallets.get(uid, 0.0),
+            "labels_this_month": label_counts.get(uid, 0),
+            "auth_provider":   d.get("auth_provider", "email"),
+        })
+
+    return {
+        "total": total,
+        "limit": limit,
+        "skip": skip,
+        "users": rows,
+        "summary": {
+            "total_users":   sum(plan_counts.values()),
+            "admin_count":   admin_count,
+            "plan_counts":   plan_counts,
+            "displayed":     len(rows),
+        },
+    }
+
+
+@api_router.get("/admin/users/{user_id}")
+async def admin_user_detail(
+    user_id: str,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    """Deep-dive on a single user — recent shipments, wallet history."""
+    _require_admin(current_user)
+    u = await db.users.find_one({"id": user_id}, {"_id": 0, "password_hash": 0})
+    if not u:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    wallet = await db.wallets.find_one({"user_id": user_id}, {"_id": 0})
+    recent_ships = await db.shipments.find(
+        {"user_id": user_id},
+        {"_id": 0, "tracking_id": 1, "customer_name": 1, "city": 1,
+         "status": 1, "created_at": 1, "amount": 1, "payment_type": 1},
+    ).sort("created_at", -1).limit(20).to_list(length=20)
+
+    ship_count = await db.shipments.count_documents({"user_id": user_id})
+    paid_orders = await db.razorpay_orders.count_documents(
+        {"user_id": user_id, "status": "paid"},
+    )
+
+    recent_wallet_tx = await db.wallet_history.find(
+        {"user_id": user_id}, {"_id": 0},
+    ).sort("created_at", -1).limit(15).to_list(length=15)
+
+    return {
+        "user": u,
+        "wallet": wallet or {"remaining_credits": 0},
+        "shipment_count": ship_count,
+        "paid_orders_count": paid_orders,
+        "recent_shipments": recent_ships,
+        "recent_wallet_tx": recent_wallet_tx,
+    }
+
+
 class PlanFeaturesPayload(BaseModel):
     plans: Dict[str, List[str]]
 

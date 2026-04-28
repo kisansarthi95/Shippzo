@@ -2671,3 +2671,108 @@ agent_communication:
         All critical acceptance criteria met. Ready for main agent to
         summarise and finish.
 
+
+---
+
+## Backend Test Run: Admin Users Endpoints (2026-04-28)
+
+backend:
+  - task: "Admin Users — GET /api/admin/users + GET /api/admin/users/{user_id}"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "testing"
+        -comment: |
+            All 56 assertions passed via /app/backend_test_admin_users.py
+            against http://localhost:8001/api. Read-only testing only;
+            no user records modified. Detailed coverage:
+
+            TEST 1 — GET /api/admin/users (LIST)
+
+            1a) No bearer token → HTTP 401 with detail
+                "Authentication required". (Spec accepts 401/403; got
+                401 as expected from the auth_gate middleware.)
+
+            1b) With admin bearer → HTTP 200. Response shape verified:
+                  total=4, limit=200, skip=0,
+                  users=[…], summary={total_users, admin_count,
+                                       plan_counts, displayed}.
+                Each user row carries every required field:
+                  id, email, name, plan, is_admin, plan_billing_cycle,
+                  plan_expires_at, plan_expired, plan_days_left,
+                  wallet_balance (float), labels_this_month (int),
+                  created_at, last_login_at
+                (plus extras: shop_name, phone, plan_mocked,
+                 plan_started_at, auto_renew, cancelled_at,
+                 auth_provider). Admin's own user_id appears in the
+                list (admin@test.com).
+
+            1c) ?q=admin@ → HTTP 200, returned 1 user; "admin@" appears
+                (case-insensitive) in email/name/shop_name of every
+                returned row.
+
+            1d) ?plan=free_trial → HTTP 200, all returned users have
+                plan=free_trial (got 2 free_trial users).
+
+            1e) ?plan=nonsense → HTTP 200 (no crash) with users=[].
+
+            1f) ?limit=5&skip=0 → HTTP 200; limit/skip echoed back as
+                5/0; users array len=4 (≤5). Pagination respected.
+
+            1g) summary.plan_counts is on the ENTIRE collection
+                regardless of filters. Verified by comparing
+                ?plan=platinum vs unfiltered:
+                  - summary.total_users  == 4 in both
+                  - summary.plan_counts  == {platinum:1, silver:1,
+                                             free_trial:2} in both
+                  - summary.admin_count  == 1 in both
+                Confirmed: filters affect users[] only, not summary.
+
+            TEST 2 — GET /api/admin/users/{user_id} (DETAIL)
+
+            2a) Valid admin's own user_id → HTTP 200. Response keys:
+                  {user, wallet, shipment_count, paid_orders_count,
+                   recent_shipments, recent_wallet_tx}.
+                user.password_hash NOT in response (sensitive omission
+                verified — keys_in_user = [id, email, name, shop_name,
+                is_admin, plan, created_at, plan_started_at,
+                plan_mocked, notification_prefs]).
+                shipment_count=int, paid_orders_count=int,
+                recent_shipments is a list len=20 (≤20),
+                recent_wallet_tx is a list len=0 (≤15).
+
+            2b) Invalid user_id "nonexistent123" → HTTP 404 with
+                detail exactly "User not found".
+
+            2c) No bearer token → HTTP 401 with
+                detail "Authentication required".
+
+            No data was modified during the run. The admin user
+            (admin@test.com / cb27b8d3-…) is exactly as found.
+
+agent_communication:
+    -agent: "testing"
+    -message: |
+        Admin Users endpoints fully verified — 56/56 assertions PASS
+        on /app/backend_test_admin_users.py against
+        http://localhost:8001/api.
+
+        Both endpoints behave per the review contract:
+          • GET /api/admin/users — auth-gated, returns
+            {total, limit, skip, users, summary}; user rows have
+            every required field; q/plan/limit/skip filters work;
+            summary is global (NOT filtered by q/plan); empty result
+            for unknown plan; admin_count and plan_counts intact.
+          • GET /api/admin/users/{id} — auth-gated, returns
+            {user, wallet, shipment_count, paid_orders_count,
+             recent_shipments[≤20], recent_wallet_tx[≤15]};
+            password_hash is properly stripped from user object;
+            unknown id returns 404 "User not found".
+
+        Read-only testing — no user records were modified. Ready
+        for main agent to summarise and finish.

@@ -783,6 +783,21 @@ export default function SettingsScreen() {
                       <Ionicons name="chevron-forward" size={22} color="#9CA3AF" />
                     </TouchableOpacity>
                     <TouchableOpacity
+                      testID="settings-hub-admin-users"
+                      style={styles.hubRow}
+                      onPress={() => router.push("/admin/users" as any)}
+                      activeOpacity={0.6}
+                    >
+                      <View style={[styles.hubIconWrap, { backgroundColor: "#DBEAFE" }]}>
+                        <Ionicons name="people-outline" size={22} color="#1D4ED8" />
+                      </View>
+                      <Text style={styles.hubTitle}>Users</Text>
+                      <View style={styles.adminPill}>
+                        <Text style={styles.adminPillTxt}>ADMIN</Text>
+                      </View>
+                      <Ionicons name="chevron-forward" size={22} color="#9CA3AF" />
+                    </TouchableOpacity>
+                    <TouchableOpacity
                       testID="settings-hub-admin-pricing"
                       style={[styles.hubRow, styles.hubRowLast]}
                       onPress={() => router.push("/admin/pricing")}
