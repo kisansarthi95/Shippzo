@@ -1,4 +1,4 @@
-import React, { useCallback, useState } from "react";
+import React, { useCallback, useRef, useState } from "react";
 import {
   View,
   Text,
@@ -13,6 +13,8 @@ import {
   KeyboardAvoidingView,
   Platform,
   useWindowDimensions,
+  Animated,
+  PanResponder,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
@@ -37,9 +39,59 @@ type Stats = {
 
 export default function Dashboard() {
   const router = useRouter();
-  const { width: screenWidth } = useWindowDimensions();
+  const { width: screenWidth, height: screenHeight } = useWindowDimensions();
   // 3-column stat grid: 16px horizontal padding + 10px × 2 gaps
   const cardW = Math.floor((screenWidth - 32 - 20) / 3);
+
+  // ────────────────────────────────────────────────────────────
+  // Smart Paste bottom-sheet drag logic.
+  //   • Initial open height = 75% of screen.
+  //   • Drag UP → grows up to 100% (full screen).
+  //   • Drag DOWN → snaps back to 75% (cannot dismiss by drag).
+  //   • Only the X button closes the sheet.
+  //   • Keyboard auto-adjust handled by KeyboardAvoidingView wrapper.
+  // ────────────────────────────────────────────────────────────
+  const sheetMinH = Math.floor(screenHeight * 0.75);
+  const sheetMaxH = screenHeight;
+  const sheetHeight = useRef(new Animated.Value(sheetMinH)).current;
+  const sheetCurH = useRef(sheetMinH);
+  React.useEffect(() => {
+    // Re-snap sheet to new minimum on rotation / window resize.
+    sheetCurH.current = sheetMinH;
+    sheetHeight.setValue(sheetMinH);
+  }, [sheetMinH, sheetHeight]);
+  const sheetPan = useRef(
+    PanResponder.create({
+      onMoveShouldSetPanResponder: (_, g) => Math.abs(g.dy) > 4,
+      onPanResponderMove: (_, g) => {
+        // dy < 0 → finger moved up → grow sheet.
+        const next = Math.max(sheetMinH, Math.min(sheetMaxH, sheetCurH.current - g.dy));
+        sheetHeight.setValue(next);
+      },
+      onPanResponderRelease: (_, g) => {
+        const candidate = Math.max(
+          sheetMinH,
+          Math.min(sheetMaxH, sheetCurH.current - g.dy),
+        );
+        // Snap to either min (75%) or max (100%) based on midpoint.
+        const mid = (sheetMinH + sheetMaxH) / 2;
+        const target = candidate >= mid ? sheetMaxH : sheetMinH;
+        sheetCurH.current = target;
+        Animated.spring(sheetHeight, {
+          toValue: target,
+          useNativeDriver: false,
+          friction: 10,
+          tension: 60,
+        }).start();
+      },
+    }),
+  ).current;
+  // Reset to 75% whenever the sheet (re-)opens.
+  const resetSheetHeight = useCallback(() => {
+    sheetCurH.current = sheetMinH;
+    sheetHeight.setValue(sheetMinH);
+  }, [sheetMinH, sheetHeight]);
+
   const [stats, setStats] = useState<Stats | null>(null);
   const [pendingOrdersCount, setPendingOrdersCount] = useState<number>(0);
   const [recent, setRecent] = useState<Shipment[]>([]);
@@ -155,6 +207,7 @@ export default function Dashboard() {
     // NO textarea. Each button below directly processes input and
     // jumps to the Summary Card — no intermediate UI.
     setPhotoUri(null);
+    resetSheetHeight();
     setPasteModalOpen(true);
   };
 
@@ -273,6 +326,7 @@ export default function Dashboard() {
       setChatReason(resp.reason || "photo OCR");
       setDupFound([]);
       setSuggestedCustomer(null);
+      resetSheetHeight();
       setChatOpen(true);
 
       const phone = (legacyFields.customer_phone || "").toString();
@@ -317,6 +371,7 @@ export default function Dashboard() {
       setChatReason(dup.ai?.reason || "");
       setDupFound(dup.duplicates || []);
       setSuggestedCustomer(null);
+      resetSheetHeight();
       setChatOpen(true);
 
       // Background phone lookup for repeat-customer suggestion.
@@ -553,8 +608,14 @@ export default function Dashboard() {
           if (!pasting && !photoUploading) setPasteModalOpen(false);
         }}
       >
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalCard}>
+        <KeyboardAvoidingView
+          behavior={Platform.OS === "ios" ? "padding" : undefined}
+          style={styles.modalOverlay}
+        >
+          <Animated.View style={[styles.sheetCard, { height: sheetHeight }]}>
+            <View {...sheetPan.panHandlers} style={styles.sheetGrabArea}>
+              <View style={styles.sheetGrabBar} />
+            </View>
             <View style={styles.modalHeader}>
               <Ionicons name="sparkles" size={18} color="#7C3AED" />
               <Text style={styles.modalTitle}>Smart Paste</Text>
@@ -567,54 +628,60 @@ export default function Dashboard() {
               </TouchableOpacity>
             </View>
 
-            {pasting || photoUploading ? (
-              <View style={styles.entryBusyCard}>
-                <ActivityIndicator size="large" color="#7C3AED" />
-                <Text style={styles.entryBusyTxt}>
-                  {photoUploading ? "Reading the photo… (5–20 sec)" : "Processing…"}
-                </Text>
-              </View>
-            ) : (
-              <View style={styles.entryBtnCol}>
-                <TouchableOpacity
-                  testID="smart-paste-paste-text-btn"
-                  onPress={handlePasteTextChosen}
-                  style={styles.entryBigBtn}
-                  activeOpacity={0.85}
-                >
-                  <View style={styles.entryBigBtnIcon}>
-                    <Ionicons name="clipboard-outline" size={26} color="#7C3AED" />
-                  </View>
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.entryBigBtnTitle}>📋  Paste Text</Text>
-                    <Text style={styles.entryBigBtnSub}>
-                      Copy WhatsApp / SMS first, then tap here.
-                    </Text>
-                  </View>
-                  <Ionicons name="chevron-forward" size={22} color="#7C3AED" />
-                </TouchableOpacity>
+            <ScrollView
+              style={{ flex: 1 }}
+              contentContainerStyle={{ padding: 14, paddingBottom: 24 }}
+              keyboardShouldPersistTaps="handled"
+            >
+              {pasting || photoUploading ? (
+                <View style={styles.entryBusyCard}>
+                  <ActivityIndicator size="large" color="#7C3AED" />
+                  <Text style={styles.entryBusyTxt}>
+                    {photoUploading ? "Reading the photo… (5–20 sec)" : "Processing…"}
+                  </Text>
+                </View>
+              ) : (
+                <View style={styles.entryBtnCol}>
+                  <TouchableOpacity
+                    testID="smart-paste-paste-text-btn"
+                    onPress={handlePasteTextChosen}
+                    style={styles.entryBigBtn}
+                    activeOpacity={0.85}
+                  >
+                    <View style={styles.entryBigBtnIcon}>
+                      <Ionicons name="clipboard-outline" size={26} color="#7C3AED" />
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.entryBigBtnTitle}>📋  Paste Text</Text>
+                      <Text style={styles.entryBigBtnSub}>
+                        Copy WhatsApp / SMS first, then tap here.
+                      </Text>
+                    </View>
+                    <Ionicons name="chevron-forward" size={22} color="#7C3AED" />
+                  </TouchableOpacity>
 
-                <TouchableOpacity
-                  testID="smart-paste-upload-photo-btn"
-                  onPress={handlePhotoChosen}
-                  style={styles.entryBigBtn}
-                  activeOpacity={0.85}
-                >
-                  <View style={styles.entryBigBtnIcon}>
-                    <Ionicons name="camera-outline" size={26} color="#7C3AED" />
-                  </View>
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.entryBigBtnTitle}>📷  Upload Photo</Text>
-                    <Text style={styles.entryBigBtnSub}>
-                      Camera or Gallery — reads Gujarati / Hindi / English.
-                    </Text>
-                  </View>
-                  <Ionicons name="chevron-forward" size={22} color="#7C3AED" />
-                </TouchableOpacity>
-              </View>
-            )}
-          </View>
-        </View>
+                  <TouchableOpacity
+                    testID="smart-paste-upload-photo-btn"
+                    onPress={handlePhotoChosen}
+                    style={styles.entryBigBtn}
+                    activeOpacity={0.85}
+                  >
+                    <View style={styles.entryBigBtnIcon}>
+                      <Ionicons name="camera-outline" size={26} color="#7C3AED" />
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.entryBigBtnTitle}>📷  Upload Photo</Text>
+                      <Text style={styles.entryBigBtnSub}>
+                        Camera or Gallery — reads Gujarati / Hindi / English.
+                      </Text>
+                    </View>
+                    <Ionicons name="chevron-forward" size={22} color="#7C3AED" />
+                  </TouchableOpacity>
+                </View>
+              )}
+            </ScrollView>
+          </Animated.View>
+        </KeyboardAvoidingView>
       </Modal>
 
       {/* ────────────────────────────────────────────────────────────
@@ -638,7 +705,10 @@ export default function Dashboard() {
           behavior={Platform.OS === "ios" ? "padding" : undefined}
           style={styles.modalOverlay}
         >
-          <View style={[styles.modalCard, { maxHeight: "92%", minHeight: "60%" }]}>
+          <Animated.View style={[styles.sheetCard, { height: sheetHeight }]}>
+            <View {...sheetPan.panHandlers} style={styles.sheetGrabArea}>
+              <View style={styles.sheetGrabBar} />
+            </View>
             <View style={styles.modalHeader}>
               <Ionicons name="sparkles-outline" size={18} color="#7C3AED" />
               <Text style={styles.modalTitle}>Smart Paste</Text>
@@ -823,7 +893,7 @@ export default function Dashboard() {
                 )}
               </TouchableOpacity>
             </View>
-          </View>
+          </Animated.View>
         </KeyboardAvoidingView>
       </Modal>
 
@@ -1653,6 +1723,27 @@ const styles = StyleSheet.create({
     borderRadius: 22,
     justifyContent: "center",
     alignItems: "center",
+  },
+
+  /* ─────────── Smart Paste — Bottom Sheet (Phase-7) ─────────── */
+  sheetCard: {
+    backgroundColor: "#fff",
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    paddingBottom: Platform.OS === "ios" ? 18 : 0,
+    overflow: "hidden",
+  },
+  sheetGrabArea: {
+    paddingTop: 8,
+    paddingBottom: 6,
+    alignItems: "center",
+    backgroundColor: "transparent",
+  },
+  sheetGrabBar: {
+    width: 42,
+    height: 5,
+    borderRadius: 3,
+    backgroundColor: "#CBD5E1",
   },
 
   /* ─────────── Smart Paste — Entry Sheet (Phase-7) ─────────── */

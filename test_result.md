@@ -101,6 +101,31 @@
 #====================================================================================================
 # Testing Data - Main Agent and testing sub agent both should log testing data below this section
 #====================================================================================================
+## Iteration: Smart Paste — Bottom Sheet Drag (75% min, 100% max) (2026-04-28 PM2)
+
+### Frontend Changes (`/app/frontend/app/(tabs)/index.tsx`)
+- **Animated draggable bottom sheet** for both Entry sheet and Summary Card.
+- `sheetMinH = screenHeight × 0.75`, `sheetMaxH = screenHeight`. Initial open height locked at 75%.
+- `PanResponder` on top grab bar:
+  - Drag UP → grows up to 100% (full screen).
+  - Drag DOWN → snaps back to 75% (cannot dismiss by drag).
+  - Spring animation on release (snaps to nearest of 75% / 100%).
+- `resetSheetHeight()` called on every Smart Paste open / Summary Card open so height resets to 75%.
+- KeyboardAvoidingView wraps both modals — keyboard auto-pushes content up, no field clipping.
+- Only X button closes the sheet (drag-down does NOT dismiss).
+- New styles: `sheetCard`, `sheetGrabArea`, `sheetGrabBar`.
+- New imports: `Animated`, `PanResponder`, `useRef` from react-native / react.
+
+### Validation
+- Screenshot at 390×844 viewport: Both Entry sheet and Summary Card open at 75% minimum height (sheet top at y≈215, content fills bottom 75%).
+- Grab bar (📏) visible at top of sheet.
+- All required fields (Name, Mobile, Address, City, State, Pincode...) visible at once → no scroll needed for required section.
+- Footer (Save Shipment / Start Over) stays sticky at bottom.
+
+### No backend changes — UI-only.
+
+---
+
 ## Iteration: Smart Paste — HARD FLOW REPLACEMENT (2026-04-28 PM)
 
 ### Hard Reset (User-Mandated)
