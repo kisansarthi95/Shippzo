@@ -101,6 +101,47 @@
 #====================================================================================================
 # Testing Data - Main Agent and testing sub agent both should log testing data below this section
 #====================================================================================================
+## Iteration: Phase-7d Master Order ID System (2026-04-28 PM5)
+
+### Backend (`/app/backend/server.py`)
+- **`generate_master_order_id()`** — atomic global counter via `db.counters` collection (`_id="master_order_id"`). Returns `YYMMDD + zfill(seq, 5)`. Sequence NEVER resets, auto-grows past 99999.
+- **`PendingOrder` model**: added `master_order_id: str = ""` (immutable, server-set) and `order_id: str = ""` (user's own, optional).
+- **`Settings` model**: added `order_id_auto_generate: bool = True` field.
+- **`SettingsUpdate`** model: added `order_id_auto_generate: Optional[bool]`.
+- **`update_settings`** endpoint: propagates `order_id_auto_generate` into update dict.
+- **`smart_paste_create`** endpoint:
+  - Reads user's `Settings.order_id_auto_generate`.
+  - When ON: allocates fresh master_order_id, dedup-checks via Mongo, copies master into user `order_id` if user's was blank.
+  - When OFF: requires user to provide `order_id` (422 if blank).
+  - Reads user order_id from BOTH `fields["order_id"]` and `fields["order_id_hint"]` (regex parser uses _hint suffix).
+
+### Frontend
+- `/app/frontend/lib/api.ts` — added `master_order_id`, `order_id`, `customer_alt_phone`, `token_amount` to `PendingOrder` type.
+- `/app/frontend/app/(tabs)/index.tsx`:
+  - FIELD_META: `ORDER_ID` label renamed "Order ID" → "Your Order ID", placeholder "ABC-001 / your own ID (optional)".
+  - `saveFromFields` success Alert now displays Master ID and (if different) Your ID.
+- `/app/frontend/app/(tabs)/settings.tsx`:
+  - New `orderIdAutoGen` state (default true).
+  - Loaded from `/settings` GET, sent in `/settings` PUT.
+  - New Switch row "Auto-Generate Order ID" inside the Smart Paste AI section with detailed Gujarati help text.
+  - Added to dirty-tracking dependency array so the Save button enables on change.
+
+### Validation
+**Backend tests (deep_testing_backend_v2)** — 14/14 PASS after 2 fixes:
+- ✅ Test 1: Auto-gen ON, no user order_id → `master_order_id=26042800001`, `order_id == master_order_id`.
+- ✅ Test 2: Auto-gen ON + user provides `ORDER_ID: ABC-001` → master fresh, `order_id="ABC-001"` preserved.
+- ✅ Test 3: 5 sequential calls produced sequential moids, atomic counter solid.
+- ✅ Test 4a: Auto-gen OFF + no order_id → 422 "Order ID is required when Auto-Generate is OFF…"
+- ✅ Test 4b: Auto-gen OFF + `ORDER_ID: MY-555` → master="", order_id="MY-555".
+- ✅ Test 5: GET /settings returns `order_id_auto_generate` field.
+
+### Notes / Future Work (Phase B/C Deferred)
+- Phase B: Master Admin Sheet writes (separate sheet for admin; columns include user_id, user_name, etc.)
+- Phase C: Filtered Master → User sheet sync back.
+- Existing orders are NOT backfilled with master_order_id (per user's request to skip).
+
+---
+
 ## Iteration: Smart Paste — Token Auto-Extraction (2026-04-28 PM4)
 
 ### Backend Changes (`/app/backend/smart_paste_ai.py`)
