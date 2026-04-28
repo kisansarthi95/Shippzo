@@ -13,6 +13,7 @@ load_dotenv()
 # Phase-1 auth (email+password, JWT, per-user data isolation)
 from auth import (
     SignupRequest, LoginRequest, UserPublic,
+    ForgotPasswordRequest,
     hash_password, verify_password, make_token, user_public,
     get_current_user_factory, utcnow_iso as auth_utcnow_iso,
     seed_demo_shipments, seed_default_courier, claim_legacy_data_for_admin,
@@ -87,6 +88,37 @@ api_router = APIRouter(prefix="/api")
 auth_router = APIRouter(prefix="/api/auth", tags=["auth"])
 
 
+# ------------- Helper: human-readable user display ID ---------------
+# Every user gets a short, sortable identifier like "USR-00042" that
+# admins can quote over the phone without reading a UUID aloud.
+# Backed by an auto-incrementing counter in db.counters.
+
+async def _next_display_id() -> str:
+    """Return the next USR-XXXXX string atomically."""
+    doc = await db.counters.find_one_and_update(
+        {"_id": "user_display_id"},
+        {"$inc": {"seq": 1}},
+        upsert=True,
+        return_document=True,
+    )
+    seq = int((doc or {}).get("seq") or 1)
+    return f"USR-{seq:05d}"
+
+
+async def _backfill_display_ids():
+    """Assign display_id to any users created before Phase-4d. Idempotent."""
+    missing = await db.users.count_documents({"display_id": {"$in": [None, ""]}})
+    if missing == 0:
+        return 0
+    cursor = db.users.find(
+        {"display_id": {"$in": [None, ""]}}, {"_id": 0, "id": 1, "created_at": 1},
+    ).sort("created_at", 1)
+    async for u in cursor:
+        did = await _next_display_id()
+        await db.users.update_one({"id": u["id"]}, {"$set": {"display_id": did}})
+    return missing
+
+
 def _user_q(user: Dict[str, Any], extra: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Return a Mongo filter scoped to this user's data. Prevents users
     from reading/writing each other's shipments/couriers/settings."""
@@ -153,17 +185,32 @@ async def auth_signup(payload: SignupRequest):
     if await db.users.find_one({"email": email}):
         raise HTTPException(status_code=400, detail="Email already registered")
 
+    # Normalise + validate phone — allow digits + optional leading "+".
+    phone_raw = (payload.phone or "").strip()
+    phone_digits = re.sub(r"\D", "", phone_raw)
+    if len(phone_digits) < 10 or len(phone_digits) > 13:
+        raise HTTPException(
+            status_code=400,
+            detail="Please enter a valid 10-digit mobile number.",
+        )
+    # Store the last 10 digits (drops country code prefixes). This makes
+    # forgot-password lookups forgiving of "+91" variations.
+    phone = phone_digits[-10:]
+
     now = auth_utcnow_iso()
     is_first = (await db.users.count_documents({})) == 0
     uid = str(uuid.uuid4())
+    display_id = await _next_display_id()
     # New users start on the 7-day Free Trial (10 labels one-time).
     trial_spec = plan_start_payload("free_trial")
     user_doc = {
         "id": uid,
+        "display_id": display_id,
         "email": email,
         "password_hash": hash_password(payload.password),
         "name": payload.name.strip(),
         "shop_name": payload.shop_name.strip(),
+        "phone": phone,
         "is_admin": is_first,
         "plan": trial_spec["plan"],
         "plan_started_at": trial_spec["plan_started_at"],
@@ -220,6 +267,153 @@ async def auth_logout():
     # exists so the frontend has something consistent to call (e.g. for
     # analytics or future server-side revocation lists).
     return {"ok": True}
+
+
+# ────────── Forgot-password (no-OTP self-service) ──────────
+#
+# Since we don't have SMTP/SMS infra yet, we gate the reset with TWO
+# factors the user must know: their email AND their registered mobile
+# number. An attacker would need BOTH pieces to forge a reset — which
+# is rare in practice for small-business SaaS. To keep this honest:
+#
+#   1. Rate-limit to 3 failed attempts per email per hour.
+#   2. Log every attempt (success or failure) for audit.
+#   3. Last-10-digit normalisation so "+91" prefixes don't trip users.
+#
+# When SMTP/SMS infra is added later, wrap this behind an OTP step
+# without breaking the API shape.
+
+_PWD_RESET_MAX_ATTEMPTS = 3
+_PWD_RESET_WINDOW_SEC = 3600  # 1 hour
+
+
+async def _count_recent_pwd_failures(email: str) -> int:
+    cutoff = datetime.utcnow() - timedelta(seconds=_PWD_RESET_WINDOW_SEC)
+    return await db.pwd_reset_attempts.count_documents({
+        "email": email,
+        "ok": False,
+        "at": {"$gte": cutoff.isoformat() + "+00:00"},
+    })
+
+
+async def _log_pwd_attempt(email: str, ok: bool, reason: str = ""):
+    await db.pwd_reset_attempts.insert_one({
+        "email": email,
+        "ok": bool(ok),
+        "reason": reason[:120] if reason else "",
+        "at": datetime.utcnow().isoformat() + "+00:00",
+    })
+
+
+@auth_router.post("/forgot-password")
+async def auth_forgot_password(payload: ForgotPasswordRequest):
+    """Reset password using registered email + phone as a 2-factor gate."""
+    email = payload.email.lower().strip()
+    phone_raw = (payload.phone or "").strip()
+    phone_digits = re.sub(r"\D", "", phone_raw)
+    if len(phone_digits) < 10:
+        raise HTTPException(
+            status_code=400,
+            detail="Please enter your registered 10-digit mobile number.",
+        )
+    phone = phone_digits[-10:]
+
+    # Rate limit first — before revealing anything.
+    failures = await _count_recent_pwd_failures(email)
+    if failures >= _PWD_RESET_MAX_ATTEMPTS:
+        raise HTTPException(
+            status_code=429,
+            detail=(
+                "Too many failed attempts. For security, please wait an hour "
+                "and try again, or contact support."
+            ),
+        )
+
+    user = await db.users.find_one({"email": email})
+    if not user:
+        await _log_pwd_attempt(email, False, "no user")
+        raise HTTPException(
+            status_code=404,
+            detail="No account with that email. Check your spelling or sign up.",
+        )
+
+    user_phone = (user.get("phone") or "").strip()
+    user_phone_digits = re.sub(r"\D", "", user_phone)[-10:] if user_phone else ""
+    # Legacy users signed up before phone was required — tell them to
+    # contact support (can't self-reset without phone on file).
+    if not user_phone_digits:
+        await _log_pwd_attempt(email, False, "legacy user, no phone on file")
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "This account was created before we started storing phone "
+                "numbers. Please contact support to reset your password."
+            ),
+        )
+    if user_phone_digits != phone:
+        await _log_pwd_attempt(email, False, "phone mismatch")
+        # Don't hint which field is wrong — just fail generically.
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "The details don't match our records. Double-check your "
+                "registered mobile number and try again."
+            ),
+        )
+
+    # Identity confirmed. Set the new password + issue a fresh token.
+    await db.users.update_one(
+        {"id": user["id"]},
+        {"$set": {
+            "password_hash": hash_password(payload.new_password),
+            "password_changed_at": datetime.utcnow().isoformat() + "+00:00",
+        }},
+    )
+    await _log_pwd_attempt(email, True, "self-reset via phone")
+    token = make_token(user["id"], email)
+    fresh = await db.users.find_one({"id": user["id"]}, {"_id": 0}) or user
+    return {**user_public(fresh), "token": token}
+
+
+# ────────── Admin-initiated password reset ──────────
+
+class AdminResetPasswordRequest(BaseModel):
+    new_password: str = Field(min_length=6, max_length=128)
+
+
+@api_router.post("/admin/users/{user_id}/reset-password")
+async def admin_reset_user_password(
+    user_id: str,
+    payload: AdminResetPasswordRequest,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    """Admin-only override — sets a new password for ANY user.
+    The admin is expected to share the new password with the user over
+    the phone. Every reset is logged."""
+    _require_admin(current_user)
+    target = await db.users.find_one({"id": user_id})
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+    await db.users.update_one(
+        {"id": user_id},
+        {"$set": {
+            "password_hash": hash_password(payload.new_password),
+            "password_changed_at": datetime.utcnow().isoformat() + "+00:00",
+            "password_reset_by_admin": current_user.get("email", ""),
+            "password_reset_at": datetime.utcnow().isoformat() + "+00:00",
+        }},
+    )
+    await _log_pwd_attempt(
+        target.get("email", ""), True,
+        f"admin-reset by {current_user.get('email','')}",
+    )
+    return {
+        "ok": True,
+        "user_id": user_id,
+        "display_id": target.get("display_id", ""),
+        "email": target.get("email", ""),
+        "message": "Password reset. Share the new password with the user over the phone.",
+    }
 
 
 # --- Google OAuth (Emergent hosted) -----------------------------------
@@ -3097,6 +3291,7 @@ async def admin_list_users(
                 pass
         rows.append({
             "id":              uid,
+            "display_id":      d.get("display_id", "") or "",
             "email":           d.get("email", ""),
             "name":            d.get("name", "") or "",
             "shop_name":       d.get("shop_name", "") or "",
@@ -4040,6 +4235,14 @@ logger = logging.getLogger(__name__)
 @app.on_event("startup")
 async def on_startup():
     await seed_defaults()
+    # Backfill display_id on any pre-Phase-4d users so admin/users
+    # shows USR-XXXXX for everyone. Idempotent.
+    try:
+        filled = await _backfill_display_ids()
+        if filled:
+            logger.info(f"Backfilled display_id for {filled} legacy user(s).")
+    except Exception:
+        logger.exception("display_id backfill failed (non-fatal)")
     logger.info("Courier Label Manager API started; defaults seeded.")
 
 

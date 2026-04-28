@@ -17,6 +17,7 @@ export default function SignupScreen() {
   const [password, setPassword] = useState("");
   const [name, setName] = useState("");
   const [shop, setShop] = useState("");
+  const [phone, setPhone] = useState("");
   const [busy, setBusy] = useState(false);
   const [showPwd, setShowPwd] = useState(false);
 
@@ -26,13 +27,21 @@ export default function SignupScreen() {
       Alert.alert("Missing fields", "Email, password and name are required");
       return;
     }
+    const phoneDigits = phone.replace(/\D/g, "");
+    if (phoneDigits.length < 10) {
+      Alert.alert(
+        "Mobile number required",
+        "Please enter your 10-digit mobile number. We'll use it if you ever need to reset your password.",
+      );
+      return;
+    }
     if (password.length < 6) {
       Alert.alert("Password too short", "Use at least 6 characters");
       return;
     }
     setBusy(true);
     try {
-      await signUp(e, password, name.trim(), shop.trim());
+      await signUp(e, password, name.trim(), shop.trim(), phoneDigits);
     } catch (err: any) {
       Alert.alert(
         "Signup failed",
@@ -89,6 +98,23 @@ export default function SignupScreen() {
               style={styles.input}
               placeholderTextColor="#94A3B8"
             />
+
+            <Text style={[styles.label, { marginTop: 12 }]}>
+              Mobile Number <Text style={styles.required}>*</Text>
+            </Text>
+            <TextInput
+              testID="signup-phone"
+              value={phone}
+              onChangeText={(t) => setPhone(t.replace(/[^\d+]/g, ""))}
+              placeholder="10-digit mobile number"
+              keyboardType="phone-pad"
+              maxLength={15}
+              style={styles.input}
+              placeholderTextColor="#94A3B8"
+            />
+            <Text style={styles.helperNote}>
+              We'll use this to help you reset your password if you forget it, and for urgent support.
+            </Text>
 
             <Text style={[styles.label, { marginTop: 12 }]}>Password (min 6)</Text>
             <View style={styles.pwRow}>
@@ -152,6 +178,8 @@ const styles = StyleSheet.create({
     borderColor: "#E5E7EB",
   },
   label: { fontSize: 12, fontWeight: "800", color: colors.text, marginBottom: 6, letterSpacing: 0.4 },
+  required: { color: "#DC2626", fontWeight: "900" },
+  helperNote: { fontSize: 11, color: "#64748B", marginTop: 4, marginBottom: 2, lineHeight: 16 },
   input: {
     backgroundColor: "#fff",
     borderWidth: 2,

@@ -17,9 +17,11 @@ const USER_KEY = "@auth_user";
 
 export type User = {
   id: string;
+  display_id?: string;
   email: string;
   name: string;
   shop_name: string;
+  phone?: string;
   is_admin?: boolean;
   plan?: string;
   created_at: string;
@@ -31,7 +33,7 @@ type AuthState = {
   /** True until we've tried to restore the session from AsyncStorage on boot. */
   loading: boolean;
   signIn: (email: string, password: string) => Promise<void>;
-  signUp: (email: string, password: string, name: string, shop_name: string) => Promise<void>;
+  signUp: (email: string, password: string, name: string, shop_name: string, phone: string) => Promise<void>;
   signInWithGoogleSession: (sessionId: string) => Promise<void>;
   signOut: () => Promise<void>;
   refresh: () => Promise<void>;
@@ -95,10 +97,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [persist]);
 
   const signUp = useCallback(async (
-    email: string, password: string, name: string, shop_name: string,
+    email: string, password: string, name: string, shop_name: string, phone: string,
   ) => {
     const r = await api.post<{ token: string } & User>("/auth/signup", {
-      email, password, name, shop_name,
+      email, password, name, shop_name, phone,
     });
     const { token: tok, ...userFields } = r.data;
     await persist(tok, userFields as User);

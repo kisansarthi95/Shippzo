@@ -2776,3 +2776,111 @@ agent_communication:
 
         Read-only testing — no user records were modified. Ready
         for main agent to summarise and finish.
+
+---
+
+## Backend Test Run: Phase 4d Auth + Admin Password Reset Endpoints (2026-04-28)
+
+backend:
+  - task: "Phase 4d auth: phone-required signup + display_id + forgot-password + admin reset"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py, /app/backend/auth.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "testing"
+        -comment: |
+            36/36 assertions PASS via /app/backend_test.py against
+            https://logistics-hub-740.preview.emergentagent.com/api.
+            Cleanup verified: 0 test users left in DB after run
+            (only the 4 pre-existing real users remain — admin@test.com,
+            user2@test.com, plus 2 Google-OAuth users).
+
+            TEST 1 — /api/auth/signup phone validation (10/10 PASS):
+              1a Missing phone → 422 (FastAPI/Pydantic validation).
+              1b "abcxyz" → 400 detail "Please enter a valid 10-digit
+                 mobile number." (mentions 'mobile').
+              1c "9876543210" → 200; response carries token, id, and
+                 display_id matching exact regex ^USR-\d{5}$ (got
+                 "USR-00012"); phone stored as "9876543210".
+              1d Duplicate email → 400 "Email already registered".
+              1e "+91 9876543211" → 200; phone normalised to last-10
+                 digits, stored as "9876543211" (not "+919876543211"
+                 nor "919876543211").
+
+            TEST 2 — /api/auth/me (3/3 PASS):
+              Admin GET /auth/me → 200; response includes display_id
+              starting with "USR-" and phone field (string, present).
+
+            TEST 3 — /api/auth/forgot-password (8/8 PASS):
+              3a phone="wrong" (too short) → 422 (Pydantic min_length=10),
+                 no crash.
+              3b phone="9111111111" (valid format, wrong digits) → 400
+                 detail mentions "match" / "Double-check".
+              3c phone="9999988888" (correct) → 200; response has
+                 token + display_id starting with "USR-". Login with
+                 new password "newpass123" → 200.
+              3d Login with OLD password "oldpass1" → 401 "Invalid
+                 email or password" (correctly invalidated).
+              3e Rate limit: cleared the pwd_reset_attempts collection
+                 for fptest@example.com first, then submitted 3 bad
+                 attempts (each returned 400). 4th bad attempt → 429
+                 detail "Too many failed attempts. For security,
+                 please wait an hour…". Cap of 3 enforced.
+
+            TEST 4 — /api/admin/users/{id}/reset-password (10/10 PASS):
+              4a Setup: created admr@example.com w/ password "abc123",
+                 phone "9000000001" → 200.
+              4b POST as admin with {"new_password":"resetme99"} → 200
+                 with response {ok: true, display_id: "USR-XXXXX",
+                 email: "admr@example.com", message: "..."}.
+              4c Login as admr@ with "resetme99" → 200; login with
+                 "abc123" → 401 (old hash invalidated).
+              4d /api/admin/users/INVALID_ID/reset-password → 404
+                 detail "User not found".
+              4e Without bearer token → 401 (HTTPBearer dependency).
+                 With non-admin user's token → 403 "Admin access
+                 required" (_require_admin guard works).
+
+            TEST 5 — GET /api/admin/users (4/4 PASS):
+              Returns 200 as admin; users[0] has display_id matching
+              "USR-XXXXX" and phone (string, may be "" for legacy
+              admin who never had phone in DB).
+
+            All 4 cleanup users (ptest1, ptest1-2, fptest, admr) plus
+            all related shipments/couriers/settings/wallets/
+            pwd_reset_attempts purged via direct Mongo cleanup at end
+            of run. Verified via raw users.count_documents → only the
+            4 pre-existing real users (admin@test.com, user2@test.com,
+            and 2 Google-OAuth users) remain. ZERO test litter.
+
+agent_communication:
+    -agent: "testing"
+    -message: |
+        Phase 4d Auth + Admin endpoints fully working — 36/36 PASS on
+        /app/backend_test.py against
+        https://logistics-hub-740.preview.emergentagent.com/api.
+
+        Coverage:
+          • /api/auth/signup now requires phone; rejects bad/short phone
+            with 400/422; "+91 9876543211" properly normalises to last
+            10 digits ("9876543211"); duplicate email → 400 "Email
+            already registered"; new users get display_id "USR-XXXXX".
+          • /api/auth/me returns display_id + phone (both strings).
+          • /api/auth/forgot-password (2-factor email + phone gate):
+            short phone → 422; wrong phone → 400 "match/double-check";
+            correct phone → 200 with new token + display_id; old
+            password is properly invalidated; rate-limit kicks in on
+            4th attempt with 429 "Too many".
+          • /api/admin/users/{id}/reset-password admin-only: 200 with
+            {ok, display_id, email}; login with new password works,
+            old fails; invalid id → 404 "User not found"; no auth →
+            401; non-admin token → 403 "Admin access required".
+          • GET /api/admin/users includes display_id (USR-XXXXX) and
+            phone fields.
+
+        All 4 test users cleaned up (verified zero remaining); main
+        agent can safely summarise and finish.

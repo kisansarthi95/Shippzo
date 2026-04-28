@@ -1,190 +1,361 @@
 """
-Targeted retest for:
-  Test 1: Plan-expiry enforcement on POST /api/shipments
-  Test 2: GET /api/me/usage trial branch returns plan_expired=false
+Backend tests for Phase-4d auth/admin endpoints:
+  * Test 1: /api/auth/signup phone validation + normalization
+  * Test 2: /api/auth/me returns display_id + phone
+  * Test 3: /api/auth/forgot-password (2-factor: email + phone)
+  * Test 4: /api/admin/users/{id}/reset-password
+  * Test 5: /api/admin/users returns display_id + phone
 """
 import os
 import sys
-import json
-
+import re
 import requests
 from pymongo import MongoClient
 from dotenv import load_dotenv
 
 load_dotenv("/app/backend/.env")
-load_dotenv("/app/frontend/.env")
 
-BASE = os.environ.get("EXPO_PUBLIC_BACKEND_URL",
-                     "https://logistics-hub-740.preview.emergentagent.com").rstrip("/")
-API = f"{BASE}/api"
-
+BASE = "https://logistics-hub-740.preview.emergentagent.com/api"
 MONGO_URL = os.environ["MONGO_URL"]
 DB_NAME = os.environ["DB_NAME"]
-
 ADMIN_EMAIL = "admin@test.com"
 ADMIN_PASSWORD = "Admin@12345"
 
-
-def login(email: str, password: str) -> dict:
-    r = requests.post(f"{API}/auth/login", json={"email": email, "password": password}, timeout=30)
-    r.raise_for_status()
-    return r.json()
+PASS = []
+FAIL = []
 
 
-def headers(tok: str) -> dict:
-    return {"Authorization": f"Bearer {tok}", "Content-Type": "application/json"}
+def rec(ok, name, detail=""):
+    if ok:
+        PASS.append(name)
+        print(f"  PASS - {name}")
+    else:
+        FAIL.append((name, detail))
+        print(f"  FAIL - {name} :: {detail}")
 
 
-def restore_clean_free_trial(users_col, admin_id):
-    users_col.update_one(
-        {"id": admin_id},
-        {
-            "$set": {"plan": "free_trial", "plan_mocked": False},
-            "$unset": {
-                "plan_expires_at": "",
-                "plan_billing_cycle": "",
-                "auto_renew": "",
-                "cancelled_at": "",
-            },
-        },
+def cleanup_users(emails):
+    if not emails:
+        return
+    cli = MongoClient(MONGO_URL)
+    db = cli[DB_NAME]
+    user_ids = [u["id"] for u in db.users.find({"email": {"$in": emails}}, {"id": 1})]
+    if user_ids:
+        db.users.delete_many({"email": {"$in": emails}})
+        for col in ("shipments", "couriers", "settings", "pending_orders",
+                    "wallets", "wallet_history", "pwd_reset_attempts"):
+            try:
+                db[col].delete_many({"user_id": {"$in": user_ids}})
+            except Exception:
+                pass
+    db.pwd_reset_attempts.delete_many({"email": {"$in": emails}})
+    cli.close()
+
+
+def admin_login():
+    r = requests.post(
+        f"{BASE}/auth/login",
+        json={"email": ADMIN_EMAIL, "password": ADMIN_PASSWORD},
+        timeout=20,
     )
+    r.raise_for_status()
+    return r.json()["token"]
+
+
+def test1_signup_phone():
+    print("\n=== TEST 1: Signup now requires phone ===")
+    cleanup_users(["ptest1@example.com", "ptest1-2@example.com"])
+
+    r = requests.post(f"{BASE}/auth/signup", json={
+        "email": "ptest1@example.com", "password": "testpass123",
+        "name": "Phone Tester", "shop_name": "PT Shop",
+    })
+    rec(
+        r.status_code in (400, 422),
+        "1a missing phone -> 422/400",
+        f"got {r.status_code} body={r.text[:200]}",
+    )
+
+    r = requests.post(f"{BASE}/auth/signup", json={
+        "email": "ptest1@example.com", "password": "testpass123",
+        "name": "Phone Tester", "shop_name": "PT Shop", "phone": "abcxyz",
+    })
+    body = r.text.lower()
+    rec(
+        r.status_code in (400, 422) and ("mobile" in body or "phone" in body),
+        "1b bad phone abcxyz -> 400/422 mentions mobile/phone",
+        f"got {r.status_code} body={r.text[:200]}",
+    )
+
+    r = requests.post(f"{BASE}/auth/signup", json={
+        "email": "ptest1@example.com", "password": "testpass123",
+        "name": "Phone Tester", "shop_name": "PT Shop", "phone": "9876543210",
+    })
+    rec(r.status_code == 200, "1c valid phone signup -> 200",
+        f"got {r.status_code} body={r.text[:200]}")
+    if r.status_code == 200:
+        b = r.json()
+        rec(bool(b.get("token")), "1c response has token")
+        rec(bool(b.get("id")), "1c response has id")
+        did = b.get("display_id", "")
+        rec(bool(re.fullmatch(r"USR-\d{5}", did)),
+            "1c display_id matches USR-XXXXX",
+            f"got display_id={did!r}")
+        rec(b.get("phone") == "9876543210",
+            "1c phone == '9876543210'",
+            f"got phone={b.get('phone')!r}")
+
+    r = requests.post(f"{BASE}/auth/signup", json={
+        "email": "ptest1@example.com", "password": "testpass123",
+        "name": "Phone Tester", "shop_name": "PT Shop", "phone": "9876543210",
+    })
+    rec(
+        r.status_code == 400 and "already" in r.text.lower(),
+        "1d duplicate email -> 400 'already registered'",
+        f"got {r.status_code} body={r.text[:200]}",
+    )
+
+    r = requests.post(f"{BASE}/auth/signup", json={
+        "email": "ptest1-2@example.com", "password": "testpass123",
+        "name": "Phone Tester 2", "shop_name": "PT Shop 2",
+        "phone": "+91 9876543211",
+    })
+    rec(r.status_code == 200, "1e +91 9876543211 -> 200",
+        f"got {r.status_code} body={r.text[:200]}")
+    if r.status_code == 200:
+        rec(r.json().get("phone") == "9876543211",
+            "1e phone normalised to last-10 digits ('9876543211')",
+            f"got phone={r.json().get('phone')!r}")
+
+    cleanup_users(["ptest1@example.com", "ptest1-2@example.com"])
+    print("  CLEANUP - ptest1, ptest1-2 removed")
+
+
+def test2_auth_me():
+    print("\n=== TEST 2: /api/auth/me returns display_id + phone ===")
+    token = admin_login()
+    r = requests.get(f"{BASE}/auth/me",
+                     headers={"Authorization": f"Bearer {token}"})
+    rec(r.status_code == 200, "2 admin /auth/me -> 200",
+        f"got {r.status_code} body={r.text[:200]}")
+    if r.status_code == 200:
+        b = r.json()
+        did = b.get("display_id", "")
+        rec(isinstance(did, str) and bool(did) and did.startswith("USR-"),
+            "2 admin display_id non-empty 'USR-XXXXX'",
+            f"got display_id={did!r}")
+        rec("phone" in b and isinstance(b.get("phone", ""), str),
+            "2 admin response includes phone (string, may be '')",
+            f"got phone={b.get('phone')!r}")
+
+
+def test3_forgot_password():
+    print("\n=== TEST 3: /api/auth/forgot-password ===")
+    cleanup_users(["fptest@example.com"])
+
+    r = requests.post(f"{BASE}/auth/signup", json={
+        "email": "fptest@example.com", "password": "oldpass1",
+        "name": "FP Tester", "shop_name": "FP Shop", "phone": "9999988888",
+    })
+    if r.status_code != 200:
+        rec(False, "3 setup signup",
+            f"got {r.status_code} body={r.text[:200]}")
+        return
+    rec(True, "3 setup signup -> 200")
+
+    r = requests.post(f"{BASE}/auth/forgot-password", json={
+        "email": "fptest@example.com", "phone": "wrong",
+        "new_password": "newpass123",
+    })
+    rec(r.status_code in (400, 422),
+        "3a phone too short -> 400/422 (no crash)",
+        f"got {r.status_code} body={r.text[:200]}")
+
+    r = requests.post(f"{BASE}/auth/forgot-password", json={
+        "email": "fptest@example.com", "phone": "9111111111",
+        "new_password": "newpass123",
+    })
+    bl = r.text.lower()
+    rec(
+        r.status_code == 400
+        and ("don't match" in bl or "do not match" in bl
+             or "double-check" in bl or "double check" in bl
+             or "match" in bl),
+        "3b wrong phone -> 400 mentions match/double-check",
+        f"got {r.status_code} body={r.text[:200]}",
+    )
+
+    r = requests.post(f"{BASE}/auth/forgot-password", json={
+        "email": "fptest@example.com", "phone": "9999988888",
+        "new_password": "newpass123",
+    })
+    rec(r.status_code == 200, "3c correct phone reset -> 200",
+        f"got {r.status_code} body={r.text[:200]}")
+    if r.status_code == 200:
+        b = r.json()
+        rec(bool(b.get("token")), "3c response has token")
+        did = b.get("display_id", "")
+        rec(isinstance(did, str) and did.startswith("USR-"),
+            "3c response has display_id",
+            f"got {did!r}")
+        rl = requests.post(f"{BASE}/auth/login", json={
+            "email": "fptest@example.com", "password": "newpass123",
+        })
+        rec(rl.status_code == 200, "3c login with new pass -> 200",
+            f"got {rl.status_code} body={rl.text[:200]}")
+
+    rl = requests.post(f"{BASE}/auth/login", json={
+        "email": "fptest@example.com", "password": "oldpass1",
+    })
+    rec(rl.status_code in (400, 401), "3d login with OLD pass -> 401/400",
+        f"got {rl.status_code} body={rl.text[:200]}")
+
+    # Rate limiting: clear failure history first so we have a known starting state
+    cli = MongoClient(MONGO_URL)
+    cli[DB_NAME].pwd_reset_attempts.delete_many({"email": "fptest@example.com"})
+    cli.close()
+
+    for i in range(3):
+        requests.post(f"{BASE}/auth/forgot-password", json={
+            "email": "fptest@example.com", "phone": "9111111111",
+            "new_password": "newpass123",
+        })
+    r4 = requests.post(f"{BASE}/auth/forgot-password", json={
+        "email": "fptest@example.com", "phone": "9111111111",
+        "new_password": "newpass123",
+    })
+    body_l = r4.text.lower()
+    rec(
+        r4.status_code == 429 and "too many" in body_l,
+        "3e 4th bad attempt -> 429 'Too many'",
+        f"got {r4.status_code} body={r4.text[:200]}",
+    )
+
+    cleanup_users(["fptest@example.com"])
+    print("  CLEANUP - fptest removed")
+
+
+def test4_admin_reset():
+    print("\n=== TEST 4: Admin password reset ===")
+    cleanup_users(["admr@example.com"])
+
+    r = requests.post(f"{BASE}/auth/signup", json={
+        "email": "admr@example.com", "password": "abc123",
+        "name": "Admin Reset Tester", "shop_name": "AR Shop",
+        "phone": "9000000001",
+    })
+    if r.status_code != 200:
+        rec(False, "4a setup signup",
+            f"got {r.status_code} body={r.text[:200]}")
+        return
+    new_uid = r.json()["id"]
+    rec(True, "4a setup signup -> 200")
+
+    admin_token = admin_login()
+
+    r = requests.post(
+        f"{BASE}/admin/users/{new_uid}/reset-password",
+        json={"new_password": "resetme99"},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    rec(r.status_code == 200, "4b admin reset -> 200",
+        f"got {r.status_code} body={r.text[:200]}")
+    if r.status_code == 200:
+        b = r.json()
+        rec(b.get("ok") is True, "4b ok=true",
+            f"got ok={b.get('ok')!r}")
+        rec(bool(b.get("display_id")), "4b response has display_id",
+            f"got display_id={b.get('display_id')!r}")
+        rec(b.get("email") == "admr@example.com",
+            "4b response has email",
+            f"got email={b.get('email')!r}")
+
+    rl = requests.post(f"{BASE}/auth/login", json={
+        "email": "admr@example.com", "password": "resetme99",
+    })
+    rec(rl.status_code == 200, "4c login with new pass -> 200",
+        f"got {rl.status_code} body={rl.text[:200]}")
+    rl_old = requests.post(f"{BASE}/auth/login", json={
+        "email": "admr@example.com", "password": "abc123",
+    })
+    rec(rl_old.status_code in (400, 401),
+        "4c login with old pass -> 401/400",
+        f"got {rl_old.status_code} body={rl_old.text[:200]}")
+
+    r = requests.post(
+        f"{BASE}/admin/users/INVALID_ID/reset-password",
+        json={"new_password": "doesntmatter"},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    rec(r.status_code == 404 and "not found" in r.text.lower(),
+        "4d invalid id -> 404 'User not found'",
+        f"got {r.status_code} body={r.text[:200]}")
+
+    r = requests.post(
+        f"{BASE}/admin/users/{new_uid}/reset-password",
+        json={"new_password": "doesntmatter"},
+    )
+    rec(r.status_code in (401, 403),
+        "4e no auth -> 401/403",
+        f"got {r.status_code} body={r.text[:200]}")
+
+    if rl.status_code == 200:
+        non_admin_token = rl.json()["token"]
+        r = requests.post(
+            f"{BASE}/admin/users/{new_uid}/reset-password",
+            json={"new_password": "x123456"},
+            headers={"Authorization": f"Bearer {non_admin_token}"},
+        )
+        rec(r.status_code == 403,
+            "4e non-admin token -> 403",
+            f"got {r.status_code} body={r.text[:200]}")
+
+    cleanup_users(["admr@example.com"])
+    print("  CLEANUP - admr removed")
+
+
+def test5_admin_users_list():
+    print("\n=== TEST 5: GET /api/admin/users includes display_id + phone ===")
+    token = admin_login()
+    r = requests.get(f"{BASE}/admin/users",
+                     headers={"Authorization": f"Bearer {token}"})
+    rec(r.status_code == 200, "5 GET /admin/users -> 200",
+        f"got {r.status_code} body={r.text[:200]}")
+    if r.status_code != 200:
+        return
+    users = r.json().get("users", [])
+    rec(len(users) > 0, "5 at least 1 user in response")
+    if users:
+        first = users[0]
+        did = first.get("display_id", "")
+        rec(isinstance(did, str) and did.startswith("USR-"),
+            "5 first row has display_id 'USR-XXXXX'",
+            f"got display_id={did!r}")
+        rec("phone" in first and isinstance(first.get("phone", ""), str),
+            "5 first row has phone (string, may be '')",
+            f"got phone={first.get('phone')!r}")
 
 
 def main():
-    print(f"API = {API}")
-    print(f"MONGO_URL = {MONGO_URL}")
-    print(f"DB_NAME = {DB_NAME}")
-
-    client = MongoClient(MONGO_URL)
-    db = client[DB_NAME]
-    users = db.users
-    shipments = db.shipments
-
-    admin_login = login(ADMIN_EMAIL, ADMIN_PASSWORD)
-    admin_tok = admin_login["token"]
-    admin_id = admin_login["id"]
-    print(f"Admin id = {admin_id}")
-
-    results = {"test1": {}, "test2": {}}
-
-    # ==== TEST 1 ====
-    print("\n=== TEST 1: Plan-expiry enforcement on POST /api/shipments ===")
     try:
-        before_count = shipments.count_documents({"user_id": admin_id})
-        print(f"Shipment count before = {before_count}")
-
-        past_iso = "2024-01-01T00:00:00+00:00"
-        started_iso = "2023-12-01T00:00:00+00:00"
-        users.update_one(
-            {"id": admin_id},
-            {"$set": {
-                "plan": "silver",
-                "plan_expires_at": past_iso,
-                "plan_started_at": started_iso,
-            }},
-        )
-        fresh = users.find_one({"id": admin_id}, {"_id": 0, "plan": 1, "plan_expires_at": 1, "plan_started_at": 1})
-        print(f"Admin set to: {fresh}")
-
-        payload = {
-            "customer_name": "Retest Expiry User",
-            "customer_phone": "9000001111",
-            "address": "12 MG Road, Surat, Gujarat 395001",
-            "courier": "Nandan Courier",
-            "tracking_id": "RTEST-EXP-0001",
-            "amount": 199.0,
-            "payment_mode": "COD",
-        }
-        r = requests.post(f"{API}/shipments", headers=headers(admin_tok), json=payload, timeout=30)
-        print(f"POST /shipments status = {r.status_code}")
-        try:
-            body = r.json()
-        except Exception:
-            body = {"raw": r.text}
-        print(f"POST /shipments body = {json.dumps(body, indent=2, default=str)}")
-
-        results["test1"]["status_code"] = r.status_code
-        results["test1"]["body"] = body
-
-        after_count = shipments.count_documents({"user_id": admin_id})
-        print(f"Shipment count after = {after_count}")
-
-        detail = str(body.get("detail", "")).lower()
-        c1 = r.status_code == 402
-        c2 = "expired" in detail
-        c3 = ("2024" in detail) or ("jan" in detail)
-        c4 = after_count == before_count
-
-        print(f"  [{'PASS' if c1 else 'FAIL'}] HTTP 402 returned (got {r.status_code})")
-        print(f"  [{'PASS' if c2 else 'FAIL'}] detail contains 'expired'")
-        print(f"  [{'PASS' if c3 else 'FAIL'}] detail mentions the expiry date (2024/Jan)")
-        print(f"  [{'PASS' if c4 else 'FAIL'}] shipment NOT created (count unchanged)")
-        results["test1"]["pass"] = all([c1, c2, c3, c4])
+        test1_signup_phone()
+        test2_auth_me()
+        test3_forgot_password()
+        test4_admin_reset()
+        test5_admin_users_list()
     finally:
-        shipments.delete_many({
-            "user_id": admin_id,
-            "tracking_id": "RTEST-EXP-0001",
-        })
+        cleanup_users([
+            "ptest1@example.com", "ptest1-2@example.com",
+            "fptest@example.com", "admr@example.com",
+        ])
 
-    # ==== TEST 2 ====
-    print("\n=== TEST 2: GET /api/me/usage trial branch ===")
-    users.update_one(
-        {"id": admin_id},
-        {
-            "$set": {"plan": "free_trial", "plan_mocked": False},
-            "$unset": {
-                "plan_expires_at": "",
-                "plan_billing_cycle": "",
-                "auto_renew": "",
-                "cancelled_at": "",
-            },
-        },
-    )
-    fresh = users.find_one({"id": admin_id}, {"_id": 0})
-    print("After restore — relevant fields:")
-    for k in ("plan", "plan_mocked", "plan_expires_at", "plan_billing_cycle",
-              "auto_renew", "cancelled_at", "plan_started_at", "trial_expires_at"):
-        print(f"  {k!r} = {fresh.get(k)!r}")
-
-    r = requests.get(f"{API}/me/usage", headers=headers(admin_tok), timeout=30)
-    print(f"GET /me/usage status = {r.status_code}")
-    body = r.json()
-    print(f"GET /me/usage body = {json.dumps(body, indent=2, default=str)}")
-
-    results["test2"]["status_code"] = r.status_code
-    results["test2"]["body"] = body
-
-    checks = [
-        ("period == 'trial'", body.get("period") == "trial"),
-        ("plan_expired is False", body.get("plan_expired") is False),
-        ("plan_expires_at is None", body.get("plan_expires_at") is None),
-        ("plan_days_left is None", body.get("plan_days_left") is None),
-        ("plan_billing_cycle is None", body.get("plan_billing_cycle") is None),
-        ("trial_expired is False", body.get("trial_expired") is False),
-        ("can_create_label is True", body.get("can_create_label") is True),
-    ]
-    all_pass = True
-    for label, ok in checks:
-        print(f"  [{'PASS' if ok else 'FAIL'}] {label}")
-        all_pass = all_pass and ok
-    results["test2"]["pass"] = all_pass
-
-    # ==== CLEANUP ====
-    print("\n=== CLEANUP ===")
-    restore_clean_free_trial(users, admin_id)
-    cleaned = users.find_one({"id": admin_id}, {"_id": 0})
-    print(f"After cleanup — plan={cleaned.get('plan')}, "
-          f"plan_mocked={cleaned.get('plan_mocked')}, "
-          f"plan_expires_at={cleaned.get('plan_expires_at')}, "
-          f"plan_billing_cycle={cleaned.get('plan_billing_cycle')}, "
-          f"auto_renew={cleaned.get('auto_renew')}, "
-          f"cancelled_at={cleaned.get('cancelled_at')}")
-
-    print("\n======== SUMMARY ========")
-    print(f"  TEST 1 (plan-expiry 402): {'PASS' if results['test1'].get('pass') else 'FAIL'}")
-    print(f"  TEST 2 (/me/usage trial): {'PASS' if results['test2'].get('pass') else 'FAIL'}")
-
-    sys.exit(0 if (results['test1'].get('pass') and results['test2'].get('pass')) else 1)
+    print("\n" + "=" * 60)
+    print(f"PASS: {len(PASS)}    FAIL: {len(FAIL)}")
+    if FAIL:
+        print("\nFAILED:")
+        for n, d in FAIL:
+            print(f"  - {n}\n      {d}")
+        sys.exit(1)
 
 
 if __name__ == "__main__":

@@ -849,7 +849,16 @@ export default function SettingsScreen() {
                 <Text style={styles.accountEmail} numberOfLines={1}>
                   {user?.email || ""}
                 </Text>
+                {user?.phone ? (
+                  <Text style={styles.accountEmail} numberOfLines={1}>📞 {user.phone}</Text>
+                ) : null}
                 <View style={{ flexDirection: "row", gap: 6, marginTop: 4, flexWrap: "wrap" }}>
+                  {user?.display_id ? (
+                    <View style={styles.badgeDisplayId}>
+                      <Ionicons name="finger-print" size={10} color="#0F172A" />
+                      <Text style={styles.badgeDisplayIdTxt}>{user.display_id}</Text>
+                    </View>
+                  ) : null}
                   {user?.is_admin ? (
                     <View style={styles.badgeAdmin}>
                       <Ionicons name="shield-checkmark" size={11} color="#fff" />
@@ -3194,6 +3203,15 @@ const styles = StyleSheet.create({
     color: "#64748B",
     textAlign: "center",
     lineHeight: 18,
+  },
+  /* ---- Account badges ---- */
+  badgeDisplayId: {
+    flexDirection: "row", alignItems: "center", gap: 3,
+    backgroundColor: "#E0E7FF",
+    paddingHorizontal: 7, paddingVertical: 3, borderRadius: 5,
+  },
+  badgeDisplayIdTxt: {
+    color: "#0F172A", fontSize: 10.5, fontWeight: "900", letterSpacing: 0.6,
   },
   /* ---- About / Help rows ---- */
   aboutRow: {

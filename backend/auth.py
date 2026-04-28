@@ -89,6 +89,7 @@ class SignupRequest(BaseModel):
     password: str = Field(min_length=6, max_length=128)
     name: str = Field(min_length=1, max_length=80)
     shop_name: str = Field(default="", max_length=80)
+    phone: str = Field(min_length=10, max_length=15)
 
 
 class LoginRequest(BaseModel):
@@ -96,11 +97,24 @@ class LoginRequest(BaseModel):
     password: str
 
 
+class ForgotPasswordRequest(BaseModel):
+    """Email + registered phone acts as a 2-factor gate so the user can
+    reset their own password without SMTP/OTP infra. The combination is
+    rare enough in practice (attacker needs BOTH email and phone) to
+    be a reasonable MVP trade-off. Rate-limited per-email.
+    """
+    email: EmailStr
+    phone: str = Field(min_length=10, max_length=15)
+    new_password: str = Field(min_length=6, max_length=128)
+
+
 class UserPublic(BaseModel):
     id: str
+    display_id: str = ""
     email: str
     name: str
     shop_name: str
+    phone: str = ""
     is_admin: bool = False
     plan: str = "free_trial"
     created_at: str
@@ -281,9 +295,11 @@ def user_public(u: Dict[str, Any]) -> Dict[str, Any]:
     """Strip the password hash + Mongo _id when sending a user doc."""
     return {
         "id": u.get("id"),
+        "display_id": u.get("display_id", ""),
         "email": u.get("email"),
         "name": u.get("name", ""),
         "shop_name": u.get("shop_name", ""),
+        "phone": u.get("phone", ""),
         "is_admin": bool(u.get("is_admin", False)),
         "plan": u.get("plan", "free_trial"),
         "created_at": u.get("created_at", ""),

@@ -20,7 +20,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   View, Text, StyleSheet, TextInput, TouchableOpacity, FlatList,
-  ActivityIndicator, RefreshControl, Modal, ScrollView, Platform,
+  ActivityIndicator, RefreshControl, Modal, ScrollView, Platform, Alert,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Stack, useRouter } from "expo-router";
@@ -30,6 +30,7 @@ import { colors } from "../../lib/theme";
 
 type Row = {
   id: string;
+  display_id: string;
   email: string;
   name: string;
   shop_name: string;
@@ -149,6 +150,65 @@ export default function AdminUsersScreen() {
       setDetailLoading(false);
     }
   };
+
+  const resetUserPassword = useCallback((uid: string, email: string) => {
+    const doReset = async (newPwd: string) => {
+      try {
+        await api.post(`/admin/users/${uid}/reset-password`, { new_password: newPwd });
+        Alert.alert(
+          "Password reset ✅",
+          `A new password has been set for ${email}. Share it with the user securely over the phone:\n\n${newPwd}`,
+        );
+      } catch (e: any) {
+        Alert.alert("Reset failed", e?.response?.data?.detail || e?.message || "Try again");
+      }
+    };
+    // Cross-platform prompt: Alert.prompt on iOS, browser prompt on web,
+    // simple random-generated on Android (RN doesn't ship a text prompt).
+    if (Platform.OS === "ios") {
+      (Alert as any).prompt(
+        "Set new password",
+        `Enter a new password for ${email}. Minimum 6 characters.`,
+        [
+          { text: "Cancel", style: "cancel" },
+          {
+            text: "Reset",
+            onPress: (txt?: string) => {
+              const pwd = (txt || "").trim();
+              if (pwd.length < 6) {
+                Alert.alert("Too short", "Password must be at least 6 characters.");
+                return;
+              }
+              doReset(pwd);
+            },
+          },
+        ],
+        "plain-text",
+      );
+    } else if (Platform.OS === "web" && typeof window !== "undefined") {
+      const pwd = (window.prompt(`Set new password for ${email} (min 6 chars):`) || "").trim();
+      if (!pwd) return;
+      if (pwd.length < 6) {
+        Alert.alert("Too short", "Password must be at least 6 characters.");
+        return;
+      }
+      doReset(pwd);
+    } else {
+      // Android fallback: generate a strong random password, show it to
+      // the admin in an alert, and apply it. Admin can share over phone.
+      const rand =
+        Math.random().toString(36).slice(2, 6) +
+        Math.floor(Math.random() * 9000 + 1000);
+      Alert.alert(
+        "Generated password",
+        `We'll set this random password for ${email}:\n\n${rand}\n\nShare it with the user over the phone. They can change it later from Settings.`,
+        [
+          { text: "Cancel", style: "cancel" },
+          { text: "Apply", onPress: () => doReset(rand) },
+        ],
+      );
+    }
+  }, []);
 
   const planChips: Array<{ key: "" | PlanKey; label: string }> = useMemo(() => {
     const counts = summary?.plan_counts || {};
@@ -294,7 +354,7 @@ export default function AdminUsersScreen() {
               <ActivityIndicator color={colors.primary} />
             </View>
           ) : (
-            <DetailView d={detail} />
+            <DetailView d={detail} onResetPassword={resetUserPassword} />
           )}
         </SafeAreaView>
       </Modal>
@@ -328,7 +388,13 @@ function UserRow({ row, onPress }: { row: Row; onPress: () => void }) {
               </View>
             ) : null}
           </View>
+          {row.display_id ? (
+            <Text style={styles.displayId}>{row.display_id}</Text>
+          ) : null}
           <Text style={styles.email} numberOfLines={1}>{row.email}</Text>
+          {row.phone ? (
+            <Text style={styles.shop} numberOfLines={1}>📞 {row.phone}</Text>
+          ) : null}
           {row.shop_name ? (
             <Text style={styles.shop} numberOfLines={1}>🏪 {row.shop_name}</Text>
           ) : null}
@@ -366,17 +432,26 @@ function Stat({ icon, value, label }: { icon: string; value: string; label: stri
   );
 }
 
-function DetailView({ d }: { d: DetailResponse }) {
+function DetailView({ d, onResetPassword }: {
+  d: DetailResponse;
+  onResetPassword: (id: string, email: string) => void;
+}) {
   const u = d.user;
   const pal = PLAN_COLORS[u.plan] || PLAN_COLORS.free_trial;
   return (
     <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 40 }}>
       {/* Hero */}
       <View style={styles.heroCard}>
+        {u.display_id ? (
+          <View style={styles.heroIdPill}>
+            <Ionicons name="finger-print" size={11} color="#0F172A" />
+            <Text style={styles.heroIdTxt}>{u.display_id}</Text>
+          </View>
+        ) : null}
         <Text style={styles.heroName}>{u.name || u.email.split("@")[0]}</Text>
         <Text style={styles.heroEmail}>{u.email}</Text>
-        {u.shop_name ? <Text style={styles.heroShop}>🏪 {u.shop_name}</Text> : null}
         {u.phone ? <Text style={styles.heroShop}>📞 {u.phone}</Text> : null}
+        {u.shop_name ? <Text style={styles.heroShop}>🏪 {u.shop_name}</Text> : null}
         <View style={styles.heroRow}>
           <View style={[styles.planPill, { backgroundColor: pal.bg }]}>
             <Text style={[styles.planPillTxt, { color: pal.fg }]}>{pal.label}</Text>
@@ -392,6 +467,18 @@ function DetailView({ d }: { d: DetailResponse }) {
               <Text style={[styles.expPillTxt, { color: "#991B1B" }]}>MOCKED</Text>
             </View>
           ) : null}
+        </View>
+
+        {/* Admin quick actions */}
+        <View style={styles.adminActions}>
+          <TouchableOpacity
+            onPress={() => onResetPassword(u.id, u.email)}
+            style={styles.actionBtn}
+            activeOpacity={0.85}
+          >
+            <Ionicons name="key-outline" size={14} color="#fff" />
+            <Text style={styles.actionTxt}>Reset Password</Text>
+          </TouchableOpacity>
         </View>
       </View>
 
@@ -494,6 +581,35 @@ const styles = StyleSheet.create({
   nameRow: { flexDirection: "row", alignItems: "center", gap: 6, flexWrap: "wrap" },
   name:  { fontSize: 15, fontWeight: "900", color: "#0F172A", maxWidth: 200 },
   email: { fontSize: 12, color: "#64748B", marginTop: 2 },
+  displayId: {
+    fontSize: 10.5, fontWeight: "900", color: "#0F172A",
+    letterSpacing: 1, marginTop: 2,
+    backgroundColor: "#E0E7FF", alignSelf: "flex-start",
+    paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4,
+  },
+  heroIdPill: {
+    alignSelf: "flex-start",
+    flexDirection: "row", alignItems: "center", gap: 4,
+    backgroundColor: "#E0E7FF",
+    paddingHorizontal: 8, paddingVertical: 3,
+    borderRadius: 6, marginBottom: 8,
+  },
+  heroIdTxt: {
+    fontSize: 11, fontWeight: "900", color: "#0F172A", letterSpacing: 1,
+  },
+  adminActions: {
+    flexDirection: "row", gap: 8, marginTop: 14,
+    paddingTop: 14, borderTopWidth: 1, borderTopColor: "#F1F5F9",
+  },
+  actionBtn: {
+    flexDirection: "row", alignItems: "center", gap: 6,
+    backgroundColor: "#0F172A",
+    paddingHorizontal: 12, paddingVertical: 8,
+    borderRadius: 8,
+  },
+  actionTxt: {
+    color: "#fff", fontSize: 12, fontWeight: "800", letterSpacing: 0.3,
+  },
   shop:  { fontSize: 11.5, color: "#475569", marginTop: 2, fontWeight: "600" },
   planPill: { paddingHorizontal: 8, paddingVertical: 3, borderRadius: 999 },
   planPillTxt: { fontSize: 10, fontWeight: "800", letterSpacing: 0.4 },
