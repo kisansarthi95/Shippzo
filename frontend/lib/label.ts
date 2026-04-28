@@ -315,20 +315,14 @@ function singleLabel(s: Shipment, sender: SenderAddress, opts: LabelOptions) {
         ${cfMetaRow}
       </div>
 
-      ${(() => {
-        // Shipment-id tag (Phase-4d fix): repeat DD + OID in a dashed
-        // box below the meta-row so the warehouse/courier operator
-        // can quickly scan them without squinting at the header.
-        // Shown only when at least one of DD or OID is present and
-        // the user has that field enabled.
-        const hasDD  = lf.dispatch_date && !!dispatchDate;
-        const hasOID = lf.oid && !!s.order_id;
-        if (!hasDD && !hasOID) return "";
-        return `<div class="ship-id-box">
-          ${hasDD ? `<div class="sib-row"><b class="lbl">DD:</b> <b class="sib-val">${escape(dispatchDate)}</b></div>` : ""}
-          ${hasOID ? `<div class="sib-row"><b class="lbl">OID:</b> <b class="sib-val">${escape(s.order_id)}</b></div>` : ""}
-        </div>`;
-      })()}
+      ${/*
+         Earlier iterations rendered a duplicate "DD/OID" tag in a
+         green dashed box right under the meta row. Per user feedback
+         on 2026-04-28 that was a misread of the original requirement
+         — DD + OID already appear in the header next to the brand,
+         so the second copy was just visual clutter and confused the
+         courier operator. Removed entirely.
+      */ ""}
     </div>
 
     <!-- BOTTOM (fixed height) — token-box (if any) + footer + optional bottom custom fields.
@@ -551,19 +545,10 @@ export function buildLabelHtml(
     border-radius: 1mm; line-height: 1.35; word-break: break-word; }
   .shipment-notes .lbl { color: #B45309; font-size: 8.5pt; }
 
-  /* Shipment-id tag — DD + OID repeated in a dashed box below meta-row
-     so warehouse/courier staff can scan them without squinting at the
-     small header. Never truncates. */
-  .ship-id-box { margin-top: 2.2mm; padding: 1.5mm 2.5mm;
-    border: 1px dashed #86EFAC; border-radius: 2mm; background: #F0FDF4;
-    display: flex; flex-direction: column; gap: 0.6mm;
-    line-height: 1.25; color: #065F46; align-self: flex-start;
-    max-width: 100%; }
-  .ship-id-box .sib-row { font-size: 9pt; white-space: nowrap; }
-  .ship-id-box .lbl { color: #047857; font-weight: 700; font-size: 8.5pt;
-    letter-spacing: 0.3px; margin-right: 1mm; }
-  .ship-id-box .sib-val { color: #064E3B; font-weight: 900; font-size: 9.5pt;
-    letter-spacing: 0.2px; }
+  /* (Removed 2026-04-28) ship-id-box — the duplicate green dashed
+     "DD + OID" pill that used to sit below the meta row. The same
+     info already lives in the header next to the brand, so this was
+     visual noise. CSS class removed to keep the stylesheet lean. */
 
   /* ---- Custom Label Fields (Phase B) ---- */
   .cf-rows { display: flex; flex-direction: column; gap: 0.8mm; margin-top: 1mm; }
