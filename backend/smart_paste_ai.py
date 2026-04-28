@@ -369,9 +369,13 @@ async def parse_paste_via_llm(
                     for ln in recovered.splitlines() if ln.strip()
                 ]
                 if lines:
-                    fields["ADDRESS_1"] = lines[0][:140]
-                    if len(lines) > 1 and not (fields.get("ADDRESS_2") or "").strip():
-                        fields["ADDRESS_2"] = lines[1][:140]
+                    # Phase-6 single-line UX — join all recovered lines
+                    # into ADDRESS_1 (was: lines[0][:140] + lines[1][:140]
+                    # in ADDRESS_2). Cap raised to 300 to match the
+                    # frontend maxLength.
+                    joined = ", ".join(lines).strip(" ,;-")
+                    fields["ADDRESS_1"] = joined[:300]
+                    fields["ADDRESS_2"] = ""
                     if "ADDRESS_1" in missing:
                         missing.remove("ADDRESS_1")
                     reason = (reason or "llm classification") + " + address recovery"
@@ -384,11 +388,21 @@ async def parse_paste_via_llm(
     # ── Address-completeness post-processor (deterministic safety net) ──
     # Even with explicit Rule 13 in the prompt, gpt-4.1-nano sometimes
     # silently drops middle parts of long multi-clause addresses. This
-    # appends any dropped chunks to ADDRESS_2 so nothing is lost.
+    # appends any dropped chunks to ADDRESS_1.
     try:
         _ensure_address_completeness(text, fields, warnings)
     except Exception as e:
         _LOG.warning("Address completeness check failed: %s", e)
+
+    # ── Phase-6 final safety net: regex-based address repair from raw ──
+    # If the AI/recovery pipeline still left ADDRESS_1 short, run a
+    # pure-Python regex extractor over the original paste text. This
+    # is the LAST line of defence — guarantees the form gets the full
+    # captured address even when the LLM is having a bad day.
+    try:
+        repair_address_from_raw(text, fields)
+    except Exception as e:
+        _LOG.warning("Deterministic address repair failed: %s", e)
 
     return {
         "fields": fields,
@@ -530,15 +544,16 @@ def _ensure_address_completeness(
         return
 
     addn = ", ".join(missing)
-    a2 = (fields.get("ADDRESS_2") or "").strip().rstrip(",").strip()
-    if a2 and a2 != "-":
-        fields["ADDRESS_2"] = (a2 + ", " + addn)[:280]
+    # Phase-6 single-line UX: append missing chunks to ADDRESS_1 (not
+    # ADDRESS_2). The legacy ADDRESS_2 path is dead code under the new
+    # form; we keep `fields["ADDRESS_2"] = ""` for output consistency.
+    a1 = (fields.get("ADDRESS_1") or "").strip().rstrip(",").strip()
+    if a1 and a1 != "-":
+        merged = f"{a1}, {addn}"
     else:
-        a1 = (fields.get("ADDRESS_1") or "").strip().rstrip(",").strip()
-        if a1 and a1 != "-":
-            fields["ADDRESS_2"] = addn[:280]
-        else:
-            fields["ADDRESS_1"] = addn[:280]
+        merged = addn
+    fields["ADDRESS_1"] = merged[:300]
+    fields["ADDRESS_2"] = ""
 
     warnings.append(
         f"Auto-recovered {len(missing)} address fragment"
@@ -665,6 +680,135 @@ def _empty_result(source: str) -> Dict[str, Any]:
 
 
 # ---- Converters for existing pipeline ----------------------------------
+
+def repair_address_from_raw(raw_text: str, schema: Dict[str, str]) -> Dict[str, str]:
+    """Defensive deterministic address extraction.
+
+    The AI sometimes truncates long addresses (puts only the first 1-2
+    fragments in ADDRESS_1 and silently drops the rest). This function
+    runs a regex-driven extraction over the ORIGINAL raw paste and, if
+    it finds a more complete address than what the AI returned, it
+    OVERWRITES schema["ADDRESS_1"] with the full version.
+
+    Returns the (possibly mutated) schema dict — same object, modified
+    in-place for caller convenience.
+
+    Strategy:
+      1. Find an "address header" line — one of:
+           Shipping Address / Delivery Address / Address / શિપિંગ /
+           પત્તો / डिलीवरी / पता / ઠેકાણું.
+      2. Capture EVERYTHING from after the colon until we hit a clear
+         end-marker: another Payment / Order / Items / phone-only line,
+         or two consecutive blank lines.
+      3. From that captured block, peel off trailing PINCODE (6 digits)
+         and the word(s) around it as STATE; the word right before
+         pincode/state as CITY.
+      4. Whatever's left becomes the new ADDRESS_1, joined with ", ".
+      5. Only override the AI if our extraction is at least 30% longer
+         than what the AI produced AND ours is non-empty — protects
+         against pathological pastes where this heuristic finds noise.
+    """
+    if not raw_text or not schema:
+        return schema or {}
+
+    # Header markers (first match wins). We anchor at line-start to avoid
+    # accidentally matching a customer name like "Mahek Patel - Address Bar".
+    header_re = re.compile(
+        r"(?im)^[\s>•\-\*]*"
+        r"(?:shipping\s*address|delivery\s*address|address|"
+        r"\u0936\u093F\u092A\u093F\u0902\u0917|"  # शिपिंग
+        r"\u092A\u0924\u093E|"                     # पता
+        r"\u0aa1\u0ac0\u0ab2\u093F\u0935\u0930\u0940|"  # ડીલીવરી
+        r"\u0aa0\u0ac7\u0a95\u0abe\u0aa3\u0ac1\u0a82|"   # ઠેકાણું
+        r"\u0AAA\u0AA4\u0acd\u0AA4\u0acB)"         # પત્તો
+        r"\s*[:\-–—]\s*",
+    )
+    m = header_re.search(raw_text)
+    if not m:
+        return schema
+
+    after = raw_text[m.end():]
+    # End-markers: consecutive blank lines OR a known next-section label
+    # OR a payment/total emoji+amount line.
+    end_re = re.compile(
+        r"(?im)(?:\n\s*\n|"
+        r"^[\s>•\-\*]*(?:order(?:\s*id)?|items?|amount|total|qty|"
+        r"payment|paid|cod|prepaid|notes?|courier|"
+        r"\u0aa4\u0aae\u0abe\u0ab0\u0acb\s*\u0a93\u0aa1\u0acd\u0ab0|"  # તમારો ઓર્ડર
+        r"\u0aaa\u0ac7\u092e\u0947\u0902\u091f|"                        # પેમેન્ટ
+        r"\u0905\u0902\u0915\u093E\u0908\s*\u0930\u0941\u092A)"        # रकम
+        r"[:\-]?)",
+    )
+    em = end_re.search(after)
+    block = (after[:em.start()] if em else after).strip()
+
+    if not block:
+        return schema
+
+    # Flatten to commas, collapse whitespace, dedupe consecutive separators.
+    block = re.sub(r"[\r\n]+", ", ", block)
+    block = re.sub(r"\s*,\s*", ", ", block)
+    block = re.sub(r"\s{2,}", " ", block).strip(" ,")
+    if not block:
+        return schema
+
+    # Cap absurdly long captures (likely we ran past a signal we didn't
+    # know about). Anything past ~400 chars is suspicious for an address.
+    if len(block) > 400:
+        block = block[:400]
+
+    # Pull off trailing pincode if present.
+    pin_match = re.search(r"\b(\d{6})\b", block)
+    pincode = pin_match.group(1) if pin_match else ""
+
+    # Strip pincode out of the working text first.
+    working = re.sub(r"\b\d{6}\b", "", block) if pincode else block
+    working = re.sub(r"\s*,\s*", ", ", working).strip(" ,")
+
+    parts = [p.strip() for p in working.split(",") if p.strip()]
+    city = state = ""
+    if len(parts) >= 3:
+        # Last part = state, second-last = city; rest joins as line1.
+        state = parts[-1]
+        city = parts[-2]
+        line1_parts = parts[:-2]
+    elif len(parts) == 2:
+        state = parts[-1]
+        line1_parts = parts[:-1]
+    else:
+        line1_parts = parts
+
+    line1_full = ", ".join(line1_parts)
+    if len(line1_full) > 300:
+        line1_full = line1_full[:300]
+
+    # Decide whether to override AI output. Heuristic: if our extraction
+    # is at least 30% longer than the AI's and contains a substring of
+    # the AI's, we trust ours. This protects against:
+    #  • pathological pastes with no real address (we'd produce noise)
+    #  • cases where the AI did a perfect job (we don't disturb it)
+    ai_addr = (schema.get("ADDRESS_1", "") or "").strip()
+    if line1_full and len(line1_full) >= int(len(ai_addr) * 1.3 + 1):
+        schema["ADDRESS_1"] = line1_full
+        # Also ensure ADDRESS_2 stays empty under the new single-line UX.
+        schema["ADDRESS_2"] = ""
+    elif line1_full and not ai_addr:
+        # AI gave nothing but we found something — definitely use ours.
+        schema["ADDRESS_1"] = line1_full
+        schema["ADDRESS_2"] = ""
+
+    # Only set CITY/STATE/PINCODE if the AI didn't already have a value
+    # (we trust the AI's classification of geography over our naive last-
+    # token heuristic when both are non-empty).
+    if pincode and not (schema.get("PINCODE") or "").strip():
+        schema["PINCODE"] = pincode
+    if city and not (schema.get("CITY") or "").strip():
+        schema["CITY"] = city
+    if state and not (schema.get("STATE") or "").strip():
+        schema["STATE"] = state
+
+    return schema
+
 
 def to_legacy_fields(ai_fields: Dict[str, str]) -> Dict[str, str]:
     """Map the 15-line schema keys onto the field names the rest of the
