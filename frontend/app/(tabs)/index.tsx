@@ -1055,6 +1055,20 @@ export default function Dashboard() {
                     Alert.alert("Invalid pincode", "Pincode must be exactly 6 digits.");
                     return;
                   }
+                  // Weight is MANDATORY and must be a positive number > 0.
+                  const weightVal = parseFloat(
+                    String((chatFields as any).weight || "").replace(/[^\d.]/g, ""),
+                  );
+                  if (!weightVal || weightVal <= 0) {
+                    if (!reqMiss.includes("WEIGHT")) reqMiss.push("WEIGHT");
+                  }
+                  // Amount must be a positive number > 0.
+                  const amountVal = parseFloat(
+                    String((chatFields as any).amount || "").replace(/[^\d.]/g, ""),
+                  );
+                  if (!amountVal || amountVal <= 0) {
+                    if (!reqMiss.includes("AMOUNT")) reqMiss.push("AMOUNT");
+                  }
                   // Payment is required.
                   const payRaw = String((chatFields as any).payment_mode || "").trim().toUpperCase();
                   const payNorm =
