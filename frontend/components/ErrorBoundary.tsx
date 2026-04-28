@@ -24,15 +24,11 @@ import {
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 
-// expo-updates is optional — only present in production builds.
-// Lazy-resolve so we don't crash dev/Go bundles that don't ship it.
-let Updates: any = null;
-try {
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  Updates = require("expo-updates");
-} catch {
-  Updates = null;
-}
+// Note: expo-updates is intentionally NOT required here.
+// Metro statically resolves require() calls even inside try/catch, which
+// breaks the bundle when the module isn't installed (dev / Expo Go).
+// On web we hard-reload via window.location; on native we reset state and
+// let the user re-navigate.
 
 type Props = { children: React.ReactNode };
 type State = {
@@ -61,22 +57,24 @@ export default class ErrorBoundary extends React.Component<Props, State> {
   }
 
   handleReload = async () => {
-    try {
-      // Try Expo Updates' graceful reload first (production builds).
-      if (Platform.OS !== "web" && Updates && (Updates as any).reloadAsync) {
-        await (Updates as any).reloadAsync();
-        return;
-      }
-    } catch {
-      // ignored — fall through
-    }
-    // Web fallback: hard reload.
+    // Web: hard reload via the browser.
     if (Platform.OS === "web" && typeof window !== "undefined") {
-      window.location.reload();
-      return;
+      try {
+        window.location.reload();
+        return;
+      } catch {
+        // fall through to state reset
+      }
     }
-    // Last resort: just clear our state and re-render.
-    this.setState({ hasError: false, error: undefined, errorInfo: undefined, showDetails: false });
+    // Native (Expo Go / dev): we don't ship expo-updates, so the safest
+    // path is to reset the boundary state and let the user re-navigate.
+    // In a production EAS build, swap this for Updates.reloadAsync().
+    this.setState({
+      hasError: false,
+      error: undefined,
+      errorInfo: undefined,
+      showDetails: false,
+    });
   };
 
   copyError = () => {
