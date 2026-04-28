@@ -744,7 +744,7 @@ export default function AddShipment() {
         </Text>
         <TouchableOpacity
           testID="scan-tracking-btn"
-          onPress={() => router.push("/scanner?returnTo=add")}
+          onPress={() => router.push("/scanner?returnTo=add&from=add")}
           style={styles.scanPill}
         >
           <Ionicons name="scan" size={16} color={colors.primary} />
@@ -899,7 +899,7 @@ export default function AddShipment() {
               {autoTracking === false && (
                 <TouchableOpacity
                   testID="tracking-inline-scan"
-                  onPress={() => router.push("/scanner?returnTo=add")}
+                  onPress={() => router.push("/scanner?returnTo=add&from=add")}
                   style={styles.inlineScanBtn}
                   hitSlop={8}
                 >

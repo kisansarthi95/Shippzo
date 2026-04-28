@@ -499,7 +499,7 @@ function DetailView({ d, onResetPassword }: {
         <Text style={styles.empty}>No shipments yet.</Text>
       ) : (
         d.recent_shipments.map((s: any, i: number) => (
-          <View key={s.tracking_id || i} style={styles.listItem}>
+          <View key={`ship-${i}-${s.tracking_id || ""}`} style={styles.listItem}>
             <View style={{ flex: 1 }}>
               <Text style={styles.liTitle} numberOfLines={1}>{s.customer_name || "—"}</Text>
               <Text style={styles.liSub}>

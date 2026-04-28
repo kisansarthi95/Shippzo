@@ -19,7 +19,7 @@ import { colors } from "../lib/theme";
 
 export default function ScannerModal() {
   const router = useRouter();
-  const params = useLocalSearchParams<{ returnTo?: string }>();
+  const params = useLocalSearchParams<{ returnTo?: string; from?: string }>();
   const [permission, requestPermission] = useCameraPermissions();
   const scannedRef = useRef(false);
   const [scannedValue, setScannedValue] = useState<string | null>(null);
@@ -72,21 +72,24 @@ export default function ScannerModal() {
     if (params.returnTo === "add") {
       // New tracking ID + user wants to create a shipment.
       //
-      // We can't rely on router.back() because:
-      //   • If user opened scanner from Dashboard, back() returns to Dashboard
-      //     and the New Shipment form never opens (silent value loss).
-      //   • If user opened scanner from Add form itself, back() correctly
-      //     returns to Add form; useFocusEffect there will read the bridge.
-      //
-      // Easiest fix: ALWAYS navigate forward to the Add tab and pass the
-      // scanned value as a route param.  Add screen already handles
-      // `params.scanned` in a useEffect and populates the tracking field.
-      // router.replace keeps the back-stack clean (no scanner duplicate).
-      scannerBridge.push(v); // keep for focus-fallback (Add form)
-      router.replace({
-        pathname: "/(tabs)/add",
-        params: { scanned: v },
-      });
+      // Two entry points to this screen:
+      //   A) From (tabs)/add itself (`from=add`): Add screen is already
+      //      mounted with user-typed form data. We MUST NOT unmount it,
+      //      otherwise the user's typed address/name/items/amount all
+      //      vanish. Use router.back() + scannerBridge.
+      //   B) From Dashboard/Home (no `from` param): Add screen is not
+      //      yet mounted. router.back() would return to the dashboard
+      //      and silently drop the scanned value. Fall back to
+      //      router.replace() which pushes Add with the param.
+      scannerBridge.push(v); // always — useFocusEffect on Add picks it up
+      if (params.from === "add") {
+        router.back();
+      } else {
+        router.replace({
+          pathname: "/(tabs)/add",
+          params: { scanned: v },
+        });
+      }
     } else {
       router.back();
     }
