@@ -924,7 +924,7 @@ export default function Dashboard() {
                     ) : (
                       <>
                         <Ionicons name="sparkles" size={14} color="#fff" />
-                        <Text style={styles.modalBtnText}>AI Parse & Queue</Text>
+                        <Text style={styles.modalBtnText}>Process & Add</Text>
                       </>
                     )}
                   </TouchableOpacity>
@@ -993,10 +993,17 @@ export default function Dashboard() {
         </View>
       </Modal>
 
-      {/* Smart Paste Chat Modal — conversational flow. AI asks for missing
-          details in natural language; user types replies or taps the
-          keyboard 🎤 to dictate (built-in Android/iOS speech-to-text).
-          Complexity badge + repeat-customer banner live in the header. */}
+      {/* ────────────────────────────────────────────────────────────
+         Smart Paste — Summary Card.
+         Replaces the previous chat-bubble UI per 2026-04-28 product
+         requirement. The whole flow is now non-AI-feeling:
+           • Step 1 (input) lives in the Smart Paste tabs above.
+           • Step 2 (this card) shows one row per field with either a
+             green tick (filled) or an inline editor (missing).
+           • No chat history, no "AI is thinking" copy — just a tool.
+         The same `chatOpen` / `chatFields` state powers it; we only
+         renamed the rendered surface.
+         ──────────────────────────────────────────────────────────── */}
       <Modal
         visible={chatOpen}
         animationType="slide"
@@ -1007,205 +1014,188 @@ export default function Dashboard() {
           behavior={Platform.OS === "ios" ? "padding" : undefined}
           style={styles.modalOverlay}
         >
-          <View style={[styles.modalCard, { maxHeight: "92%", minHeight: "70%" }]}>
+          <View style={[styles.modalCard, { maxHeight: "92%", minHeight: "60%" }]}>
             <View style={styles.modalHeader}>
-              <Ionicons name="chatbubbles" size={18} color="#7C3AED" />
-              <Text style={styles.modalTitle}>Smart Paste Chat</Text>
+              <Ionicons name="sparkles-outline" size={18} color="#7C3AED" />
+              <Text style={styles.modalTitle}>Smart Paste</Text>
               <TouchableOpacity onPress={closeChat} hitSlop={10} disabled={chatSending}>
                 <Ionicons name="close" size={22} color={colors.text} />
               </TouchableOpacity>
             </View>
 
-            {/* Complexity + duplicate badges, if any */}
-            <View style={styles.badgesRow}>
-              {!!chatComplexity && (
-                <View
-                  style={[
-                    styles.badge,
-                    chatComplexity === "complex"
-                      ? styles.badgeComplex
-                      : chatComplexity === "medium"
-                      ? styles.badgeMedium
-                      : styles.badgeSimple,
-                  ]}
-                >
-                  <Ionicons
-                    name={chatComplexity === "complex" ? "warning" : "checkmark-circle"}
-                    size={12}
-                    color={
-                      chatComplexity === "complex"
-                        ? "#92400E"
-                        : chatComplexity === "medium"
-                        ? "#92400E"
-                        : "#065F46"
-                    }
-                  />
-                  <Text
-                    style={[
-                      styles.badgeText,
-                      {
-                        color:
-                          chatComplexity === "complex"
-                            ? "#92400E"
-                            : chatComplexity === "medium"
-                            ? "#92400E"
-                            : "#065F46",
-                      },
-                    ]}
-                  >
-                    {chatComplexity === "complex"
-                      ? "Complex address"
-                      : chatComplexity === "medium"
-                      ? "Medium complexity"
-                      : "Simple address"}
-                  </Text>
-                </View>
-              )}
-              {dupFound.length > 0 && (
-                <View style={[styles.badge, styles.badgeDup]}>
-                  <Ionicons name="copy-outline" size={12} color="#9F1239" />
-                  <Text style={[styles.badgeText, { color: "#9F1239" }]}>
-                    {dupFound.length} possible duplicate
-                    {dupFound.length > 1 ? "s" : ""}
-                  </Text>
-                </View>
-              )}
-            </View>
-
-            {/* Repeat-customer suggestion banner */}
-            {suggestedCustomer && (
-              <View style={styles.suggestBanner}>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.suggestBannerTitle}>🎯 Repeat customer</Text>
-                  <Text style={styles.suggestBannerBody} numberOfLines={2}>
-                    {suggestedCustomer.customer_name} —{" "}
-                    {suggestedCustomer.address_line1}
-                    {suggestedCustomer.city ? `, ${suggestedCustomer.city}` : ""}
-                    {suggestedCustomer._count > 1
-                      ? ` (${suggestedCustomer._count} past orders)`
-                      : ""}
-                  </Text>
-                </View>
-                <TouchableOpacity onPress={applySuggestedCustomer} style={styles.suggestBtn}>
-                  <Text style={styles.suggestBtnText}>Use</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  onPress={() => setSuggestedCustomer(null)}
-                  hitSlop={8}
-                  style={{ marginLeft: 6 }}
-                >
-                  <Ionicons name="close" size={18} color="#065F46" />
-                </TouchableOpacity>
+            {/* Repeat-customer / duplicate-shipment banner */}
+            {!!suggestedCustomer && (
+              <View style={styles.dupBanner}>
+                <Ionicons name="person-circle-outline" size={16} color="#1E40AF" />
+                <Text style={styles.dupBannerTxt} numberOfLines={2}>
+                  Repeat customer: {suggestedCustomer?.customer_name || ""}
+                </Text>
+              </View>
+            )}
+            {dupFound.length > 0 && (
+              <View style={[styles.dupBanner, { backgroundColor: "#FEF3C7", borderColor: "#FCD34D" }]}>
+                <Ionicons name="alert-circle-outline" size={16} color="#92400E" />
+                <Text style={[styles.dupBannerTxt, { color: "#78350F" }]} numberOfLines={2}>
+                  Possible duplicate shipment — review before saving.
+                </Text>
               </View>
             )}
 
-            {/* Message stream */}
             <ScrollView
-              style={{ flex: 1, marginVertical: 8 }}
-              contentContainerStyle={{ paddingBottom: 8 }}
+              testID="smart-paste-summary"
               keyboardShouldPersistTaps="handled"
+              style={{ flex: 1 }}
+              contentContainerStyle={{ padding: 14, paddingBottom: 20 }}
             >
-              {chatMessages.map((m, i) => {
-                if (m.role === "system") {
-                  return (
-                    <Text key={i} style={styles.chatSystemText}>
-                      {m.text}
-                    </Text>
-                  );
-                }
-                const isAI = m.role === "ai";
-                // Typing indicator bubble — animated "…" while the AI
-                // response is in-flight.
-                if (m.typing) {
+              {(() => {
+                // Render each schema field as a "row card". Required
+                // fields with an empty value are inline-editable; filled
+                // fields show a green tick. Tap any filled value to
+                // edit it as well (toggle via editingKey).
+                const REQ = ["NAME", "PHONE", "ADDRESS_1", "CITY", "STATE", "PINCODE", "WEIGHT"];
+                const OPT = ["AMOUNT", "ITEMS", "PAYMENT", "COURIER", "ORDER_ID", "NOTES"];
+                // Map snake_case ↔ schema key for inline-edit binding.
+                const SNAKE: Record<string, string> = {
+                  NAME: "customer_name", PHONE: "customer_phone",
+                  ADDRESS_1: "address_line1", CITY: "city",
+                  STATE: "state", PINCODE: "pincode",
+                  WEIGHT: "weight", AMOUNT: "amount", ITEMS: "items",
+                  PAYMENT: "payment_mode", COURIER: "courier_name",
+                  ORDER_ID: "order_id", NOTES: "notes",
+                };
+
+                const renderRow = (key: string, isReq: boolean) => {
+                  const meta = FIELD_META[key] || { label: key, placeholder: "" };
+                  const sk = SNAKE[key];
+                  const val = String((chatFields as any)[sk] ?? "").trim();
+                  const isMissing = !val;
                   return (
                     <View
-                      key={i}
-                      style={[styles.chatBubble, styles.chatBubbleAI]}
+                      key={key}
+                      style={[
+                        styles.spRow,
+                        isMissing && isReq ? styles.spRowMissing : null,
+                      ]}
+                      testID={`smart-paste-row-${sk}`}
                     >
-                      <Text style={styles.chatBubbleKicker}>🤖 AI</Text>
-                      <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-                        <ActivityIndicator size="small" color="#7C3AED" />
-                        <Text style={[styles.chatBubbleText, { color: "#6B7280" }]}>
-                          Thinking…
+                      <View style={styles.spRowLeft}>
+                        {isMissing ? (
+                          <Ionicons
+                            name={isReq ? "alert-circle" : "ellipse-outline"}
+                            size={16}
+                            color={isReq ? "#DC2626" : "#94A3B8"}
+                          />
+                        ) : (
+                          <Ionicons name="checkmark-circle" size={16} color="#16A34A" />
+                        )}
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.spRowLabel}>
+                          {meta.label}
+                          {isReq ? <Text style={{ color: "#DC2626" }}>  *</Text> : null}
                         </Text>
+                        <TextInput
+                          testID={`smart-paste-input-${sk}`}
+                          style={[
+                            styles.spRowInput,
+                            isMissing && isReq ? { borderColor: "#FCA5A5" } : null,
+                          ]}
+                          value={val}
+                          onChangeText={(t) => {
+                            // Phase-6 single-address-field cap.
+                            const capped = key === "ADDRESS_1" && t.length > 300 ? t.slice(0, 300) : t;
+                            setChatFields((p) => ({ ...p, [sk]: capped }));
+                          }}
+                          placeholder={meta.placeholder}
+                          placeholderTextColor="#9CA3AF"
+                          keyboardType={meta.keyboard || "default"}
+                          multiline={key === "ADDRESS_1" || key === "NOTES"}
+                          numberOfLines={key === "ADDRESS_1" ? 3 : 1}
+                          maxLength={key === "ADDRESS_1" ? 300 : key === "PINCODE" ? 6 : key === "PHONE" ? 15 : 200}
+                        />
                       </View>
                     </View>
                   );
-                }
+                };
+
+                const reqRows = REQ.map((k) => renderRow(k, true));
+                const optRows = OPT.map((k) => renderRow(k, false));
+                const reqMissing = REQ.filter((k) => !String((chatFields as any)[SNAKE[k]] ?? "").trim());
                 return (
-                  <View
-                    key={i}
-                    style={[
-                      styles.chatBubble,
-                      isAI ? styles.chatBubbleAI : styles.chatBubbleUser,
-                    ]}
-                  >
-                    {isAI && (
-                      <Text style={styles.chatBubbleKicker}>🤖 AI</Text>
+                  <>
+                    <Text style={styles.spSectionLabel}>Required details</Text>
+                    {reqRows}
+                    <Text style={[styles.spSectionLabel, { marginTop: 14 }]}>Optional</Text>
+                    {optRows}
+
+                    {reqMissing.length > 0 && (
+                      <View style={styles.spReqHint}>
+                        <Ionicons name="information-circle" size={14} color="#92400E" />
+                        <Text style={styles.spReqHintTxt}>
+                          {reqMissing.length === 1
+                            ? "1 required field still empty"
+                            : `${reqMissing.length} required fields still empty`}
+                        </Text>
+                      </View>
                     )}
-                    <Text
-                      style={[
-                        styles.chatBubbleText,
-                        isAI ? { color: "#111827" } : { color: "#fff" },
-                      ]}
-                    >
-                      {m.text}
-                    </Text>
-                  </View>
+                  </>
                 );
-              })}
+              })()}
             </ScrollView>
 
-            {/* Input row + send button. Users can tap the keyboard 🎤 icon
-                to dictate (native STT on iOS/Android). When all required
-                fields are already filled, a green "Save Now" button
-                appears above the input so the user can commit without
-                another chat turn. */}
-            {chatComplete && !chatSending && (
+            <View style={styles.spFooter}>
               <TouchableOpacity
-                testID="chat-save-now"
-                style={styles.chatSaveNowBtn}
-                onPress={() => saveFromFields(chatFields)}
+                testID="smart-paste-cancel"
+                onPress={closeChat}
+                disabled={chatSending}
+                style={[styles.spFooterBtn, { backgroundColor: "#F3F4F6" }]}
               >
-                <Ionicons name="checkmark-circle" size={16} color="#fff" />
-                <Text style={styles.chatSaveNowText}>Save order now</Text>
+                <Text style={[styles.spFooterBtnTxt, { color: colors.text }]}>Start Over</Text>
               </TouchableOpacity>
-            )}
-            <View style={styles.chatInputRow}>
-              <TextInput
-                testID="chat-input"
-                value={chatInput}
-                onChangeText={setChatInput}
-                placeholder={
-                  chatComplete
-                    ? "Add more info (optional) or tap Save"
-                    : "Type or tap 🎤 on keyboard to speak…"
-                }
-                placeholderTextColor="#9CA3AF"
-                multiline
-                style={styles.chatInput}
-                editable={!chatSending}
-                onSubmitEditing={sendChatReply}
-                blurOnSubmit={false}
-              />
               <TouchableOpacity
-                testID="chat-send"
-                onPress={sendChatReply}
-                disabled={chatSending || !chatInput.trim()}
+                testID="smart-paste-save"
+                onPress={() => {
+                  // Local validation — required fields filled?
+                  const SNAKE2: Record<string, string> = {
+                    NAME: "customer_name", PHONE: "customer_phone",
+                    ADDRESS_1: "address_line1", CITY: "city",
+                    STATE: "state", PINCODE: "pincode", WEIGHT: "weight",
+                  };
+                  const reqMiss = ["NAME","PHONE","ADDRESS_1","CITY","STATE","PINCODE","WEIGHT"]
+                    .filter((k) => !String((chatFields as any)[SNAKE2[k]] ?? "").trim());
+                  if (reqMiss.length > 0) {
+                    const labels = reqMiss.map((k) => FIELD_META[k]?.label || k).join(", ");
+                    Alert.alert("Please fill required fields", labels);
+                    return;
+                  }
+                  saveFromFields(chatFields);
+                }}
+                disabled={chatSending}
                 style={[
-                  styles.chatSendBtn,
+                  styles.spFooterBtn,
                   {
-                    backgroundColor:
-                      chatSending || !chatInput.trim() ? "#D1D5DB" : "#7C3AED",
+                    backgroundColor: chatSending ? "#9CA3AF" : "#7C3AED",
+                    flex: 2,
                   },
                 ]}
               >
-                <Ionicons name="send" size={18} color="#fff" />
+                {chatSending ? (
+                  <ActivityIndicator color="#fff" />
+                ) : (
+                  <>
+                    <Ionicons name="save-outline" size={16} color="#fff" />
+                    <Text style={[styles.spFooterBtnTxt, { color: "#fff", marginLeft: 6 }]}>
+                      Save Shipment
+                    </Text>
+                  </>
+                )}
               </TouchableOpacity>
             </View>
           </View>
         </KeyboardAvoidingView>
       </Modal>
+
+
 
       <ScrollView
         testID="dashboard-scroll"
@@ -2031,6 +2021,62 @@ const styles = StyleSheet.create({
     borderRadius: 22,
     justifyContent: "center",
     alignItems: "center",
+  },
+
+  /* ─────────── Smart Paste — Summary Card styles (Phase-7) ─────────── */
+  spSectionLabel: {
+    fontSize: 11, fontWeight: "800", color: "#64748B",
+    letterSpacing: 0.6, textTransform: "uppercase",
+    marginTop: 4, marginBottom: 6,
+  },
+  spRow: {
+    flexDirection: "row", alignItems: "flex-start", gap: 10,
+    paddingHorizontal: 10, paddingVertical: 8,
+    backgroundColor: "#fff",
+    borderRadius: 8, borderWidth: 1, borderColor: "#E5E7EB",
+    marginBottom: 6,
+  },
+  spRowMissing: {
+    backgroundColor: "#FEF2F2",
+    borderColor: "#FECACA",
+  },
+  spRowLeft: {
+    width: 22, alignItems: "center", paddingTop: 6,
+  },
+  spRowLabel: {
+    fontSize: 11, fontWeight: "700", color: "#475569",
+    letterSpacing: 0.3, marginBottom: 2,
+  },
+  spRowInput: {
+    fontSize: 13, fontWeight: "600", color: "#0F172A",
+    borderWidth: 1, borderColor: "#E2E8F0",
+    borderRadius: 6,
+    paddingHorizontal: 8, paddingVertical: 6,
+    backgroundColor: "#fff",
+    minHeight: 34,
+  },
+  spReqHint: {
+    flexDirection: "row", alignItems: "center", gap: 6,
+    marginTop: 12, paddingHorizontal: 10, paddingVertical: 8,
+    backgroundColor: "#FEF3C7", borderRadius: 8,
+    borderWidth: 1, borderColor: "#FCD34D",
+  },
+  spReqHintTxt: {
+    fontSize: 12, fontWeight: "700", color: "#78350F",
+  },
+  spFooter: {
+    flexDirection: "row", gap: 8,
+    paddingHorizontal: 14, paddingVertical: 10,
+    borderTopWidth: 1, borderTopColor: "#E5E7EB",
+    backgroundColor: "#fff",
+  },
+  spFooterBtn: {
+    flex: 1, flexDirection: "row",
+    alignItems: "center", justifyContent: "center",
+    paddingVertical: 12, borderRadius: 10,
+  },
+  spFooterBtnTxt: {
+    fontSize: 13.5, fontWeight: "800", letterSpacing: 0.3,
   },
 
   /* "Save Now" button — appears above the chat input once every required
