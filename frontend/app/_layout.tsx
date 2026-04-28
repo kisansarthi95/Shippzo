@@ -7,6 +7,7 @@ import * as SplashScreen from "expo-splash-screen";
 import { Ionicons } from "@expo/vector-icons";
 import { AuthProvider, useAuth } from "../lib/auth";
 import { FeatureFlagsProvider } from "../lib/feature_flags";
+import ErrorBoundary from "../components/ErrorBoundary";
 
 // Keep splash visible while we warm-up fonts
 SplashScreen.preventAutoHideAsync().catch(() => {});
@@ -76,43 +77,45 @@ export default function RootLayout() {
   }
 
   return (
-    <AuthProvider>
-      <FeatureFlagsProvider>
-        <SafeAreaProvider>
-          <StatusBar style="dark" />
-          <AuthGate>
-            <Stack
-              screenOptions={{
-                headerShown: false,
-                contentStyle: { backgroundColor: "#F4F5F7" },
-              }}
-            >
-              <Stack.Screen name="(auth)" />
-              <Stack.Screen name="(tabs)" />
-              <Stack.Screen name="scanner" options={{ presentation: "modal", headerShown: false }} />
-              <Stack.Screen name="label/[id]" options={{ headerShown: false }} />
-              <Stack.Screen name="courier/[id]" options={{ headerShown: false }} />
-              <Stack.Screen
-                name="plans"
-                options={{ headerShown: true, title: "Plans & Billing" }}
-              />
-              <Stack.Screen
-                name="wallet"
-                options={{ headerShown: true, title: "Wallet & Credits" }}
-              />
-              <Stack.Screen
-                name="admin/plan-features"
-                options={{ headerShown: false }}
-              />
-              <Stack.Screen
-                name="admin/credit-packages"
-                options={{ headerShown: false }}
-              />
-            </Stack>
-          </AuthGate>
-        </SafeAreaProvider>
-      </FeatureFlagsProvider>
-    </AuthProvider>
+    <ErrorBoundary>
+      <AuthProvider>
+        <FeatureFlagsProvider>
+          <SafeAreaProvider>
+            <StatusBar style="dark" />
+            <AuthGate>
+              <Stack
+                screenOptions={{
+                  headerShown: false,
+                  contentStyle: { backgroundColor: "#F4F5F7" },
+                }}
+              >
+                <Stack.Screen name="(auth)" />
+                <Stack.Screen name="(tabs)" />
+                <Stack.Screen name="scanner" options={{ presentation: "modal", headerShown: false }} />
+                <Stack.Screen name="label/[id]" options={{ headerShown: false }} />
+                <Stack.Screen name="courier/[id]" options={{ headerShown: false }} />
+                <Stack.Screen
+                  name="plans"
+                  options={{ headerShown: true, title: "Plans & Billing" }}
+                />
+                <Stack.Screen
+                  name="wallet"
+                  options={{ headerShown: true, title: "Wallet & Credits" }}
+                />
+                <Stack.Screen
+                  name="admin/plan-features"
+                  options={{ headerShown: false }}
+                />
+                <Stack.Screen
+                  name="admin/credit-packages"
+                  options={{ headerShown: false }}
+                />
+              </Stack>
+            </AuthGate>
+          </SafeAreaProvider>
+        </FeatureFlagsProvider>
+      </AuthProvider>
+    </ErrorBoundary>
   );
 }
 
