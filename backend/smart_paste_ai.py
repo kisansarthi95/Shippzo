@@ -30,10 +30,11 @@ _MODEL = os.getenv("SMART_PASTE_MODEL", "gpt-4.1-nano")
 _PROVIDER = os.getenv("SMART_PASTE_PROVIDER", "openai")
 _TIMEOUT = float(os.getenv("SMART_PASTE_TIMEOUT", "6.0"))
 
-# The 15-line schema we ALWAYS return (hidden from users).
+# The 16-line schema we ALWAYS return (hidden from users).
 SCHEMA_FIELDS: List[str] = [
     "NAME", "PHONE", "ALT_PHONE", "ADDRESS_1", "ADDRESS_2", "CITY", "STATE",
-    "PINCODE", "ITEMS", "AMOUNT", "PAYMENT", "COURIER", "ORDER_ID", "WEIGHT", "NOTES",
+    "PINCODE", "ITEMS", "AMOUNT", "PAYMENT", "TOKEN",
+    "COURIER", "ORDER_ID", "WEIGHT", "NOTES",
 ]
 
 # Default ShipBot-style system prompt bundled with the app. Users can
@@ -49,7 +50,7 @@ NEVER output template placeholders like "<customer name>", "<phone>",
 that starts with `(` and ends with `)`. Those are descriptions, NOT
 values. If the input text doesn't contain the info, write `-` only.
 
-OUTPUT FORMAT (STRICT) — return ONE code block with EXACTLY 15 lines,
+OUTPUT FORMAT (STRICT) — return ONE code block with EXACTLY 16 lines,
 in this exact order, with no emoji / no explanation / no extra lines.
 Each value MUST be the actual data from the input or `-`. The `<…>`
 placeholders below are descriptions only and MUST NEVER appear in
@@ -66,6 +67,7 @@ PINCODE: <6 digits only>
 ITEMS: <item + quantity like "Saree x 2"; comma-separated for multiple>
 AMOUNT: <number only, no ₹ symbol>
 PAYMENT: <COD or PAID — leave blank if not stated>
+TOKEN: <token / advance / partial-paid amount — number only, no ₹ symbol; `-` if not present>
 COURIER: <courier name or ->
 ORDER_ID: <order number or ->
 WEIGHT: <ALWAYS leave as `-`. NEVER infer parcel weight from item name.>
@@ -84,6 +86,7 @@ PINCODE: 383246
 ITEMS: ODC3 x 1
 AMOUNT: 1500
 PAYMENT: COD
+TOKEN: -
 COURIER: -
 ORDER_ID: -
 WEIGHT: -
@@ -104,6 +107,28 @@ PINCODE: 390019
 ITEMS: -
 AMOUNT: -
 PAYMENT: -
+TOKEN: -
+COURIER: -
+ORDER_ID: -
+WEIGHT: -
+NOTES: -
+```
+
+EXAMPLE of a GOOD response when input has BOTH a COD amount AND a
+token already paid (Gujarati / mixed-script message):
+```
+NAME: GREY GENTS
+PHONE: 7575848410
+ALT_PHONE: 7777978550
+ADDRESS_1: 20 "Dev Atelier", Nr RK Enterprise, Hiran Circle, Ramdevnagar Road, Prahladnagar, Ahmedabad, 380015 Gujarat
+ADDRESS_2: -
+CITY: Ahmedabad
+STATE: Gujarat
+PINCODE: 380015
+ITEMS: 3 Kg Natural Honey
+AMOUNT: 1750
+PAYMENT: COD
+TOKEN: 50
 COURIER: -
 ORDER_ID: -
 WEIGHT: -
@@ -225,9 +250,33 @@ City / State should be English transliteration when obvious (e.g.
 "અરવલ્લી" → "Aravalli", "ગુજરાત" → "Gujarat") so the courier sheet
 is consistent; otherwise keep the source script.
 
-**Rule 10 — Amount & token:**
-AMOUNT = COD amount (only if explicitly COD).
-Token-paid amounts go in NOTES as "Token <value>".
+**Rule 10 — Amount & token (CRITICAL):**
+AMOUNT = the COD / total order amount (the BIG number after ₹/Rs/INR
+on the same line as Payment / COD / Cash on Delivery / Total).
+  * Examples:
+      "💰 Payment: COD ₹1750"          → AMOUNT: 1750, PAYMENT: COD
+      "Cash on delivery — Rs. 2400"    → AMOUNT: 2400, PAYMENT: COD
+      "Total: 999 / Paid online"       → AMOUNT: 999,  PAYMENT: PAID
+      "₹1750 COD"                      → AMOUNT: 1750, PAYMENT: COD
+  * If the input has BOTH a COD/Total amount AND a Token / Advance,
+    the LARGER number is the AMOUNT, the SMALLER is the TOKEN.
+
+TOKEN = the advance / partial amount the customer ALREADY paid online.
+Look for any of these signals (case-insensitive, may be in Gujarati / Hindi):
+    "Token", "Tokn", "advance", "advance paid",
+    "ઍડ્વાન્સ", "આગોતરા", "ટોકન", "टोकन", "अग्रिम"
+Examples:
+    "50 tokn"          → TOKEN: 50
+    "Token ₹100"       → TOKEN: 100
+    "advance 200"      → TOKEN: 200
+    "ટોકન 300"         → TOKEN: 300
+TOKEN is a NUMBER ONLY (just the digits). NEVER copy "tokn" / "token"
+text into TOKEN — only the number.
+TOKEN is its OWN field. DO NOT put token text into NOTES anymore.
+
+If both AMOUNT and TOKEN are present, the customer still owes
+(AMOUNT − TOKEN) on COD, but the AI's job is just to extract both
+numbers verbatim — do NOT do any subtraction.
 
 **Rule 11 — Payment field:**
 PAYMENT: COD only if "COD/Cash on Delivery" is mentioned;
@@ -464,6 +513,15 @@ async def parse_paste_via_llm(
         _strip_product_weight_from_parcel_weight(text, fields)
     except Exception as e:
         _LOG.warning("Parcel-weight guard failed: %s", e)
+
+    # Phase-7c: deterministic TOKEN extraction safety net. If the AI
+    # missed the "50 tokn" / "Token ₹100" / "advance 200" amount,
+    # this regex pulls it out of the raw text so the user doesn't
+    # have to type it manually.
+    try:
+        _extract_token_from_raw(text, fields)
+    except Exception as e:
+        _LOG.warning("Token-extract guard failed: %s", e)
 
     return {
         "fields": fields,
@@ -939,6 +997,50 @@ def _strip_product_weight_from_parcel_weight(raw_text: str, fields: Dict[str, st
     fields["WEIGHT"] = ""
 
 
+def _extract_token_from_raw(raw_text: str, fields: Dict[str, str]) -> None:
+    """Deterministic safety net: if AI did NOT extract TOKEN but the
+    raw paste mentions a token / advance amount, pull it out via
+    regex so the user doesn't have to type it manually.
+
+    Triggers:
+      - existing TOKEN value is empty / `-`
+      - raw text contains: token, tokn, advance, ઍડ્વાન્સ, ટોકન,
+        टोकन, अग्रिम (case-insensitive), with a number nearby.
+    """
+    cur = (fields.get("TOKEN", "") or "").strip()
+    if cur and cur != "-":
+        return
+    if not raw_text:
+        return
+    # Match: <number><optional ws><token-keyword>  OR  <token-keyword><optional ws>< ₹/Rs?><number>
+    # Examples handled:
+    #   "50 tokn"          → 50
+    #   "Token ₹100"       → 100
+    #   "Token: 100"       → 100
+    #   "advance 200"      → 200
+    #   "ટોકન 300"         → 300
+    #   "ઍડ્વાન્સ Rs 150"   → 150
+    keyword = (
+        r"(?:token|tokn|advance|adv|"
+        r"\u091F\u094B\u0915\u0928|"                  # टोकन
+        r"\u0A9F\u0acb\u0A95\u0AA8|"                  # ટોકન
+        r"\u0905\u0917\u094D\u0930\u093F\u092E|"      # अग्रिम
+        r"\u0A8D\u0AA1\u0acd\u0AB5\u0Aa3\u0acd\u0Ab8)" # ઍડ્વાન્સ (best-effort)
+    )
+    # Pattern A: NUMBER then keyword
+    pat_a = re.compile(rf"(?i)(\d{{1,7}})\s*{keyword}")
+    m = pat_a.search(raw_text)
+    if not m:
+        # Pattern B: keyword then optional ₹/Rs then number
+        pat_b = re.compile(rf"(?i){keyword}\s*[:\-]?\s*(?:₹|rs\.?|inr)?\s*(\d{{1,7}})")
+        m = pat_b.search(raw_text)
+    if not m:
+        return
+    token_val = m.group(1)
+    _LOG.info("Smart-paste: TOKEN extracted via deterministic fallback = %s", token_val)
+    fields["TOKEN"] = token_val
+
+
 def to_legacy_fields(ai_fields: Dict[str, str]) -> Dict[str, str]:
     """Map the 15-line schema keys onto the field names the rest of the
     app (Shipment model) already uses. Also splits compound phone values
@@ -980,6 +1082,7 @@ def to_legacy_fields(ai_fields: Dict[str, str]) -> Dict[str, str]:
         "items":          ai_fields.get("ITEMS", ""),
         "amount":         ai_fields.get("AMOUNT", ""),
         "payment_mode":   (ai_fields.get("PAYMENT", "") or "").upper(),
+        "token_amount":   ai_fields.get("TOKEN", ""),
         "courier_name":   ai_fields.get("COURIER", ""),
         "order_id":       ai_fields.get("ORDER_ID", ""),
         "weight":         ai_fields.get("WEIGHT", ""),

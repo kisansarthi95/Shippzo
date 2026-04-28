@@ -101,6 +101,43 @@
 #====================================================================================================
 # Testing Data - Main Agent and testing sub agent both should log testing data below this section
 #====================================================================================================
+## Iteration: Smart Paste — Token Auto-Extraction (2026-04-28 PM4)
+
+### Backend Changes (`/app/backend/smart_paste_ai.py`)
+- **`SCHEMA_FIELDS`** updated to 16-field list (added `TOKEN`).
+- **`DEFAULT_SHIPBOT_PROMPT`**: 
+  - Strict output format expanded to 16 lines, with `TOKEN: <number or ->` line.
+  - Both existing examples updated to include `TOKEN: -`.
+  - New worked example showing input "💰 Payment: COD ₹1750 / 50 tokn / GREY GENTS / 3 Kg Natural Honey" producing `AMOUNT: 1750`, `PAYMENT: COD`, `TOKEN: 50`, `WEIGHT: -`, `ITEMS: 3 Kg Natural Honey`.
+- **Rule 10** rewritten with explicit examples for AMOUNT (after ₹/Rs/INR) and TOKEN (recognises Token / Tokn / advance / ઍડ્વાન્સ / ટોકન / टोकन / अग्रिम in any script). Old "Token-paid amounts go in NOTES" instruction REMOVED.
+- **`_extract_token_from_raw`** — NEW deterministic Python regex safety net:
+  - Triggers when AI's TOKEN field is empty.
+  - Matches both `<NUMBER> <token-keyword>` and `<token-keyword> [:₹/Rs] <NUMBER>` patterns.
+  - Multi-script support (Latin / Gujarati / Hindi).
+- **`to_legacy_fields`** — added `"token_amount": ai_fields.get("TOKEN", "")` so the field reaches the frontend's `chatFields` state.
+
+### Validation
+With user's exact sample text:
+```
+💰 Payment:
+COD ₹1750
+50 tokn
+GREY GENTS
+7575848410 / 7777978550
+20 "Dev Atelier", … Ahmedabad, 380015 Gujarat
+તમારો ઓર્ડર: 3 Kg Natural Honey
+```
+Screenshots show:
+- Amount = **1750** ✅
+- Payment = **COD** ✅ (toggle button purple)
+- Token Amount = **50** ✅ (extracted from "50 tokn")
+- Weight = empty ⚠️ (correctly NOT pulled from "3 Kg")
+- Phone = 7575848410, Alt Mobile = 7777978550, Items = "3 Kg Natural Honey", City/State/Pincode all filled.
+
+### No frontend changes — backend AI prompt + python fallback wired.
+
+---
+
 ## Iteration: Smart Paste — Field Logic Update (Amount/Payment/Token/AltMobile) (2026-04-28 PM3)
 
 ### Backend Changes (`/app/backend/server.py`)
