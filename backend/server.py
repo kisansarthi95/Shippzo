@@ -2432,6 +2432,49 @@ async def smart_paste_chat(
     else:
         schema = _legacy_to_schema(incoming)
 
+    # Phase-6 chat-aware short-circuits — when the user's last reply is
+    # a direct answer to one specific missing field (e.g. they replied
+    # just "3.5" or "500g" because we asked them for weight), accept it
+    # *literally* without re-running the LLM. This prevents the parcel-
+    # weight guard from wiping the answer (the guard correctly clears
+    # weight values that aren't accompanied by a "parcel weight" label,
+    # but in chat-context the user IS confirming the parcel weight).
+    reply_raw = (payload.reply or "").strip()
+    # Compute what was missing BEFORE this turn.
+    pre_missing: List[str] = [
+        k for k in _CHAT_REQUIRED
+        if not (schema.get(k) or "").strip()
+    ]
+
+    # 1. Weight short-circuit — user replied with a number-ish thing AND
+    #    weight was the ONLY (or first) missing required field.
+    if (reply_raw and "WEIGHT" in pre_missing
+            and not (schema.get("WEIGHT") or "").strip()):
+        # Accept any of: "3.5", "3.5 kg", "500g", "500gm", "0.8 kgs"
+        wt_match = re.fullmatch(
+            r"\s*(\d+(?:[.,]\d+)?)\s*(g|gm|gms|kg|kgs|grams?|kilos?|kilograms?)?\s*",
+            reply_raw, flags=re.IGNORECASE,
+        )
+        if wt_match:
+            num = wt_match.group(1).replace(",", ".")
+            unit = (wt_match.group(2) or "").lower()
+            if not unit:
+                # If user just typed "3.5" — assume kg if the number is
+                # a small float (< 25), else grams. Couriers in India
+                # almost always weigh in kg for anything > a few-hundred
+                # grams, so this default is safe.
+                try:
+                    val = float(num)
+                    unit = "kg" if val <= 25 else "g"
+                except Exception:
+                    unit = "kg"
+            # Normalize unit display.
+            if unit in ("gm", "gms", "grams", "gram"):
+                unit = "g"
+            elif unit in ("kgs", "kilos", "kilo", "kilograms", "kilogram"):
+                unit = "kg"
+            schema["WEIGHT"] = f"{num}{unit}"
+
     # Build the synthetic block so the LLM has full grounding — known
     # KEY: value lines first, then the user's freeform reply.
     lines: List[str] = []
@@ -2440,7 +2483,13 @@ async def smart_paste_chat(
         if v:
             lines.append(f"{k}: {v}")
     synthetic = "\n".join(lines)
-    reply = (payload.reply or "").strip()
+    reply = reply_raw
+    # If our short-circuit already captured the weight from the reply,
+    # tag the reply with an explicit "Parcel weight:" label so the
+    # downstream parcel-weight guard won't clear it.
+    if (schema.get("WEIGHT") or "").strip() and reply:
+        # Marker line keeps the LLM from re-classifying the bare number.
+        reply = f"Parcel weight: {schema['WEIGHT']}\n\n{reply}"
     combined = synthetic + ("\n\n" + reply if reply else "")
 
     # Re-parse with the user's custom instructions so their business
