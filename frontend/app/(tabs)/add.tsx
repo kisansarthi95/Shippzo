@@ -1552,7 +1552,10 @@ export default function AddShipment() {
           ) : (
             <FlatList
               data={filteredImport}
-              keyExtractor={(o) => o.row_key || String(o.row_index)}
+              // See orders.tsx for the rationale — row_key alone is
+              // not unique when two sheet rows hash identically (same
+              // amount + same customer name). Suffix with row_index.
+              keyExtractor={(o, idx) => `${o.row_key || "row"}|${o.row_index ?? idx}`}
               contentContainerStyle={{ padding: 12, paddingBottom: 32 }}
               ListEmptyComponent={
                 <Text style={styles.emptyImport}>

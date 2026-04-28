@@ -318,7 +318,14 @@ export default function OrdersFromSheet() {
             <FlatList
               testID="orders-list"
               data={visible}
-              keyExtractor={(o) => o.row_key || String(o.row_index)}
+              // Always include the row_index suffix — when two sheet rows
+              // happen to hash to the same row_key (the backend builds it
+              // from amount + customer name and Indian customers re-using
+              // the same name across orders DOES happen), React would
+              // otherwise warn "two children with the same key" and
+              // silently drop one of the rows. Suffixing with the
+              // 1-indexed row number guarantees uniqueness.
+              keyExtractor={(o, idx) => `${o.row_key || "row"}|${o.row_index ?? idx}`}
               refreshControl={
                 <RefreshControl
                   refreshing={refreshing}
