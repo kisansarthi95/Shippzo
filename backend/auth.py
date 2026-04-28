@@ -25,6 +25,23 @@ from typing import Any, Dict, Optional
 import jwt as pyjwt
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+
+# --- Passlib / bcrypt 4.x compatibility shim --------------------------
+# Passlib 1.7.x reads `bcrypt.__about__.__version__` to decide which
+# backend implementation to use. bcrypt >= 4.0 removed `__about__`,
+# producing a noisy warning at startup:
+#     (trapped) error reading bcrypt version
+# We add a tiny stub so passlib finds what it expects without forcing
+# a version downgrade. Must run *before* `from passlib.context import …`.
+try:
+    import bcrypt as _bcrypt  # type: ignore
+    if not hasattr(_bcrypt, "__about__"):
+        class _About:  # noqa: D401
+            __version__ = getattr(_bcrypt, "__version__", "4.x")
+        _bcrypt.__about__ = _About()  # type: ignore[attr-defined]
+except Exception:  # pragma: no cover — purely cosmetic
+    pass
+
 from passlib.context import CryptContext
 from pydantic import BaseModel, EmailStr, Field
 

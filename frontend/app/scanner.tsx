@@ -7,6 +7,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { CameraView, useCameraPermissions } from "expo-camera";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Api, Courier } from "../lib/api";
 import { scannerBridge } from "../lib/scannerBridge";
 import {
@@ -18,6 +19,11 @@ import {
 import { colors } from "../lib/theme";
 import { validateTrackingId, findMatchingCourier } from "../lib/trackingValidator";
 
+// Storage key for the user's "double-confirm scan" preference (per device).
+const DOUBLE_CONFIRM_KEY = "@scanner_double_confirm_v1";
+// Window (ms) within which a second matching read must arrive to confirm.
+const CONFIRM_WINDOW_MS = 2500;
+
 export default function ScannerModal() {
   const router = useRouter();
   const params = useLocalSearchParams<{ returnTo?: string; from?: string }>();
@@ -27,6 +33,9 @@ export default function ScannerModal() {
   const [manualValue, setManualValue] = useState("");
   const [requesting, setRequesting] = useState(false);
   const [soundOn, setSoundOn] = useState(true);
+  const [doubleConfirm, setDoubleConfirm] = useState(true);
+  const [pendingValue, setPendingValue] = useState<string | null>(null);
+  const pendingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [couriers, setCouriers] = useState<Courier[]>([]);
   const [errorHint, setErrorHint] = useState<string | null>(null);
 
@@ -39,6 +48,39 @@ export default function ScannerModal() {
       disposeScanFeedback();
     };
   }, []);
+
+  // Restore the user's "double-confirm" preference (defaults to ON).
+  useEffect(() => {
+    (async () => {
+      try {
+        const v = await AsyncStorage.getItem(DOUBLE_CONFIRM_KEY);
+        if (v === "0") setDoubleConfirm(false);
+      } catch {/* ignore */}
+    })();
+  }, []);
+
+  // Cleanup pending-confirm timer on unmount.
+  useEffect(() => () => {
+    if (pendingTimerRef.current) {
+      clearTimeout(pendingTimerRef.current);
+      pendingTimerRef.current = null;
+    }
+  }, []);
+
+  const toggleDoubleConfirm = async () => {
+    const next = !doubleConfirm;
+    setDoubleConfirm(next);
+    try {
+      await AsyncStorage.setItem(DOUBLE_CONFIRM_KEY, next ? "1" : "0");
+    } catch {/* ignore */}
+    // Reset any pending state when the user changes mode mid-flow.
+    if (pendingTimerRef.current) {
+      clearTimeout(pendingTimerRef.current);
+      pendingTimerRef.current = null;
+    }
+    setPendingValue(null);
+    scannedRef.current = false;
+  };
 
   // Load couriers once so we can validate scans against their format rules.
   useEffect(() => {
@@ -148,13 +190,58 @@ export default function ScannerModal() {
 
   const onBarcodeScanned = ({ data }: { data: string }) => {
     if (scannedRef.current) return;
-    scannedRef.current = true;
-    setScannedValue(data);
-    // Instant audio + haptic feedback (fire-and-forget).
-    if (soundOn) {
-      playScanSuccess();
+    if (!data) return;
+
+    // Single-read mode → behave as before.
+    if (!doubleConfirm) {
+      scannedRef.current = true;
+      setScannedValue(data);
+      if (soundOn) playScanSuccess();
+      setTimeout(() => submitValue(data), 300);
+      return;
     }
-    setTimeout(() => submitValue(data), 300);
+
+    // Double-confirm mode: require two consecutive matching reads
+    // within CONFIRM_WINDOW_MS to commit. Reduces single-frame
+    // misreads (e.g. "EG350898496IN" vs "EG358898496IN").
+    if (pendingValue === null) {
+      // First read — start pending state.
+      setPendingValue(data);
+      if (soundOn) playScanSuccess();
+      // Auto-clear pending if a matching second read doesn't arrive.
+      if (pendingTimerRef.current) clearTimeout(pendingTimerRef.current);
+      pendingTimerRef.current = setTimeout(() => {
+        setPendingValue(null);
+        pendingTimerRef.current = null;
+      }, CONFIRM_WINDOW_MS);
+      return;
+    }
+
+    // Already pending — compare.
+    if (data.trim() === pendingValue.trim()) {
+      // Second matching read → commit.
+      if (pendingTimerRef.current) {
+        clearTimeout(pendingTimerRef.current);
+        pendingTimerRef.current = null;
+      }
+      scannedRef.current = true;
+      setScannedValue(data);
+      setPendingValue(null);
+      if (soundOn) playScanSuccess();
+      setTimeout(() => submitValue(data), 200);
+    } else {
+      // Inconsistent reads → restart the confirm cycle with the new value.
+      setPendingValue(data);
+      if (pendingTimerRef.current) clearTimeout(pendingTimerRef.current);
+      pendingTimerRef.current = setTimeout(() => {
+        setPendingValue(null);
+        pendingTimerRef.current = null;
+      }, CONFIRM_WINDOW_MS);
+      // Subtle error tone — reading was unstable, ask user to hold steady.
+      playScanError();
+      setErrorHint("Reading was inconsistent — hold steady, scan again.");
+      setTimeout(() => setErrorHint(null), 1200);
+    }
   };
 
   const noPermission = !isWeb && permission && !permission.granted;
@@ -166,18 +253,32 @@ export default function ScannerModal() {
           <Ionicons name="close" size={22} color="#fff" />
         </TouchableOpacity>
         <Text style={styles.title}>Scan Tracking ID</Text>
-        <TouchableOpacity
-          testID="sound-toggle"
-          onPress={() => setSoundOn((v) => !v)}
-          style={styles.closeBtn}
-          accessibilityLabel={soundOn ? "Mute scan beep" : "Unmute scan beep"}
-        >
-          <Ionicons
-            name={soundOn ? "volume-high" : "volume-mute"}
-            size={22}
-            color="#fff"
-          />
-        </TouchableOpacity>
+        <View style={{ flexDirection: "row", gap: 6 }}>
+          <TouchableOpacity
+            testID="double-confirm-toggle"
+            onPress={toggleDoubleConfirm}
+            style={[styles.closeBtn, doubleConfirm && styles.closeBtnActive]}
+            accessibilityLabel={doubleConfirm ? "Double-confirm scan ON" : "Double-confirm scan OFF"}
+          >
+            <Ionicons
+              name={doubleConfirm ? "shield-checkmark" : "shield-outline"}
+              size={20}
+              color="#fff"
+            />
+          </TouchableOpacity>
+          <TouchableOpacity
+            testID="sound-toggle"
+            onPress={() => setSoundOn((v) => !v)}
+            style={styles.closeBtn}
+            accessibilityLabel={soundOn ? "Mute scan beep" : "Unmute scan beep"}
+          >
+            <Ionicons
+              name={soundOn ? "volume-high" : "volume-mute"}
+              size={22}
+              color="#fff"
+            />
+          </TouchableOpacity>
+        </View>
       </View>
 
       {isWeb ? (
@@ -259,8 +360,23 @@ export default function ScannerModal() {
               <View style={[styles.corner, styles.cornerBL]} />
               <View style={[styles.corner, styles.cornerBR]} />
             </View>
-            <Text style={styles.overlayText}>Point camera at barcode / QR</Text>
-            {scannedValue && !errorHint && <Text style={styles.scannedText}>✓ {scannedValue}</Text>}
+            <Text style={styles.overlayText}>
+              {doubleConfirm
+                ? "Point camera at barcode — we'll read it twice"
+                : "Point camera at barcode / QR"}
+            </Text>
+            {pendingValue && !errorHint ? (
+              <View style={styles.confirmBanner}>
+                <ActivityIndicator color="#fff" size="small" />
+                <Text style={styles.confirmBannerTxt}>
+                  Confirming {pendingValue}{"\n"}
+                  <Text style={styles.confirmBannerSub}>
+                    Hold steady — scanning again to confirm…
+                  </Text>
+                </Text>
+              </View>
+            ) : null}
+            {scannedValue && !errorHint && !pendingValue && <Text style={styles.scannedText}>✓ {scannedValue}</Text>}
             {errorHint ? (
               <View style={styles.errorBanner}>
                 <Ionicons name="close-circle" size={18} color="#fff" />
@@ -295,6 +411,23 @@ const styles = StyleSheet.create({
     width: 44, height: 44, borderRadius: 10,
     backgroundColor: "rgba(255,255,255,0.1)",
     justifyContent: "center", alignItems: "center",
+  },
+  closeBtnActive: {
+    backgroundColor: "rgba(34, 197, 94, 0.35)",
+    borderWidth: 1, borderColor: "rgba(34, 197, 94, 0.7)",
+  },
+  confirmBanner: {
+    position: "absolute",
+    top: 40, left: 16, right: 16,
+    backgroundColor: "rgba(30, 64, 175, 0.94)",
+    padding: 12, borderRadius: 10,
+    flexDirection: "row", alignItems: "center", gap: 10,
+  },
+  confirmBannerTxt: {
+    flex: 1, color: "#fff", fontSize: 13, fontWeight: "800",
+  },
+  confirmBannerSub: {
+    color: "rgba(255,255,255,0.85)", fontSize: 11.5, fontWeight: "600",
   },
   center: { flex: 1, justifyContent: "center", alignItems: "center", padding: 24, gap: 12 },
   scannerWrap: { flex: 1 },

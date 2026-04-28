@@ -2884,3 +2884,162 @@ agent_communication:
 
         All 4 test users cleaned up (verified zero remaining); main
         agent can safely summarise and finish.
+
+
+---
+
+## Iteration: One-Tap Renewal + Scanner Two-Read + bcrypt Shim (2026-04-28)
+
+### Backend Changes
+- `/app/backend/auth.py`: Added a tiny passlib/bcrypt 4.x compatibility shim
+  before the `from passlib.context import CryptContext` line. This stubs
+  `bcrypt.__about__.__version__` so passlib stops emitting the noisy
+  startup warning `(trapped) error reading bcrypt version`. No behavioural
+  change to `hash_password` / `verify_password` / `CryptContext`.
+
+### Frontend Changes
+- `/app/frontend/components/ErrorBoundary.tsx`: removed the dead
+  `require("expo-updates")` block (Metro statically resolves require()
+  calls and was failing the bundle). `handleReload` now relies on
+  `window.location.reload()` on web and a state-reset on native — Expo
+  Updates can be re-introduced later in EAS production builds.
+- `/app/frontend/app/plans.tsx`: One-Tap Renewal — when the user is on
+  their current paid plan AND it's expired or expiring within 30 days,
+  the per-card CTA enables "Renew {planName}" (orange/red depending
+  on expired vs expiring) and routes to `/checkout?mode=plan&...`.
+  Also auto-syncs the monthly/yearly billing toggle to the user's
+  saved `plan_billing_cycle` on first load (won't override after the
+  user manually toggles).
+- `/app/frontend/app/scanner.tsx`: "Double-confirm" mode (default ON,
+  per-device toggle persisted in AsyncStorage). Camera scans now
+  require two consecutive reads of the same value within 2.5s before
+  committing — catches single-frame misreads. Header gains a
+  shield-checkmark toggle to disable the feature for power users.
+  Inconsistent reads show a brief "Reading was inconsistent — hold
+  steady" hint and reset the confirm cycle.
+
+### Backend regression risk
+Auth flow uses passlib's `CryptContext.hash` / `.verify` which the shim
+does not modify — it just adds a fake `__about__` attribute that
+passlib reads at startup for logging.
+
+### Tests Required
+1. `POST /api/auth/signup` — new user signup with phone still works,
+   returns `display_id` and password hash is bcrypt-format.
+2. `POST /api/auth/login` — login with correct & incorrect passwords
+   still returns 200 / 401.
+3. `POST /api/auth/forgot-password` — password reset still works.
+4. Backend startup logs MUST NOT contain
+   `passlib.handlers.bcrypt - WARNING - (trapped) error reading bcrypt version`
+   anymore.
+
+backend:
+  - task: "bcrypt 4.x passlib shim — auth flows still work"
+    implemented: true
+    working: true
+    file: "/app/backend/auth.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: |
+            Added a small monkeypatch in /app/backend/auth.py that injects a
+            stub `bcrypt.__about__.__version__` attribute BEFORE
+            `from passlib.context import CryptContext`. Goal: silence the
+            startup `WARNING (trapped) error reading bcrypt version` that
+            passlib 1.7.4 emits when running against bcrypt >= 4.0.
+
+            Fresh backend startup (16:11) log shows zero bcrypt warnings.
+            Need to confirm signup + login + forgot-password still work
+            end-to-end and no regressions sneak in via the import-order
+            change.
+        -working: true
+        -agent: "testing"
+        -comment: |
+            25/25 PASS on /app/backend_test.py against
+            https://logistics-hub-740.preview.emergentagent.com/api.
+            • signup (8/8): 200, token, display_id USR-#####, phone, no
+              password_hash leak, email match.
+            • login correct password (3/3): 200 + token + email match.
+            • login wrong password (2/2): 401 with detail "Invalid email
+              or password".
+            • /auth/me (7/7): 200, display_id present + matches regex,
+              phone present + matches signup, email matches, no
+              password_hash leak.
+            • forgot-password (3/3): 200 + fresh token + email match.
+            • login with NEW password (1/1): 200.
+            • login with OLD password (1/1): 401 — old hash invalidated.
+            • Cleanup: 1 user + 15 shipments + 1 courier + 1 wallet + 1
+              pwd_reset_attempt purged. Zero litter.
+
+frontend:
+  - task: "One-tap Renewal CTA on plans.tsx"
+    implemented: true
+    working: "NA"
+    file: "/app/frontend/app/plans.tsx"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: false
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: |
+            When usage.period === "month" and (plan_expired OR
+            plan_days_left <= 30), the user's current paid plan card now
+            shows an enabled "Renew {plan.name}" button instead of the
+            disabled "You're on this plan" pill. Tapping routes to
+            /checkout?mode=plan&plan=<key>&cycle=<billing> — same flow
+            we already use for upgrades. Billing toggle auto-syncs to
+            the saved cycle on first load.
+  - task: "Scanner double-read confirmation"
+    implemented: true
+    working: "NA"
+    file: "/app/frontend/app/scanner.tsx"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: false
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: |
+            Camera scans now require two matching reads of the same
+            tracking ID within 2.5s before committing. Inconsistent reads
+            restart the cycle and show a brief warning hint. Default ON,
+            user can mute via the new shield icon in the header — choice
+            persisted in AsyncStorage under @scanner_double_confirm_v1.
+            Manual entry path is unaffected.
+
+test_plan:
+  current_focus:
+    - "bcrypt 4.x passlib shim — auth flows still work"
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"
+
+agent_communication:
+    -agent: "main"
+    -message: |
+        Three quick wins delivered:
+
+        1. P0 — ErrorBoundary bundling fix (expo-updates require removed).
+           Frontend bundle is healthy again — verified via screenshot of
+           login page rendering correctly.
+
+        2. P1 — One-Tap Renewal: HomeAlerts already had the renewal CTA;
+           plans.tsx CTAs now ALSO enable "Renew" on the user's current
+           paid plan when expired or within 30 days. Billing toggle
+           auto-syncs to plan_billing_cycle.
+
+        3. P2 — Scanner double-read confirmation. Header now has a
+           shield-checkmark toggle. Default ON. Catches single-frame
+           misreads.
+
+        4. P3 — bcrypt shim: silence the passlib startup warning. Fresh
+           backend run shows zero `(trapped) error reading bcrypt
+           version` lines.
+
+        Please RE-TEST signup / login / forgot-password to confirm the
+        bcrypt shim doesn't regress the auth flow. Do NOT retest the
+        admin/user endpoints — those were already green at 36/36.

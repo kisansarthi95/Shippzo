@@ -1,361 +1,253 @@
 """
-Backend tests for Phase-4d auth/admin endpoints:
-  * Test 1: /api/auth/signup phone validation + normalization
-  * Test 2: /api/auth/me returns display_id + phone
-  * Test 3: /api/auth/forgot-password (2-factor: email + phone)
-  * Test 4: /api/admin/users/{id}/reset-password
-  * Test 5: /api/admin/users returns display_id + phone
+Auth regression test — verifies bcrypt 4.x → passlib compatibility shim
+in /app/backend/auth.py does not break:
+
+  1. POST /api/auth/signup   (token + display_id USR-##### + phone)
+  2. POST /api/auth/login    (correct password)
+  3. POST /api/auth/login    (wrong password → 401)
+  4. GET  /api/auth/me       (display_id + phone)
+  5. POST /api/auth/forgot-password  (token, then login old/new pwds)
+
+Cleanup: removes the test user + its wallet/seed artifacts.
 """
+from __future__ import annotations
+
 import os
-import sys
 import re
+import sys
+import time
+import json
+import uuid
+import asyncio
+from pathlib import Path
+
 import requests
-from pymongo import MongoClient
-from dotenv import load_dotenv
-
-load_dotenv("/app/backend/.env")
-
-BASE = "https://logistics-hub-740.preview.emergentagent.com/api"
-MONGO_URL = os.environ["MONGO_URL"]
-DB_NAME = os.environ["DB_NAME"]
-ADMIN_EMAIL = "admin@test.com"
-ADMIN_PASSWORD = "Admin@12345"
-
-PASS = []
-FAIL = []
 
 
-def rec(ok, name, detail=""):
-    if ok:
-        PASS.append(name)
-        print(f"  PASS - {name}")
+# ----- locate backend URL ---------------------------------------------------
+
+def _read_backend_url() -> str:
+    env_path = Path("/app/frontend/.env")
+    text = env_path.read_text()
+    for line in text.splitlines():
+        line = line.strip()
+        if line.startswith("EXPO_PUBLIC_BACKEND_URL="):
+            return line.split("=", 1)[1].strip().strip('"').strip("'")
+    raise RuntimeError("EXPO_PUBLIC_BACKEND_URL not found in /app/frontend/.env")
+
+
+BASE = _read_backend_url().rstrip("/") + "/api"
+print(f"[INFO] Testing against: {BASE}")
+
+
+# ----- assertion helpers ---------------------------------------------------
+
+PASS = 0
+FAIL = 0
+FAIL_DETAILS: list[str] = []
+
+
+def check(label: str, cond: bool, detail: str = ""):
+    global PASS, FAIL
+    if cond:
+        PASS += 1
+        print(f"  ✓ {label}")
     else:
-        FAIL.append((name, detail))
-        print(f"  FAIL - {name} :: {detail}")
+        FAIL += 1
+        FAIL_DETAILS.append(f"{label}: {detail}")
+        print(f"  ✗ {label}  {detail}")
 
 
-def cleanup_users(emails):
-    if not emails:
-        return
-    cli = MongoClient(MONGO_URL)
-    db = cli[DB_NAME]
-    user_ids = [u["id"] for u in db.users.find({"email": {"$in": emails}}, {"id": 1})]
-    if user_ids:
-        db.users.delete_many({"email": {"$in": emails}})
-        for col in ("shipments", "couriers", "settings", "pending_orders",
-                    "wallets", "wallet_history", "pwd_reset_attempts"):
-            try:
-                db[col].delete_many({"user_id": {"$in": user_ids}})
-            except Exception:
-                pass
-    db.pwd_reset_attempts.delete_many({"email": {"$in": emails}})
-    cli.close()
+# ----- test data -----------------------------------------------------------
 
-
-def admin_login():
-    r = requests.post(
-        f"{BASE}/auth/login",
-        json={"email": ADMIN_EMAIL, "password": ADMIN_PASSWORD},
-        timeout=20,
-    )
-    r.raise_for_status()
-    return r.json()["token"]
-
-
-def test1_signup_phone():
-    print("\n=== TEST 1: Signup now requires phone ===")
-    cleanup_users(["ptest1@example.com", "ptest1-2@example.com"])
-
-    r = requests.post(f"{BASE}/auth/signup", json={
-        "email": "ptest1@example.com", "password": "testpass123",
-        "name": "Phone Tester", "shop_name": "PT Shop",
-    })
-    rec(
-        r.status_code in (400, 422),
-        "1a missing phone -> 422/400",
-        f"got {r.status_code} body={r.text[:200]}",
-    )
-
-    r = requests.post(f"{BASE}/auth/signup", json={
-        "email": "ptest1@example.com", "password": "testpass123",
-        "name": "Phone Tester", "shop_name": "PT Shop", "phone": "abcxyz",
-    })
-    body = r.text.lower()
-    rec(
-        r.status_code in (400, 422) and ("mobile" in body or "phone" in body),
-        "1b bad phone abcxyz -> 400/422 mentions mobile/phone",
-        f"got {r.status_code} body={r.text[:200]}",
-    )
-
-    r = requests.post(f"{BASE}/auth/signup", json={
-        "email": "ptest1@example.com", "password": "testpass123",
-        "name": "Phone Tester", "shop_name": "PT Shop", "phone": "9876543210",
-    })
-    rec(r.status_code == 200, "1c valid phone signup -> 200",
-        f"got {r.status_code} body={r.text[:200]}")
-    if r.status_code == 200:
-        b = r.json()
-        rec(bool(b.get("token")), "1c response has token")
-        rec(bool(b.get("id")), "1c response has id")
-        did = b.get("display_id", "")
-        rec(bool(re.fullmatch(r"USR-\d{5}", did)),
-            "1c display_id matches USR-XXXXX",
-            f"got display_id={did!r}")
-        rec(b.get("phone") == "9876543210",
-            "1c phone == '9876543210'",
-            f"got phone={b.get('phone')!r}")
-
-    r = requests.post(f"{BASE}/auth/signup", json={
-        "email": "ptest1@example.com", "password": "testpass123",
-        "name": "Phone Tester", "shop_name": "PT Shop", "phone": "9876543210",
-    })
-    rec(
-        r.status_code == 400 and "already" in r.text.lower(),
-        "1d duplicate email -> 400 'already registered'",
-        f"got {r.status_code} body={r.text[:200]}",
-    )
-
-    r = requests.post(f"{BASE}/auth/signup", json={
-        "email": "ptest1-2@example.com", "password": "testpass123",
-        "name": "Phone Tester 2", "shop_name": "PT Shop 2",
-        "phone": "+91 9876543211",
-    })
-    rec(r.status_code == 200, "1e +91 9876543211 -> 200",
-        f"got {r.status_code} body={r.text[:200]}")
-    if r.status_code == 200:
-        rec(r.json().get("phone") == "9876543211",
-            "1e phone normalised to last-10 digits ('9876543211')",
-            f"got phone={r.json().get('phone')!r}")
-
-    cleanup_users(["ptest1@example.com", "ptest1-2@example.com"])
-    print("  CLEANUP - ptest1, ptest1-2 removed")
-
-
-def test2_auth_me():
-    print("\n=== TEST 2: /api/auth/me returns display_id + phone ===")
-    token = admin_login()
-    r = requests.get(f"{BASE}/auth/me",
-                     headers={"Authorization": f"Bearer {token}"})
-    rec(r.status_code == 200, "2 admin /auth/me -> 200",
-        f"got {r.status_code} body={r.text[:200]}")
-    if r.status_code == 200:
-        b = r.json()
-        did = b.get("display_id", "")
-        rec(isinstance(did, str) and bool(did) and did.startswith("USR-"),
-            "2 admin display_id non-empty 'USR-XXXXX'",
-            f"got display_id={did!r}")
-        rec("phone" in b and isinstance(b.get("phone", ""), str),
-            "2 admin response includes phone (string, may be '')",
-            f"got phone={b.get('phone')!r}")
-
-
-def test3_forgot_password():
-    print("\n=== TEST 3: /api/auth/forgot-password ===")
-    cleanup_users(["fptest@example.com"])
-
-    r = requests.post(f"{BASE}/auth/signup", json={
-        "email": "fptest@example.com", "password": "oldpass1",
-        "name": "FP Tester", "shop_name": "FP Shop", "phone": "9999988888",
-    })
-    if r.status_code != 200:
-        rec(False, "3 setup signup",
-            f"got {r.status_code} body={r.text[:200]}")
-        return
-    rec(True, "3 setup signup -> 200")
-
-    r = requests.post(f"{BASE}/auth/forgot-password", json={
-        "email": "fptest@example.com", "phone": "wrong",
-        "new_password": "newpass123",
-    })
-    rec(r.status_code in (400, 422),
-        "3a phone too short -> 400/422 (no crash)",
-        f"got {r.status_code} body={r.text[:200]}")
-
-    r = requests.post(f"{BASE}/auth/forgot-password", json={
-        "email": "fptest@example.com", "phone": "9111111111",
-        "new_password": "newpass123",
-    })
-    bl = r.text.lower()
-    rec(
-        r.status_code == 400
-        and ("don't match" in bl or "do not match" in bl
-             or "double-check" in bl or "double check" in bl
-             or "match" in bl),
-        "3b wrong phone -> 400 mentions match/double-check",
-        f"got {r.status_code} body={r.text[:200]}",
-    )
-
-    r = requests.post(f"{BASE}/auth/forgot-password", json={
-        "email": "fptest@example.com", "phone": "9999988888",
-        "new_password": "newpass123",
-    })
-    rec(r.status_code == 200, "3c correct phone reset -> 200",
-        f"got {r.status_code} body={r.text[:200]}")
-    if r.status_code == 200:
-        b = r.json()
-        rec(bool(b.get("token")), "3c response has token")
-        did = b.get("display_id", "")
-        rec(isinstance(did, str) and did.startswith("USR-"),
-            "3c response has display_id",
-            f"got {did!r}")
-        rl = requests.post(f"{BASE}/auth/login", json={
-            "email": "fptest@example.com", "password": "newpass123",
-        })
-        rec(rl.status_code == 200, "3c login with new pass -> 200",
-            f"got {rl.status_code} body={rl.text[:200]}")
-
-    rl = requests.post(f"{BASE}/auth/login", json={
-        "email": "fptest@example.com", "password": "oldpass1",
-    })
-    rec(rl.status_code in (400, 401), "3d login with OLD pass -> 401/400",
-        f"got {rl.status_code} body={rl.text[:200]}")
-
-    # Rate limiting: clear failure history first so we have a known starting state
-    cli = MongoClient(MONGO_URL)
-    cli[DB_NAME].pwd_reset_attempts.delete_many({"email": "fptest@example.com"})
-    cli.close()
-
-    for i in range(3):
-        requests.post(f"{BASE}/auth/forgot-password", json={
-            "email": "fptest@example.com", "phone": "9111111111",
-            "new_password": "newpass123",
-        })
-    r4 = requests.post(f"{BASE}/auth/forgot-password", json={
-        "email": "fptest@example.com", "phone": "9111111111",
-        "new_password": "newpass123",
-    })
-    body_l = r4.text.lower()
-    rec(
-        r4.status_code == 429 and "too many" in body_l,
-        "3e 4th bad attempt -> 429 'Too many'",
-        f"got {r4.status_code} body={r4.text[:200]}",
-    )
-
-    cleanup_users(["fptest@example.com"])
-    print("  CLEANUP - fptest removed")
-
-
-def test4_admin_reset():
-    print("\n=== TEST 4: Admin password reset ===")
-    cleanup_users(["admr@example.com"])
-
-    r = requests.post(f"{BASE}/auth/signup", json={
-        "email": "admr@example.com", "password": "abc123",
-        "name": "Admin Reset Tester", "shop_name": "AR Shop",
-        "phone": "9000000001",
-    })
-    if r.status_code != 200:
-        rec(False, "4a setup signup",
-            f"got {r.status_code} body={r.text[:200]}")
-        return
-    new_uid = r.json()["id"]
-    rec(True, "4a setup signup -> 200")
-
-    admin_token = admin_login()
-
-    r = requests.post(
-        f"{BASE}/admin/users/{new_uid}/reset-password",
-        json={"new_password": "resetme99"},
-        headers={"Authorization": f"Bearer {admin_token}"},
-    )
-    rec(r.status_code == 200, "4b admin reset -> 200",
-        f"got {r.status_code} body={r.text[:200]}")
-    if r.status_code == 200:
-        b = r.json()
-        rec(b.get("ok") is True, "4b ok=true",
-            f"got ok={b.get('ok')!r}")
-        rec(bool(b.get("display_id")), "4b response has display_id",
-            f"got display_id={b.get('display_id')!r}")
-        rec(b.get("email") == "admr@example.com",
-            "4b response has email",
-            f"got email={b.get('email')!r}")
-
-    rl = requests.post(f"{BASE}/auth/login", json={
-        "email": "admr@example.com", "password": "resetme99",
-    })
-    rec(rl.status_code == 200, "4c login with new pass -> 200",
-        f"got {rl.status_code} body={rl.text[:200]}")
-    rl_old = requests.post(f"{BASE}/auth/login", json={
-        "email": "admr@example.com", "password": "abc123",
-    })
-    rec(rl_old.status_code in (400, 401),
-        "4c login with old pass -> 401/400",
-        f"got {rl_old.status_code} body={rl_old.text[:200]}")
-
-    r = requests.post(
-        f"{BASE}/admin/users/INVALID_ID/reset-password",
-        json={"new_password": "doesntmatter"},
-        headers={"Authorization": f"Bearer {admin_token}"},
-    )
-    rec(r.status_code == 404 and "not found" in r.text.lower(),
-        "4d invalid id -> 404 'User not found'",
-        f"got {r.status_code} body={r.text[:200]}")
-
-    r = requests.post(
-        f"{BASE}/admin/users/{new_uid}/reset-password",
-        json={"new_password": "doesntmatter"},
-    )
-    rec(r.status_code in (401, 403),
-        "4e no auth -> 401/403",
-        f"got {r.status_code} body={r.text[:200]}")
-
-    if rl.status_code == 200:
-        non_admin_token = rl.json()["token"]
-        r = requests.post(
-            f"{BASE}/admin/users/{new_uid}/reset-password",
-            json={"new_password": "x123456"},
-            headers={"Authorization": f"Bearer {non_admin_token}"},
-        )
-        rec(r.status_code == 403,
-            "4e non-admin token -> 403",
-            f"got {r.status_code} body={r.text[:200]}")
-
-    cleanup_users(["admr@example.com"])
-    print("  CLEANUP - admr removed")
-
-
-def test5_admin_users_list():
-    print("\n=== TEST 5: GET /api/admin/users includes display_id + phone ===")
-    token = admin_login()
-    r = requests.get(f"{BASE}/admin/users",
-                     headers={"Authorization": f"Bearer {token}"})
-    rec(r.status_code == 200, "5 GET /admin/users -> 200",
-        f"got {r.status_code} body={r.text[:200]}")
-    if r.status_code != 200:
-        return
-    users = r.json().get("users", [])
-    rec(len(users) > 0, "5 at least 1 user in response")
-    if users:
-        first = users[0]
-        did = first.get("display_id", "")
-        rec(isinstance(did, str) and did.startswith("USR-"),
-            "5 first row has display_id 'USR-XXXXX'",
-            f"got display_id={did!r}")
-        rec("phone" in first and isinstance(first.get("phone", ""), str),
-            "5 first row has phone (string, may be '')",
-            f"got phone={first.get('phone')!r}")
+TS = int(time.time())
+EMAIL = f"bcrypt_shim_test_{TS}@example.com"
+PASSWORD = "OldP@ssw0rd123"
+NEW_PASSWORD = "FreshP@ss456!"
+NAME = "Bcrypt Shim Tester"
+SHOP = "Shim QA Shop"
+PHONE = "9876512340"   # 10 digits
 
 
 def main():
-    try:
-        test1_signup_phone()
-        test2_auth_me()
-        test3_forgot_password()
-        test4_admin_reset()
-        test5_admin_users_list()
-    finally:
-        cleanup_users([
-            "ptest1@example.com", "ptest1-2@example.com",
-            "fptest@example.com", "admr@example.com",
-        ])
+    s = requests.Session()
+    s.headers.update({"Content-Type": "application/json"})
+    user_id = None
+    token = None
 
+    # ---- 1) SIGNUP ---------------------------------------------------------
+    print("\n=== 1) POST /api/auth/signup ===")
+    r = s.post(f"{BASE}/auth/signup", json={
+        "email": EMAIL,
+        "password": PASSWORD,
+        "name": NAME,
+        "shop_name": SHOP,
+        "phone": PHONE,
+    }, timeout=60)
+    print(f"  HTTP {r.status_code}")
+    check("signup HTTP 200", r.status_code == 200, f"body={r.text[:300]}")
+    if r.status_code == 200:
+        body = r.json()
+        token = body.get("token")
+        user_id = body.get("id")
+        display_id = body.get("display_id", "")
+        check("signup returns non-empty token", bool(token), f"got={token!r}")
+        check("signup returns user id (uuid)", bool(user_id))
+        check(
+            "signup display_id matches USR-#####",
+            bool(re.fullmatch(r"USR-\d{5}", display_id or "")),
+            f"display_id={display_id!r}",
+        )
+        check("signup returns phone field", "phone" in body, f"keys={list(body.keys())}")
+        check(
+            "signup phone is the 10-digit value submitted",
+            body.get("phone") == PHONE,
+            f"phone={body.get('phone')!r}",
+        )
+        check("signup does not leak password_hash", "password_hash" not in body)
+        check("signup email matches", body.get("email") == EMAIL)
+
+    if not token:
+        print("\n[FATAL] No token after signup — aborting downstream auth tests.")
+        return _finish(s, user_id)
+
+    # ---- 2) LOGIN OK -------------------------------------------------------
+    print("\n=== 2) POST /api/auth/login (correct password) ===")
+    r = s.post(f"{BASE}/auth/login", json={
+        "email": EMAIL, "password": PASSWORD,
+    }, timeout=30)
+    print(f"  HTTP {r.status_code}")
+    check("login (correct) HTTP 200", r.status_code == 200, f"body={r.text[:300]}")
+    if r.status_code == 200:
+        body = r.json()
+        check("login returns non-empty token", bool(body.get("token")))
+        check("login email matches", body.get("email") == EMAIL)
+        # Refresh the session token for safety
+        token = body.get("token") or token
+
+    # ---- 3) LOGIN WRONG PASSWORD → 401 ------------------------------------
+    print("\n=== 3) POST /api/auth/login (wrong password → 401) ===")
+    r = s.post(f"{BASE}/auth/login", json={
+        "email": EMAIL, "password": "ThisIsNotMyPassword!!"
+    }, timeout=30)
+    print(f"  HTTP {r.status_code}")
+    check("login (wrong) HTTP 401", r.status_code == 401, f"body={r.text[:200]}")
+    if r.status_code == 401:
+        try:
+            detail = r.json().get("detail", "")
+        except Exception:
+            detail = ""
+        check(
+            "wrong-pwd detail == 'Invalid email or password'",
+            detail == "Invalid email or password",
+            f"detail={detail!r}",
+        )
+
+    # ---- 4) GET /auth/me ---------------------------------------------------
+    print("\n=== 4) GET /api/auth/me ===")
+    r = s.get(f"{BASE}/auth/me", headers={"Authorization": f"Bearer {token}"}, timeout=30)
+    print(f"  HTTP {r.status_code}")
+    check("me HTTP 200", r.status_code == 200, f"body={r.text[:300]}")
+    if r.status_code == 200:
+        body = r.json()
+        check("me has display_id field", "display_id" in body)
+        check(
+            "me display_id matches USR-#####",
+            bool(re.fullmatch(r"USR-\d{5}", body.get("display_id") or "")),
+            f"display_id={body.get('display_id')!r}",
+        )
+        check("me has phone field", "phone" in body)
+        check("me phone matches signup phone", body.get("phone") == PHONE,
+              f"phone={body.get('phone')!r}")
+        check("me email matches", body.get("email") == EMAIL)
+        check("me does not leak password_hash", "password_hash" not in body)
+
+    # ---- 5) FORGOT-PASSWORD -----------------------------------------------
+    print("\n=== 5) POST /api/auth/forgot-password ===")
+    r = s.post(f"{BASE}/auth/forgot-password", json={
+        "email": EMAIL,
+        "phone": PHONE,
+        "new_password": NEW_PASSWORD,
+    }, timeout=30)
+    print(f"  HTTP {r.status_code}")
+    check("forgot-password HTTP 200", r.status_code == 200, f"body={r.text[:300]}")
+    if r.status_code == 200:
+        body = r.json()
+        check("forgot-password returns fresh token", bool(body.get("token")))
+        check("forgot-password email matches", body.get("email") == EMAIL)
+        token = body.get("token") or token
+
+    # 5b) login with NEW password → 200
+    print("\n=== 5b) Login with NEW password (should be 200) ===")
+    r = s.post(f"{BASE}/auth/login", json={
+        "email": EMAIL, "password": NEW_PASSWORD
+    }, timeout=30)
+    print(f"  HTTP {r.status_code}")
+    check("login w/ NEW password HTTP 200", r.status_code == 200, f"body={r.text[:200]}")
+
+    # 5c) login with OLD password → 401
+    print("\n=== 5c) Login with OLD password (should be 401) ===")
+    r = s.post(f"{BASE}/auth/login", json={
+        "email": EMAIL, "password": PASSWORD
+    }, timeout=30)
+    print(f"  HTTP {r.status_code}")
+    check("login w/ OLD password HTTP 401", r.status_code == 401, f"body={r.text[:200]}")
+
+    _finish(s, user_id)
+
+
+# ----- cleanup -------------------------------------------------------------
+
+def _finish(_s: requests.Session, user_id: str | None):
+    print("\n=== Cleanup ===")
+    try:
+        # Use motor directly because the test user shouldn't linger.
+        from motor.motor_asyncio import AsyncIOMotorClient
+        from dotenv import load_dotenv
+        load_dotenv("/app/backend/.env")
+        mongo = os.environ.get("MONGO_URL")
+        db_name = os.environ.get("DB_NAME", "test_database")
+        if not mongo:
+            print("  [WARN] MONGO_URL not set; skipping DB cleanup")
+        else:
+            async def _clean():
+                client = AsyncIOMotorClient(mongo)
+                db = client[db_name]
+                # Remove user + any associated isolated data
+                u = await db.users.find_one({"email": EMAIL})
+                if not u:
+                    print(f"  [WARN] no user found for {EMAIL}; nothing to clean")
+                    return
+                uid = u.get("id")
+                r1 = await db.users.delete_many({"email": EMAIL})
+                r2 = await db.shipments.delete_many({"user_id": uid})
+                r3 = await db.couriers.delete_many({"user_id": uid})
+                r4 = await db.settings.delete_many({"user_id": uid})
+                r5 = await db.pending_orders.delete_many({"user_id": uid})
+                r6 = await db.wallet_transactions.delete_many({"user_id": uid})
+                r7 = await db.wallets.delete_many({"user_id": uid})
+                r8 = await db.pwd_reset_attempts.delete_many({"email": EMAIL})
+                client.close()
+                print(
+                    f"  Cleaned: users={r1.deleted_count} "
+                    f"shipments={r2.deleted_count} couriers={r3.deleted_count} "
+                    f"settings={r4.deleted_count} pending={r5.deleted_count} "
+                    f"wallet_tx={r6.deleted_count} wallets={r7.deleted_count} "
+                    f"pwd_attempts={r8.deleted_count}"
+                )
+            asyncio.run(_clean())
+    except Exception as e:
+        print(f"  [WARN] cleanup failed: {e!r}")
+
+    # ---- Final summary -----------------------------------------------------
     print("\n" + "=" * 60)
-    print(f"PASS: {len(PASS)}    FAIL: {len(FAIL)}")
+    print(f"RESULT: {PASS} passed, {FAIL} failed")
     if FAIL:
-        print("\nFAILED:")
-        for n, d in FAIL:
-            print(f"  - {n}\n      {d}")
-        sys.exit(1)
+        print("Failures:")
+        for d in FAIL_DETAILS:
+            print(f"  - {d}")
+    print("=" * 60)
+    sys.exit(0 if FAIL == 0 else 1)
 
 
 if __name__ == "__main__":

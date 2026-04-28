@@ -71,6 +71,9 @@ export default function PlansScreen() {
   const [loading, setLoading] = useState(true);
   const [busyKey, setBusyKey] = useState<PlanKey | null>(null);
   const [billing, setBilling] = useState<BillingMode>("yearly");
+  // Track whether the user has manually toggled the cycle since this
+  // mount — only auto-sync to their saved cycle when they haven't.
+  const billingTouchedRef = useRef(false);
   const [pricing, setPricing] = useState<Record<PlanKey, PlanPricingEntry> | null>(null);
   const [countdown, setCountdown] = useState<CountdownConfig | null>(null);
   const [secondsLeft, setSecondsLeft] = useState<number>(0);
@@ -88,6 +91,11 @@ export default function PlansScreen() {
       setCurrent(pl.current);
       setUsage(u);
       setWallet(w);
+      // Auto-sync billing toggle to user's saved cycle (only if user
+      // hasn't manually picked one this session). Helps One-Tap renewal.
+      if (!billingTouchedRef.current && u?.plan_billing_cycle) {
+        setBilling(u.plan_billing_cycle === "yearly" ? "yearly" : "monthly");
+      }
       if (pp) {
         setPricing(pp.plan_pricing);
         setCountdown(pp.countdown);
@@ -367,7 +375,7 @@ export default function PlansScreen() {
         <View style={styles.toggleWrap}>
           <TouchableOpacity
             testID="bill-monthly"
-            onPress={() => setBilling("monthly")}
+            onPress={() => { billingTouchedRef.current = true; setBilling("monthly"); }}
             style={[styles.toggleBtn, billing === "monthly" && styles.toggleBtnActive]}
           >
             <Text style={[styles.toggleTxt, billing === "monthly" && styles.toggleTxtActive]}>
@@ -376,7 +384,7 @@ export default function PlansScreen() {
           </TouchableOpacity>
           <TouchableOpacity
             testID="bill-yearly"
-            onPress={() => setBilling("yearly")}
+            onPress={() => { billingTouchedRef.current = true; setBilling("yearly"); }}
             style={[styles.toggleBtn, billing === "yearly" && styles.toggleBtnActive]}
           >
             <Text style={[styles.toggleTxt, billing === "yearly" && styles.toggleTxtActive]}>
@@ -391,18 +399,34 @@ export default function PlansScreen() {
         {loading ? (
           <ActivityIndicator style={{ marginTop: 40 }} color={colors.primary} />
         ) : (
-          plans.map((p) => (
-            <PlanCard
-              key={p.key}
-              plan={p}
-              isCurrent={p.key === current}
-              busy={busyKey === p.key}
-              billing={billing}
-              pricing={pricing?.[p.key] || null}
-              showAnchor={showOffer || (pricing?.[p.key]?.show_strikethrough ?? false)}
-              onUpgrade={() => doUpgrade(p.key)}
-            />
-          ))
+          plans.map((p) => {
+            const isCurr = p.key === current;
+            // One-tap renewal: enable CTA on the user's current paid plan
+            // when it's expired or expiring within 30 days, so they can
+            // renew without leaving the screen.
+            const renewable =
+              isCurr &&
+              p.key !== "free_trial" &&
+              usage?.period === "month" &&
+              (
+                usage.plan_expired === true ||
+                (usage.plan_days_left != null && usage.plan_days_left <= 30)
+              );
+            return (
+              <PlanCard
+                key={p.key}
+                plan={p}
+                isCurrent={isCurr}
+                isRenewable={!!renewable}
+                planExpired={!!usage?.plan_expired}
+                busy={busyKey === p.key}
+                billing={billing}
+                pricing={pricing?.[p.key] || null}
+                showAnchor={showOffer || (pricing?.[p.key]?.show_strikethrough ?? false)}
+                onUpgrade={() => doUpgrade(p.key)}
+              />
+            );
+          })
         )}
 
         <Text style={styles.footnote}>
@@ -431,10 +455,12 @@ export default function PlansScreen() {
 // ------------ Plan Card ---------------------------------------------------
 
 function PlanCard({
-  plan, isCurrent, busy, onUpgrade, billing, pricing, showAnchor,
+  plan, isCurrent, isRenewable, planExpired, busy, onUpgrade, billing, pricing, showAnchor,
 }: {
   plan: PlanSpec;
   isCurrent: boolean;
+  isRenewable?: boolean;
+  planExpired?: boolean;
   busy: boolean;
   billing: BillingMode;
   pricing: PlanPricingEntry | null;
@@ -497,9 +523,20 @@ function PlanCard({
         </View>
       )}
       {isCurrent && (
-        <View style={styles.currentPill}>
-          <Ionicons name="checkmark-circle" size={12} color="#065F46" />
-          <Text style={styles.currentPillTxt}>Your Current Plan</Text>
+        <View style={[styles.currentPill, isRenewable && (planExpired ? styles.currentPillDanger : styles.currentPillWarn)]}>
+          <Ionicons
+            name={isRenewable ? (planExpired ? "alert-circle" : "calendar-outline") : "checkmark-circle"}
+            size={12}
+            color={isRenewable ? (planExpired ? "#7F1D1D" : "#78350F") : "#065F46"}
+          />
+          <Text style={[
+            styles.currentPillTxt,
+            isRenewable && (planExpired ? { color: "#7F1D1D" } : { color: "#78350F" }),
+          ]}>
+            {isRenewable
+              ? (planExpired ? "Expired — Renew now" : "Your Current Plan · Renew")
+              : "Your Current Plan"}
+          </Text>
         </View>
       )}
 
@@ -557,21 +594,35 @@ function PlanCard({
 
       <TouchableOpacity
         testID={`plan-cta-${plan.key}`}
-        disabled={isCurrent || busy}
+        disabled={(isCurrent && !isRenewable) || busy}
         onPress={onUpgrade}
         activeOpacity={0.85}
         style={[
           styles.cta,
           {
-            backgroundColor: isCurrent ? "#E5E7EB" : pal.accent,
+            backgroundColor:
+              isCurrent && !isRenewable
+                ? "#E5E7EB"
+                : isRenewable
+                  ? (planExpired ? "#DC2626" : "#B45309")
+                  : pal.accent,
           },
         ]}
       >
         {busy ? (
-          <ActivityIndicator color={isCurrent ? "#64748B" : "#fff"} />
+          <ActivityIndicator color={isCurrent && !isRenewable ? "#64748B" : "#fff"} />
         ) : (
-          <Text style={[styles.ctaTxt, { color: isCurrent ? "#64748B" : "#fff" }]}>
-            {isCurrent ? "You're on this plan" : isFree ? "Switch to Free Trial" : `Upgrade to ${plan.name}`}
+          <Text style={[
+            styles.ctaTxt,
+            { color: isCurrent && !isRenewable ? "#64748B" : "#fff" },
+          ]}>
+            {isCurrent && !isRenewable
+              ? "You're on this plan"
+              : isRenewable
+                ? (planExpired ? `Renew ${plan.name} now` : `Renew ${plan.name}`)
+                : isFree
+                  ? "Switch to Free Trial"
+                  : `Upgrade to ${plan.name}`}
           </Text>
         )}
       </TouchableOpacity>
@@ -760,6 +811,8 @@ const styles = StyleSheet.create({
     marginBottom: 8,
   },
   currentPillTxt: { color: "#065F46", fontSize: 10, fontWeight: "800", letterSpacing: 0.4 },
+  currentPillWarn:   { backgroundColor: "#FEF3C7" },
+  currentPillDanger: { backgroundColor: "#FEE2E2" },
   planName: { fontSize: 22, fontWeight: "900", marginBottom: 4 },
   planFeel: { fontSize: 13, fontWeight: "700", color: "#1F2937", marginBottom: 2 },
   planPurpose: { fontSize: 12, color: "#64748B", marginBottom: 12 },
