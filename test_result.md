@@ -101,6 +101,47 @@
 #====================================================================================================
 # Testing Data - Main Agent and testing sub agent both should log testing data below this section
 #====================================================================================================
+## Iteration: Phase-7e New Shipment Auto-fill (2026-04-28 PM6)
+
+### Backend (`/app/backend/server.py`)
+- **`Shipment` + `ShipmentCreate` models**: added `master_order_id: str = ""` field (immutable, server-set).
+- **`Settings.order_id_autofill_in_new_shipment: bool = True`** field (controls New Shipment form auto-fill independently of Auto-Generate).
+- **`peek_next_master_order_id()`** helper — reads counter WITHOUT incrementing, returns predicted next ID. Used for live preview only; actual ID still allocated atomically at save.
+- **`GET /api/orders/peek-master-id`** — new endpoint returning `{master_order_id, auto_generate, autofill_in_new_shipment}`.
+- **`POST /api/shipments`** flow:
+  - Auto-Gen ON + frontend supplies a YYMMDD-prefixed `master_order_id` → server uses that exact value (skips re-allocation).
+  - Auto-Gen ON without master_order_id → server allocates fresh.
+  - Auto-Gen OFF without user order_id → 422 with "Order ID is required when Auto-Generate is OFF…"
+  - User Order ID stays separate; falls back to master if blank.
+- **`SettingsUpdate`** + `update_settings` endpoint: propagates new flag.
+
+### Frontend
+- `/app/frontend/lib/api.ts`:
+  - `peekMasterOrderId()` API method.
+- `/app/frontend/app/(tabs)/add.tsx`:
+  - `previewMasterId`, `orderIdAutoGen`, `orderIdAutofillNew`, `userTouchedOrderId` state.
+  - `useEffect` on form open calls `Api.peekMasterOrderId()` → auto-fills Order ID input when both flags ON and user hasn't typed.
+  - Hint label below Order ID shows "Master ID (system): NNNNNNNNNN  ·  Your ID kept separately" when user types a different ID.
+  - Save payload now includes `master_order_id: previewMasterId`.
+- `/app/frontend/app/(tabs)/settings.tsx`:
+  - New `orderIdAutofillNew` state.
+  - Loaded from `/settings`, sent in `/settings` PUT.
+  - **Second toggle** "Auto-fill in New Shipment" added under Auto-Generate (greyed out when Auto-Generate OFF).
+  - Dirty-tracking dependency array updated.
+
+### Validation
+**Backend tests (deep_testing_backend_v2)** — **23/23 PASS**:
+- ✅ peek (auto-gen ON) returns valid YYMMDD+seq, idempotent (no counter mutation)
+- ✅ peek (auto-gen OFF) returns empty string + flags
+- ✅ POST /shipments with frontend-supplied master_order_id → exact value preserved
+- ✅ POST /shipments without master_order_id → server allocates fresh
+- ✅ POST /shipments (auto-gen OFF) without order_id → 422 with proper message
+- ✅ Settings round-trip works for both new flags
+
+### No Regressions in shipment list / labels.
+
+---
+
 ## Iteration: Phase-7d Master Order ID System (2026-04-28 PM5)
 
 ### Backend (`/app/backend/server.py`)
