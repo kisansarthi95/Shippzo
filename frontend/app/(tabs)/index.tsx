@@ -75,32 +75,24 @@ export default function Dashboard() {
     load().catch(() => {});
   };
 
-  // Smart Paste — AI-first flow: auto-paste raw WhatsApp text from clipboard,
-  // LLM parses everything. Modal is just a fallback when clipboard is empty.
+  // Smart Paste — Phase-7 hard reset.
+  // Entry sheet has ONLY 2 buttons: Paste Text / Upload Photo.
+  // After processing, Summary Card opens with parsed fields.
   const [pasteModalOpen, setPasteModalOpen] = useState(false);
-  const [pasteText, setPasteText] = useState("");
   const [pasting, setPasting] = useState(false);
   const [pasteStage, setPasteStage] = useState<"" | "parsing" | "saving">("");
-  // Smart Paste tabs: text vs photo. Photo tab is feature-gated by
-  // `smart_paste_image_ocr` which is enabled in every plan by default.
-  const [pasteTab, setPasteTab] = useState<"text" | "photo">("text");
   const [photoUri, setPhotoUri] = useState<string | null>(null);
   const [photoUploading, setPhotoUploading] = useState(false);
 
-  // Smart Paste Chat — conversational flow. AI asks for missing details
-  // in natural language, user types/dictates replies (keyboard mic works
-  // out of the box on iOS/Android for voice-to-text). Nothing is saved
-  // until the AI confirms all required fields are present.
+  // Summary Card state (the modal that lets the user review/edit fields).
   const [chatOpen, setChatOpen] = useState(false);
-  type ChatMsg = { role: "ai" | "user" | "system"; text: string; typing?: boolean };
-  const [chatMessages, setChatMessages] = useState<ChatMsg[]>([]);
   const [chatFields, setChatFields] = useState<Record<string, any>>({});
   const [chatComplexity, setChatComplexity] = useState<"simple" | "medium" | "complex" | "">("");
   const [chatReason, setChatReason] = useState("");
-  const [chatInput, setChatInput] = useState("");
   const [chatSending, setChatSending] = useState(false);
   const [suggestedCustomer, setSuggestedCustomer] = useState<any | null>(null);
   const [dupFound, setDupFound] = useState<any[]>([]);
+
 
   // Human-readable labels + placeholders for each schema field.
   const FIELD_META: Record<
@@ -135,26 +127,6 @@ export default function Dashboard() {
     "NAME", "PHONE", "ADDRESS_1", "CITY", "STATE", "PINCODE", "AMOUNT", "WEIGHT",
   ];
 
-  /** Derived: do we already have every required field? Controls the
-   *  "Save Now" button visibility in the chat input row. */
-  const chatComplete = React.useMemo(() => {
-    const keyMap: Record<string, string> = {
-      NAME: "customer_name",
-      PHONE: "customer_phone",
-      ADDRESS_1: "address_line1",
-      CITY: "city",
-      STATE: "state",
-      PINCODE: "pincode",
-      AMOUNT: "amount",
-      WEIGHT: "weight",
-    };
-    return REQUIRED_FIELDS.every((k) => {
-      const v = chatFields[keyMap[k]];
-      return v != null && String(v).trim() !== "";
-    });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chatFields]);
-
   // Map from backend (snake_case / shipment schema) → UI schema (UPPER).
   const fromLegacy = (legacy: any): Record<string, string> => {
     const items = legacy?.items;
@@ -178,23 +150,49 @@ export default function Dashboard() {
   };
 
   const handleSmartPaste = async () => {
-    // Phase-5d UX fix: ALWAYS open the Smart Paste modal first so the
-    // user can choose between Text and Photo. Previously the clipboard
-    // would be auto-parsed and the user had no way to switch to Photo
-    // without manually clearing the clipboard.
-    //
-    // We still pre-fill the Text input from clipboard (if any) so a
-    // single "AI Parse & Queue" tap still works for the common case.
+    // Phase-7 hard reset: open ONLY the 2-button entry sheet
+    // (Paste Text / Upload Photo). NO clipboard auto-load, NO tabs,
+    // NO textarea. Each button below directly processes input and
+    // jumps to the Summary Card — no intermediate UI.
+    setPhotoUri(null);
+    setPasteModalOpen(true);
+  };
+
+  /** "Paste Text" button → read clipboard → process → Summary Card. */
+  const handlePasteTextChosen = async () => {
+    if (pasting) return;
     let text = "";
     try {
       text = (await Clipboard.getStringAsync()) || "";
     } catch {
       text = "";
     }
-    setPasteText(text.trim());
-    setPasteTab("text");
-    setPhotoUri(null);
-    setPasteModalOpen(true);
+    text = text.trim();
+    if (!text) {
+      Alert.alert(
+        "Clipboard empty",
+        "Copy your order text (WhatsApp / SMS) first, then tap Paste Text again.",
+      );
+      return;
+    }
+    // Close entry sheet, then run AI parse → Summary Card.
+    setPasteModalOpen(false);
+    await runSmartPasteAI(text, false);
+  };
+
+  /** "Upload Photo" button → ask Camera vs Gallery → process → Summary Card. */
+  const handlePhotoChosen = () => {
+    if (photoUploading) return;
+    Alert.alert(
+      "Upload Photo",
+      "Where should we read the address from?",
+      [
+        { text: "Camera",  onPress: () => pickAndProcessPhoto("camera") },
+        { text: "Gallery", onPress: () => pickAndProcessPhoto("gallery") },
+        { text: "Cancel",  style: "cancel" },
+      ],
+      { cancelable: true },
+    );
   };
 
   /**
@@ -265,43 +263,16 @@ export default function Dashboard() {
       setPhotoUploading(false);
       setPhotoUri(null);
       setPasteModalOpen(false);
-      setPasteTab("text");
 
       // Same merge logic as runSmartPasteAI:
       const legacyFields = resp.fields || {};
-      const missing = (resp.missing || []).filter((k) =>
-        REQUIRED_FIELDS.includes(k),
-      );
-      const photoWarnings: string[] = Array.isArray((resp as any)?.warnings)
-        ? ((resp as any).warnings as string[])
-        : [];
-      const hasPincodeWarning = photoWarnings.some(
-        (w) => /pincode/i.test(w) || /pin\s*code/i.test(w),
-      );
 
-      // Force-open chat if there's a pincode mismatch — user must verify.
-      if (resp.complete && missing.length === 0 && !hasPincodeWarning) {
-        await saveFromFields(legacyFields);
-        return;
-      }
-
-      // Open chat modal with photo-decoded fields pre-filled.
+      // Always open Summary Card so user verifies before saving.
       setChatFields(legacyFields);
       setChatComplexity((resp.complexity as any) || "complex");
       setChatReason(resp.reason || "photo OCR");
       setDupFound([]);
       setSuggestedCustomer(null);
-      setChatInput("");
-      const firstMsg = resp.ai_message || buildChatMessage(legacyFields, missing, true);
-      const messages: ChatMsg[] = [
-        { role: "system", text: `📷 Photo decoded · cost ${resp.credits_charged ?? 2} credits` },
-      ];
-      // Surface AI-side warnings (address completeness, pincode mismatch).
-      for (const w of photoWarnings) {
-        messages.push({ role: "system", text: w });
-      }
-      messages.push({ role: "ai", text: firstMsg });
-      setChatMessages(messages);
       setChatOpen(true);
 
       const phone = (legacyFields.customer_phone || "").toString();
@@ -321,94 +292,31 @@ export default function Dashboard() {
         e?.response?.data?.detail ||
         e?.message ||
         "Could not read the photo. Try a brighter, clearer shot.";
-      Alert.alert("Photo OCR failed", msg);
+      Alert.alert("Photo upload failed", msg);
     }
   };
 
   /**
-   * End-to-end Smart Paste flow (AI first, chat-on-missing).
-   *   1. /smart-paste/check-duplicate runs the LLM on backend.
-   *   2. If ALL required fields present → save immediately (no form).
-   *   3. Else → open chat modal and let the AI ask for missing details
-   *      naturally. User can type or use the keyboard 🎤 to dictate.
+   * End-to-end Smart Paste flow.
+   *   1. /smart-paste/check-duplicate parses the text.
+   *   2. ALWAYS open Summary Card so user verifies before saving.
    */
-  const runSmartPasteAI = async (text: string, fromModal = false) => {
+  const runSmartPasteAI = async (text: string, _fromModal = false) => {
     try {
       setPasting(true);
       setPasteStage("parsing");
       const dup = await Api.smartPasteCheckDuplicate(text);
 
-      // Close the fallback paste modal before the next sheet animates in.
-      if (fromModal) setPasteModalOpen(false);
-
-      const missing = (dup.ai?.missing || []).filter((k) =>
-        REQUIRED_FIELDS.includes(k)
-      );
       const legacyFields = dup.fields || {};
-
-      // If AI detected an alternative phone but the user hasn't enabled
-      // the Alt-Phone field on the label, surface a one-line notification
-      // so they know it was found but won't print / save unless enabled.
-      let altPhoneWarning: string | null = null;
-      const altPhoneFound = (legacyFields.customer_alt_phone || "").trim();
-      if (altPhoneFound) {
-        try {
-          const settings = await Api.getSettings();
-          const altOn = !!(settings as any)?.label_fields?.alt_phone;
-          if (!altOn) {
-            altPhoneWarning =
-              `⚠️ Found a second phone (${altPhoneFound}) but "Alt Phone" ` +
-              `field is OFF in Settings → Label Fields. ` +
-              `Turn it ON to save & print this number.`;
-          }
-        } catch {
-          /* ignore — non-blocking */
-        }
-      }
-
-      // Collect any address-completeness / pincode-mismatch warnings
-      // surfaced by the backend. Pincode warnings (mismatch) MUST
-      // force the chat modal open so the user can verify before save.
-      const aiWarnings: string[] = Array.isArray((dup as any)?.warnings)
-        ? ((dup as any).warnings as string[])
-        : [];
-      const hasPincodeWarning = aiWarnings.some(
-        (w) => /pincode/i.test(w) || /pin\s*code/i.test(w),
-      );
-
       setPasting(false);
       setPasteStage("");
 
-      // All required present + no duplicates + no pincode warnings → save direct.
-      if (
-        missing.length === 0 &&
-        (dup.duplicates || []).length === 0 &&
-        !altPhoneWarning &&
-        !hasPincodeWarning
-      ) {
-        await saveFromFields(legacyFields);
-        return;
-      }
-
-      // Otherwise: open chat modal. Seed first AI bubble from the initial
-      // parse (no extra LLM call needed — we already have `fields`).
+      // Always open the Summary Card — never auto-save.
       setChatFields(legacyFields);
       setChatComplexity((dup.ai?.complexity as any) || "");
       setChatReason(dup.ai?.reason || "");
       setDupFound(dup.duplicates || []);
       setSuggestedCustomer(null);
-      setChatInput("");
-      const firstMsg = buildChatMessage(legacyFields, missing, true);
-      const initialMessages: ChatMsg[] = [{ role: "ai", text: firstMsg }];
-      // Pincode-mismatch warnings shown FIRST so the user spots them
-      // before answering the AI's "still need" prompt.
-      for (const w of aiWarnings) {
-        initialMessages.unshift({ role: "system", text: w });
-      }
-      if (altPhoneWarning) {
-        initialMessages.unshift({ role: "system", text: altPhoneWarning });
-      }
-      setChatMessages(initialMessages);
       setChatOpen(true);
 
       // Background phone lookup for repeat-customer suggestion.
@@ -430,53 +338,6 @@ export default function Dashboard() {
         e?.response?.data?.detail || e?.message || "Please try again."
       );
     }
-  };
-
-  /**
-   * Build the natural-language chat bubble the AI posts: "Got X, Y. Still
-   * need Z." Matches the backend's template so the UX feels consistent.
-   */
-  const buildChatMessage = (
-    legacyFields: Record<string, any>,
-    missing: string[],
-    isFirst: boolean,
-  ): string => {
-    const lines: string[] = [];
-    const push = (label: string, key: string) => {
-      const v = legacyFields[key];
-      if (v && String(v).trim()) lines.push(`• ${label}: ${v}`);
-    };
-    push("Name", "customer_name");
-    push("Phone", "customer_phone");
-    // Show alt phone right under the primary so users see both at a glance.
-    if (legacyFields.customer_alt_phone)
-      lines.push(`• Alt Phone: ${legacyFields.customer_alt_phone}`);
-    push("Address", "address_line1");
-    if (legacyFields.address_line2) lines.push(`• Landmark: ${legacyFields.address_line2}`);
-    push("City", "city");
-    push("State", "state");
-    push("Pincode", "pincode");
-    // Items can be array or string.
-    const itemsVal = legacyFields.items;
-    const itemsText = Array.isArray(itemsVal) ? itemsVal.join(", ") : itemsVal;
-    if (itemsText && String(itemsText).trim()) lines.push(`• Items: ${itemsText}`);
-    if (legacyFields.amount != null && legacyFields.amount !== "")
-      lines.push(`• Amount: ₹${legacyFields.amount}`);
-    if (legacyFields.payment_mode)
-      lines.push(`• Payment: ${String(legacyFields.payment_mode).toUpperCase()}`);
-
-    const known = lines.length
-      ? lines.join("\n")
-      : "• (nothing yet)";
-
-    if (missing.length === 0) {
-      return `All set!\n${known}\n\nSaving the order now…`;
-    }
-    const miss = missing
-      .map((k) => `• ${FIELD_META[k]?.label || k}`)
-      .join("\n");
-    const prefix = isFirst ? "Got these so far:" : "Updated:";
-    return `${prefix}\n${known}\n\nStill need:\n${miss}\n\nPlease share (type or tap 🎤 on the keyboard to speak).`;
   };
 
   const applySuggestedCustomer = () => {
@@ -501,31 +362,9 @@ export default function Dashboard() {
       addedItemsLabel?: string,
     ) => {
       setChatFields(updated);
-      const stillMissing = REQUIRED_FIELDS.filter((k) => {
-        const snakeKey: Record<string, string> = {
-          NAME: "customer_name",
-          PHONE: "customer_phone",
-          ADDRESS_1: "address_line1",
-          CITY: "city",
-          STATE: "state",
-          PINCODE: "pincode",
-          AMOUNT: "amount",
-        };
-        const v = updated[snakeKey[k]];
-        return !v || !String(v).trim();
-      });
-      const msg = buildChatMessage(updated, stillMissing, false);
-      const usedNote = addedItemsLabel
-        ? `Used past address + items for ${suggestedCustomer.customer_name}.${addedItemsLabel}`
-        : `Used past address for ${suggestedCustomer.customer_name}.`;
-      setChatMessages((prev) => [
-        ...prev,
-        { role: "system", text: usedNote },
-        { role: "ai", text: msg },
-      ]);
       setSuggestedCustomer(null);
-      if (stillMissing.length === 0 && dupFound.length === 0) {
-        saveFromFields(updated);
+      if (addedItemsLabel) {
+        // Optional toast — silently keep user in the Summary Card.
       }
     };
 
@@ -593,84 +432,9 @@ export default function Dashboard() {
     ]);
   };
 
-  /**
-   * User sent a chat reply. Push it to the backend `/smart-paste/chat`
-   * endpoint which merges the reply into current fields, re-parses via
-   * LLM, and returns updated fields + the next AI message.
-   */
-  const sendChatReply = async () => {
-    const reply = chatInput.trim();
-    if (!reply) return;
-    // Add user bubble + an optimistic "…" AI typing indicator so the UI
-    // feels responsive even though the LLM call itself takes a few seconds.
-    setChatMessages((prev) => [
-      ...prev,
-      { role: "user", text: reply },
-      { role: "ai", text: "…", typing: true },
-    ]);
-    setChatInput("");
-    setChatSending(true);
-    try {
-      const res = await Api.smartPasteChat(chatFields, reply);
-      setChatFields(res.fields || {});
-      setChatComplexity((res.complexity as any) || "");
-      setChatReason(res.reason || "");
-      const msg = buildChatMessage(res.fields || {}, res.missing || [], false);
-      // Replace the typing placeholder with the real AI bubble.
-      setChatMessages((prev) => {
-        const out = [...prev];
-        const idx = out.findIndex((m) => m.typing);
-        const bubble: ChatMsg = { role: "ai", text: msg };
-        if (idx >= 0) out[idx] = bubble;
-        else out.push(bubble);
-        return out;
-      });
-      setChatSending(false);
-      if (res.complete) {
-        // Handle duplicate confirmation if any were flagged earlier.
-        if (dupFound.length > 0) {
-          const lines = dupFound
-            .map((d: any, i: number) => {
-              const id =
-                d.kind === "shipment" ? d.tracking_id : `PEND ${String(d.id).slice(0, 6)}`;
-              const why = (d.match_on || []).join(" + ") || "match";
-              const oid = d.order_id ? ` · #${d.order_id}` : "";
-              return `${i + 1}. ${id} — ${d.customer_name}${oid}  (${why})`;
-            })
-            .join("\n");
-          Alert.alert(
-            "Possible duplicate",
-            `Found ${dupFound.length} existing order${
-              dupFound.length > 1 ? "s" : ""
-            } with the same phone/order ID:\n\n${lines}\n\nCreate this order anyway?`,
-            [
-              { text: "Cancel", style: "cancel" },
-              {
-                text: "Create anyway",
-                style: "destructive",
-                onPress: () => saveFromFields(res.fields || {}),
-              },
-            ]
-          );
-          return;
-        }
-        await saveFromFields(res.fields || {});
-      }
-    } catch (e: any) {
-      setChatSending(false);
-      setChatMessages((prev) => {
-        const out = prev.filter((m) => !m.typing);
-        out.push({ role: "system", text: "Something went wrong. Please try again." });
-        return out;
-      });
-    }
-  };
-
   const closeChat = () => {
     setChatOpen(false);
-    setChatMessages([]);
     setChatFields({});
-    setChatInput("");
     setDupFound([]);
     setSuggestedCustomer(null);
   };
@@ -716,12 +480,8 @@ export default function Dashboard() {
       setPasting(false);
       setChatSending(false);
       setPasteStage("");
-      setChatMessages((prev) => [
-        ...prev,
-        { role: "ai", text: "✅ Order added to your Pending Orders queue." },
-      ]);
-      // Close the chat after a brief moment so the user sees the confirmation.
-      setTimeout(() => closeChat(), 1200);
+      // Close Summary Card immediately on success.
+      closeChat();
       Alert.alert(
         "✅ Order added",
         "Order queued in Orders tab. Ready to ship.",
@@ -734,32 +494,10 @@ export default function Dashboard() {
       setPasting(false);
       setChatSending(false);
       setPasteStage("");
-      setChatMessages((prev) => [
-        ...prev,
-        {
-          role: "system",
-          text:
-            "Save failed: " +
-            (err?.response?.data?.detail || err?.message || "please try again"),
-        },
-      ]);
-    }
-  };
-
-  const submitPasteModal = async () => {
-    if (!pasteText.trim()) {
-      Alert.alert("Empty", "Please paste some text first.");
-      return;
-    }
-    await runSmartPasteAI(pasteText, true);
-  };
-
-  const pasteFromClipboardToModal = async () => {
-    try {
-      const t = await Clipboard.getStringAsync();
-      if (t) setPasteText(t);
-    } catch {
-      /* ignore */
+      Alert.alert(
+        "Save failed",
+        err?.response?.data?.detail || err?.message || "Please try again.",
+      );
     }
   };
 
@@ -801,193 +539,79 @@ export default function Dashboard() {
         </View>
       </View>
 
-      {/* Smart Paste Fallback Modal — clipboard was empty, user pastes raw
-          WhatsApp/SMS text here OR uploads a photo (Phase-5d). */}
+      {/* ────────────────────────────────────────────────────────────
+         Smart Paste — Entry Sheet.
+         Phase-7 hard reset: ONLY 2 buttons (Paste Text / Upload Photo).
+         No tabs, no textarea, no clipboard preview. Each button directly
+         processes input → opens Summary Card. NO intermediate UI.
+         ──────────────────────────────────────────────────────────── */}
       <Modal
         visible={pasteModalOpen}
         animationType="slide"
         transparent
-        onRequestClose={() => setPasteModalOpen(false)}
+        onRequestClose={() => {
+          if (!pasting && !photoUploading) setPasteModalOpen(false);
+        }}
       >
         <View style={styles.modalOverlay}>
           <View style={styles.modalCard}>
             <View style={styles.modalHeader}>
               <Ionicons name="sparkles" size={18} color="#7C3AED" />
               <Text style={styles.modalTitle}>Smart Paste</Text>
-              <TouchableOpacity onPress={() => setPasteModalOpen(false)} hitSlop={10}>
+              <TouchableOpacity
+                onPress={() => setPasteModalOpen(false)}
+                hitSlop={10}
+                disabled={pasting || photoUploading}
+              >
                 <Ionicons name="close" size={22} color={colors.text} />
               </TouchableOpacity>
             </View>
 
-            {/* Tabs: Text vs Photo */}
-            <View style={styles.tabRow}>
-              <TouchableOpacity
-                testID="smart-paste-tab-text"
-                onPress={() => setPasteTab("text")}
-                style={[styles.tabBtn, pasteTab === "text" && styles.tabBtnActive]}
-                disabled={pasting || photoUploading}
-              >
-                <Ionicons
-                  name="document-text-outline"
-                  size={14}
-                  color={pasteTab === "text" ? "#fff" : "#475569"}
-                />
-                <Text
-                  style={[
-                    styles.tabBtnTxt,
-                    pasteTab === "text" && styles.tabBtnTxtActive,
-                  ]}
-                >
-                  Text
+            {pasting || photoUploading ? (
+              <View style={styles.entryBusyCard}>
+                <ActivityIndicator size="large" color="#7C3AED" />
+                <Text style={styles.entryBusyTxt}>
+                  {photoUploading ? "Reading the photo… (5–20 sec)" : "Processing…"}
                 </Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                testID="smart-paste-tab-photo"
-                onPress={() => {
-                  setPasteTab("photo");
-                  setPasteText(""); // forget clipboard text — user is going photo
-                }}
-                style={[styles.tabBtn, pasteTab === "photo" && styles.tabBtnActive]}
-                disabled={pasting || photoUploading}
-              >
-                <Ionicons
-                  name="camera-outline"
-                  size={14}
-                  color={pasteTab === "photo" ? "#fff" : "#475569"}
-                />
-                <Text
-                  style={[
-                    styles.tabBtnTxt,
-                    pasteTab === "photo" && styles.tabBtnTxtActive,
-                  ]}
-                >
-                  Photo
-                </Text>
-                <View style={styles.tabPill}>
-                  <Text style={styles.tabPillTxt}>1.5 cr</Text>
-                </View>
-              </TouchableOpacity>
-            </View>
-
-            {pasteTab === "text" ? (
-              <>
-                <Text style={styles.modalHint}>
-                  Paste any WhatsApp / SMS order — fields will auto-fill below. No formatting required.
-                </Text>
-
-                <View style={styles.modalQuickRow}>
-                  <TouchableOpacity style={styles.modalQuickBtn} onPress={pasteFromClipboardToModal}>
-                    <Ionicons name="clipboard-outline" size={14} color="#7C3AED" />
-                    <Text style={styles.modalQuickBtnText}>Paste from Clipboard</Text>
-                  </TouchableOpacity>
-                </View>
-
-                <TextInput
-                  testID="smart-paste-input"
-                  value={pasteText}
-                  onChangeText={setPasteText}
-                  multiline
-                  placeholder={
-                    "e.g. Ramesh Patel, 9876543210, 45 MG Road, Ahmedabad 380001, Saree 2 pcs, 1200 COD"
-                  }
-                  placeholderTextColor="#9CA3AF"
-                  style={styles.modalInput}
-                  autoFocus
-                  editable={!pasting}
-                />
-
-                {pasting && (
-                  <View style={styles.aiStatusRow}>
-                    <ActivityIndicator size="small" color="#7C3AED" />
-                    <Text style={styles.aiStatusText}>
-                      {pasteStage === "saving" ? "Saving order…" : "Processing…"}
-                    </Text>
-                  </View>
-                )}
-
-                <View style={styles.modalActions}>
-                  <TouchableOpacity
-                    style={[styles.modalBtn, { backgroundColor: "#E5E7EB" }]}
-                    onPress={() => setPasteModalOpen(false)}
-                    disabled={pasting}
-                  >
-                    <Text style={[styles.modalBtnText, { color: colors.text }]}>Cancel</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    testID="smart-paste-submit"
-                    style={[styles.modalBtn, { backgroundColor: "#7C3AED", opacity: pasting ? 0.7 : 1 }]}
-                    onPress={submitPasteModal}
-                    disabled={pasting}
-                  >
-                    {pasting ? (
-                      <ActivityIndicator size="small" color="#fff" />
-                    ) : (
-                      <>
-                        <Ionicons name="sparkles" size={14} color="#fff" />
-                        <Text style={styles.modalBtnText}>Smart Paste</Text>
-                      </>
-                    )}
-                  </TouchableOpacity>
-                </View>
-              </>
+              </View>
             ) : (
-              <>
-                <Text style={styles.modalHint}>
-                  📷 Take a photo (or pick from gallery) of any address —
-                  handwritten paper, visiting card, packing slip, screenshot.
-                  Reads Gujarati / Hindi / English.
-                </Text>
-
-                {photoUploading ? (
-                  <View style={styles.photoUploadCard}>
-                    <ActivityIndicator size="large" color="#7C3AED" />
-                    <Text style={styles.photoUploadTxt}>
-                      Reading the photo… (5–20 sec)
+              <View style={styles.entryBtnCol}>
+                <TouchableOpacity
+                  testID="smart-paste-paste-text-btn"
+                  onPress={handlePasteTextChosen}
+                  style={styles.entryBigBtn}
+                  activeOpacity={0.85}
+                >
+                  <View style={styles.entryBigBtnIcon}>
+                    <Ionicons name="clipboard-outline" size={26} color="#7C3AED" />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.entryBigBtnTitle}>📋  Paste Text</Text>
+                    <Text style={styles.entryBigBtnSub}>
+                      Copy WhatsApp / SMS first, then tap here.
                     </Text>
                   </View>
-                ) : (
-                  <View style={styles.photoBtnGrid}>
-                    <TouchableOpacity
-                      testID="smart-paste-camera-btn"
-                      onPress={() => pickAndProcessPhoto("camera")}
-                      style={styles.photoBigBtn}
-                      activeOpacity={0.85}
-                    >
-                      <Ionicons name="camera" size={28} color="#7C3AED" />
-                      <Text style={styles.photoBigBtnTxt}>Camera</Text>
-                      <Text style={styles.photoBigBtnSub}>Live capture</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity
-                      testID="smart-paste-gallery-btn"
-                      onPress={() => pickAndProcessPhoto("gallery")}
-                      style={styles.photoBigBtn}
-                      activeOpacity={0.85}
-                    >
-                      <Ionicons name="images" size={28} color="#7C3AED" />
-                      <Text style={styles.photoBigBtnTxt}>Gallery</Text>
-                      <Text style={styles.photoBigBtnSub}>Pick existing</Text>
-                    </TouchableOpacity>
+                  <Ionicons name="chevron-forward" size={22} color="#7C3AED" />
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  testID="smart-paste-upload-photo-btn"
+                  onPress={handlePhotoChosen}
+                  style={styles.entryBigBtn}
+                  activeOpacity={0.85}
+                >
+                  <View style={styles.entryBigBtnIcon}>
+                    <Ionicons name="camera-outline" size={26} color="#7C3AED" />
                   </View>
-                )}
-
-                <View style={styles.photoTipBox}>
-                  <Ionicons name="bulb-outline" size={14} color="#92400E" />
-                  <Text style={styles.photoTipTxt}>
-                    Tip: bright light + flat surface = best results. Multiple
-                    phones? First 2 are picked. No name? Shop name is used.
-                  </Text>
-                </View>
-
-                <View style={styles.modalActions}>
-                  <TouchableOpacity
-                    style={[styles.modalBtn, { backgroundColor: "#E5E7EB", flex: 1 }]}
-                    onPress={() => setPasteModalOpen(false)}
-                    disabled={photoUploading}
-                  >
-                    <Text style={[styles.modalBtnText, { color: colors.text }]}>Cancel</Text>
-                  </TouchableOpacity>
-                </View>
-              </>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.entryBigBtnTitle}>📷  Upload Photo</Text>
+                    <Text style={styles.entryBigBtnSub}>
+                      Camera or Gallery — reads Gujarati / Hindi / English.
+                    </Text>
+                  </View>
+                  <Ionicons name="chevron-forward" size={22} color="#7C3AED" />
+                </TouchableOpacity>
+              </View>
             )}
           </View>
         </View>
@@ -2029,6 +1653,54 @@ const styles = StyleSheet.create({
     borderRadius: 22,
     justifyContent: "center",
     alignItems: "center",
+  },
+
+  /* ─────────── Smart Paste — Entry Sheet (Phase-7) ─────────── */
+  entryBtnCol: {
+    gap: 12,
+    paddingVertical: 12,
+  },
+  entryBigBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 14,
+    backgroundColor: "#F5F3FF",
+    borderWidth: 1.5,
+    borderColor: "#DDD6FE",
+    borderRadius: 14,
+    paddingVertical: 18,
+    paddingHorizontal: 16,
+  },
+  entryBigBtnIcon: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: "#fff",
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderColor: "#DDD6FE",
+  },
+  entryBigBtnTitle: {
+    fontSize: 16, fontWeight: "900", color: "#5B21B6",
+    letterSpacing: 0.2,
+  },
+  entryBigBtnSub: {
+    fontSize: 12, fontWeight: "600", color: "#6D28D9",
+    marginTop: 3,
+  },
+  entryBusyCard: {
+    alignItems: "center",
+    paddingVertical: 40,
+    backgroundColor: "#F5F3FF",
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "#DDD6FE",
+    marginVertical: 10,
+    gap: 12,
+  },
+  entryBusyTxt: {
+    fontSize: 13, fontWeight: "700", color: "#6D28D9",
   },
 
   /* ─────────── Smart Paste — Summary Card styles (Phase-7) ─────────── */

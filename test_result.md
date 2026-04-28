@@ -101,6 +101,30 @@
 #====================================================================================================
 # Testing Data - Main Agent and testing sub agent both should log testing data below this section
 #====================================================================================================
+## Iteration: Smart Paste — HARD FLOW REPLACEMENT (2026-04-28 PM)
+
+### Hard Reset (User-Mandated)
+After Phase-7 v1 still showed mixed old + new UI, user demanded a complete flow replacement.
+
+### Frontend Changes (`/app/frontend/app/(tabs)/index.tsx`)
+- **Entry Sheet — only 2 buttons now**: 📋 Paste Text / 📷 Upload Photo. Removed: tabs row, textarea, "Paste from Clipboard" pill, clipboard preview pre-fill, "Process & Add" button, photo Camera/Gallery sub-tab, photoTipBox.
+- **Direct flow control**:
+  - `handlePasteTextChosen` → reads clipboard → if empty Alert, else closes entry → `runSmartPasteAI(text)` → Summary Card.
+  - `handlePhotoChosen` → Alert (Camera/Gallery/Cancel) → `pickAndProcessPhoto` → Summary Card.
+- **Always show Summary Card** — `runSmartPasteAI` and `pickAndProcessPhoto` no longer auto-save when fields complete; user always reviews + taps Save.
+- **Dead code removed**: `chatMessages` / `chatInput` / `setChatMessages` / `setChatInput` / `ChatMsg` type / `sendChatReply` / `buildChatMessage` / `submitPasteModal` / `pasteFromClipboardToModal` / `pasteText` / `pasteTab` state / `chatComplete` useMemo. Updated `applySuggestedCustomer`, `closeChat`, `saveFromFields` to no longer push chat messages.
+- **New styles**: `entryBtnCol`, `entryBigBtn`, `entryBigBtnIcon`, `entryBigBtnTitle`, `entryBigBtnSub`, `entryBusyCard`, `entryBusyTxt`.
+
+### Validation
+Verified via screenshot at viewport 390×844:
+1. Click Smart Paste header button → Modal shows ONLY two big buttons (📋 Paste Text + 📷 Upload Photo). No tabs, no textarea.
+2. Pre-write clipboard text → Click Paste Text → Summary Card opens directly. No intermediate UI.
+3. Summary Card shows required fields (green ticks for filled Name/Phone/Address/City/State/Pincode, red warning for missing Weight), Repeat-customer banner with Use button, Possible-duplicate banner, Save Shipment / Start Over footer.
+
+### No backend changes — UI-only revamp.
+
+---
+
 ## Iteration: Smart Paste UI Revamp — Summary Card replaces Chat (2026-04-28)
 
 ### Frontend Changes
