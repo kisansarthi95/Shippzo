@@ -3507,6 +3507,11 @@ async def admin_list_users(
             "wallet_balance":  wallets.get(uid, 0.0),
             "labels_this_month": label_counts.get(uid, 0),
             "auth_provider":   d.get("auth_provider", "email"),
+            # Phase-2b: surface the anti-abuse decision so admins know
+            # which accounts were silently denied a free trial. UI can
+            # show a small "trial denied" badge on these rows.
+            "trial_denied_reason": d.get("trial_denied_reason", "") or "",
+            "device_fingerprint":  (d.get("device_fingerprint", "") or "")[:12],
         })
 
     return {

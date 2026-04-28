@@ -50,6 +50,8 @@ type Row = {
   wallet_balance: number;
   labels_this_month: number;
   auth_provider: string;
+  trial_denied_reason?: string;
+  device_fingerprint?: string;
 };
 
 type ListResponse = {
@@ -406,6 +408,14 @@ function UserRow({ row, onPress }: { row: Row; onPress: () => void }) {
           {expStatus ? (
             <View style={[styles.expPill, { backgroundColor: expStatus.bg }]}>
               <Text style={[styles.expPillTxt, { color: expStatus.fg }]}>{expStatus.label}</Text>
+            </View>
+          ) : null}
+          {row.trial_denied_reason === "duplicate_device" ? (
+            <View style={[styles.expPill, { backgroundColor: "#FEE2E2" }]}>
+              <Ionicons name="hardware-chip-outline" size={9} color="#7F1D1D" />
+              <Text style={[styles.expPillTxt, { color: "#7F1D1D", marginLeft: 2 }]}>
+                Trial denied · same device
+              </Text>
             </View>
           ) : null}
         </View>

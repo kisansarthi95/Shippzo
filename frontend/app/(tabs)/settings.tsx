@@ -19,6 +19,7 @@ import {
 import * as ImagePicker from "expo-image-picker";
 import * as Clipboard from "expo-clipboard";
 import { SafeAreaView } from "react-native-safe-area-context";
+import PendingSyncPanel from "../../components/PendingSyncPanel";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter, useFocusEffect, useLocalSearchParams, useNavigation } from "expo-router";
 import { Api, Courier, Settings as SettingsT, SenderAddress, SheetPreview, SHEET_FIELDS, api, PlanKey } from "../../lib/api";
@@ -2302,6 +2303,13 @@ export default function SettingsScreen() {
           {section === "notifications" && (<>
           <Section title="Notifications" icon="notifications-outline">
             <NotificationsPanel />
+          </Section>
+          <Section title="Offline Sync Queue" icon="cloud-upload-outline">
+            <Text style={styles.hint}>
+              Items waiting to be synced to the server. They sync
+              automatically when you're back online.
+            </Text>
+            <PendingSyncPanel />
           </Section>
           </>)}
 
