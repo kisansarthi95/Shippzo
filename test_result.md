@@ -101,6 +101,33 @@
 #====================================================================================================
 # Testing Data - Main Agent and testing sub agent both should log testing data below this section
 #====================================================================================================
+## Iteration: Smart Paste UI Revamp — Summary Card replaces Chat (2026-04-28)
+
+### Frontend Changes
+- `/app/frontend/app/(tabs)/index.tsx`:
+  - Replaced chat-bubble modal entirely with a clean "Summary Card" UI showing one row per field.
+  - Filled fields show a green ✅ checkmark; missing required fields show a red ⚠️ icon with red-tinted background.
+  - All fields are inline-editable TextInputs (Address multiline up to 300 chars, Pincode capped at 6, Phone at 15).
+  - "Save Shipment" footer button validates required fields locally before calling `saveFromFields()`.
+  - Repeat-customer banner now has actionable "Use" button to trigger `applySuggestedCustomer`.
+  - Stripped lingering AI/Chat terminology from user-facing strings:
+    - "AI will auto-fill the form" → "fields will auto-fill below"
+    - "AI is parsing…" → "Processing…"
+    - "Process & Add" button → "Smart Paste"
+    - "🤖 Reading the photo…" → "Reading the photo…"
+    - "AI picks the first 2" → "First 2 are picked"
+    - "AI will read everything in Gujarati / Hindi / English" → "Reads Gujarati / Hindi / English"
+  - Added missing `dupBanner*` styles (banner background, button, text).
+
+### Validation
+- Screenshot verified: Summary Card renders correctly with green ticks for filled fields, red warning + red bg for missing Weight, Repeat-customer "Use" button, Possible-duplicate yellow banner, Optional section with Amount/Items/Payment/Courier/Order ID/Notes.
+- Direct typing in the Weight field updates `chatFields` state and tick toggles to green.
+- "Save Shipment" button at bottom; "Start Over" cancels.
+
+### No backend changes — UI-only revamp.
+
+---
+
 ## Iteration: Courier Customer ID + Dispatch Date on Label (2026-04-20)
 
 ### Backend Changes

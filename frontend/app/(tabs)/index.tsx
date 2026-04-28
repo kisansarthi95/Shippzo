@@ -872,7 +872,7 @@ export default function Dashboard() {
             {pasteTab === "text" ? (
               <>
                 <Text style={styles.modalHint}>
-                  Paste any WhatsApp/SMS order text below. AI will auto-fill the form — no formatting needed.
+                  Paste any WhatsApp / SMS order — fields will auto-fill below. No formatting required.
                 </Text>
 
                 <View style={styles.modalQuickRow}>
@@ -900,7 +900,7 @@ export default function Dashboard() {
                   <View style={styles.aiStatusRow}>
                     <ActivityIndicator size="small" color="#7C3AED" />
                     <Text style={styles.aiStatusText}>
-                      {pasteStage === "saving" ? "Saving order…" : "AI is parsing…"}
+                      {pasteStage === "saving" ? "Saving order…" : "Processing…"}
                     </Text>
                   </View>
                 )}
@@ -924,7 +924,7 @@ export default function Dashboard() {
                     ) : (
                       <>
                         <Ionicons name="sparkles" size={14} color="#fff" />
-                        <Text style={styles.modalBtnText}>Process & Add</Text>
+                        <Text style={styles.modalBtnText}>Smart Paste</Text>
                       </>
                     )}
                   </TouchableOpacity>
@@ -935,14 +935,14 @@ export default function Dashboard() {
                 <Text style={styles.modalHint}>
                   📷 Take a photo (or pick from gallery) of any address —
                   handwritten paper, visiting card, packing slip, screenshot.
-                  AI will read everything in Gujarati / Hindi / English.
+                  Reads Gujarati / Hindi / English.
                 </Text>
 
                 {photoUploading ? (
                   <View style={styles.photoUploadCard}>
                     <ActivityIndicator size="large" color="#7C3AED" />
                     <Text style={styles.photoUploadTxt}>
-                      🤖 Reading the photo… (5–20 sec)
+                      Reading the photo… (5–20 sec)
                     </Text>
                   </View>
                 ) : (
@@ -974,7 +974,7 @@ export default function Dashboard() {
                   <Ionicons name="bulb-outline" size={14} color="#92400E" />
                   <Text style={styles.photoTipTxt}>
                     Tip: bright light + flat surface = best results. Multiple
-                    phones? AI picks the first 2. No name? Shop name is used.
+                    phones? First 2 are picked. No name? Shop name is used.
                   </Text>
                 </View>
 
@@ -1029,7 +1029,15 @@ export default function Dashboard() {
                 <Ionicons name="person-circle-outline" size={16} color="#1E40AF" />
                 <Text style={styles.dupBannerTxt} numberOfLines={2}>
                   Repeat customer: {suggestedCustomer?.customer_name || ""}
+                  {suggestedCustomer?._count ? `  (${suggestedCustomer._count} prev)` : ""}
                 </Text>
+                <TouchableOpacity
+                  testID="apply-repeat-customer"
+                  onPress={applySuggestedCustomer}
+                  style={styles.dupBannerBtn}
+                >
+                  <Text style={styles.dupBannerBtnTxt}>Use</Text>
+                </TouchableOpacity>
               </View>
             )}
             {dupFound.length > 0 && (
@@ -2024,6 +2032,37 @@ const styles = StyleSheet.create({
   },
 
   /* ─────────── Smart Paste — Summary Card styles (Phase-7) ─────────── */
+  dupBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    backgroundColor: "#DBEAFE",
+    borderColor: "#93C5FD",
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    marginHorizontal: 14,
+    marginTop: 6,
+    marginBottom: 4,
+  },
+  dupBannerTxt: {
+    flex: 1,
+    fontSize: 12,
+    fontWeight: "700",
+    color: "#1E3A8A",
+  },
+  dupBannerBtn: {
+    backgroundColor: "#2563EB",
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 6,
+  },
+  dupBannerBtnTxt: {
+    color: "#fff",
+    fontWeight: "800",
+    fontSize: 12,
+  },
   spSectionLabel: {
     fontSize: 11, fontWeight: "800", color: "#64748B",
     letterSpacing: 0.6, textTransform: "uppercase",
