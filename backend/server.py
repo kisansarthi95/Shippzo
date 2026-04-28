@@ -123,6 +123,34 @@ async def _backfill_display_ids():
     return missing
 
 
+# ─────────────────────────────────────────────────────────────────────────
+# Phase-7d Master Order ID
+# ─────────────────────────────────────────────────────────────────────────
+# Format: YYMMDD + zero-padded global sequence (min 5 digits, can grow).
+# The sequence is GLOBAL across ALL users and NEVER resets — even when
+# the date rolls over. Sequence is stored atomically in `db.counters`
+# under `_id="master_order_id"`.
+#
+# Examples:
+#   2026-04-29 + seq=1      → "2604290001"
+#   2026-04-29 + seq=42     → "2604290042"
+#   2026-04-29 + seq=99999  → "2604299999"
+#   2026-04-29 + seq=100000 → "260429100000"  (auto-grows past 5 digits)
+#   2026-04-30 + seq=100001 → "260430100001"  (still continues)
+async def generate_master_order_id() -> str:
+    """Atomically allocate the next Master Order ID. Caller must persist."""
+    doc = await db.counters.find_one_and_update(
+        {"_id": "master_order_id"},
+        {"$inc": {"seq": 1}},
+        upsert=True,
+        return_document=True,
+    )
+    seq = int((doc or {}).get("seq") or 1)
+    seq_str = str(seq).zfill(5)  # 5-digit min, auto-grows
+    yymmdd = datetime.utcnow().strftime("%y%m%d")
+    return f"{yymmdd}{seq_str}"
+
+
 def _user_q(user: Dict[str, Any], extra: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Return a Mongo filter scoped to this user's data. Prevents users
     from reading/writing each other's shipments/couriers/settings."""
@@ -725,6 +753,11 @@ class Settings(BaseModel):
     ai_cost_simple: float = 0.5
     ai_cost_medium: float = 1.0
     ai_cost_complex: float = 2.0
+    # Phase-7d: Order ID auto-generation. When ON, the server stamps every
+    # new pending order with a Master Order ID (YYMMDD + global 5-digit
+    # sequence). User Order ID stays optional — if blank, master is copied.
+    # When OFF, the user MUST provide their own order ID at save time.
+    order_id_auto_generate: bool = True
 
 
 class SettingsUpdate(BaseModel):
@@ -744,6 +777,7 @@ class SettingsUpdate(BaseModel):
     ai_cost_simple: Optional[float] = None
     ai_cost_medium: Optional[float] = None
     ai_cost_complex: Optional[float] = None
+    order_id_auto_generate: Optional[bool] = None
 
 
 class Shipment(BaseModel):
@@ -1859,6 +1893,15 @@ class PendingOrder(BaseModel):
     source: str = "paste"  # "paste" | "sheet" | "manual"
     status: str = "pending"  # "pending" | "shipped" | "skipped"
 
+    # Phase-7d Order ID System.
+    #
+    # master_order_id  → server-generated, format YYMMDD + zero-padded
+    #                    global counter (e.g. "2604290001"). Immutable.
+    # order_id         → user's own optional reference (e.g. "ABC-001").
+    #                    Falls back to master_order_id if blank at save.
+    master_order_id: str = ""
+    order_id: str = ""
+
     # Customer data
     customer_name: str = ""
     customer_phone: str = ""
@@ -2782,6 +2825,45 @@ async def smart_paste_create(
                             pass
     except Exception:
         logger.exception("LLM path failed on smart-paste create — using regex only")
+
+    # ---- Phase-7d: Master Order ID + User Order ID ----
+    # The Settings.order_id_auto_generate flag controls server stamping.
+    # When ON: server allocates a fresh master_order_id; if user's own
+    # order_id is blank, we copy master into it so both sheets always
+    # have a value.
+    # When OFF: user MUST supply their own order_id — we 422 if blank.
+    settings_doc = await db.settings.find_one(
+        {"user_id": current_user["id"]},
+        {"_id": 0, "order_id_auto_generate": 1},
+    ) or {}
+    auto_gen = bool(settings_doc.get("order_id_auto_generate", True))
+    user_order_id = str(fields.get("order_id", "") or "").strip()
+
+    if auto_gen:
+        master_oid = await generate_master_order_id()
+        # Best-effort uniqueness guard — counter is atomic but defensive.
+        retries = 0
+        while await db.pending_orders.find_one({"master_order_id": master_oid}, {"_id": 1}):
+            master_oid = await generate_master_order_id()
+            retries += 1
+            if retries > 5:
+                raise HTTPException(
+                    status_code=500,
+                    detail="Could not allocate a unique Master Order ID — retry.",
+                )
+        fields["master_order_id"] = master_oid
+        if not user_order_id:
+            user_order_id = master_oid
+        fields["order_id"] = user_order_id
+    else:
+        if not user_order_id:
+            raise HTTPException(
+                status_code=422,
+                detail="Order ID is required when Auto-Generate is OFF. "
+                       "Enter your own Order ID or enable Auto-Generate in Settings.",
+            )
+        fields["master_order_id"] = ""
+        fields["order_id"] = user_order_id
 
     # ---- 1) Write to Google Master Sheet first (atomic) ----
     sheet_meta: Dict[str, Any] = {"ok": False}

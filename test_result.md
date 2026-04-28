@@ -3544,3 +3544,152 @@ agent_communication:
         Please RE-TEST signup / login / forgot-password to confirm the
         bcrypt shim doesn't regress the auth flow. Do NOT retest the
         admin/user endpoints — those were already green at 36/36.
+
+---
+
+## Backend Test Run: Phase-7d Master Order ID System (2026-04-28 PM5)
+
+backend:
+  - task: "Phase-7d Master Order ID auto-generation + toggle"
+    implemented: true
+    working: false
+    file: "/app/backend/server.py"
+    stuck_count: 1
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: false
+        -agent: "testing"
+        -comment: |
+            Tested via /app/backend_test.py against
+            https://logistics-hub-740.preview.emergentagent.com/api with
+            admin@test.com / Admin@12345. 22/30 assertions passed. Two
+            critical bugs found that block the spec.
+
+            === PASSING (the core MOID generator works) ===
+            T1 Auto-gen ON, no user order_id:
+              - master_order_id = "26042800001" (matches ^\d{6}\d{5,}$
+                with today's UTC YYMMDD prefix "260428") ✅
+              - order_id == master_order_id ("26042800001") ✅
+              - customer_name parsed correctly ✅
+            T3 Sequence increments globally (5 sequential calls):
+              - moids = ['26042800001','26042800002','26042800003',
+                          '26042800004','26042800005']
+              - sequence diffs all == +1 ✅
+              - all share today's YYMMDD prefix ✅
+            T5 Settings persistence:
+              - GET /settings includes order_id_auto_generate field
+                (bool, default true) ✅
+
+            === FAILING — BUG #1: PUT /settings cannot toggle the field ===
+            PUT /api/settings with body {"order_id_auto_generate": true}
+            (or false) returns 400 "No fields to update".
+
+            RCA: /app/backend/server.py update_settings() (line ~1062)
+            collects update[] from `payload.sender, payload.brand,
+            payload.whatsapp_template, … ai_cost_complex` but has NO
+            handler for `payload.order_id_auto_generate`. The field
+            exists on the SettingsUpdate model (line 780) and on the
+            Settings model (line 760, default True), but the update
+            handler silently ignores it. Since the test sent ONLY this
+            field, `update` ends up empty → the
+            `if not update: raise HTTPException(400, "No fields to
+            update")` guard fires.
+
+            Effect: users / clients can never persist a False value;
+            GET /settings always returns the default True; the
+            "Auto-generate OFF" branch in smart_paste_create() is
+            unreachable in production. This is the root cause of every
+            T4 failure (T4a, T4a-detail, T4b master/order_id checks,
+            T4-reset).
+
+            FIX (one-liner needed in update_settings, after the
+            ai_cost_* loop):
+                if payload.order_id_auto_generate is not None:
+                    update["order_id_auto_generate"] = bool(
+                        payload.order_id_auto_generate
+                    )
+
+            === FAILING — BUG #2: User's ORDER_ID is overwritten ===
+            T2 Auto-gen ON + paste containing "ORDER_ID: ABC-001"
+            (skip_llm=true, structured paste only):
+              expected: master_order_id fresh, order_id == "ABC-001"
+              actual:   master_order_id = "26042800002",
+                        order_id        = "26042800002"
+              The user's "ABC-001" was discarded.
+
+            RCA: parse_structured_paste() maps the canonical key
+            ORDER_ID → "order_id_hint" (server.py line 2046), NOT
+            "order_id". So in smart_paste_create(), the line
+                user_order_id = str(fields.get("order_id", "") or "").strip()
+            (line 2840) reads an empty string, the guard `if not
+            user_order_id` is True, and we copy master_oid into
+            order_id, discarding the user's value which lives in
+            fields["order_id_hint"].
+
+            FIX: change the user_order_id resolution in
+            smart_paste_create() to also consult the hint, e.g.:
+                user_order_id = str(
+                    fields.get("order_id") or fields.get("order_id_hint") or ""
+                ).strip()
+
+            With both fixes applied, T1/T2/T3/T5 will go fully green
+            and T4 (auto=false) will become testable. The MOID
+            generator (generate_master_order_id) and the global
+            sequence counter are CORRECT — sequence increments by
+            exactly +1 every call across 5 sequential POSTs and the
+            YYMMDD prefix is right.
+
+            Failure list (8 total):
+              - "Setup: PUT /settings auto=true" — got 400 (Bug #1)
+              - "T2 order_id preserves user's ABC-001" — got
+                '26042800002' (Bug #2)
+              - "T4 PUT /settings auto=false" — got 400 (Bug #1)
+              - "T4a Without order_id -> 422" — got 200 (toggle never
+                turned off, so auto-gen still ran) (Bug #1)
+              - "T4a 422 detail mentions 'Order ID is required'" —
+                detail empty (Bug #1)
+              - "T4b master_order_id is empty string" — got
+                '26042800007' (Bug #1)
+              - "T4b order_id == 'MY-555'" — got '26042800007'
+                (Bug #1 + #2)
+              - "T4 reset PUT /settings auto=true" — got 400 (Bug #1)
+
+            7 test pending orders were inadvertently left in the user's
+            queue (cleanup tried but DELETE may not work for soft-
+            deleted sheet rows). Backend logs show "Sheet append OK"
+            for each one.
+
+agent_communication:
+    -agent: "testing"
+    -message: |
+        Phase-7d Master Order ID — PARTIAL PASS (22/30 assertions).
+        Core MOID generator + global sequence counter are working
+        perfectly (T1, T3, T5 all green: format YYMMDD+5digits, atomic
+        +1 increment over 5 calls, GET /settings exposes the bool).
+
+        BLOCKING FINDINGS (2 critical backend bugs):
+
+        BUG #1 — update_settings() in /app/backend/server.py is
+        MISSING the propagator for order_id_auto_generate. The field
+        is in the SettingsUpdate Pydantic model but has no
+        `if payload.order_id_auto_generate is not None: update[...]`
+        line. Result: PUT /settings with only this field → 400 "No
+        fields to update", and the toggle can never be set False from
+        the API. Fix is a one-line addition (see status_history above).
+
+        BUG #2 — smart_paste_create() reads fields["order_id"] but
+        parse_structured_paste maps the user's "ORDER_ID:" line to
+        fields["order_id_hint"]. So Test 2 (auto=ON + user-supplied
+        ORDER_ID=ABC-001) overwrites the user's value with the
+        master_order_id. Fix: prefer order_id_hint when order_id is
+        empty (one-line change in smart_paste_create, line ~2840).
+
+        Both fixes are tiny and unrelated to the MOID generator
+        itself. After applying, please re-run Tests 2 and 4 only —
+        Tests 1, 3, 5 are already green.
+
+        TEST CREDENTIALS confirmed working: admin@test.com /
+        Admin@12345 from /app/memory/test_credentials.md.
+
+

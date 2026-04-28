@@ -164,7 +164,7 @@ export default function Dashboard() {
     PAYMENT:   { label: "Payment",          placeholder: "COD or Prepaid", primary: true },
     TOKEN:     { label: "Token Amount (₹)", placeholder: "Enter token", keyboard: "numeric" },
     COURIER:   { label: "Courier",          placeholder: "optional" },
-    ORDER_ID:  { label: "Order ID",         placeholder: "optional" },
+    ORDER_ID:  { label: "Your Order ID",    placeholder: "ABC-001 / your own ID (optional)" },
     WEIGHT:    { label: "Weight (g)",       placeholder: "Enter weight in grams", keyboard: "numeric" },
     NOTES:     { label: "Notes",            placeholder: "special instructions" },
   };
@@ -538,15 +538,26 @@ export default function Dashboard() {
         return v ? `${k}: ${v}` : null;
       }).filter(Boolean) as string[];
       const text = lines.join("\n");
-      await Api.smartPasteCreate(text, true);  // skip_llm = true (we already have canonical fields → save 2-4s)
+      const created: any = await Api.smartPasteCreate(text, true);  // skip_llm = true (canonical fields → save 2-4s)
       setPasting(false);
       setChatSending(false);
       setPasteStage("");
       // Close Summary Card immediately on success.
       closeChat();
+      const masterId = created?.master_order_id || "";
+      const userId = created?.order_id || "";
+      const sameId = masterId && userId && masterId === userId;
+      const idLine = masterId
+        ? sameId
+          ? `Order ID: ${masterId}`
+          : `Master ID: ${masterId}\nYour ID: ${userId}`
+        : userId
+          ? `Order ID: ${userId}`
+          : "";
       Alert.alert(
         "✅ Order added",
-        "Order queued in Orders tab. Ready to ship.",
+        (idLine ? `${idLine}\n\n` : "") +
+        "Queued in Orders tab. Ready to ship.",
         [
           { text: "OK", style: "cancel" },
           { text: "View Orders →", onPress: () => router.push("/orders") },

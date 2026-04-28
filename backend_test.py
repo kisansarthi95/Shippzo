@@ -1,159 +1,312 @@
 """
-Phase-1 incremental refactor verification.
-Tests that extracting /admin/global-config GET into routers/admin.py
-hasn't regressed any auth / admin / sheets / shipments flows.
+Phase-7d Master Order ID backend tests.
+
+Tests the server-side Master Order ID auto-generation for the SAAS
+backend. Covers the full toggle behaviour:
+  - Auto-generate ON (default): master_order_id is YYMMDD+5+ digits;
+    blank user order_id falls back to master.
+  - User-provided order_id is preserved when auto-gen is ON.
+  - Sequence increments globally and atomically.
+  - Auto-generate OFF: blank order_id 422s, user-provided one is
+    persisted as order_id, master_order_id is empty.
+  - Settings GET exposes the order_id_auto_generate boolean (default
+    true).
+
+The endpoint URL is derived from frontend/.env:EXPO_PUBLIC_BACKEND_URL
+to match how the deployed app talks to the backend.
 """
-import os, time, requests, sys
 
-# Use the same backend URL the frontend uses (the public preview URL).
-with open("/app/frontend/.env") as f:
-    env = dict(l.strip().split("=", 1) for l in f if "=" in l and not l.startswith("#"))
-BACKEND = env["EXPO_PUBLIC_BACKEND_URL"].strip().strip('"') + "/api"
-print(f"[INFO] Testing against: {BACKEND}\n")
+import re
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
 
-results = []
-def t(name, ok, detail=""):
-    mark = "✓" if ok else "✗"
-    print(f"  {mark} {name}{(' — ' + detail) if detail else ''}")
-    results.append((name, ok, detail))
+import requests
 
-# --- helpers ---------------------------------------------------------
-def login(email, pw):
-    r = requests.post(f"{BACKEND}/auth/login", json={"email": email, "password": pw}, timeout=20)
-    return r
+# Resolve the public backend URL the way the frontend does.
+FRONTEND_ENV = Path("/app/frontend/.env")
+BASE = ""
+if FRONTEND_ENV.exists():
+    for line in FRONTEND_ENV.read_text().splitlines():
+        if line.startswith("EXPO_PUBLIC_BACKEND_URL="):
+            BASE = line.split("=", 1)[1].strip().strip('"').rstrip("/")
+            break
+if not BASE:
+    BASE = "https://logistics-hub-740.preview.emergentagent.com"
+API = f"{BASE}/api"
 
-# --- 0. Admin login --------------------------------------------------
-print("[0] Admin login")
-ar = login("admin@test.com", "Admin@12345")
-t("admin login 200", ar.status_code == 200, f"got {ar.status_code}")
-admin_tok = ar.json().get("token", "")
-H_ADMIN = {"Authorization": f"Bearer {admin_tok}"}
+EMAIL = "admin@test.com"
+PASSWORD = "Admin@12345"
 
-# Regular user login (for non-admin checks)
-print("\n[0b] Regular user login")
-ur = login("user2@test.com", "User@12345")
-t("regular user login 200", ur.status_code == 200, f"got {ur.status_code}")
-user_tok = ur.json().get("token", "")
-H_USER = {"Authorization": f"Bearer {user_tok}"}
+PASSED = []
+FAILED = []
 
-# --- 1. Moved endpoint -----------------------------------------------
-print("\n[1] /admin/global-config (extracted to routers/admin.py)")
-r = requests.get(f"{BACKEND}/admin/global-config", headers=H_ADMIN, timeout=20)
-t("admin GET 200", r.status_code == 200, f"got {r.status_code}")
-body = r.json() if r.status_code == 200 else {}
-t("has global_ai_rates", "global_ai_rates" in body)
-t("has credit_packages", "credit_packages" in body)
-t("has plan_pricing", "plan_pricing" in body)
 
-r = requests.get(f"{BACKEND}/admin/global-config", timeout=20)
-t("no-token → 401", r.status_code == 401, f"got {r.status_code}")
+def _record(ok: bool, name: str, info: str = ""):
+    if ok:
+        PASSED.append(name)
+        print(f"  PASS {name}")
+    else:
+        FAILED.append(f"{name} :: {info}")
+        print(f"  FAIL {name} -- {info}")
 
-r = requests.get(f"{BACKEND}/admin/global-config", headers=H_USER, timeout=20)
-t("non-admin → 403", r.status_code == 403, f"got {r.status_code}")
 
-# --- 2. Adjacent admin endpoints (still in server.py) ----------------
-print("\n[2] Adjacent admin endpoints (must not regress)")
-r = requests.get(f"{BACKEND}/admin/users", headers=H_ADMIN, timeout=20)
-t("GET /admin/users 200", r.status_code == 200, f"got {r.status_code}")
-users_count = len(r.json().get("users", [])) if r.status_code == 200 else 0
-t(f"users array populated ({users_count} users)", users_count >= 1)
+def login() -> str:
+    r = requests.post(
+        f"{API}/auth/login",
+        json={"email": EMAIL, "password": PASSWORD},
+        timeout=20,
+    )
+    print(f"login -> {r.status_code}")
+    r.raise_for_status()
+    body = r.json()
+    tok = body.get("token")
+    assert tok, f"no token in login response: {body}"
+    return tok
 
-r = requests.put(f"{BACKEND}/admin/global-config", json={}, headers=H_ADMIN, timeout=20)
-t("PUT /admin/global-config 200", r.status_code == 200, f"got {r.status_code}")
 
-r = requests.get(f"{BACKEND}/admin/plan-features", headers=H_ADMIN, timeout=20)
-t("GET /admin/plan-features 200", r.status_code == 200, f"got {r.status_code}")
-if r.status_code == 200:
-    pf = r.json()
-    t("plan-features has registry", "registry" in pf)
-    t("plan-features has plans", "plans" in pf)
+def hdr(token: str):
+    return {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
 
-# --- 3. Auth flows ---------------------------------------------------
-print("\n[3] Auth flows (bcrypt shim + signup)")
-ts = int(time.time())
-fp = f"refactor-test-fp-{ts}"
-sig = requests.post(f"{BACKEND}/auth/signup", json={
-    "email": f"refactor_a_{ts}@example.com", "password": "Pass1234!",
-    "name": "Refactor A", "shop_name": "Shop A", "phone": "9988776655",
-    "device_fingerprint": fp,
-}, timeout=20)
-t("signup 200", sig.status_code == 200, f"got {sig.status_code}")
-sig_data = sig.json() if sig.status_code == 200 else {}
-t("signup has token", bool(sig_data.get("token")))
-t("display_id matches USR-####", sig_data.get("display_id", "").startswith("USR-"))
-test_uid_a = sig_data.get("id")
 
-lg = login(f"refactor_a_{ts}@example.com", "Pass1234!")
-t("login correct 200", lg.status_code == 200, f"got {lg.status_code}")
+def put_settings(token: str, payload: dict):
+    return requests.put(f"{API}/settings", json=payload, headers=hdr(token), timeout=20)
 
-lg = login(f"refactor_a_{ts}@example.com", "wrong-password")
-t("login wrong 401", lg.status_code == 401, f"got {lg.status_code}")
 
-# --- 4. Sheets endpoints ---------------------------------------------
-print("\n[4] Sheets endpoints (Phase-5 SA-share)")
-r = requests.get(f"{BACKEND}/sheets/service-account", headers=H_ADMIN, timeout=20)
-t("GET /sheets/service-account 200", r.status_code == 200, f"got {r.status_code}")
-sa = r.json() if r.status_code == 200 else {}
-t("SA email returned", "@" in sa.get("email", ""), f"email='{sa.get('email','')[:40]}'")
+def get_settings(token: str):
+    return requests.get(f"{API}/settings", headers=hdr(token), timeout=20)
 
-# Master sheet should be SA-accessible
-master_url = "https://docs.google.com/spreadsheets/d/1troW3K7P_uaE_7moo6_CioPczUosSiZyoPmCBBcekxA/edit#gid=0"
-r = requests.post(f"{BACKEND}/sheets/preview", json={"url": master_url}, headers=H_ADMIN, timeout=30)
-t("POST /sheets/preview master 200", r.status_code == 200, f"got {r.status_code}")
-if r.status_code == 200:
-    pv = r.json()
-    t("access_method=service_account", pv.get("access_method") == "service_account",
-      f"got '{pv.get('access_method')}'")
-    t(f"total_rows>=1 ({pv.get('total_rows')})", (pv.get("total_rows", 0) or 0) >= 1)
 
-# --- 5. Device fingerprint regression check -------------------------
-print("\n[5] Phase-2b device fingerprint anti-abuse")
-sig2 = requests.post(f"{BACKEND}/auth/signup", json={
-    "email": f"refactor_b_{ts}@example.com", "password": "Pass1234!",
-    "name": "Refactor B", "shop_name": "Shop B", "phone": "9988776656",
-    "device_fingerprint": fp,  # SAME fingerprint
-}, timeout=20)
-t("2nd signup same-fp 200", sig2.status_code == 200, f"got {sig2.status_code}")
-sig2_data = sig2.json() if sig2.status_code == 200 else {}
-t("2nd signup trial_denied=True", sig2_data.get("trial_denied") is True,
-  f"got {sig2_data.get('trial_denied')}")
-t("2nd signup plan='' (no trial)", sig2_data.get("plan", "<missing>") == "",
-  f"got '{sig2_data.get('plan')}'")
-test_uid_b = sig2_data.get("id")
+def smart_paste(token: str, payload: dict):
+    return requests.post(
+        f"{API}/smart-paste",
+        json=payload,
+        headers=hdr(token),
+        timeout=60,
+    )
 
-# --- Cleanup ---------------------------------------------------------
-print("\n[Cleanup]")
-import asyncio
-mongo_url = open("/app/backend/.env").read()
-mongo_url = mongo_url.split("MONGO_URL=")[1].split("\n")[0].strip().strip('"')
-async def cleanup():
-    from motor.motor_asyncio import AsyncIOMotorClient
-    cli = AsyncIOMotorClient(mongo_url)
-    db = cli["test_database"]
-    n = 0
-    for u in [test_uid_a, test_uid_b]:
-        if not u: continue
-        rd = await db.users.delete_one({"id": u})
-        n += rd.deleted_count
-        await db.shipments.delete_many({"user_id": u})
-        await db.couriers.delete_many({"user_id": u})
-        await db.wallets.delete_many({"user_id": u})
-        await db.credit_transactions.delete_many({"user_id": u})
-        await db.settings.delete_many({"user_id": u})
-        await db.pwd_reset_attempts.delete_many({"email": {"$regex": f"refactor_._{ts}"}})
-    cli.close()
-    return n
-deleted = asyncio.run(cleanup())
-print(f"  ✓ Removed {deleted} test users + their seed data")
 
-# --- Summary ---------------------------------------------------------
-passed = sum(1 for _, ok, _ in results if ok)
-total = len(results)
-print(f"\n{'='*60}")
-print(f"  RESULT: {passed}/{total} {'✅ PASS' if passed == total else '❌ FAIL'}")
-print(f"{'='*60}")
-if passed != total:
-    print("\nFailed tests:")
-    for n, ok, d in results:
-        if not ok: print(f"  - {n}: {d}")
-    sys.exit(1)
+def cleanup_pending(token: str, pid: str):
+    try:
+        requests.delete(
+            f"{API}/orders/pending/{pid}", headers=hdr(token), timeout=30
+        )
+    except Exception:
+        pass
+
+
+def test_master_order_id():
+    print(f"\n=== Master Order ID Tests against {API} ===\n")
+    token = login()
+
+    today_yymmdd = datetime.now(timezone.utc).strftime("%y%m%d")
+    print(f"Today's UTC YYMMDD = {today_yymmdd}")
+
+    pending_to_cleanup: list = []
+
+    r = put_settings(token, {"order_id_auto_generate": True})
+    _record(r.status_code == 200, "Setup: PUT /settings auto=true", str(r.status_code))
+
+    # ---------- TEST 1 ----------
+    print("\n--- Test 1: Auto-generate ON (default) ---")
+    text1 = (
+        "NAME: Master Test 1\n"
+        "PHONE: 9111111111\n"
+        "ADDRESS_1: Test addr\n"
+        "CITY: Ahmedabad\n"
+        "STATE: Gujarat\n"
+        "PINCODE: 380001\n"
+        "AMOUNT: 100\n"
+        "PAYMENT: COD\n"
+        "WEIGHT: 500"
+    )
+    r1 = smart_paste(token, {"text": text1, "skip_llm": True})
+    _record(r1.status_code == 200, "T1 POST /smart-paste 200",
+            f"got {r1.status_code} body={r1.text[:300]}")
+    if r1.status_code != 200:
+        return
+    body1 = r1.json()
+    pending_to_cleanup.append(body1.get("id", ""))
+
+    moid1 = body1.get("master_order_id", "")
+    oid1 = body1.get("order_id", "")
+    print(f"  master_order_id={moid1!r}  order_id={oid1!r}")
+
+    pat = re.compile(r"^\d{6}\d{5,}$")
+    _record(bool(pat.match(moid1)), "T1 master_order_id matches YYMMDD+5+digits",
+            f"got {moid1!r}")
+    _record(moid1.startswith(today_yymmdd),
+            "T1 master_order_id starts with today's UTC YYMMDD",
+            f"got {moid1!r} expected prefix {today_yymmdd}")
+    _record(oid1 == moid1,
+            "T1 order_id falls back to master_order_id when user didn't provide",
+            f"order_id={oid1!r} master={moid1!r}")
+    _record(body1.get("customer_name") == "Master Test 1",
+            "T1 customer_name parsed",
+            f"got {body1.get('customer_name')!r}")
+
+    # ---------- TEST 2 ----------
+    print("\n--- Test 2: Auto-generate ON, user-provided ORDER_ID ---")
+    text2 = (
+        "NAME: Master Test 2\n"
+        "PHONE: 9222222222\n"
+        "ADDRESS_1: Test addr 2\n"
+        "CITY: Surat\n"
+        "STATE: Gujarat\n"
+        "PINCODE: 395001\n"
+        "AMOUNT: 250\n"
+        "PAYMENT: COD\n"
+        "WEIGHT: 600\n"
+        "ORDER_ID: ABC-001"
+    )
+    r2 = smart_paste(token, {"text": text2, "skip_llm": True})
+    _record(r2.status_code == 200, "T2 POST /smart-paste 200",
+            f"got {r2.status_code} body={r2.text[:300]}")
+    if r2.status_code != 200:
+        return
+    body2 = r2.json()
+    pending_to_cleanup.append(body2.get("id", ""))
+
+    moid2 = body2.get("master_order_id", "")
+    oid2 = body2.get("order_id", "")
+    print(f"  master_order_id={moid2!r}  order_id={oid2!r}")
+
+    _record(bool(pat.match(moid2)), "T2 master_order_id is well-formed",
+            f"got {moid2!r}")
+    _record(moid2 != moid1, "T2 master_order_id is fresh (different from T1)",
+            f"T1={moid1!r} T2={moid2!r}")
+    _record(oid2 == "ABC-001",
+            "T2 order_id preserves user's ABC-001",
+            f"got {oid2!r}")
+
+    # ---------- TEST 3 ----------
+    print("\n--- Test 3: Sequence increments globally ---")
+    moids = [moid1, moid2]
+    for i in range(3):
+        text_i = (
+            f"NAME: Master Test Seq {i+3}\n"
+            f"PHONE: 933333333{i}\n"
+            "ADDRESS_1: Seq Addr\n"
+            "CITY: Ahmedabad\n"
+            "STATE: Gujarat\n"
+            "PINCODE: 380001\n"
+            "AMOUNT: 50\n"
+            "PAYMENT: COD\n"
+            "WEIGHT: 100"
+        )
+        r = smart_paste(token, {"text": text_i, "skip_llm": True})
+        _record(r.status_code == 200, f"T3 POST seq #{i+1} 200",
+                f"got {r.status_code} body={r.text[:200]}")
+        if r.status_code != 200:
+            return
+        b = r.json()
+        pending_to_cleanup.append(b.get("id", ""))
+        moids.append(b.get("master_order_id", ""))
+
+    print(f"  collected moids: {moids}")
+    for i, m in enumerate(moids):
+        _record(m.startswith(today_yymmdd),
+                f"T3 moid[{i}] starts with today's YYMMDD",
+                f"got {m!r}")
+
+    def _seq(m: str) -> int:
+        return int(m[6:])
+
+    seqs = [_seq(m) for m in moids]
+    print(f"  seqs={seqs}")
+    diffs = [seqs[i + 1] - seqs[i] for i in range(len(seqs) - 1)]
+    _record(all(d == 1 for d in diffs),
+            "T3 sequence increments by exactly +1 each call",
+            f"diffs={diffs}")
+
+    # ---------- TEST 4 ----------
+    print("\n--- Test 4: Auto-generate OFF ---")
+    r = put_settings(token, {"order_id_auto_generate": False})
+    _record(r.status_code == 200, "T4 PUT /settings auto=false",
+            f"got {r.status_code}")
+    if r.status_code == 200:
+        body = r.json()
+        _record(body.get("order_id_auto_generate") is False,
+                "T4 settings response reflects order_id_auto_generate=false",
+                f"got {body.get('order_id_auto_generate')!r}")
+
+    text4a = (
+        "NAME: NoID Test\n"
+        "PHONE: 9444444444\n"
+        "ADDRESS_1: Off Addr\n"
+        "CITY: Ahmedabad\n"
+        "STATE: Gujarat\n"
+        "PINCODE: 380001\n"
+        "AMOUNT: 70\n"
+        "PAYMENT: COD\n"
+        "WEIGHT: 100"
+    )
+    r4a = smart_paste(token, {"text": text4a, "skip_llm": True})
+    _record(r4a.status_code == 422, "T4a Without order_id -> 422",
+            f"got {r4a.status_code} body={r4a.text[:300]}")
+    try:
+        detail = (r4a.json() or {}).get("detail", "")
+    except Exception:
+        detail = r4a.text
+    _record("Order ID is required" in str(detail),
+            "T4a 422 detail mentions 'Order ID is required'",
+            f"got {detail!r}")
+
+    text4b = text4a + "\nORDER_ID: MY-555"
+    r4b = smart_paste(token, {"text": text4b, "skip_llm": True})
+    _record(r4b.status_code == 200, "T4b With ORDER_ID -> 200",
+            f"got {r4b.status_code} body={r4b.text[:300]}")
+    if r4b.status_code == 200:
+        b = r4b.json()
+        pending_to_cleanup.append(b.get("id", ""))
+        _record(b.get("master_order_id", "<missing>") == "",
+                "T4b master_order_id is empty string",
+                f"got {b.get('master_order_id')!r}")
+        _record(b.get("order_id") == "MY-555",
+                "T4b order_id == 'MY-555'",
+                f"got {b.get('order_id')!r}")
+
+    r = put_settings(token, {"order_id_auto_generate": True})
+    _record(r.status_code == 200, "T4 reset PUT /settings auto=true",
+            f"got {r.status_code}")
+
+    # ---------- TEST 5 ----------
+    print("\n--- Test 5: Settings persistence ---")
+    r5 = get_settings(token)
+    _record(r5.status_code == 200, "T5 GET /settings 200",
+            f"got {r5.status_code}")
+    if r5.status_code == 200:
+        body = r5.json()
+        _record("order_id_auto_generate" in body,
+                "T5 GET /settings response includes 'order_id_auto_generate'",
+                f"keys={sorted(body.keys())[:25]}")
+        _record(isinstance(body.get("order_id_auto_generate"), bool),
+                "T5 order_id_auto_generate is a bool",
+                f"got type={type(body.get('order_id_auto_generate')).__name__}")
+        _record(body.get("order_id_auto_generate") is True,
+                "T5 order_id_auto_generate currently True (after reset)",
+                f"got {body.get('order_id_auto_generate')!r}")
+
+    # ---------- Cleanup ----------
+    print("\n--- Cleanup: deleting test pending orders ---")
+    for pid in pending_to_cleanup:
+        if pid:
+            cleanup_pending(token, pid)
+
+
+if __name__ == "__main__":
+    try:
+        test_master_order_id()
+    except Exception as e:
+        print(f"\nFATAL: test driver crashed: {e!r}")
+        FAILED.append(f"driver crash: {e!r}")
+
+    print("\n========== SUMMARY ==========")
+    print(f"PASSED: {len(PASSED)}")
+    print(f"FAILED: {len(FAILED)}")
+    if FAILED:
+        print("\nFAILURES:")
+        for f in FAILED:
+            print(f"  - {f}")
+        sys.exit(1)
+    print("All assertions passed.")

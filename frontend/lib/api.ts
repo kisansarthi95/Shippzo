@@ -651,8 +651,11 @@ export type PendingOrder = {
   id: string;
   source: "paste" | "sheet" | "manual";
   status: "pending" | "shipped" | "skipped";
+  master_order_id?: string;
+  order_id?: string;
   customer_name: string;
   customer_phone: string;
+  customer_alt_phone?: string;
   address_line1: string;
   address_line2: string;
   city: string;
@@ -660,6 +663,7 @@ export type PendingOrder = {
   pincode: string;
   items: string;
   amount: number;
+  token_amount?: number;
   payment_mode: "COD" | "PAID";
   courier_hint?: string;
   order_id_hint?: string;

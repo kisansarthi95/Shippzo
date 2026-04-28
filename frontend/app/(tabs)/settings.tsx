@@ -260,6 +260,8 @@ export default function SettingsScreen() {
 
   // Phase-4b+ Smart Paste AI customisation
   const [spaiEnabled, setSpaiEnabled] = useState(true);
+  // Phase-7d Order ID auto-generate toggle (Master Order ID system).
+  const [orderIdAutoGen, setOrderIdAutoGen] = useState(true);
   const [spaiInstructions, setSpaiInstructions] = useState("");
   const [spaiDefaultPrompt, setSpaiDefaultPrompt] = useState("");
   const [spaiShowDefault, setSpaiShowDefault] = useState(false);
@@ -302,6 +304,7 @@ export default function SettingsScreen() {
           logoShape,
           spaiEnabled,
           spaiInstructions,
+          orderIdAutoGen,
         });
       case "print":
         return JSON.stringify({
@@ -326,7 +329,7 @@ export default function SettingsScreen() {
     }
   }, [
     sender, brandName, brandLogo, preferLogo, logoShape,
-    spaiEnabled, spaiInstructions,
+    spaiEnabled, spaiInstructions, orderIdAutoGen,
     labelFields, customFields, shipmentTagline,
     template, copyTemplate, etaDays,
     aiCostSimple, aiCostMedium, aiCostComplex,
@@ -383,6 +386,7 @@ export default function SettingsScreen() {
           custom_fields: customFields,
           smart_paste_ai_enabled: spaiEnabled,
           smart_paste_instructions: spaiInstructions,
+          order_id_auto_generate: orderIdAutoGen,
         };
         await api.put("/settings", payload);
       }
@@ -477,6 +481,8 @@ export default function SettingsScreen() {
     // Phase-4b+ smart paste AI fields
     setSpaiEnabled((s as any).smart_paste_ai_enabled !== false);
     setSpaiInstructions(String((s as any).smart_paste_instructions || ""));
+    // Phase-7d: Master Order ID auto-generate (default ON)
+    setOrderIdAutoGen((s as any).order_id_auto_generate !== false);
     // Phase-4b+ AI rate card (fall back to spec defaults)
     setAiCostSimple(
       String(
@@ -550,6 +556,7 @@ export default function SettingsScreen() {
       await api.put("/settings", {
         smart_paste_ai_enabled: spaiEnabled,
         smart_paste_instructions: spaiInstructions,
+        order_id_auto_generate: orderIdAutoGen,
       });
       Alert.alert("Saved", "Smart Paste AI settings updated.");
     } catch (e: any) {
@@ -970,6 +977,21 @@ export default function SettingsScreen() {
                 testID="spai-enabled-toggle"
                 value={spaiEnabled}
                 onValueChange={setSpaiEnabled}
+              />
+            </View>
+
+            {/* Phase-7d: Master Order ID auto-generate toggle */}
+            <View style={styles.toggleRow}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.toggleLbl}>Auto-Generate Order ID</Text>
+                <Text style={styles.toggleSub}>
+                  ON: System Master Order ID assign કરશે (YYMMDD + 5-digit, eg 2604290001) — તમારી "Your Order ID" ખાલી હોય તો ત્યાં copy થશે. OFF: તમે manual પોતાનો Order ID આપો.
+                </Text>
+              </View>
+              <Switch
+                testID="order-id-auto-gen-toggle"
+                value={orderIdAutoGen}
+                onValueChange={setOrderIdAutoGen}
               />
             </View>
 
