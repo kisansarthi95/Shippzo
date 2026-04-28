@@ -79,9 +79,10 @@ export default function ScannerModal() {
     const couriersWithRules = couriers.filter(
       (c) => c.tracking_id_prefix || c.tracking_id_suffix || c.tracking_id_length,
     );
+    let matchedCourier: Courier | null = null;
     if (couriersWithRules.length > 0) {
-      const matched = findMatchingCourier(v, couriersWithRules as any);
-      if (!matched) {
+      matchedCourier = (findMatchingCourier(v, couriersWithRules as any) as Courier) || null;
+      if (!matchedCourier) {
         // Run validation against the "best-guess" courier (first one
         // whose prefix matches, else the first with rules) so we can
         // give a precise reason to the user.
@@ -121,22 +122,23 @@ export default function ScannerModal() {
     if (params.returnTo === "add") {
       // New tracking ID + user wants to create a shipment.
       //
-      // Two entry points to this screen:
-      //   A) From (tabs)/add itself (`from=add`): Add screen is already
-      //      mounted with user-typed form data. We MUST NOT unmount it,
-      //      otherwise the user's typed address/name/items/amount all
-      //      vanish. Use router.back() + scannerBridge.
-      //   B) From Dashboard/Home (no `from` param): Add screen is not
-      //      yet mounted. router.back() would return to the dashboard
-      //      and silently drop the scanned value. Fall back to
-      //      router.replace() which pushes Add with the param.
-      scannerBridge.push(v); // always — useFocusEffect on Add picks it up
+      // Phase-4d: when a courier's format rules matched this scan,
+      // include its id so the Add screen can auto-select the courier
+      // dropdown — saves the user a tap.
+      scannerBridge.push({
+        value: v,
+        courier_id: matchedCourier?.id || null,
+        courier_name: matchedCourier?.name || null,
+      });
       if (params.from === "add") {
         router.back();
       } else {
         router.replace({
           pathname: "/(tabs)/add",
-          params: { scanned: v },
+          params: {
+            scanned: v,
+            ...(matchedCourier?.id ? { courier_id: matchedCourier.id } : {}),
+          },
         });
       }
     } else {

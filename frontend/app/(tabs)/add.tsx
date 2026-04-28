@@ -19,6 +19,7 @@ import { useLocalSearchParams, useRouter, useFocusEffect } from "expo-router";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Api, Courier, SheetOrder } from "../../lib/api";
 import { scannerBridge } from "../../lib/scannerBridge";
+import { validateTrackingId } from "../../lib/trackingValidator";
 import { colors } from "../../lib/theme";
 import { useFeatureFlag } from "../../lib/feature_flags";
 
@@ -191,15 +192,50 @@ export default function AddShipment() {
 
   // Pick up scanned value from bridge when returning from modal scanner
   // (router.back preserves form state; we read the value here on focus).
+  // Phase-4d: the bridge now also carries the matched courier_id so
+  // we can auto-select the courier dropdown when the scanner detected
+  // the format (e.g. "EG…IN" ⇒ India Post).
   useFocusEffect(
     useCallback(() => {
       const v = scannerBridge.consume();
       if (v) {
         setAutoTracking(false);
-        setTrackingId(v);
+        setTrackingId(v.value);
+        if (v.courier_id) {
+          // If couriers list is already hydrated, resolve immediately;
+          // otherwise park it in pendingCourierId so the existing
+          // resolver effect picks it up.
+          setPendingCourierId(v.courier_id);
+        }
       }
     }, [])
   );
+
+  // Dashboard-entry path: when scanner replaces to /(tabs)/add with
+  // query params, also honour `courier_id` here.
+  useEffect(() => {
+    const cid = String((params as any).courier_id || "").trim();
+    if (cid) setPendingCourierId(cid);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [(params as any).courier_id]);
+
+  // Auto-detect courier from manually-typed tracking ID when the user
+  // is in manual/scan mode and has NOT already picked a courier.
+  // We match against couriers that have format rules configured —
+  // first match wins. This makes the "EG…IN ⇒ India Post" auto-select
+  // work even for manual typing, not just camera scans.
+  useEffect(() => {
+    if (autoTracking !== false) return;       // only in manual mode
+    if (selectedCourier) return;              // user already picked one
+    const tid = trackingId.trim();
+    if (tid.length < 6) return;               // avoid noise
+    const candidates = couriers.filter(
+      (c) => c.tracking_id_prefix || c.tracking_id_suffix || c.tracking_id_length,
+    );
+    if (candidates.length === 0) return;
+    const match = candidates.find((c) => validateTrackingId(tid, c as any).ok);
+    if (match) setSelectedCourier(match);
+  }, [trackingId, autoTracking, selectedCourier, couriers]);
 
   // Raw sheet row captured from prefill — used to auto-fill per-shipment
   // custom fields once both the prefill AND the customFields definitions
