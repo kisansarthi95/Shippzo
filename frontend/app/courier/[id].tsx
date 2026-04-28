@@ -29,6 +29,12 @@ export default function CourierEdit() {
   const [trackingTpl, setTrackingTpl] = useState("");
   const [customerId, setCustomerId] = useState("");
   const [notes, setNotes] = useState("");
+  // Tracking-ID format rules (Phase-4d — reject garbled scans)
+  const [tidPrefix, setTidPrefix] = useState("");
+  const [tidSuffix, setTidSuffix] = useState("");
+  const [tidLength, setTidLength] = useState("");
+  const [tidMinLen, setTidMinLen] = useState("");
+  const [tidMaxLen, setTidMaxLen] = useState("");
 
   const load = useCallback(async () => {
     if (isNew) return;
@@ -44,6 +50,11 @@ export default function CourierEdit() {
       setTrackingTpl(c.tracking_url_template);
       setCustomerId((c as any).customer_id || "");
       setNotes(c.notes);
+      setTidPrefix((c as any).tracking_id_prefix || "");
+      setTidSuffix((c as any).tracking_id_suffix || "");
+      setTidLength(String((c as any).tracking_id_length || "") === "0" ? "" : String((c as any).tracking_id_length || ""));
+      setTidMinLen(String((c as any).tracking_id_min_length || "") === "0" ? "" : String((c as any).tracking_id_min_length || ""));
+      setTidMaxLen(String((c as any).tracking_id_max_length || "") === "0" ? "" : String((c as any).tracking_id_max_length || ""));
     } catch (e: any) {
       Alert.alert("Error", e?.message || "Failed to load");
       router.back();
@@ -72,6 +83,11 @@ export default function CourierEdit() {
         tracking_url_template: trackingTpl.trim(),
         customer_id: customerId.trim(),
         notes: notes.trim(),
+        tracking_id_prefix: tidPrefix.trim().toUpperCase(),
+        tracking_id_suffix: tidSuffix.trim().toUpperCase(),
+        tracking_id_length: Number(tidLength) || 0,
+        tracking_id_min_length: Number(tidMinLen) || 0,
+        tracking_id_max_length: Number(tidMaxLen) || 0,
       } as any;
       if (isNew) {
         await Api.createCourier(payload);
@@ -200,6 +216,97 @@ export default function CourierEdit() {
                 {`${prefix}${String(Number(nextNumber) || 0).padStart(Number(padding) || 4, "0")}`}
               </Text>
             </View>
+          </Section>
+
+          <Section title="Tracking-ID Format Validation (for scans)">
+            <Text style={styles.hint}>
+              Set these so the camera scanner and manual entry reject
+              garbled or wrong reads. Example — India Post Speed Post
+              IDs always start with <Text style={{ fontWeight: "900" }}>EG</Text>,
+              end with <Text style={{ fontWeight: "900" }}>IN</Text>, and
+              are 13 characters long.
+            </Text>
+            <View style={{ flexDirection: "row", gap: 10 }}>
+              <View style={{ flex: 1 }}>
+                <Field label="Starts with">
+                  <TextInput
+                    testID="courier-tid-prefix"
+                    value={tidPrefix}
+                    onChangeText={(t) => setTidPrefix(t.toUpperCase())}
+                    placeholder="e.g. EG"
+                    placeholderTextColor="#9CA3AF"
+                    autoCapitalize="characters"
+                    style={styles.input}
+                  />
+                </Field>
+              </View>
+              <View style={{ flex: 1 }}>
+                <Field label="Ends with">
+                  <TextInput
+                    testID="courier-tid-suffix"
+                    value={tidSuffix}
+                    onChangeText={(t) => setTidSuffix(t.toUpperCase())}
+                    placeholder="e.g. IN"
+                    placeholderTextColor="#9CA3AF"
+                    autoCapitalize="characters"
+                    style={styles.input}
+                  />
+                </Field>
+              </View>
+            </View>
+            <Field label="Exact length (chars)">
+              <TextInput
+                testID="courier-tid-length"
+                value={tidLength}
+                onChangeText={(t) => setTidLength(t.replace(/\D/g, ""))}
+                keyboardType="number-pad"
+                placeholder="e.g. 13  (leave blank if variable)"
+                placeholderTextColor="#9CA3AF"
+                style={styles.input}
+              />
+            </Field>
+            <View style={{ flexDirection: "row", gap: 10 }}>
+              <View style={{ flex: 1 }}>
+                <Field label="Min length">
+                  <TextInput
+                    testID="courier-tid-min"
+                    value={tidMinLen}
+                    onChangeText={(t) => setTidMinLen(t.replace(/\D/g, ""))}
+                    keyboardType="number-pad"
+                    placeholder="blank = off"
+                    placeholderTextColor="#9CA3AF"
+                    style={styles.input}
+                  />
+                </Field>
+              </View>
+              <View style={{ flex: 1 }}>
+                <Field label="Max length">
+                  <TextInput
+                    testID="courier-tid-max"
+                    value={tidMaxLen}
+                    onChangeText={(t) => setTidMaxLen(t.replace(/\D/g, ""))}
+                    keyboardType="number-pad"
+                    placeholder="blank = off"
+                    placeholderTextColor="#9CA3AF"
+                    style={styles.input}
+                  />
+                </Field>
+              </View>
+            </View>
+            {tidPrefix || tidSuffix || tidLength ? (
+              <View style={[styles.preview, { backgroundColor: "#ECFDF5", borderColor: "#86EFAC" }]}>
+                <Text style={[styles.previewLabel, { color: "#065F46" }]}>
+                  Scanner will accept only IDs like:
+                </Text>
+                <Text style={[styles.previewTrack, { color: "#065F46" }]}>
+                  {tidPrefix || "***"}
+                  {tidLength
+                    ? "".padEnd(Math.max(0, Number(tidLength) - tidPrefix.length - tidSuffix.length), "X")
+                    : "XXXXXX"}
+                  {tidSuffix || "***"}
+                </Text>
+              </View>
+            ) : null}
           </Section>
 
           <Section title="Courier Contact (for customer queries)">

@@ -554,6 +554,14 @@ class Courier(BaseModel):
     tracking_url_template: str = ""   # e.g. "https://nandan.com/track?id={tracking_id}"
     customer_id: str = ""             # e.g. India Post customer ID printed under courier name on label
     notes: str = ""
+    # Phase-4d: per-courier tracking-ID format validation. Used by
+    # scanner (reject garbled reads) and manual-entry (inline error).
+    tracking_id_prefix: str = ""      # e.g. "EG" for India Post Speed Post
+    tracking_id_suffix: str = ""      # e.g. "IN" for India Post
+    tracking_id_length: int = 0       # exact length incl. prefix+suffix, 0 = no check
+    tracking_id_min_length: int = 0   # lower bound if exact length unknown
+    tracking_id_max_length: int = 0   # upper bound
+    tracking_id_pattern: str = ""     # optional regex (advanced users)
     created_at: str = Field(default_factory=utcnow_iso)
 
 
@@ -568,6 +576,12 @@ class CourierCreate(BaseModel):
     tracking_url_template: Optional[str] = ""
     customer_id: Optional[str] = ""
     notes: Optional[str] = ""
+    tracking_id_prefix: Optional[str] = ""
+    tracking_id_suffix: Optional[str] = ""
+    tracking_id_length: Optional[int] = 0
+    tracking_id_min_length: Optional[int] = 0
+    tracking_id_max_length: Optional[int] = 0
+    tracking_id_pattern: Optional[str] = ""
 
 
 class CourierUpdate(BaseModel):
@@ -581,6 +595,12 @@ class CourierUpdate(BaseModel):
     tracking_url_template: Optional[str] = None
     customer_id: Optional[str] = None
     notes: Optional[str] = None
+    tracking_id_prefix: Optional[str] = None
+    tracking_id_suffix: Optional[str] = None
+    tracking_id_length: Optional[int] = None
+    tracking_id_min_length: Optional[int] = None
+    tracking_id_max_length: Optional[int] = None
+    tracking_id_pattern: Optional[str] = None
 
 
 class SenderAddress(BaseModel):

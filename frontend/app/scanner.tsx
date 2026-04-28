@@ -7,7 +7,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { CameraView, useCameraPermissions } from "expo-camera";
-import { Api } from "../lib/api";
+import { Api, Courier } from "../lib/api";
 import { scannerBridge } from "../lib/scannerBridge";
 import {
   initScanFeedback,
@@ -16,6 +16,7 @@ import {
   disposeScanFeedback,
 } from "../lib/scanFeedback";
 import { colors } from "../lib/theme";
+import { validateTrackingId, findMatchingCourier } from "../lib/trackingValidator";
 
 export default function ScannerModal() {
   const router = useRouter();
@@ -26,6 +27,8 @@ export default function ScannerModal() {
   const [manualValue, setManualValue] = useState("");
   const [requesting, setRequesting] = useState(false);
   const [soundOn, setSoundOn] = useState(true);
+  const [couriers, setCouriers] = useState<Courier[]>([]);
+  const [errorHint, setErrorHint] = useState<string | null>(null);
 
   const isWeb = Platform.OS === "web";
 
@@ -35,6 +38,15 @@ export default function ScannerModal() {
     return () => {
       disposeScanFeedback();
     };
+  }, []);
+
+  // Load couriers once so we can validate scans against their format rules.
+  useEffect(() => {
+    let cancelled = false;
+    Api.listCouriers()
+      .then((list) => { if (!cancelled) setCouriers(list || []); })
+      .catch(() => {});
+    return () => { cancelled = true; };
   }, []);
 
   const askPermission = async () => {
@@ -53,12 +65,49 @@ export default function ScannerModal() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [permission?.canAskAgain, permission?.granted, isWeb]);
 
-  const submitValue = async (value: string) => {
+  const submitValue = async (value: string, fromManual = false) => {
     const v = value.trim();
     if (!v) {
       playScanError();
       return;
     }
+
+    // ── Format validation ─────────────────────────────────────────
+    // If ANY courier has format rules configured, find the first one
+    // whose rules accept this value. If none matches, the scan is
+    // almost certainly garbled — show a red error and keep scanning.
+    const couriersWithRules = couriers.filter(
+      (c) => c.tracking_id_prefix || c.tracking_id_suffix || c.tracking_id_length,
+    );
+    if (couriersWithRules.length > 0) {
+      const matched = findMatchingCourier(v, couriersWithRules as any);
+      if (!matched) {
+        // Run validation against the "best-guess" courier (first one
+        // whose prefix matches, else the first with rules) so we can
+        // give a precise reason to the user.
+        const guess =
+          couriersWithRules.find((c) =>
+            (c.tracking_id_prefix || "").length > 0 &&
+            v.toUpperCase().startsWith((c.tracking_id_prefix || "").toUpperCase()),
+          ) || couriersWithRules[0];
+        const res = validateTrackingId(v, guess as any);
+        playScanError();
+        setErrorHint(
+          `${res.reason || "This doesn't match any courier format."}\n` +
+          `Scanned: ${v}`,
+        );
+        // Reset debounce so the next good scan can fire.
+        setTimeout(() => {
+          scannedRef.current = false;
+          setScannedValue(null);
+        }, fromManual ? 0 : 900);
+        return;
+      }
+    }
+
+    // Reset the error hint on a good scan.
+    setErrorHint(null);
+
     // First check if this tracking already exists
     try {
       const existing = await Api.getShipmentByTracking(v);
@@ -143,12 +192,12 @@ export default function ScannerModal() {
             placeholderTextColor="#9CA3AF"
             style={styles.manualInput}
             autoCapitalize="characters"
-            onSubmitEditing={() => submitValue(manualValue)}
+            onSubmitEditing={() => submitValue(manualValue, true)}
           />
           <TouchableOpacity
             testID="manual-submit-btn"
             style={styles.submitBtn}
-            onPress={() => submitValue(manualValue)}
+            onPress={() => submitValue(manualValue, true)}
           >
             <Text style={styles.submitBtnText}>Use Tracking ID</Text>
           </TouchableOpacity>
@@ -209,7 +258,13 @@ export default function ScannerModal() {
               <View style={[styles.corner, styles.cornerBR]} />
             </View>
             <Text style={styles.overlayText}>Point camera at barcode / QR</Text>
-            {scannedValue && <Text style={styles.scannedText}>✓ {scannedValue}</Text>}
+            {scannedValue && !errorHint && <Text style={styles.scannedText}>✓ {scannedValue}</Text>}
+            {errorHint ? (
+              <View style={styles.errorBanner}>
+                <Ionicons name="close-circle" size={18} color="#fff" />
+                <Text style={styles.errorBannerTxt}>{errorHint}</Text>
+              </View>
+            ) : null}
           </View>
         </View>
       )}
@@ -219,6 +274,16 @@ export default function ScannerModal() {
 
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: "#000" },
+  errorBanner: {
+    position: "absolute",
+    top: 40, left: 16, right: 16,
+    backgroundColor: "rgba(220, 38, 38, 0.95)",
+    padding: 12, borderRadius: 10,
+    flexDirection: "row", alignItems: "flex-start", gap: 8,
+  },
+  errorBannerTxt: {
+    flex: 1, color: "#fff", fontSize: 12.5, fontWeight: "700", lineHeight: 17,
+  },
   header: {
     height: 56, flexDirection: "row", alignItems: "center",
     justifyContent: "space-between", paddingHorizontal: 14, backgroundColor: "#000",

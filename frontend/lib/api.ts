@@ -73,6 +73,13 @@ export type Courier = {
   tracking_url_template: string;
   customer_id: string;
   notes: string;
+  // Phase-4d: per-courier tracking-ID format validation.
+  tracking_id_prefix?: string;
+  tracking_id_suffix?: string;
+  tracking_id_length?: number;
+  tracking_id_min_length?: number;
+  tracking_id_max_length?: number;
+  tracking_id_pattern?: string;
   created_at: string;
 };
 
