@@ -101,6 +101,42 @@
 #====================================================================================================
 # Testing Data - Main Agent and testing sub agent both should log testing data below this section
 #====================================================================================================
+## Iteration: Phase-7f IST Timezone Fix + Counter Customization (2026-04-28 PM7)
+
+### Problem 1 — Date prefix wrong in early-morning hours (IST vs UTC)
+- Backend used `datetime.utcnow()` for the YYMMDD prefix → at 4:30 AM IST master ID showed `260428…` instead of `260429…`.
+- **Fix**: `generate_master_order_id` and `peek_next_master_order_id` now compute the date as `datetime.utcnow() + timedelta(hours=5, minutes=30)`. App's customers are India-based; IST is the user-facing calendar.
+
+### Problem 2 — User wants counter migration (legacy series continuity)
+User has shipped 2200 parcels in their old system and wants the next master ID to start from 2201, not 1.
+
+### Backend
+- **`GET /api/orders/master-id-counter`** — read current counter (returns `current_seq`, `next_seq`, `next_master_order_id`).
+- **`POST /api/orders/master-id-counter`** — set the counter to a specific seq (body: `{seq: int, force?: bool}`).
+  - Default: lowering blocked with 409 "Counter is currently at N. Lowering to M would risk duplicate Master Order IDs. Pass force=true to override."
+  - `force=true` allows lowering (admin/migration only).
+  - Validation: 422 for `seq < 0` or `seq > 9_999_999`.
+
+### Frontend
+- `/app/frontend/lib/api.ts` — `getMasterIdCounter()`, `setMasterIdCounter(seq, force)` API methods.
+- `/app/frontend/app/(tabs)/settings.tsx` — new "Order ID Sequence Number" section under the Auto-Generate toggles:
+  - Shows current counter + next master ID preview live.
+  - Numeric input for new starting seq + Set button.
+  - On lower-than-current input, prompts user with destructive "Force" confirmation Alert before sending `force=true`.
+  - Greyed out when Auto-Generate is OFF.
+
+### Validation — **20/20 backend tests PASS**:
+- ✅ peek returns IST-prefixed `26042900012` (verified — server was in UTC 2026-04-28 but IST date is 2026-04-29).
+- ✅ GET counter returns valid shape.
+- ✅ Setting higher value works; subsequent allocation produces expected zero-padded ID.
+- ✅ Lowering without force → 409.
+- ✅ Lowering with force=true → 200 with new value.
+- ✅ Validation: negative / too-large seq rejected.
+
+### No regressions to existing flows.
+
+---
+
 ## Iteration: Phase-7e New Shipment Auto-fill (2026-04-28 PM6)
 
 ### Backend (`/app/backend/server.py`)
