@@ -735,19 +735,23 @@ export default function AddShipment() {
           ]);
         }
       } catch (e: any) {
-        // Phase-5+: On a network-style failure for a *new* shipment, save
-        // to the offline queue instead of losing the user's data. Edits
-        // and pending-order links still need a server round-trip.
+        // Phase-5+: On a network-style failure, save to the offline queue
+        // instead of losing the user's data. Both Create and Edit are now
+        // queue-able. Permanent (4xx) errors still bubble to the user.
         const isNetworkErr =
           !e?.response &&
           /network|timeout|abort|err_network/i.test(String(e?.message || ""));
-        if (!editingShipmentId && isNetworkErr) {
+        if (isNetworkErr) {
           try {
-            await SyncQueue.enqueueShipmentCreate(payload, customerName);
+            if (editingShipmentId) {
+              await SyncQueue.enqueueShipmentUpdate(editingShipmentId, payload, customerName);
+            } else {
+              await SyncQueue.enqueueShipmentCreate(payload, customerName);
+            }
             resetForm();
             Alert.alert(
               "Saved offline",
-              "We couldn't reach the server. This shipment is queued and will sync automatically when you're back online.",
+              "We couldn't reach the server. Your changes are queued and will sync automatically when you're back online.",
               [{ text: "OK", onPress: () => router.replace("/(tabs)/shipments") }],
             );
             return;

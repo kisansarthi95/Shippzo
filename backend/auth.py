@@ -107,6 +107,10 @@ class SignupRequest(BaseModel):
     name: str = Field(min_length=1, max_length=80)
     shop_name: str = Field(default="", max_length=80)
     phone: str = Field(min_length=10, max_length=15)
+    # Phase-2b: opaque per-device hash (mobile install id / web stable
+    # uuid). Optional for backwards compatibility — older clients won't
+    # send it, and the backend simply skips the abuse check for them.
+    device_fingerprint: str = Field(default="", max_length=256)
 
 
 class LoginRequest(BaseModel):

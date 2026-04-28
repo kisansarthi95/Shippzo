@@ -205,8 +205,51 @@ async def auth_signup(payload: SignupRequest):
     is_first = (await db.users.count_documents({})) == 0
     uid = str(uuid.uuid4())
     display_id = await _next_display_id()
-    # New users start on the 7-day Free Trial (10 labels one-time).
+
+    # Phase-2b: Device-fingerprint anti-abuse — block repeated free
+    # trials from the same physical device. We do NOT block the signup
+    # itself (legitimate users may share devices), we just deny the new
+    # account the free trial. Admin can override later via the plan
+    # endpoints if a real customer is affected.
+    fp = (payload.device_fingerprint or "").strip()
+    deny_free_trial = False
+    if fp and not is_first:
+        try:
+            prior = await db.users.count_documents({
+                "device_fingerprint": fp,
+                # only existing free-trial / former-trial accounts count
+                # — paying customers signing up a 2nd account on their
+                # device should still get the trial.
+                "$or": [
+                    {"plan": "free_trial"},
+                    {"trial_consumed": True},
+                ],
+            })
+            if prior >= 1:
+                deny_free_trial = True
+                logger.info(
+                    f"[anti-abuse] Free trial denied for {email} — "
+                    f"device {fp[:12]}… already used by {prior} prior trial signup(s)."
+                )
+        except Exception:
+            logger.exception("device-fingerprint lookup failed (non-fatal)")
+            deny_free_trial = False
+
+    # New users start on the 7-day Free Trial (10 labels one-time) UNLESS
+    # the device already burned a trial — then they start with no plan
+    # (effectively a paywall on the first action).
     trial_spec = plan_start_payload("free_trial")
+    if deny_free_trial:
+        # No trial: empty plan + no expiry. The plan-gate middleware
+        # treats this as "needs to subscribe" and shows upgrade prompts.
+        plan_for_user = ""
+        plan_started = ""
+        plan_expires = ""
+    else:
+        plan_for_user = trial_spec["plan"]
+        plan_started = trial_spec["plan_started_at"]
+        plan_expires = trial_spec["plan_expires_at"]
+
     user_doc = {
         "id": uid,
         "display_id": display_id,
@@ -215,10 +258,13 @@ async def auth_signup(payload: SignupRequest):
         "name": payload.name.strip(),
         "shop_name": payload.shop_name.strip(),
         "phone": phone,
+        "device_fingerprint": fp,         # store for future checks
+        "trial_consumed": not deny_free_trial,  # mark trial as used iff granted
+        "trial_denied_reason": "duplicate_device" if deny_free_trial else "",
         "is_admin": is_first,
-        "plan": trial_spec["plan"],
-        "plan_started_at": trial_spec["plan_started_at"],
-        "plan_expires_at": trial_spec["plan_expires_at"],
+        "plan": plan_for_user,
+        "plan_started_at": plan_started,
+        "plan_expires_at": plan_expires,
         "created_at": now,
     }
     await db.users.insert_one(user_doc)
@@ -247,7 +293,13 @@ async def auth_signup(payload: SignupRequest):
     token = make_token(uid, email)
     out = user_public(user_doc)
     out["_token"] = token  # stashed for the /signup response
-    return {**user_public(user_doc), **{"token": token}}  # type: ignore
+    response = {**user_public(user_doc), **{"token": token}}
+    if deny_free_trial:
+        # Frontend uses this to show a friendly "device already used a
+        # trial — please subscribe to continue" notice on first login.
+        response["trial_denied"] = True
+        response["trial_denied_reason"] = "duplicate_device"
+    return response  # type: ignore
 
 
 @auth_router.post("/login")

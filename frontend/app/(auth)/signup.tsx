@@ -41,7 +41,16 @@ export default function SignupScreen() {
     }
     setBusy(true);
     try {
-      await signUp(e, password, name.trim(), shop.trim(), phoneDigits);
+      const res = await signUp(e, password, name.trim(), shop.trim(), phoneDigits);
+      if (res?.trial_denied) {
+        // Phase-2b: friendly notice — signup succeeded, free trial wasn't
+        // granted because this device already used one. We don't reveal
+        // *who* the prior account belongs to.
+        Alert.alert(
+          "Welcome aboard!",
+          "We noticed this device has already used a free trial before, so the trial wasn't started this time. You can subscribe to a paid plan from the Plans screen anytime to continue.",
+        );
+      }
     } catch (err: any) {
       Alert.alert(
         "Signup failed",

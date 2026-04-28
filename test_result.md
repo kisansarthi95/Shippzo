@@ -3134,6 +3134,93 @@ test_plan:
               need conflict resolution against newer server state.
             • Smart Paste / OCR / Razorpay flows remain online-only.
 
+  - task: "Phase-2b: Device fingerprint anti-abuse"
+    implemented: true
+    working: true
+    file: "/app/backend/auth.py + /app/backend/server.py + /app/frontend/lib/deviceFingerprint.ts + /app/frontend/lib/auth.tsx + /app/frontend/app/(auth)/signup.tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "main"
+        -comment: |
+            Goal: stop a single user from creating dozens of free-trial
+            accounts by changing email each time.
+
+            Frontend (lib/deviceFingerprint.ts):
+            - iOS: Application.getIosIdForVendorAsync()
+            - Android: Application.getAndroidId()
+            - Web / fallback: AsyncStorage-persisted UUID
+            - All sources mixed with Device.modelId / osVersion, then
+              FNV-1a hashed before being sent (no raw IDs leak server-
+              side). Cached in AsyncStorage after first resolution.
+
+            New deps:
+            - expo-application@55.0.14
+            - expo-device@55.0.15
+
+            Auth flow:
+            - SignupRequest.device_fingerprint added (default "" for
+              back-compat with older clients).
+            - lib/auth.tsx signUp() best-effort collects the fingerprint
+              and forwards it; surface trial_denied flag back to caller.
+            - signup.tsx shows a friendly Alert if trial_denied without
+              naming the prior account.
+
+            Backend logic (auth_signup):
+            - If a fingerprint is supplied AND a prior user with the
+              same fingerprint already had a free trial OR
+              trial_consumed=true, the new account is created with an
+              empty plan (no trial), trial_denied_reason="duplicate_
+              device". A log line with the truncated fingerprint helps
+              ops investigate abuse patterns.
+            - Existing users (no fingerprint stored) and non-fingerprint
+              clients are unaffected — first-write-wins.
+
+            Smoke-test (4 cases, /app backend live):
+            1. Fresh fingerprint → trial granted ✓
+            2. Same fingerprint repeat signup → trial DENIED, plan="" ✓
+            3. Different fingerprint → trial granted ✓
+            4. No fingerprint (legacy client) → trial granted ✓
+            Test users + their seeded shipments/couriers/wallets cleaned
+            up post-test.
+
+  - task: "Offline queue extended: update / delete / status"
+    implemented: true
+    working: true
+    file: "/app/frontend/lib/syncQueue.ts + /app/frontend/app/(tabs)/shipments.tsx + /app/frontend/app/(tabs)/add.tsx"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "main"
+        -comment: |
+            Phase-1 of the queue covered shipment_create only. Now the
+            queue handles four op types:
+              - shipment_create
+              - shipment_update   (with last-write-wins coalescing)
+              - shipment_delete   (drops any pending update for same id)
+              - shipment_status   (status-only updates, also coalesced)
+
+            Coalescing rules in syncQueue.ts:
+            - Multiple pending updates for the same shipment id collapse
+              into the most-recent payload — saves bandwidth + avoids
+              partial-state conflicts on flush.
+            - A delete drops pending updates for the same id.
+            - A status change for the same id supersedes the previous.
+
+            Wired into:
+            - add.tsx: BOTH create and edit now route to the queue on
+              network error (was create-only before).
+            - shipments.tsx: toggleDelivered, changeStatus, and the
+              swipe-to-delete handler use a small isNetworkErrish()
+              helper to decide queue-vs-alert.
+
+            Existing flush() handles the new types via Api.updateShipment
+            / Api.deleteShipment.
+
 agent_communication:
     -agent: "main"
     -message: |

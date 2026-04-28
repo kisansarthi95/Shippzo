@@ -33,7 +33,9 @@ type AuthState = {
   /** True until we've tried to restore the session from AsyncStorage on boot. */
   loading: boolean;
   signIn: (email: string, password: string) => Promise<void>;
-  signUp: (email: string, password: string, name: string, shop_name: string, phone: string) => Promise<void>;
+  signUp: (
+    email: string, password: string, name: string, shop_name: string, phone: string,
+  ) => Promise<{ trial_denied: boolean; trial_denied_reason: string }>;
   signInWithGoogleSession: (sessionId: string) => Promise<void>;
   signOut: () => Promise<void>;
   refresh: () => Promise<void>;
@@ -99,11 +101,23 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const signUp = useCallback(async (
     email: string, password: string, name: string, shop_name: string, phone: string,
   ) => {
-    const r = await api.post<{ token: string } & User>("/auth/signup", {
-      email, password, name, shop_name, phone,
+    // Phase-2b: collect a stable per-device fingerprint so the backend
+    // can deny repeated free trials from the same hardware. Best-effort
+    // — never blocks signup if the helper fails.
+    let device_fingerprint = "";
+    try {
+      const { safeGetDeviceFingerprint } = await import("./deviceFingerprint");
+      device_fingerprint = await safeGetDeviceFingerprint();
+    } catch { /* ignore */ }
+
+    const r = await api.post<
+      { token: string; trial_denied?: boolean; trial_denied_reason?: string } & User
+    >("/auth/signup", {
+      email, password, name, shop_name, phone, device_fingerprint,
     });
-    const { token: tok, ...userFields } = r.data;
+    const { token: tok, trial_denied, trial_denied_reason, ...userFields } = r.data;
     await persist(tok, userFields as User);
+    return { trial_denied: !!trial_denied, trial_denied_reason: trial_denied_reason || "" };
   }, [persist]);
 
   /**

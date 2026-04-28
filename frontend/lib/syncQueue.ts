@@ -35,7 +35,11 @@ import { Api } from "./api";
 const STORAGE_KEY = "@offline_sync_queue_v1";
 const MAX_TRIES = 10;
 
-export type QueueOpType = "shipment_create";
+export type QueueOpType =
+  | "shipment_create"
+  | "shipment_update"
+  | "shipment_delete"
+  | "shipment_status";
 
 export type QueueItem = {
   id: string;                  // local uuid
@@ -148,6 +152,79 @@ export const SyncQueue = {
     return item;
   },
 
+  /** Queue an UPDATE on an existing shipment. Conflict strategy: last-
+   *  write-wins. If the user makes multiple offline edits to the same
+   *  shipment we collapse them into the most recent payload. */
+  async enqueueShipmentUpdate(
+    shipmentId: string,
+    payload: any,
+    label?: string,
+  ): Promise<QueueItem> {
+    const items = await readQueue();
+    // Coalesce: drop any earlier pending update for this shipment.
+    const filtered = items.filter(
+      (i) => !(i.type === "shipment_update" && i.payload?.__id === shipmentId),
+    );
+    const item: QueueItem = {
+      id: uuidLike(),
+      type: "shipment_update",
+      // We stash the id under `__id` so the flusher can pull it out.
+      payload: { ...payload, __id: shipmentId },
+      created_at: new Date().toISOString(),
+      tries: 0,
+      label: label || payload?.customer_name || payload?.tracking_id || shipmentId,
+    };
+    filtered.push(item);
+    await writeQueue(filtered);
+    return item;
+  },
+
+  /** Queue a DELETE on a shipment. If a pending CREATE exists for the
+   *  same client-side id we just drop the create instead of round-
+   *  tripping (saves a wasted POST when the user creates+deletes offline). */
+  async enqueueShipmentDelete(shipmentId: string, label?: string): Promise<QueueItem | null> {
+    const items = await readQueue();
+    // Drop any pending update for this shipment — moot once deleted.
+    let next = items.filter(
+      (i) => !(i.type === "shipment_update" && i.payload?.__id === shipmentId),
+    );
+    const item: QueueItem = {
+      id: uuidLike(),
+      type: "shipment_delete",
+      payload: { __id: shipmentId },
+      created_at: new Date().toISOString(),
+      tries: 0,
+      label: label || shipmentId,
+    };
+    next.push(item);
+    await writeQueue(next);
+    return item;
+  },
+
+  /** Queue a STATUS change (delivered / pending / cancelled). */
+  async enqueueShipmentStatus(
+    shipmentId: string,
+    status: string,
+    label?: string,
+  ): Promise<QueueItem> {
+    const items = await readQueue();
+    // Coalesce: keep only the latest status change for this shipment.
+    const filtered = items.filter(
+      (i) => !(i.type === "shipment_status" && i.payload?.__id === shipmentId),
+    );
+    const item: QueueItem = {
+      id: uuidLike(),
+      type: "shipment_status",
+      payload: { __id: shipmentId, status },
+      created_at: new Date().toISOString(),
+      tries: 0,
+      label: label || `${shipmentId} → ${status}`,
+    };
+    filtered.push(item);
+    await writeQueue(filtered);
+    return item;
+  },
+
   /** Remove an item from the queue (e.g. after success or user dismiss). */
   async remove(id: string): Promise<void> {
     const items = await readQueue();
@@ -181,6 +258,18 @@ export const SyncQueue = {
         try {
           if (item.type === "shipment_create") {
             await Api.createShipment(item.payload);
+          } else if (item.type === "shipment_update") {
+            const { __id, ...body } = item.payload || {};
+            if (!__id) throw new Error("missing shipment id");
+            await Api.updateShipment(__id, body);
+          } else if (item.type === "shipment_delete") {
+            const { __id } = item.payload || {};
+            if (!__id) throw new Error("missing shipment id");
+            await Api.deleteShipment(__id);
+          } else if (item.type === "shipment_status") {
+            const { __id, status } = item.payload || {};
+            if (!__id || !status) throw new Error("missing id/status");
+            await Api.updateShipment(__id, { status } as any);
           }
           // Success → remove from queue.
           const after = (await readQueue()).filter((i) => i.id !== item.id);

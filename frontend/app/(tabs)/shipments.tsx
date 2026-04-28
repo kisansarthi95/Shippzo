@@ -12,6 +12,15 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useFocusEffect, useRouter, useLocalSearchParams } from "expo-router";
 import DateTimePicker from "@react-native-community/datetimepicker";
 import { Api, Shipment, Settings, Courier } from "../../lib/api";
+import { SyncQueue } from "../../lib/syncQueue";
+
+// Helper: detect axios "no server reachable" type errors so we can route
+// the operation to the offline queue instead of surfacing a scary alert.
+function isNetworkErrish(err: any): boolean {
+  if (!err) return false;
+  if (err?.response) return false; // server replied — definitive failure
+  return /network|timeout|abort|err_network/i.test(String(err?.message || ""));
+}
 import { buildCopyText, buildWhatsAppText, cleanPhone } from "../../lib/format";
 import { buildLabelHtml, pageDimensionsFor } from "../../lib/label";
 import { colors } from "../../lib/theme";
@@ -288,7 +297,15 @@ export default function Shipments() {
     // Users can get the full 8-status picker via the "⋮" chip tap.
     const prev = s.status || "Pending";
     const newStatus = prev === "Delivered" ? "Dispatched" : "Delivered";
-    await Api.updateShipment(s.id, { status: newStatus });
+    try {
+      await Api.updateShipment(s.id, { status: newStatus });
+    } catch (e: any) {
+      if (isNetworkErrish(e)) {
+        await SyncQueue.enqueueShipmentStatus(s.id, newStatus, s.tracking_id);
+      } else {
+        Alert.alert("Couldn't update", e?.response?.data?.detail || e?.message || "Try again");
+      }
+    }
     load();
   };
 
@@ -302,7 +319,19 @@ export default function Shipments() {
     if (!statusPickerShipment) return;
     setStatusUpdating(true);
     try {
-      await Api.updateShipment(statusPickerShipment.id, { status: newStatus });
+      try {
+        await Api.updateShipment(statusPickerShipment.id, { status: newStatus });
+      } catch (e: any) {
+        if (isNetworkErrish(e)) {
+          await SyncQueue.enqueueShipmentStatus(
+            statusPickerShipment.id,
+            newStatus,
+            statusPickerShipment.tracking_id,
+          );
+        } else {
+          throw e;
+        }
+      }
       setStatusPickerShipment(null);
       await load();
     } catch (e: any) {
@@ -352,7 +381,16 @@ export default function Shipments() {
               );
             }
           } catch (e: any) {
-            Alert.alert("Delete error", e?.message || "Failed to delete");
+            if (isNetworkErrish(e)) {
+              await SyncQueue.enqueueShipmentDelete(s.id, s.tracking_id);
+              // Optimistic UX — let the user know it's queued.
+              Alert.alert(
+                "Queued for deletion",
+                "We're offline — this shipment will be removed once you're back online.",
+              );
+            } else {
+              Alert.alert("Delete error", e?.response?.data?.detail || e?.message || "Failed to delete");
+            }
           }
           load();
         },
