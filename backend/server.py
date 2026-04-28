@@ -1870,6 +1870,7 @@ class PendingOrder(BaseModel):
     pincode: str = ""
     items: str = ""  # comma separated
     amount: float = 0
+    token_amount: float = 0.0   # advance / token already collected (COD orders)
     payment_mode: str = "COD"  # "COD" | "PAID"
 
     # Hints from paste
@@ -1992,6 +1993,9 @@ def parse_structured_paste(text: str) -> Dict[str, Any]:
         ("AMOUNT", "amount"),
         ("PRICE", "amount"),
         ("TOTAL", "amount"),
+        ("TOKEN", "token_amount"),
+        ("TOKEN_AMOUNT", "token_amount"),
+        ("ADVANCE", "token_amount"),
         ("PAYMENT_MODE", "payment_mode"),
         ("PAYMENT", "payment_mode"),
         ("PAY", "payment_mode"),
@@ -2767,6 +2771,13 @@ async def smart_paste_create(
                     if m:
                         try:
                             fields["amount"] = float(m.group(1))
+                        except Exception:
+                            pass
+                if isinstance(fields.get("token_amount"), str):
+                    m = re.search(r"(\d+(?:\.\d+)?)", fields["token_amount"].replace(",", ""))
+                    if m:
+                        try:
+                            fields["token_amount"] = float(m.group(1))
                         except Exception:
                             pass
     except Exception:

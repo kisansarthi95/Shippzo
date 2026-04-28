@@ -101,6 +101,36 @@
 #====================================================================================================
 # Testing Data - Main Agent and testing sub agent both should log testing data below this section
 #====================================================================================================
+## Iteration: Smart Paste — Field Logic Update (Amount/Payment/Token/AltMobile) (2026-04-28 PM3)
+
+### Backend Changes (`/app/backend/server.py`)
+- `PendingOrder` model: added `token_amount: float = 0.0` field.
+- `parse_structured_paste` FIELD_KEYS regex map: added `("TOKEN", "token_amount")`, `("TOKEN_AMOUNT", "token_amount")`, `("ADVANCE", "token_amount")`.
+- `smart_paste_create`: added float-coercion for `token_amount` (mirrors existing amount logic).
+
+### Frontend Changes (`/app/frontend/app/(tabs)/index.tsx`)
+- **AMOUNT**: moved from Optional → Required. Placeholder "Enter amount" (was "COD amount"). Numeric keyboard.
+- **PAYMENT**: replaced TextInput with 2-button toggle [COD] [Prepaid]. COD highlighted purple when selected; Prepaid clears Token. Required field with green ✅ when chosen.
+- **TOKEN (NEW)**: schema key `TOKEN` → `token_amount`. Visible only when payment === "COD". Required for COD orders. Numeric keyboard. Label "Token Amount (₹)".
+- **ALT_PHONE (NEW)**: schema key `ALT_PHONE` → `customer_alt_phone`. Always shown in Optional. Numeric keyboard. 10-digit validation at save (must be empty or exactly 10 digits).
+- **WEIGHT**: numeric keyboard (was default). Strips non-digits on input.
+- **All numeric fields** (PHONE, ALT_PHONE, PINCODE, AMOUNT, TOKEN, WEIGHT) — onChangeText sanitises non-digit input. Phone/Alt/Pincode strip even decimal dot.
+- Save button validation now enforces: PAYMENT chosen, TOKEN required if COD, ALT_PHONE 10-digit if present, PINCODE exactly 6 digits.
+- New styles: `payToggleRow`, `payToggleBtn`, `payToggleBtnActive`, `payToggleTxt`, `payToggleTxtActive`.
+
+### Validation
+Verified via 3 sequential screenshots at 390×844:
+1. After paste with COD 500 + Token 100 + Alt 9090909090: Amount=500 ✅, Payment toggle shows COD highlighted, Token field RED required (auto-filled "Token 100" ended up in Notes — see note below), Alt Mobile in Optional ✅.
+2. Switching to Prepaid: Token field DISAPPEARS, Payment row turns green ✅.
+3. Smart Paste-decoded Amount + COD payment auto-detected.
+
+### Note
+The current sample text uses "Token 100" which the AI's regex doesn't yet parse into `token_amount` (the AI prompt update for `TOKEN`/`token_amount` is not done). For now, user can type the token value directly into the form. Backend already accepts `token_amount` from canonical paste text.
+
+### No regressions to existing flows.
+
+---
+
 ## Iteration: Smart Paste — Bottom Sheet Drag (75% min, 100% max) (2026-04-28 PM2)
 
 ### Frontend Changes (`/app/frontend/app/(tabs)/index.tsx`)

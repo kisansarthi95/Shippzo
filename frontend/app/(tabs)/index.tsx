@@ -153,28 +153,31 @@ export default function Dashboard() {
   > = {
     NAME:      { label: "Customer Name",    placeholder: "e.g. Ramesh Patel", primary: true },
     PHONE:     { label: "Mobile Number",    placeholder: "10-digit mobile", keyboard: "phone-pad", primary: true },
+    ALT_PHONE: { label: "Alternate Mobile", placeholder: "10-digit (optional)", keyboard: "phone-pad" },
     ADDRESS_1: { label: "Address",          placeholder: "House / street / area", primary: true },
     ADDRESS_2: { label: "Address Line 2",   placeholder: "Landmark / optional" },
     CITY:      { label: "City",             placeholder: "e.g. Ahmedabad", primary: true },
     STATE:     { label: "State",            placeholder: "e.g. Gujarat", primary: true },
     PINCODE:   { label: "Pincode",          placeholder: "6 digits", keyboard: "numeric", primary: true },
     ITEMS:     { label: "Item(s)",          placeholder: "e.g. Saree x 2", primary: true },
-    AMOUNT:    { label: "Amount (₹)",       placeholder: "COD amount", keyboard: "numeric", primary: true },
-    PAYMENT:   { label: "Payment",          placeholder: "COD or PAID", primary: true },
+    AMOUNT:    { label: "Amount (₹)",       placeholder: "Enter amount", keyboard: "numeric", primary: true },
+    PAYMENT:   { label: "Payment",          placeholder: "COD or Prepaid", primary: true },
+    TOKEN:     { label: "Token Amount (₹)", placeholder: "Enter token", keyboard: "numeric" },
     COURIER:   { label: "Courier",          placeholder: "optional" },
     ORDER_ID:  { label: "Order ID",         placeholder: "optional" },
-    WEIGHT:    { label: "Weight",           placeholder: "e.g. 500g" },
+    WEIGHT:    { label: "Weight (g)",       placeholder: "Enter weight in grams", keyboard: "numeric" },
     NOTES:     { label: "Notes",            placeholder: "special instructions" },
   };
 
-  // Field order in the preview form. Primary fields first, then optional.
+  // Field order in the canonical paste-text payload.
   const FIELD_ORDER = [
     "NAME", "PHONE", "ALT_PHONE", "ADDRESS_1", "ADDRESS_2", "CITY", "STATE", "PINCODE",
-    "ITEMS", "AMOUNT", "PAYMENT",
+    "ITEMS", "AMOUNT", "PAYMENT", "TOKEN",
     "COURIER", "ORDER_ID", "WEIGHT", "NOTES",
   ];
 
-  // Fields the app treats as REQUIRED — blocks Save until filled.
+  // Required fields (always blocking). TOKEN is conditionally required
+  // when payment_mode === COD and is enforced separately at save time.
   const REQUIRED_FIELDS = [
     "NAME", "PHONE", "ADDRESS_1", "CITY", "STATE", "PINCODE", "AMOUNT", "WEIGHT",
   ];
@@ -521,6 +524,10 @@ export default function Dashboard() {
             ? String(legacyFields.amount)
             : "",
         PAYMENT: String(legacyFields.payment_mode || "").toUpperCase(),
+        TOKEN:
+          legacyFields.token_amount != null && legacyFields.token_amount !== ""
+            ? String(legacyFields.token_amount)
+            : "",
         COURIER: legacyFields.courier_name || "",
         ORDER_ID: legacyFields.order_id || "",
         WEIGHT: legacyFields.weight || "",
@@ -754,19 +761,139 @@ export default function Dashboard() {
                 // fields with an empty value are inline-editable; filled
                 // fields show a green tick. Tap any filled value to
                 // edit it as well (toggle via editingKey).
-                const REQ = ["NAME", "PHONE", "ADDRESS_1", "CITY", "STATE", "PINCODE", "WEIGHT"];
-                const OPT = ["AMOUNT", "ITEMS", "PAYMENT", "COURIER", "ORDER_ID", "NOTES"];
-                // Map snake_case ↔ schema key for inline-edit binding.
+                //
+                // PAYMENT renders a 2-button toggle (COD / Prepaid).
+                // TOKEN appears only when PAYMENT === "COD" and is required.
+                const REQ = [
+                  "NAME", "PHONE", "ADDRESS_1", "CITY", "STATE",
+                  "PINCODE", "AMOUNT", "PAYMENT", "WEIGHT",
+                ];
+                const OPT = [
+                  "ALT_PHONE", "ITEMS", "COURIER", "ORDER_ID", "NOTES",
+                ];
+                // Map schema-key ↔ legacy field name (used by inline edit binding).
                 const SNAKE: Record<string, string> = {
-                  NAME: "customer_name", PHONE: "customer_phone",
-                  ADDRESS_1: "address_line1", CITY: "city",
-                  STATE: "state", PINCODE: "pincode",
-                  WEIGHT: "weight", AMOUNT: "amount", ITEMS: "items",
-                  PAYMENT: "payment_mode", COURIER: "courier_name",
-                  ORDER_ID: "order_id", NOTES: "notes",
+                  NAME: "customer_name",
+                  PHONE: "customer_phone",
+                  ALT_PHONE: "customer_alt_phone",
+                  ADDRESS_1: "address_line1",
+                  CITY: "city",
+                  STATE: "state",
+                  PINCODE: "pincode",
+                  WEIGHT: "weight",
+                  AMOUNT: "amount",
+                  ITEMS: "items",
+                  PAYMENT: "payment_mode",
+                  TOKEN: "token_amount",
+                  COURIER: "courier_name",
+                  ORDER_ID: "order_id",
+                  NOTES: "notes",
+                };
+
+                // Normalise current payment value → "COD" | "PREPAID" | "".
+                const rawPay = String((chatFields as any).payment_mode || "")
+                  .trim()
+                  .toUpperCase();
+                const payNorm =
+                  rawPay === "COD"
+                    ? "COD"
+                    : rawPay === "PREPAID" || rawPay === "PAID"
+                      ? "PREPAID"
+                      : "";
+                const isCOD = payNorm === "COD";
+
+                /** Renders a custom row for the PAYMENT field — 2-button toggle. */
+                const renderPaymentRow = (isReq: boolean) => {
+                  const meta = FIELD_META["PAYMENT"];
+                  const isMissing = !payNorm;
+                  return (
+                    <View
+                      key="PAYMENT"
+                      style={[
+                        styles.spRow,
+                        isMissing && isReq ? styles.spRowMissing : null,
+                      ]}
+                      testID="smart-paste-row-payment_mode"
+                    >
+                      <View style={styles.spRowLeft}>
+                        {isMissing ? (
+                          <Ionicons
+                            name={isReq ? "alert-circle" : "ellipse-outline"}
+                            size={16}
+                            color={isReq ? "#DC2626" : "#94A3B8"}
+                          />
+                        ) : (
+                          <Ionicons name="checkmark-circle" size={16} color="#16A34A" />
+                        )}
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.spRowLabel}>
+                          {meta.label}
+                          {isReq ? <Text style={{ color: "#DC2626" }}>  *</Text> : null}
+                        </Text>
+                        <View style={styles.payToggleRow}>
+                          <TouchableOpacity
+                            testID="payment-toggle-cod"
+                            onPress={() =>
+                              setChatFields((p) => ({ ...p, payment_mode: "COD" }))
+                            }
+                            style={[
+                              styles.payToggleBtn,
+                              payNorm === "COD" && styles.payToggleBtnActive,
+                            ]}
+                            activeOpacity={0.85}
+                          >
+                            <Ionicons
+                              name="cash-outline"
+                              size={14}
+                              color={payNorm === "COD" ? "#fff" : "#7C3AED"}
+                            />
+                            <Text
+                              style={[
+                                styles.payToggleTxt,
+                                payNorm === "COD" && styles.payToggleTxtActive,
+                              ]}
+                            >
+                              COD
+                            </Text>
+                          </TouchableOpacity>
+                          <TouchableOpacity
+                            testID="payment-toggle-prepaid"
+                            onPress={() =>
+                              setChatFields((p) => ({
+                                ...p,
+                                payment_mode: "PREPAID",
+                                token_amount: "",
+                              }))
+                            }
+                            style={[
+                              styles.payToggleBtn,
+                              payNorm === "PREPAID" && styles.payToggleBtnActive,
+                            ]}
+                            activeOpacity={0.85}
+                          >
+                            <Ionicons
+                              name="card-outline"
+                              size={14}
+                              color={payNorm === "PREPAID" ? "#fff" : "#7C3AED"}
+                            />
+                            <Text
+                              style={[
+                                styles.payToggleTxt,
+                                payNorm === "PREPAID" && styles.payToggleTxtActive,
+                              ]}
+                            >
+                              Prepaid
+                            </Text>
+                          </TouchableOpacity>
+                        </View>
+                      </View>
+                    </View>
+                  );
                 };
 
                 const renderRow = (key: string, isReq: boolean) => {
+                  if (key === "PAYMENT") return renderPaymentRow(isReq);
                   const meta = FIELD_META[key] || { label: key, placeholder: "" };
                   const sk = SNAKE[key];
                   const val = String((chatFields as any)[sk] ?? "").trim();
@@ -805,15 +932,34 @@ export default function Dashboard() {
                           value={val}
                           onChangeText={(t) => {
                             // Phase-6 single-address-field cap.
-                            const capped = key === "ADDRESS_1" && t.length > 300 ? t.slice(0, 300) : t;
-                            setChatFields((p) => ({ ...p, [sk]: capped }));
+                            let next = t;
+                            if (key === "ADDRESS_1" && t.length > 300) next = t.slice(0, 300);
+                            // Numeric-keyboard fields → strip non-digits.
+                            if (
+                              key === "PHONE" ||
+                              key === "ALT_PHONE" ||
+                              key === "PINCODE" ||
+                              key === "AMOUNT" ||
+                              key === "TOKEN" ||
+                              key === "WEIGHT"
+                            ) {
+                              next = next.replace(/[^\d.]/g, "");
+                              if (key === "PHONE" || key === "ALT_PHONE" || key === "PINCODE")
+                                next = next.replace(/\./g, "");
+                            }
+                            setChatFields((p) => ({ ...p, [sk]: next }));
                           }}
                           placeholder={meta.placeholder}
                           placeholderTextColor="#9CA3AF"
                           keyboardType={meta.keyboard || "default"}
                           multiline={key === "ADDRESS_1" || key === "NOTES"}
                           numberOfLines={key === "ADDRESS_1" ? 3 : 1}
-                          maxLength={key === "ADDRESS_1" ? 300 : key === "PINCODE" ? 6 : key === "PHONE" ? 15 : 200}
+                          maxLength={
+                            key === "ADDRESS_1" ? 300 :
+                            key === "PINCODE" ? 6 :
+                            key === "PHONE" || key === "ALT_PHONE" ? 15 :
+                            200
+                          }
                         />
                       </View>
                     </View>
@@ -821,8 +967,26 @@ export default function Dashboard() {
                 };
 
                 const reqRows = REQ.map((k) => renderRow(k, true));
+                // Insert TOKEN row right after PAYMENT when COD is selected.
+                if (isCOD) {
+                  const insertIdx = REQ.indexOf("PAYMENT") + 1;
+                  reqRows.splice(insertIdx, 0, renderRow("TOKEN", true));
+                }
                 const optRows = OPT.map((k) => renderRow(k, false));
-                const reqMissing = REQ.filter((k) => !String((chatFields as any)[SNAKE[k]] ?? "").trim());
+
+                // Compute current required-missing count (incl. conditional TOKEN/PAYMENT).
+                const reqMiss: string[] = [];
+                REQ.forEach((k) => {
+                  if (k === "PAYMENT") {
+                    if (!payNorm) reqMiss.push(k);
+                  } else if (!String((chatFields as any)[SNAKE[k]] ?? "").trim()) {
+                    reqMiss.push(k);
+                  }
+                });
+                if (isCOD && !String((chatFields as any).token_amount ?? "").trim()) {
+                  reqMiss.push("TOKEN");
+                }
+
                 return (
                   <>
                     <Text style={styles.spSectionLabel}>Required details</Text>
@@ -830,13 +994,13 @@ export default function Dashboard() {
                     <Text style={[styles.spSectionLabel, { marginTop: 14 }]}>Optional</Text>
                     {optRows}
 
-                    {reqMissing.length > 0 && (
+                    {reqMiss.length > 0 && (
                       <View style={styles.spReqHint}>
                         <Ionicons name="information-circle" size={14} color="#92400E" />
                         <Text style={styles.spReqHintTxt}>
-                          {reqMissing.length === 1
+                          {reqMiss.length === 1
                             ? "1 required field still empty"
-                            : `${reqMissing.length} required fields still empty`}
+                            : `${reqMiss.length} required fields still empty`}
                         </Text>
                       </View>
                     )}
@@ -859,18 +1023,60 @@ export default function Dashboard() {
                 onPress={() => {
                   // Local validation — required fields filled?
                   const SNAKE2: Record<string, string> = {
-                    NAME: "customer_name", PHONE: "customer_phone",
-                    ADDRESS_1: "address_line1", CITY: "city",
-                    STATE: "state", PINCODE: "pincode", WEIGHT: "weight",
+                    NAME: "customer_name",
+                    PHONE: "customer_phone",
+                    ADDRESS_1: "address_line1",
+                    CITY: "city",
+                    STATE: "state",
+                    PINCODE: "pincode",
+                    AMOUNT: "amount",
+                    WEIGHT: "weight",
                   };
-                  const reqMiss = ["NAME","PHONE","ADDRESS_1","CITY","STATE","PINCODE","WEIGHT"]
+                  const reqMiss = ["NAME","PHONE","ADDRESS_1","CITY","STATE","PINCODE","AMOUNT","WEIGHT"]
                     .filter((k) => !String((chatFields as any)[SNAKE2[k]] ?? "").trim());
+                  // Mobile must be 10+ digits.
+                  const phoneDigits = String((chatFields as any).customer_phone || "").replace(/\D/g, "");
+                  if (phoneDigits && phoneDigits.length < 10) {
+                    Alert.alert("Invalid mobile", "Mobile number must be at least 10 digits.");
+                    return;
+                  }
+                  // Alternate Mobile (optional) — if present, must be 10 digits.
+                  const altDigits = String((chatFields as any).customer_alt_phone || "").replace(/\D/g, "");
+                  if (altDigits && altDigits.length !== 10) {
+                    Alert.alert(
+                      "Invalid alternate mobile",
+                      "Alternate mobile must be exactly 10 digits, or leave it empty.",
+                    );
+                    return;
+                  }
+                  // Pincode must be exactly 6 digits.
+                  const pinDigits = String((chatFields as any).pincode || "").replace(/\D/g, "");
+                  if (pinDigits && pinDigits.length !== 6) {
+                    Alert.alert("Invalid pincode", "Pincode must be exactly 6 digits.");
+                    return;
+                  }
+                  // Payment is required.
+                  const payRaw = String((chatFields as any).payment_mode || "").trim().toUpperCase();
+                  const payNorm =
+                    payRaw === "COD" ? "COD" : (payRaw === "PREPAID" || payRaw === "PAID") ? "PREPAID" : "";
+                  if (!payNorm) reqMiss.push("PAYMENT");
+                  // Token required when COD.
+                  if (payNorm === "COD") {
+                    const tk = String((chatFields as any).token_amount ?? "").trim();
+                    if (!tk) reqMiss.push("TOKEN");
+                  }
                   if (reqMiss.length > 0) {
                     const labels = reqMiss.map((k) => FIELD_META[k]?.label || k).join(", ");
                     Alert.alert("Please fill required fields", labels);
                     return;
                   }
-                  saveFromFields(chatFields);
+                  // Normalise payment_mode + clear token if Prepaid.
+                  const finalFields = {
+                    ...chatFields,
+                    payment_mode: payNorm,
+                    token_amount: payNorm === "COD" ? (chatFields as any).token_amount : "",
+                  };
+                  saveFromFields(finalFields);
                 }}
                 disabled={chatSending}
                 style={[
@@ -1723,6 +1929,38 @@ const styles = StyleSheet.create({
     borderRadius: 22,
     justifyContent: "center",
     alignItems: "center",
+  },
+
+  /* ─────────── Smart Paste — Payment toggle (COD / Prepaid) ─────────── */
+  payToggleRow: {
+    flexDirection: "row",
+    gap: 8,
+    marginTop: 4,
+  },
+  payToggleBtn: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    paddingVertical: 10,
+    borderRadius: 8,
+    borderWidth: 1.5,
+    borderColor: "#DDD6FE",
+    backgroundColor: "#fff",
+  },
+  payToggleBtnActive: {
+    backgroundColor: "#7C3AED",
+    borderColor: "#7C3AED",
+  },
+  payToggleTxt: {
+    fontSize: 13,
+    fontWeight: "800",
+    color: "#7C3AED",
+    letterSpacing: 0.3,
+  },
+  payToggleTxtActive: {
+    color: "#fff",
   },
 
   /* ─────────── Smart Paste — Bottom Sheet (Phase-7) ─────────── */
