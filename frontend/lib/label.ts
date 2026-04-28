@@ -314,6 +314,21 @@ function singleLabel(s: Shipment, sender: SenderAddress, opts: LabelOptions) {
         ${lf.item ? `<span><b class="lbl">Item:</b> ${escape(itemsText)}</span>` : ""}
         ${cfMetaRow}
       </div>
+
+      ${(() => {
+        // Shipment-id tag (Phase-4d fix): repeat DD + OID in a dashed
+        // box below the meta-row so the warehouse/courier operator
+        // can quickly scan them without squinting at the header.
+        // Shown only when at least one of DD or OID is present and
+        // the user has that field enabled.
+        const hasDD  = lf.dispatch_date && !!dispatchDate;
+        const hasOID = lf.oid && !!s.order_id;
+        if (!hasDD && !hasOID) return "";
+        return `<div class="ship-id-box">
+          ${hasDD ? `<div class="sib-row"><b class="lbl">DD:</b> <b class="sib-val">${escape(dispatchDate)}</b></div>` : ""}
+          ${hasOID ? `<div class="sib-row"><b class="lbl">OID:</b> <b class="sib-val">${escape(s.order_id)}</b></div>` : ""}
+        </div>`;
+      })()}
     </div>
 
     <!-- BOTTOM (fixed height) — token-box (if any) + footer + optional bottom custom fields.
@@ -498,15 +513,16 @@ export function buildLabelHtml(
     image-rendering: -webkit-optimize-contrast;
     image-rendering: crisp-edges;
     image-rendering: high-quality; }
-  .brand-meta { display: flex; flex-direction: row; justify-content: flex-start;
-    align-items: center; gap: 1mm 3mm; font-size: 7.5pt; color: #1F2937;
-    flex-wrap: nowrap; width: 100%; overflow: hidden; line-height: 1.15;
-    margin-top: 0.5mm; }
-  .brand-meta span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-    min-width: 0; flex: 0 1 auto; }
-  .brand-meta span.oid-span { flex: 1 1 auto; }
-  .brand-meta .lbl { color: #6B7280; font-weight: 700; }
-  .brand-meta .meta-val { font-weight: 900; color: #0A0A0A; font-size: 8pt; }
+  .brand-meta { display: flex; flex-direction: column; justify-content: flex-start;
+    align-items: flex-start; gap: 0.8mm; font-size: 8pt; color: #1F2937;
+    width: 100%; line-height: 1.15;
+    margin-top: 0.8mm; }
+  .brand-meta span { white-space: nowrap; overflow: visible;
+    min-width: 0; flex: 0 0 auto; }
+  .brand-meta span.oid-span { flex: 0 0 auto; }
+  .brand-meta .lbl { color: #6B7280; font-weight: 700; margin-right: 1mm; }
+  .brand-meta .meta-val { font-weight: 900; color: #0A0A0A; font-size: 8.5pt;
+    letter-spacing: 0.1px; }
   .brand-name { font-size: 17pt; font-weight: 900; letter-spacing: -0.2px;
     line-height: 1.1; word-break: break-word; max-width: 100%; }
   .pay-wrap { text-align: right; flex: 0 0 auto; min-width: 30mm; }
@@ -534,6 +550,20 @@ export function buildLabelHtml(
     color: #1F2937; background: #FFFBEB; border-left: 2mm solid #F59E0B;
     border-radius: 1mm; line-height: 1.35; word-break: break-word; }
   .shipment-notes .lbl { color: #B45309; font-size: 8.5pt; }
+
+  /* Shipment-id tag — DD + OID repeated in a dashed box below meta-row
+     so warehouse/courier staff can scan them without squinting at the
+     small header. Never truncates. */
+  .ship-id-box { margin-top: 2.2mm; padding: 1.5mm 2.5mm;
+    border: 1px dashed #86EFAC; border-radius: 2mm; background: #F0FDF4;
+    display: flex; flex-direction: column; gap: 0.6mm;
+    line-height: 1.25; color: #065F46; align-self: flex-start;
+    max-width: 100%; }
+  .ship-id-box .sib-row { font-size: 9pt; white-space: nowrap; }
+  .ship-id-box .lbl { color: #047857; font-weight: 700; font-size: 8.5pt;
+    letter-spacing: 0.3px; margin-right: 1mm; }
+  .ship-id-box .sib-val { color: #064E3B; font-weight: 900; font-size: 9.5pt;
+    letter-spacing: 0.2px; }
 
   /* ---- Custom Label Fields (Phase B) ---- */
   .cf-rows { display: flex; flex-direction: column; gap: 0.8mm; margin-top: 1mm; }
