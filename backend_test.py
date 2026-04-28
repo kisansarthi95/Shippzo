@@ -1,254 +1,159 @@
 """
-Auth regression test — verifies bcrypt 4.x → passlib compatibility shim
-in /app/backend/auth.py does not break:
-
-  1. POST /api/auth/signup   (token + display_id USR-##### + phone)
-  2. POST /api/auth/login    (correct password)
-  3. POST /api/auth/login    (wrong password → 401)
-  4. GET  /api/auth/me       (display_id + phone)
-  5. POST /api/auth/forgot-password  (token, then login old/new pwds)
-
-Cleanup: removes the test user + its wallet/seed artifacts.
+Phase-1 incremental refactor verification.
+Tests that extracting /admin/global-config GET into routers/admin.py
+hasn't regressed any auth / admin / sheets / shipments flows.
 """
-from __future__ import annotations
+import os, time, requests, sys
 
-import os
-import re
-import sys
-import time
-import json
-import uuid
+# Use the same backend URL the frontend uses (the public preview URL).
+with open("/app/frontend/.env") as f:
+    env = dict(l.strip().split("=", 1) for l in f if "=" in l and not l.startswith("#"))
+BACKEND = env["EXPO_PUBLIC_BACKEND_URL"].strip().strip('"') + "/api"
+print(f"[INFO] Testing against: {BACKEND}\n")
+
+results = []
+def t(name, ok, detail=""):
+    mark = "✓" if ok else "✗"
+    print(f"  {mark} {name}{(' — ' + detail) if detail else ''}")
+    results.append((name, ok, detail))
+
+# --- helpers ---------------------------------------------------------
+def login(email, pw):
+    r = requests.post(f"{BACKEND}/auth/login", json={"email": email, "password": pw}, timeout=20)
+    return r
+
+# --- 0. Admin login --------------------------------------------------
+print("[0] Admin login")
+ar = login("admin@test.com", "Admin@12345")
+t("admin login 200", ar.status_code == 200, f"got {ar.status_code}")
+admin_tok = ar.json().get("token", "")
+H_ADMIN = {"Authorization": f"Bearer {admin_tok}"}
+
+# Regular user login (for non-admin checks)
+print("\n[0b] Regular user login")
+ur = login("user2@test.com", "User@12345")
+t("regular user login 200", ur.status_code == 200, f"got {ur.status_code}")
+user_tok = ur.json().get("token", "")
+H_USER = {"Authorization": f"Bearer {user_tok}"}
+
+# --- 1. Moved endpoint -----------------------------------------------
+print("\n[1] /admin/global-config (extracted to routers/admin.py)")
+r = requests.get(f"{BACKEND}/admin/global-config", headers=H_ADMIN, timeout=20)
+t("admin GET 200", r.status_code == 200, f"got {r.status_code}")
+body = r.json() if r.status_code == 200 else {}
+t("has global_ai_rates", "global_ai_rates" in body)
+t("has credit_packages", "credit_packages" in body)
+t("has plan_pricing", "plan_pricing" in body)
+
+r = requests.get(f"{BACKEND}/admin/global-config", timeout=20)
+t("no-token → 401", r.status_code == 401, f"got {r.status_code}")
+
+r = requests.get(f"{BACKEND}/admin/global-config", headers=H_USER, timeout=20)
+t("non-admin → 403", r.status_code == 403, f"got {r.status_code}")
+
+# --- 2. Adjacent admin endpoints (still in server.py) ----------------
+print("\n[2] Adjacent admin endpoints (must not regress)")
+r = requests.get(f"{BACKEND}/admin/users", headers=H_ADMIN, timeout=20)
+t("GET /admin/users 200", r.status_code == 200, f"got {r.status_code}")
+users_count = len(r.json().get("users", [])) if r.status_code == 200 else 0
+t(f"users array populated ({users_count} users)", users_count >= 1)
+
+r = requests.put(f"{BACKEND}/admin/global-config", json={}, headers=H_ADMIN, timeout=20)
+t("PUT /admin/global-config 200", r.status_code == 200, f"got {r.status_code}")
+
+r = requests.get(f"{BACKEND}/admin/plan-features", headers=H_ADMIN, timeout=20)
+t("GET /admin/plan-features 200", r.status_code == 200, f"got {r.status_code}")
+if r.status_code == 200:
+    pf = r.json()
+    t("plan-features has registry", "registry" in pf)
+    t("plan-features has plans", "plans" in pf)
+
+# --- 3. Auth flows ---------------------------------------------------
+print("\n[3] Auth flows (bcrypt shim + signup)")
+ts = int(time.time())
+fp = f"refactor-test-fp-{ts}"
+sig = requests.post(f"{BACKEND}/auth/signup", json={
+    "email": f"refactor_a_{ts}@example.com", "password": "Pass1234!",
+    "name": "Refactor A", "shop_name": "Shop A", "phone": "9988776655",
+    "device_fingerprint": fp,
+}, timeout=20)
+t("signup 200", sig.status_code == 200, f"got {sig.status_code}")
+sig_data = sig.json() if sig.status_code == 200 else {}
+t("signup has token", bool(sig_data.get("token")))
+t("display_id matches USR-####", sig_data.get("display_id", "").startswith("USR-"))
+test_uid_a = sig_data.get("id")
+
+lg = login(f"refactor_a_{ts}@example.com", "Pass1234!")
+t("login correct 200", lg.status_code == 200, f"got {lg.status_code}")
+
+lg = login(f"refactor_a_{ts}@example.com", "wrong-password")
+t("login wrong 401", lg.status_code == 401, f"got {lg.status_code}")
+
+# --- 4. Sheets endpoints ---------------------------------------------
+print("\n[4] Sheets endpoints (Phase-5 SA-share)")
+r = requests.get(f"{BACKEND}/sheets/service-account", headers=H_ADMIN, timeout=20)
+t("GET /sheets/service-account 200", r.status_code == 200, f"got {r.status_code}")
+sa = r.json() if r.status_code == 200 else {}
+t("SA email returned", "@" in sa.get("email", ""), f"email='{sa.get('email','')[:40]}'")
+
+# Master sheet should be SA-accessible
+master_url = "https://docs.google.com/spreadsheets/d/1troW3K7P_uaE_7moo6_CioPczUosSiZyoPmCBBcekxA/edit#gid=0"
+r = requests.post(f"{BACKEND}/sheets/preview", json={"url": master_url}, headers=H_ADMIN, timeout=30)
+t("POST /sheets/preview master 200", r.status_code == 200, f"got {r.status_code}")
+if r.status_code == 200:
+    pv = r.json()
+    t("access_method=service_account", pv.get("access_method") == "service_account",
+      f"got '{pv.get('access_method')}'")
+    t(f"total_rows>=1 ({pv.get('total_rows')})", (pv.get("total_rows", 0) or 0) >= 1)
+
+# --- 5. Device fingerprint regression check -------------------------
+print("\n[5] Phase-2b device fingerprint anti-abuse")
+sig2 = requests.post(f"{BACKEND}/auth/signup", json={
+    "email": f"refactor_b_{ts}@example.com", "password": "Pass1234!",
+    "name": "Refactor B", "shop_name": "Shop B", "phone": "9988776656",
+    "device_fingerprint": fp,  # SAME fingerprint
+}, timeout=20)
+t("2nd signup same-fp 200", sig2.status_code == 200, f"got {sig2.status_code}")
+sig2_data = sig2.json() if sig2.status_code == 200 else {}
+t("2nd signup trial_denied=True", sig2_data.get("trial_denied") is True,
+  f"got {sig2_data.get('trial_denied')}")
+t("2nd signup plan='' (no trial)", sig2_data.get("plan", "<missing>") == "",
+  f"got '{sig2_data.get('plan')}'")
+test_uid_b = sig2_data.get("id")
+
+# --- Cleanup ---------------------------------------------------------
+print("\n[Cleanup]")
 import asyncio
-from pathlib import Path
+mongo_url = open("/app/backend/.env").read()
+mongo_url = mongo_url.split("MONGO_URL=")[1].split("\n")[0].strip().strip('"')
+async def cleanup():
+    from motor.motor_asyncio import AsyncIOMotorClient
+    cli = AsyncIOMotorClient(mongo_url)
+    db = cli["test_database"]
+    n = 0
+    for u in [test_uid_a, test_uid_b]:
+        if not u: continue
+        rd = await db.users.delete_one({"id": u})
+        n += rd.deleted_count
+        await db.shipments.delete_many({"user_id": u})
+        await db.couriers.delete_many({"user_id": u})
+        await db.wallets.delete_many({"user_id": u})
+        await db.credit_transactions.delete_many({"user_id": u})
+        await db.settings.delete_many({"user_id": u})
+        await db.pwd_reset_attempts.delete_many({"email": {"$regex": f"refactor_._{ts}"}})
+    cli.close()
+    return n
+deleted = asyncio.run(cleanup())
+print(f"  ✓ Removed {deleted} test users + their seed data")
 
-import requests
-
-
-# ----- locate backend URL ---------------------------------------------------
-
-def _read_backend_url() -> str:
-    env_path = Path("/app/frontend/.env")
-    text = env_path.read_text()
-    for line in text.splitlines():
-        line = line.strip()
-        if line.startswith("EXPO_PUBLIC_BACKEND_URL="):
-            return line.split("=", 1)[1].strip().strip('"').strip("'")
-    raise RuntimeError("EXPO_PUBLIC_BACKEND_URL not found in /app/frontend/.env")
-
-
-BASE = _read_backend_url().rstrip("/") + "/api"
-print(f"[INFO] Testing against: {BASE}")
-
-
-# ----- assertion helpers ---------------------------------------------------
-
-PASS = 0
-FAIL = 0
-FAIL_DETAILS: list[str] = []
-
-
-def check(label: str, cond: bool, detail: str = ""):
-    global PASS, FAIL
-    if cond:
-        PASS += 1
-        print(f"  ✓ {label}")
-    else:
-        FAIL += 1
-        FAIL_DETAILS.append(f"{label}: {detail}")
-        print(f"  ✗ {label}  {detail}")
-
-
-# ----- test data -----------------------------------------------------------
-
-TS = int(time.time())
-EMAIL = f"bcrypt_shim_test_{TS}@example.com"
-PASSWORD = "OldP@ssw0rd123"
-NEW_PASSWORD = "FreshP@ss456!"
-NAME = "Bcrypt Shim Tester"
-SHOP = "Shim QA Shop"
-PHONE = "9876512340"   # 10 digits
-
-
-def main():
-    s = requests.Session()
-    s.headers.update({"Content-Type": "application/json"})
-    user_id = None
-    token = None
-
-    # ---- 1) SIGNUP ---------------------------------------------------------
-    print("\n=== 1) POST /api/auth/signup ===")
-    r = s.post(f"{BASE}/auth/signup", json={
-        "email": EMAIL,
-        "password": PASSWORD,
-        "name": NAME,
-        "shop_name": SHOP,
-        "phone": PHONE,
-    }, timeout=60)
-    print(f"  HTTP {r.status_code}")
-    check("signup HTTP 200", r.status_code == 200, f"body={r.text[:300]}")
-    if r.status_code == 200:
-        body = r.json()
-        token = body.get("token")
-        user_id = body.get("id")
-        display_id = body.get("display_id", "")
-        check("signup returns non-empty token", bool(token), f"got={token!r}")
-        check("signup returns user id (uuid)", bool(user_id))
-        check(
-            "signup display_id matches USR-#####",
-            bool(re.fullmatch(r"USR-\d{5}", display_id or "")),
-            f"display_id={display_id!r}",
-        )
-        check("signup returns phone field", "phone" in body, f"keys={list(body.keys())}")
-        check(
-            "signup phone is the 10-digit value submitted",
-            body.get("phone") == PHONE,
-            f"phone={body.get('phone')!r}",
-        )
-        check("signup does not leak password_hash", "password_hash" not in body)
-        check("signup email matches", body.get("email") == EMAIL)
-
-    if not token:
-        print("\n[FATAL] No token after signup — aborting downstream auth tests.")
-        return _finish(s, user_id)
-
-    # ---- 2) LOGIN OK -------------------------------------------------------
-    print("\n=== 2) POST /api/auth/login (correct password) ===")
-    r = s.post(f"{BASE}/auth/login", json={
-        "email": EMAIL, "password": PASSWORD,
-    }, timeout=30)
-    print(f"  HTTP {r.status_code}")
-    check("login (correct) HTTP 200", r.status_code == 200, f"body={r.text[:300]}")
-    if r.status_code == 200:
-        body = r.json()
-        check("login returns non-empty token", bool(body.get("token")))
-        check("login email matches", body.get("email") == EMAIL)
-        # Refresh the session token for safety
-        token = body.get("token") or token
-
-    # ---- 3) LOGIN WRONG PASSWORD → 401 ------------------------------------
-    print("\n=== 3) POST /api/auth/login (wrong password → 401) ===")
-    r = s.post(f"{BASE}/auth/login", json={
-        "email": EMAIL, "password": "ThisIsNotMyPassword!!"
-    }, timeout=30)
-    print(f"  HTTP {r.status_code}")
-    check("login (wrong) HTTP 401", r.status_code == 401, f"body={r.text[:200]}")
-    if r.status_code == 401:
-        try:
-            detail = r.json().get("detail", "")
-        except Exception:
-            detail = ""
-        check(
-            "wrong-pwd detail == 'Invalid email or password'",
-            detail == "Invalid email or password",
-            f"detail={detail!r}",
-        )
-
-    # ---- 4) GET /auth/me ---------------------------------------------------
-    print("\n=== 4) GET /api/auth/me ===")
-    r = s.get(f"{BASE}/auth/me", headers={"Authorization": f"Bearer {token}"}, timeout=30)
-    print(f"  HTTP {r.status_code}")
-    check("me HTTP 200", r.status_code == 200, f"body={r.text[:300]}")
-    if r.status_code == 200:
-        body = r.json()
-        check("me has display_id field", "display_id" in body)
-        check(
-            "me display_id matches USR-#####",
-            bool(re.fullmatch(r"USR-\d{5}", body.get("display_id") or "")),
-            f"display_id={body.get('display_id')!r}",
-        )
-        check("me has phone field", "phone" in body)
-        check("me phone matches signup phone", body.get("phone") == PHONE,
-              f"phone={body.get('phone')!r}")
-        check("me email matches", body.get("email") == EMAIL)
-        check("me does not leak password_hash", "password_hash" not in body)
-
-    # ---- 5) FORGOT-PASSWORD -----------------------------------------------
-    print("\n=== 5) POST /api/auth/forgot-password ===")
-    r = s.post(f"{BASE}/auth/forgot-password", json={
-        "email": EMAIL,
-        "phone": PHONE,
-        "new_password": NEW_PASSWORD,
-    }, timeout=30)
-    print(f"  HTTP {r.status_code}")
-    check("forgot-password HTTP 200", r.status_code == 200, f"body={r.text[:300]}")
-    if r.status_code == 200:
-        body = r.json()
-        check("forgot-password returns fresh token", bool(body.get("token")))
-        check("forgot-password email matches", body.get("email") == EMAIL)
-        token = body.get("token") or token
-
-    # 5b) login with NEW password → 200
-    print("\n=== 5b) Login with NEW password (should be 200) ===")
-    r = s.post(f"{BASE}/auth/login", json={
-        "email": EMAIL, "password": NEW_PASSWORD
-    }, timeout=30)
-    print(f"  HTTP {r.status_code}")
-    check("login w/ NEW password HTTP 200", r.status_code == 200, f"body={r.text[:200]}")
-
-    # 5c) login with OLD password → 401
-    print("\n=== 5c) Login with OLD password (should be 401) ===")
-    r = s.post(f"{BASE}/auth/login", json={
-        "email": EMAIL, "password": PASSWORD
-    }, timeout=30)
-    print(f"  HTTP {r.status_code}")
-    check("login w/ OLD password HTTP 401", r.status_code == 401, f"body={r.text[:200]}")
-
-    _finish(s, user_id)
-
-
-# ----- cleanup -------------------------------------------------------------
-
-def _finish(_s: requests.Session, user_id: str | None):
-    print("\n=== Cleanup ===")
-    try:
-        # Use motor directly because the test user shouldn't linger.
-        from motor.motor_asyncio import AsyncIOMotorClient
-        from dotenv import load_dotenv
-        load_dotenv("/app/backend/.env")
-        mongo = os.environ.get("MONGO_URL")
-        db_name = os.environ.get("DB_NAME", "test_database")
-        if not mongo:
-            print("  [WARN] MONGO_URL not set; skipping DB cleanup")
-        else:
-            async def _clean():
-                client = AsyncIOMotorClient(mongo)
-                db = client[db_name]
-                # Remove user + any associated isolated data
-                u = await db.users.find_one({"email": EMAIL})
-                if not u:
-                    print(f"  [WARN] no user found for {EMAIL}; nothing to clean")
-                    return
-                uid = u.get("id")
-                r1 = await db.users.delete_many({"email": EMAIL})
-                r2 = await db.shipments.delete_many({"user_id": uid})
-                r3 = await db.couriers.delete_many({"user_id": uid})
-                r4 = await db.settings.delete_many({"user_id": uid})
-                r5 = await db.pending_orders.delete_many({"user_id": uid})
-                r6 = await db.wallet_transactions.delete_many({"user_id": uid})
-                r7 = await db.wallets.delete_many({"user_id": uid})
-                r8 = await db.pwd_reset_attempts.delete_many({"email": EMAIL})
-                client.close()
-                print(
-                    f"  Cleaned: users={r1.deleted_count} "
-                    f"shipments={r2.deleted_count} couriers={r3.deleted_count} "
-                    f"settings={r4.deleted_count} pending={r5.deleted_count} "
-                    f"wallet_tx={r6.deleted_count} wallets={r7.deleted_count} "
-                    f"pwd_attempts={r8.deleted_count}"
-                )
-            asyncio.run(_clean())
-    except Exception as e:
-        print(f"  [WARN] cleanup failed: {e!r}")
-
-    # ---- Final summary -----------------------------------------------------
-    print("\n" + "=" * 60)
-    print(f"RESULT: {PASS} passed, {FAIL} failed")
-    if FAIL:
-        print("Failures:")
-        for d in FAIL_DETAILS:
-            print(f"  - {d}")
-    print("=" * 60)
-    sys.exit(0 if FAIL == 0 else 1)
-
-
-if __name__ == "__main__":
-    main()
+# --- Summary ---------------------------------------------------------
+passed = sum(1 for _, ok, _ in results if ok)
+total = len(results)
+print(f"\n{'='*60}")
+print(f"  RESULT: {passed}/{total} {'✅ PASS' if passed == total else '❌ FAIL'}")
+print(f"{'='*60}")
+if passed != total:
+    print("\nFailed tests:")
+    for n, ok, d in results:
+        if not ok: print(f"  - {n}: {d}")
+    sys.exit(1)

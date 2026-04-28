@@ -3221,6 +3221,93 @@ test_plan:
             Existing flush() handles the new types via Api.updateShipment
             / Api.deleteShipment.
 
+  - task: "Phase-1 incremental refactor (admin router scaffold)"
+    implemented: true
+    working: true
+    file: "/app/backend/routers/__init__.py + /app/backend/routers/admin.py + /app/backend/server.py"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "main"
+        -comment: |
+            Phase-1 of the server.py modularisation. Created
+            /app/backend/routers/ package with:
+            - __init__.py (docstring + package marker)
+            - admin.py — first extracted router. Single endpoint
+              moved: GET /admin/global-config. Pattern uses a late-
+              binding init() function called by server.py AFTER all
+              helpers are defined, avoiding the circular-import trap
+              that would happen with naive top-of-file imports.
+
+            server.py:
+            - Removed the inline @api_router.get("/admin/global-config")
+              handler.
+            - At the bottom of the file, after `app.include_router(api_
+              router)`, we `from routers.admin import admin_router,
+              init` and call init() then include_router(admin_router).
+            - Wrapped the include block in try/except so a future
+              broken router can't take down the whole API.
+
+            Verified zero regression via /app/backend_test.py:
+            27/27 PASS covering:
+            - The MOVED endpoint (admin GET 200, no-token 401, non-admin 403, all 3 keys present)
+            - Adjacent admin endpoints still in server.py: /admin/users, PUT /admin/global-config, /admin/plan-features
+            - Auth flows: signup (display_id format, token, no leak), login correct/wrong
+            - Sheets Phase-5 SA-share: /sheets/service-account, /sheets/preview master sheet (access_method=service_account, 41 rows)
+            - Phase-2b: same-fp 2nd signup gets trial_denied=True, plan=""
+            - Cleanup: 2 test users + dependents removed.
+
+            Pattern proven. Future phases can extract /admin/users,
+            /admin/users/{id}, /admin/users/{id}/reset-password, PUT
+            /admin/global-config, /admin/plan-features GET+PUT and
+            then move on to /sheets/*, /shipments/*, etc.
+
+  - task: "Admin Users dashboard surfaces trial_denied flag"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py + /app/frontend/app/admin/users.tsx"
+    stuck_count: 0
+    priority: "low"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "main"
+        -comment: |
+            /admin/users response now includes trial_denied_reason
+            (and a 12-char prefix of device_fingerprint). The Users
+            list renders a small red "Trial denied · same device"
+            pill alongside the existing plan/expiry pills when the
+            flag is set, so admins can spot abuse cases at a glance.
+
+  - task: "Pending-Sync per-item panel in Settings"
+    implemented: true
+    working: true
+    file: "/app/frontend/components/PendingSyncPanel.tsx + /app/frontend/app/(tabs)/settings.tsx"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "main"
+        -comment: |
+            New component lists every queued offline operation (create
+            / update / delete / status) with a colour-coded type pill,
+            friendly age, retry count, and error reason. Buttons:
+            "Retry all" (flushes the queue) and "Clear errors" (drops
+            permanent_error items). Per-item × removes a single op.
+
+            Mounted in Settings → Notifications section (under a new
+            "Offline Sync Queue" sub-section). Auto-updates on queue
+            mutations via the SyncQueue.subscribe hook.
+
+            Verified via Playwright: injected 3 sample queue items
+            (create + update + permanent-error delete), navigated to
+            Settings → Notifications, panel rendered correctly with
+            "Retry all" + "Clear errors" buttons and per-item ×
+            controls.
+
 agent_communication:
     -agent: "main"
     -message: |

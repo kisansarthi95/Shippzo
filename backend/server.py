@@ -4236,14 +4236,6 @@ class GlobalConfigPayload(BaseModel):
     countdown:        Optional[Dict[str, Any]]      = None
 
 
-@api_router.get("/admin/global-config")
-async def admin_get_global_config(
-    current_user: Dict[str, Any] = Depends(get_current_user),
-):
-    _require_admin(current_user)
-    return await _get_admin_config()
-
-
 @api_router.put("/admin/global-config")
 async def admin_put_global_config(
     payload: GlobalConfigPayload,
@@ -4375,6 +4367,17 @@ async def me_ai_rates(
 
 app.include_router(api_router)
 app.include_router(auth_router)
+
+# Phase-1 modular refactor — extracted routers. Each router is wired
+# in *after* server.py has finished defining its helpers + db, so the
+# late-binding `init()` calls inside them can `from server import …`
+# without circular-import errors.
+try:
+    from routers.admin import admin_router as _admin_router, init as _init_admin_router
+    _init_admin_router()
+    app.include_router(_admin_router)
+except Exception as _adm_exc:
+    logger.exception(f"Failed to mount admin router: {_adm_exc}")
 
 
 # --------------------------------------------------------------------
