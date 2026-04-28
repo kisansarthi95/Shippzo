@@ -29,6 +29,14 @@ const LS_LAST_COURIER = "@csm/lastCourierId";
 const LS_LAST_PAYMENT = "@csm/lastPaymentMode";
 const LS_LAST_TRACK_MODE = "@csm/lastTrackMode";
 
+/**
+ * Parse a free-form address string into the form's structured fields.
+ *
+ * Phase-6 (2026-04-28): we no longer split into line1/line2. Everything
+ * non-city/state/pincode goes into a single "line1" return key, capped
+ * at 300 characters. line2 is kept in the return shape only for
+ * back-compat with the form state — it's always empty.
+ */
 function splitAddress(full: string): {
   line1: string;
   line2: string;
@@ -40,17 +48,27 @@ function splitAddress(full: string): {
   if (!clean) return { line1: "", line2: "", city: "", state: "", pincode: "" };
   const pinMatch = clean.match(/(\d{6})/);
   const pincode = pinMatch ? pinMatch[1] : "";
-  const parts = clean.split(/[,\n]/).map((p) => p.trim()).filter(Boolean);
-  let line1 = parts[0] || "";
-  let line2 = parts[1] || "";
+  // Strip the pincode from the working text so it doesn't leak into
+  // line1 (it shows up in the dedicated Pincode field instead).
+  let working = pincode ? clean.replace(pincode, "") : clean;
+  const parts = working.split(/[,\n]/).map((p) => p.trim()).filter(Boolean);
   let city = "";
   let state = "";
-  if (parts.length >= 3) city = parts[parts.length - 2] || "";
-  if (parts.length >= 2) {
-    const last = parts[parts.length - 1].replace(/\d{6}/, "").trim();
-    state = last || state;
+  let line1 = "";
+  if (parts.length >= 3) {
+    state = parts[parts.length - 1] || "";
+    city  = parts[parts.length - 2] || "";
+    line1 = parts.slice(0, -2).join(", ");
+  } else if (parts.length === 2) {
+    state = parts[1] || "";
+    line1 = parts[0] || "";
+  } else {
+    line1 = parts.join(", ");
   }
-  return { line1, line2, city, state, pincode };
+  // Trim to the 300-char cap (defensive) — backend post-processor and
+  // form maxLength also enforce this.
+  if (line1.length > 300) line1 = line1.slice(0, 300);
+  return { line1, line2: "", city, state, pincode };
 }
 
 export default function AddShipment() {
@@ -289,8 +307,17 @@ export default function AddShipment() {
         setCustomerName(s.customer_name || "");
         setCustomerPhone(s.customer_phone || "");
         setCustomerAltPhone((s as any).customer_alt_phone || "");
-        setAddr1(s.address_line1 || "");
-        setAddr2(s.address_line2 || "");
+        // Phase-6 single-address-field merge: collapse legacy line1 +
+        // line2 into the single field. New form only writes line1.
+        const legacyL1 = (s.address_line1 || "").trim();
+        const legacyL2 = (s.address_line2 || "").trim();
+        let merged = legacyL1;
+        if (legacyL2 && legacyL2 !== "-") {
+          merged = legacyL1 ? `${legacyL1}, ${legacyL2}` : legacyL2;
+        }
+        if (merged.length > 300) merged = merged.slice(0, 300);
+        setAddr1(merged);
+        setAddr2("");
         setCity(s.city || "");
         setState(s.state || "");
         setPincode(s.pincode || "");
@@ -363,8 +390,18 @@ export default function AddShipment() {
         setCustomerName(o.customer_name || "");
         setCustomerPhone(o.phone || "");
         setCustomerAltPhone(o.alt_phone || o.customer_alt_phone || "");
-        setAddr1(addr.line1);
-        setAddr2(addr.line2);
+        // Phase-6: support either a structured prefill (separate
+        // line1 + line2) or the new flat "address" string. In all
+        // cases we collapse into a single 300-char line1.
+        const incomingL1 = (o.address_line1 || "").trim();
+        const incomingL2 = (o.address_line2 || "").trim();
+        let merged = incomingL1 || addr.line1;
+        if (incomingL2 && incomingL2 !== "-") {
+          merged = merged ? `${merged}, ${incomingL2}` : incomingL2;
+        }
+        if (merged.length > 300) merged = merged.slice(0, 300);
+        setAddr1(merged);
+        setAddr2("");
         setCity(o.city || addr.city);
         setState(o.state || addr.state);
         setPincode(o.pincode || addr.pincode);
@@ -475,8 +512,9 @@ export default function AddShipment() {
     setOrderId(o.order_id);
     setCustomerName(o.customer_name);
     setCustomerPhone(o.phone);
-    setAddr1(addr.line1);
-    setAddr2(addr.line2);
+    // Phase-6 single-address-field — no more line2 split.
+    setAddr1((addr.line1 || "").slice(0, 300));
+    setAddr2("");
     setCity(o.city || addr.city);
     setState(o.state || addr.state);
     setPincode(o.pincode || addr.pincode);
@@ -674,8 +712,11 @@ export default function AddShipment() {
           customer_name: customerName.trim(),
           customer_phone: customerPhone.trim(),
           customer_alt_phone: customerAltPhone.trim(),
-          address_line1: addr1.trim(),
-          address_line2: addr2.trim(),
+          // Phase-6 single-address-field — line1 holds the entire
+          // address; line2 is always blank under the new UX. Backend
+          // schema kept for back-compat with old shipments.
+          address_line1: addr1.trim().slice(0, 300),
+          address_line2: "",
           city: city.trim(),
           state: state.trim(),
           pincode: pincode.trim(),
@@ -1040,27 +1081,43 @@ export default function AddShipment() {
             )}
           </Section>
 
-          {/* Address */}
+          {/* Address — single full-address field (Phase-6 2026-04-28).
+              Previous version had two separate "Line 1" / "Line 2"
+              fields and the Smart Paste AI tried to split addresses
+              between them, sometimes truncating. We now use one
+              multiline field with a 300-char cap; the AI is instructed
+              to put the entire address here, leaving City / State /
+              Pincode in their own (separate) fields. */}
           <Section title="Delivery Address">
-            <Field label="Address Line 1">
+            <Field label="Address">
               <TextInput
                 testID="addr1-input"
                 value={addr1}
-                onChangeText={setAddr1}
-                placeholder="House / Street"
+                onChangeText={(v) => {
+                  // Hard 300-char cap, applied even if maxLength is
+                  // bypassed (e.g. paste from clipboard on some Android
+                  // devices). Prefer truncating silently to losing data.
+                  setAddr1(v.length > 300 ? v.slice(0, 300) : v);
+                  // Keep legacy line2 always blank so old multi-line
+                  // data never sneaks back in.
+                  if (addr2) setAddr2("");
+                }}
+                placeholder="Full address (landmark, area, street)"
                 placeholderTextColor="#9CA3AF"
-                style={styles.input}
+                multiline
+                numberOfLines={3}
+                maxLength={300}
+                style={[styles.input, { minHeight: 70, textAlignVertical: "top", paddingTop: 10 }]}
               />
-            </Field>
-            <Field label="Address Line 2">
-              <TextInput
-                testID="addr2-input"
-                value={addr2}
-                onChangeText={setAddr2}
-                placeholder="Area / Landmark"
-                placeholderTextColor="#9CA3AF"
-                style={styles.input}
-              />
+              <Text style={{
+                fontSize: 11,
+                color: addr1.length > 280 ? "#DC2626" : "#94A3B8",
+                marginTop: 4,
+                textAlign: "right",
+                fontWeight: addr1.length > 280 ? "700" : "500",
+              }}>
+                {addr1.length} / 300
+              </Text>
             </Field>
             <View style={styles.grid2}>
               <View style={{ flex: 1 }}>

@@ -58,8 +58,8 @@ your output:
 NAME: <real customer name, keep original script — Gujarati stays Gujarati, English stays English>
 PHONE: <primary 10 digits only, strip +91 or 0>
 ALT_PHONE: <second / alternative 10-digit number if message has TWO phones, else ->
-ADDRESS_1: <primary address line — street / house / area / village ONLY, keep original script>
-ADDRESS_2: <secondary address / landmark, else ->
+ADDRESS_1: <FULL physical address — house / street / area / landmark / village / taluka / district — all on one line, NEVER split. Keep original script.>
+ADDRESS_2: <ALWAYS leave blank / output `-`. Do NOT use this field.>
 CITY: <city / town — keep original script>
 STATE: <state — keep original script>
 PINCODE: <6 digits only>
@@ -96,8 +96,8 @@ address + name was provided — leave AMOUNT and PAYMENT blank):
 NAME: Dr. Kagathara
 PHONE: 7405304899
 ALT_PHONE: -
-ADDRESS_1: C-25, Prarambh Complex
-ADDRESS_2: Nr. Parivar Char Rasta, Waghodhiya Road
+ADDRESS_1: C-25, Prarambh Complex, Nr. Parivar Char Rasta, Waghodhiya Road
+ADDRESS_2: -
 CITY: Vadodara
 STATE: Gujarat
 PINCODE: 390019
@@ -143,40 +143,41 @@ in ITEMS — NEVER in ADDRESS_1 or ADDRESS_2.
   * A weight-only item like "20gm ODC3" → "ODC3 x 1" (weight goes in WEIGHT)
 
 **Rule 7 — ADDRESS_1 content:**
-ADDRESS_1 is ONLY physical address: house no / street / area /
-colony / village / post / taluka / district. NEVER products,
-quantity, or amount.
+ADDRESS_1 holds the COMPLETE physical address — house no / flat /
+street / area / colony / village / post / taluka / district /
+landmark — ALL of it together on ONE line, separated by commas.
+NEVER products, quantity, or amount.
 
-**Rule 8 — CRITICAL ADDRESS RULE: never blank, split correctly:**
+**Rule 8 — CRITICAL ADDRESS RULE: never blank, NEVER split, NEVER drop:**
 NEVER LEAVE ADDRESS_1 EMPTY IF THE INPUT CONTAINS ANY ADDRESS-LIKE
-TEXT. This is the single most important rule.
+TEXT. NEVER use ADDRESS_2 — leave it as `-`.
   * If the input has a label like "Shipping address" / "Delivery
     address" / "Address" / "પત્તો" / "पता", treat the WHOLE multi-
     line block that follows (until you hit phone / email / name /
     order id / payment) as the address block.
-  * From that address block, peel OFF the trailing city + state +
-    pincode (whatever you can detect) and put each in its own
-    field. Whatever is LEFT (street/house/apartment/area/landmark
-    bits) MUST go into ADDRESS_1 (with overflow into ADDRESS_2).
-  * Example of a long shipping address that MUST be split, NOT
-    collapsed into city only:
+  * From that address block, peel OFF the trailing CITY + STATE +
+    PINCODE (whatever you can detect) and put each in its own
+    field. Whatever is LEFT (street / house / apartment / area /
+    landmark / district bits) MUST go into ADDRESS_1 in ONE long
+    comma-separated string. DO NOT split into ADDRESS_2.
+  * Example of the new behaviour:
       Input  : "Shipping address: C-401 Venus Apartment, near
                 Sainik Vihar Saraswati Vihar, Rani Bagh, Pitampura,
                 Delhi, 110034 Delhi"
-      WRONG  : ADDRESS_1: -
-               CITY: Delhi  STATE: Delhi  PINCODE: 110034
-      RIGHT  : ADDRESS_1: C-401 Venus Apartment, Saraswati Vihar,
-                          Rani Bagh, Pitampura
+      WRONG  : ADDRESS_1: C-401 Venus Apartment
                ADDRESS_2: near Sainik Vihar
+      RIGHT  : ADDRESS_1: C-401 Venus Apartment, near Sainik Vihar,
+                          Saraswati Vihar, Rani Bagh, Pitampura
+               ADDRESS_2: -
                CITY: Delhi  STATE: Delhi  PINCODE: 110034
   * If the same word (e.g. "Delhi") appears TWICE — once as a
     neighbourhood name and once as the city — keep the city
     occurrence in CITY and KEEP the neighbourhood occurrence in
     ADDRESS_1. Do NOT silently drop one.
-  * "near …" / "behind …" / "opp …" landmarks → ADDRESS_2 if a
-    separate ADDRESS_1 already exists, else keep them in ADDRESS_1.
-  * If you can identify a flat/house number (C-401, B/12, 3rd floor,
-    Room 5, Plot 22 etc.) — that ALWAYS belongs in ADDRESS_1.
+  * "near …" / "behind …" / "opp …" landmarks → stay INSIDE
+    ADDRESS_1, separated by ", ".
+  * Flat/house numbers (C-401, B/12, 3rd floor, Room 5, Plot 22
+    etc.) ALWAYS belong in ADDRESS_1.
 
 **Rule 9 — City / State translation:**
 City / State should be English transliteration when obvious (e.g.
@@ -211,35 +212,32 @@ DO NOT guess. The user will set it later if needed.
     copy EVERYTHING after that label (until you hit a different
     field) into ITEMS.
 
-**Rule 13 — NEVER LEAVE ADDRESS PARTIAL — capture EVERY line:**
-The user has TWO address lines (ADDRESS_1 + ADDRESS_2) precisely so
-that long multi-clause addresses can fit completely. NEVER drop any
-part of the visible street/area/landmark text.
+**Rule 13 — NEVER LEAVE ADDRESS PARTIAL — capture EVERY line in ADDRESS_1:**
+There is now a SINGLE address line (ADDRESS_1). Capacity is up to
+~280 characters — long enough for any real-world Indian address.
+ADDRESS_2 must always be `-`.
+NEVER drop any visible street/area/landmark text.
   * Procedure when the address block has 3+ comma-separated parts:
       1. Last 2-3 parts → CITY / STATE / PINCODE.
-      2. The remaining parts MUST be split between ADDRESS_1 and
-         ADDRESS_2 such that NOTHING is dropped. ADDRESS_1 holds
-         the first ~half, ADDRESS_2 holds the rest. Both lines may
-         hold up to ~140 characters.
+      2. ALL remaining parts → ADDRESS_1, joined by ", ". Keep the
+         original ordering. Do NOT split into ADDRESS_2.
   * Example showing the bug to AVOID:
       Input  : "20 \"Dev Atelier\", Nr RK Enterprise, Hiran Circle,
                 Ramdevnagar Road, Prahladnagar, Ahmedabad,
                 380015 Gujarat"
-      WRONG  : ADDRESS_1: 20 "Dev Atelier"
-               ADDRESS_2: Nr RK Enterprise
-               (Hiran Circle, Ramdevnagar Road, Prahladnagar got
-               silently DROPPED — this is FORBIDDEN.)
+      WRONG  : ADDRESS_1: 20 "Dev Atelier", Nr RK Enterprise
+               ADDRESS_2: Hiran Circle, Ramdevnagar Road
+               (splitting into TWO lines is FORBIDDEN now.)
       RIGHT  : ADDRESS_1: 20 "Dev Atelier", Nr RK Enterprise,
-                          Hiran Circle
-               ADDRESS_2: Ramdevnagar Road, Prahladnagar
+                          Hiran Circle, Ramdevnagar Road,
+                          Prahladnagar
+               ADDRESS_2: -
                CITY: Ahmedabad  STATE: Gujarat  PINCODE: 380015
-  * If even after splitting you have leftover address parts that
-    do not fit, append them to ADDRESS_2 separated by ", ". Never
-    drop them.
-  * "Near / Opp / Behind / Landmark / etc." preferentially go into
-    ADDRESS_2 only IF ADDRESS_1 is already full of street/house
-    text. Otherwise keep them in ADDRESS_1 and use ADDRESS_2 for
-    the next overflow.
+  * If the joined ADDRESS_1 would exceed 280 chars (very rare),
+    truncate trailing duplicates only — do NOT move parts into
+    ADDRESS_2.
+  * "Near / Opp / Behind / Landmark / etc." stay INSIDE ADDRESS_1,
+    in their original position separated by ", ".
 
 **Rule 14 — NAME: shop / business name is acceptable as customer name:**
   * Prefer a person's name when present.
@@ -682,12 +680,27 @@ def to_legacy_fields(ai_fields: Dict[str, str]) -> Dict[str, str]:
     if alt_raw.strip():
         alt = alt_raw
 
+    # Phase-6 single-address-field merge (2026-04-28).
+    # The form now exposes ONE address field, so we collapse anything
+    # the AI may still drop into ADDRESS_2 back into ADDRESS_1. This
+    # is a defensive safety net — the prompt has already been updated
+    # to instruct the AI to put EVERYTHING in ADDRESS_1, but we
+    # belt-and-braces the merge here so a single mis-step from the
+    # model never silently truncates a customer's address.
+    addr1_raw = (ai_fields.get("ADDRESS_1", "") or "").strip()
+    addr2_raw = (ai_fields.get("ADDRESS_2", "") or "").strip()
+    if addr2_raw and addr2_raw != "-":
+        # Avoid stupid duplication: only append addr2 if it's not
+        # already a substring of addr1 (some prompt drift is possible).
+        if addr2_raw.lower() not in addr1_raw.lower():
+            addr1_raw = (addr1_raw + ", " + addr2_raw) if addr1_raw else addr2_raw
+
     return {
         "customer_name":  ai_fields.get("NAME", ""),
         "customer_phone": primary,
         "customer_alt_phone": alt,
-        "address_line1":  ai_fields.get("ADDRESS_1", ""),
-        "address_line2":  ai_fields.get("ADDRESS_2", ""),
+        "address_line1":  addr1_raw,
+        "address_line2":  "",  # always blank under the single-field UX
         "city":           ai_fields.get("CITY", ""),
         "state":          ai_fields.get("STATE", ""),
         "pincode":        ai_fields.get("PINCODE", ""),
