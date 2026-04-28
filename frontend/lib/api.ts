@@ -585,6 +585,24 @@ export const Api = {
       autofill_in_new_shipment: boolean;
     }>("/orders/peek-master-id").then((r) => r.data),
 
+  // Phase-7f: Read / write the global Master Order ID counter.
+  // Used in Settings to migrate from a legacy numbering system —
+  // eg user has shipped 2200 parcels and wants the next master ID
+  // to start from `02201`. setMasterIdCounter forces seq=2200 so the
+  // next allocation produces `<YYMMDD>02201`.
+  getMasterIdCounter: () =>
+    api.get<{
+      current_seq: number;
+      next_seq: number;
+      next_master_order_id: string;
+    }>("/orders/master-id-counter").then((r) => r.data),
+  setMasterIdCounter: (seq: number, force: boolean = false) =>
+    api.post<{
+      current_seq: number;
+      next_seq: number;
+      next_master_order_id: string;
+    }>("/orders/master-id-counter", { seq, force }).then((r) => r.data),
+
   // Conversational Smart Paste (chat UI).
   smartPasteChat: (fields: Record<string, any>, reply: string) =>
     api.post<{

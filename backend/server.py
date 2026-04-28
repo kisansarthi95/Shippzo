@@ -147,7 +147,11 @@ async def generate_master_order_id() -> str:
     )
     seq = int((doc or {}).get("seq") or 1)
     seq_str = str(seq).zfill(5)  # 5-digit min, auto-grows
-    yymmdd = datetime.utcnow().strftime("%y%m%d")
+    # IST date — the app's customers are in India, so the YYMMDD prefix
+    # must reflect the local calendar day. (UTC would roll over at
+    # 5:30 AM IST and confuse users in the early-morning hours.)
+    ist_now = datetime.utcnow() + timedelta(hours=5, minutes=30)
+    yymmdd = ist_now.strftime("%y%m%d")
     return f"{yymmdd}{seq_str}"
 
 
@@ -164,7 +168,8 @@ async def peek_next_master_order_id() -> str:
     doc = await db.counters.find_one({"_id": "master_order_id"})
     seq = int((doc or {}).get("seq", 0)) + 1
     seq_str = str(seq).zfill(5)
-    yymmdd = datetime.utcnow().strftime("%y%m%d")
+    ist_now = datetime.utcnow() + timedelta(hours=5, minutes=30)
+    yymmdd = ist_now.strftime("%y%m%d")
     return f"{yymmdd}{seq_str}"
 
 
@@ -2388,6 +2393,70 @@ async def find_duplicate_matches(
     # Sort newest first, cap at `limit` overall.
     results.sort(key=lambda r: r.get("created_at") or "", reverse=True)
     return results[:limit]
+
+
+@api_router.get("/orders/master-id-counter")
+async def get_master_id_counter(
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    """Phase-7f: Read the current global Master Order ID counter.
+    The next allocated ID's sequence will be `current_seq + 1`.
+    """
+    doc = await db.counters.find_one({"_id": "master_order_id"})
+    seq = int((doc or {}).get("seq", 0))
+    ist_now = datetime.utcnow() + timedelta(hours=5, minutes=30)
+    return {
+        "current_seq": seq,
+        "next_seq": seq + 1,
+        "next_master_order_id": f"{ist_now.strftime('%y%m%d')}{str(seq + 1).zfill(5)}",
+    }
+
+
+class _CounterSetPayload(BaseModel):
+    seq: int  # The seq value the NEXT allocation should produce.
+    force: Optional[bool] = False  # Allow lowering (risk of duplicates).
+
+
+@api_router.post("/orders/master-id-counter")
+async def set_master_id_counter(
+    payload: _CounterSetPayload,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    """Phase-7f: Set the global Master Order ID counter to a specific
+    value. Useful when migrating from a legacy system — eg the user
+    has already shipped 2200 parcels and wants the next master ID to
+    end in `02201` (or `02200` if they pass seq=2199).
+
+    By default, lowering the counter is BLOCKED (creating duplicates
+    would break the unique-master_order_id invariant). Pass
+    `force: true` to override (admin/migration only — be careful).
+    """
+    if payload.seq < 0:
+        raise HTTPException(status_code=422, detail="seq must be ≥ 0")
+    if payload.seq > 9_999_999:
+        raise HTTPException(status_code=422, detail="seq too large")
+    cur_doc = await db.counters.find_one({"_id": "master_order_id"})
+    cur = int((cur_doc or {}).get("seq", 0))
+    if payload.seq < cur and not payload.force:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Counter is currently at {cur}. Lowering to {payload.seq} "
+                "would risk duplicate Master Order IDs. Pass force=true to override."
+            ),
+        )
+    await db.counters.update_one(
+        {"_id": "master_order_id"},
+        {"$set": {"seq": int(payload.seq)}},
+        upsert=True,
+    )
+    ist_now = datetime.utcnow() + timedelta(hours=5, minutes=30)
+    return {
+        "current_seq": int(payload.seq),
+        "next_seq": int(payload.seq) + 1,
+        "next_master_order_id":
+            f"{ist_now.strftime('%y%m%d')}{str(int(payload.seq) + 1).zfill(5)}",
+    }
 
 
 @api_router.get("/orders/peek-master-id")

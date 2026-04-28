@@ -3954,3 +3954,95 @@ agent_communication:
             422 with required detail message. PASS
         Cleanup performed (settings reset, two test shipments deleted).
         No regressions observed; ready for main agent to summarise/finish.
+
+---
+
+## Backend Test Run: Phase-7f Master Order ID Counter Customization (2026-04-29)
+
+backend:
+  - task: "Phase-7f Master Order ID counter customization (IST tz fix + GET/POST /api/orders/master-id-counter + force lowering)"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "testing"
+        -comment: |
+            All 20/20 assertions passed via /app/backend_test.py against
+            https://logistics-hub-740.preview.emergentagent.com/api as
+            admin@test.com.
+
+            Test 1 — IST timezone fix on GET /api/orders/peek-master-id:
+              Response: {"master_order_id":"26042900012",
+                         "auto_generate":true,
+                         "autofill_in_new_shipment":true}.
+              Prefix "260429" matches today's IST YYMMDD (UTC was still
+              2026-04-28 23:07 when called → +5h30m IST offset correctly
+              applied). PASS.
+
+            Test 2 — GET /api/orders/master-id-counter:
+              Response: {"current_seq":11, "next_seq":12,
+                         "next_master_order_id":"26042900012"}.
+              current_seq is int ≥ 0, next_seq == current_seq+1, and
+              next_master_order_id starts with the IST YYMMDD prefix. PASS.
+
+            Test 3 — POST set counter HIGHER (cur+100 = 111):
+              POST {"seq":111} → 200 with
+              {"current_seq":111,"next_seq":112,
+               "next_master_order_id":"26042900112"}.
+              GET confirmed current_seq=111.
+              POST /api/smart-paste with skip_llm=true and the canonical
+              KEY: value paste returned PendingOrder with
+              master_order_id="26042900112" — exactly cur+101 zero-padded
+              to 5 digits, prefixed with IST date "260429". (Cleanup:
+              pending order deleted with DELETE /api/orders/pending/{id}.)
+              PASS.
+
+            Test 4 — POST set counter LOWER without force:
+              POST {"seq":1} → 409 with detail:
+                "Counter is currently at 112. Lowering to 1 would risk
+                 duplicate Master Order IDs. Pass force=true to override."
+              Detail contains both "Lowering" and "duplicate" substrings
+              as specified by the contract. PASS.
+
+            Test 5 — POST set counter LOWER WITH force:
+              POST {"seq":2200,"force":true} → 200 with current_seq=2200.
+              GET confirmed current_seq=2200.
+              Cleanup: POST {"seq":112,"force":true} restored counter
+              close to its post-Test-3 value. PASS.
+
+            Test 6 — Validation:
+              POST {"seq":-5} → 422 detail "seq must be ≥ 0". PASS.
+              POST {"seq":99999999} → 422 detail "seq too large". PASS.
+
+            Endpoints exercised (all behind JWT auth via Bearer token):
+              GET  /api/orders/peek-master-id
+              GET  /api/orders/master-id-counter
+              POST /api/orders/master-id-counter (higher, lower w/o force,
+                                                  lower with force, neg,
+                                                  oversized)
+              POST /api/smart-paste (skip_llm=true)
+              DELETE /api/orders/pending/{id} (cleanup)
+
+            No regressions detected. No mocks involved — counter writes
+            land in MongoDB db.counters._id="master_order_id", and the
+            smart-paste path went through the real Google Sheet append
+            (sheet_row_num was set on the response).
+
+agent_communication:
+    -agent: "testing"
+    -message: |
+        Phase-7f Master Order ID counter customization — FULL PASS
+        (20/20 assertions). IST timezone fix is applied correctly to
+        BOTH peek-master-id and the counter endpoints. Set higher,
+        block-lower-without-force (409 with the right detail), and
+        force-lower paths all work. Validation 422s for negative and
+        oversized seq are correct. Smart-paste consumed the next ID
+        atomically (cur+100 → 111 → smart-paste returned 26042900112
+        i.e. cur+101 zero-padded). Counter was restored close to
+        original at end of test (current_seq=112). Pending test order
+        cleaned up. Ready for main agent to summarise/finish.
+

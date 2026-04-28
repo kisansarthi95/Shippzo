@@ -264,6 +264,13 @@ export default function SettingsScreen() {
   const [orderIdAutoGen, setOrderIdAutoGen] = useState(true);
   // Phase-7e: When auto-gen is ON, also auto-fill in the New Shipment form.
   const [orderIdAutofillNew, setOrderIdAutofillNew] = useState(true);
+  // Phase-7f: live current counter + input for migrating from legacy
+  // numbering (eg user has shipped 2200 parcels → set seq to 2200 so
+  // the next allocation produces …02201).
+  const [oidCounterCurrent, setOidCounterCurrent] = useState<number | null>(null);
+  const [oidCounterNextPreview, setOidCounterNextPreview] = useState<string>("");
+  const [oidCounterInput, setOidCounterInput] = useState<string>("");
+  const [oidCounterSaving, setOidCounterSaving] = useState<boolean>(false);
   const [spaiInstructions, setSpaiInstructions] = useState("");
   const [spaiDefaultPrompt, setSpaiDefaultPrompt] = useState("");
   const [spaiShowDefault, setSpaiShowDefault] = useState(false);
@@ -488,6 +495,15 @@ export default function SettingsScreen() {
     // Phase-7d: Master Order ID auto-generate (default ON)
     setOrderIdAutoGen((s as any).order_id_auto_generate !== false);
     setOrderIdAutofillNew((s as any).order_id_autofill_in_new_shipment !== false);
+    // Phase-7f: load current Master Order ID counter (separate endpoint
+    // since it's not on the Settings doc — it's a global counter doc).
+    try {
+      const c = await Api.getMasterIdCounter();
+      setOidCounterCurrent(c.current_seq);
+      setOidCounterNextPreview(c.next_master_order_id);
+    } catch {
+      /* ignore — fresh user / offline */
+    }
     // Phase-4b+ AI rate card (fall back to spec defaults)
     setAiCostSimple(
       String(
@@ -1021,6 +1037,115 @@ export default function SettingsScreen() {
                 onValueChange={setOrderIdAutofillNew}
                 disabled={!orderIdAutoGen}
               />
+            </View>
+
+            {/* Phase-7f: Master Order ID counter customisation
+                (one-time migration helper for users with legacy ID series). */}
+            <View
+              style={[
+                styles.toggleRow,
+                !orderIdAutoGen && { opacity: 0.5 },
+                { flexDirection: "column", alignItems: "stretch", gap: 8 },
+              ]}
+            >
+              <View>
+                <Text style={styles.toggleLbl}>Order ID Sequence Number</Text>
+                <Text style={styles.toggleSub}>
+                  Current counter: <Text style={{ fontWeight: "800" }}>
+                    {oidCounterCurrent ?? "…"}
+                  </Text>
+                  {oidCounterNextPreview ? (
+                    <Text>  ·  Next ID: <Text style={{ fontWeight: "800" }}>
+                      {oidCounterNextPreview}
+                    </Text></Text>
+                  ) : null}
+                </Text>
+                <Text style={[styles.toggleSub, { marginTop: 4 }]}>
+                  જૂના 2200 parcels પછી શરૂ કરવા જેવા cases માટે — input માં 2200 લખીને Set દબાવો, પછી next allocation `{(oidCounterNextPreview || "").slice(0, 6)}02201` થશે. YYMMDD prefix આપોઆપ આજની તારીખ રહેશે.
+                </Text>
+              </View>
+              <View style={{ flexDirection: "row", gap: 8, alignItems: "center" }}>
+                <TextInput
+                  testID="oid-counter-input"
+                  value={oidCounterInput}
+                  onChangeText={(t) => setOidCounterInput(t.replace(/[^\d]/g, ""))}
+                  placeholder={`e.g. 2200  (last shipped count)`}
+                  placeholderTextColor="#9CA3AF"
+                  keyboardType="numeric"
+                  editable={orderIdAutoGen && !oidCounterSaving}
+                  style={[styles.input, { flex: 1 }]}
+                />
+                <TouchableOpacity
+                  testID="oid-counter-save"
+                  disabled={
+                    !orderIdAutoGen ||
+                    oidCounterSaving ||
+                    !oidCounterInput.trim()
+                  }
+                  onPress={async () => {
+                    const seq = parseInt(oidCounterInput.trim(), 10);
+                    if (!Number.isFinite(seq) || seq < 0) {
+                      Alert.alert("Invalid number", "Enter a positive whole number.");
+                      return;
+                    }
+                    const cur = oidCounterCurrent ?? 0;
+                    let force = false;
+                    if (seq < cur) {
+                      // Confirm: lowering risks duplicates.
+                      const ok = await new Promise<boolean>((resolve) => {
+                        Alert.alert(
+                          "Lowering counter?",
+                          `Counter is currently at ${cur}. Setting it to ${seq} could create duplicate Master Order IDs with existing shipments. Continue?`,
+                          [
+                            { text: "Cancel", style: "cancel", onPress: () => resolve(false) },
+                            { text: "Force", style: "destructive", onPress: () => resolve(true) },
+                          ],
+                        );
+                      });
+                      if (!ok) return;
+                      force = true;
+                    }
+                    setOidCounterSaving(true);
+                    try {
+                      const r = await Api.setMasterIdCounter(seq, force);
+                      setOidCounterCurrent(r.current_seq);
+                      setOidCounterNextPreview(r.next_master_order_id);
+                      setOidCounterInput("");
+                      Alert.alert(
+                        "✅ Counter updated",
+                        `Next Master Order ID will be ${r.next_master_order_id}.`,
+                      );
+                    } catch (e: any) {
+                      Alert.alert(
+                        "Failed",
+                        e?.response?.data?.detail || e?.message || "Could not update counter.",
+                      );
+                    } finally {
+                      setOidCounterSaving(false);
+                    }
+                  }}
+                  style={{
+                    paddingHorizontal: 14,
+                    paddingVertical: 12,
+                    backgroundColor: "#7C3AED",
+                    borderRadius: 8,
+                    opacity:
+                      !orderIdAutoGen ||
+                      oidCounterSaving ||
+                      !oidCounterInput.trim()
+                        ? 0.5
+                        : 1,
+                  }}
+                >
+                  {oidCounterSaving ? (
+                    <ActivityIndicator size="small" color="#fff" />
+                  ) : (
+                    <Text style={{ color: "#fff", fontWeight: "800", fontSize: 13 }}>
+                      Set
+                    </Text>
+                  )}
+                </TouchableOpacity>
+              </View>
             </View>
 
             <Text style={styles.fieldLabel}>Your custom instructions (optional)</Text>
