@@ -68,7 +68,7 @@ AMOUNT: <number only, no ₹ symbol>
 PAYMENT: <COD or PAID — leave blank if not stated>
 COURIER: <courier name or ->
 ORDER_ID: <order number or ->
-WEIGHT: <weight with unit or ->
+WEIGHT: <ALWAYS leave as `-`. NEVER infer parcel weight from item name.>
 NOTES: <special instruction or ->
 
 EXAMPLE of a GOOD response (for a Gujarati message):
@@ -86,7 +86,7 @@ AMOUNT: 1500
 PAYMENT: COD
 COURIER: -
 ORDER_ID: -
-WEIGHT: 20gm
+WEIGHT: -
 NOTES: -
 ```
 
@@ -140,7 +140,43 @@ in ITEMS — NEVER in ADDRESS_1 or ADDRESS_2.
   * "2 saree" → "Saree x 2"
   * "Saree" (no qty mentioned) → "Saree x 1"
   * Multiple items: "Saree x 2, Kurti x 1"
-  * A weight-only item like "20gm ODC3" → "ODC3 x 1" (weight goes in WEIGHT)
+  * A weight-only product code like "20gm ODC3" → "ODC3 x 1"
+    (KEEP the weight as part of the item name, e.g. "ODC3 20gm x 1")
+  * IMPORTANT: a product weight like "20gm", "500g", "3 kg" baked
+    into the item name is the PRODUCT'S OWN weight. It is NOT the
+    parcel's shipping weight. Do NOT copy it into WEIGHT.
+
+**Rule 6b — PARCEL WEIGHT IS NEVER GUESSED:**
+WEIGHT is the dispatch/parcel weight (= product + box + bubble wrap).
+It can ONLY be filled if the user EXPLICITLY states a parcel /
+shipping / dispatch weight using clear words like:
+  - "parcel weight: 500g"
+  - "shipping weight 1.2 kg"
+  - "dispatch weight - 2 kg"
+  - "package: 750gm"
+  - "weight (incl. box): 800gm"
+NEVER infer WEIGHT from any of these:
+  ❌ Item name ("3 Kg Natural Honey", "ODC3 20gm")
+  ❌ Standalone product weight on its own line ("20gm")
+  ❌ Quantity numbers ("Saree x 2")
+  ❌ Pricing tiers ("500g pack")
+If the message does not contain a clearly-labelled PARCEL/SHIPPING/
+DISPATCH/PACKAGE weight, output `WEIGHT: -` (single dash). The user
+will be prompted to enter the actual parcel weight on the form.
+
+Examples:
+  Input: "3 Kg Natural Honey, Qty 1"
+    →  WEIGHT: -            (3 kg is the product's own weight)
+        ITEMS:  3 Kg Natural Honey x 1
+  Input: "ODC3 20gm x 1"
+    →  WEIGHT: -            (20gm is part of the SKU code)
+        ITEMS:  ODC3 20gm x 1
+  Input: "Saree x 2, Parcel weight: 800g"
+    →  WEIGHT: 800g         (explicit "Parcel weight" label)
+        ITEMS:  Saree x 2
+  Input: "Kurti, dispatch wt 1.2 kg"
+    →  WEIGHT: 1.2 kg       (explicit "dispatch wt" label)
+        ITEMS:  Kurti x 1
 
 **Rule 7 — ADDRESS_1 content:**
 ADDRESS_1 holds the COMPLETE physical address — house no / flat /
@@ -403,6 +439,17 @@ async def parse_paste_via_llm(
         repair_address_from_raw(text, fields)
     except Exception as e:
         _LOG.warning("Deterministic address repair failed: %s", e)
+
+    # ── Phase-6 PARCEL WEIGHT GUARD ──
+    # AI sometimes copies the product's own weight (from item names like
+    # "3 Kg Natural Honey" or "ODC3 20gm") into the WEIGHT field. That
+    # is the product's own weight — NOT the parcel/dispatch weight. We
+    # forcibly clear WEIGHT unless the source contains an explicit
+    # "parcel weight" / "shipping weight" / "dispatch weight" label.
+    try:
+        _strip_product_weight_from_parcel_weight(text, fields)
+    except Exception as e:
+        _LOG.warning("Parcel-weight guard failed: %s", e)
 
     return {
         "fields": fields,
@@ -808,6 +855,41 @@ def repair_address_from_raw(raw_text: str, schema: Dict[str, str]) -> Dict[str, 
         schema["STATE"] = state
 
     return schema
+
+
+def _strip_product_weight_from_parcel_weight(raw_text: str, fields: Dict[str, str]) -> None:
+    """Deterministic guard: prevent product weight (from item name) from
+    leaking into the parcel WEIGHT field.
+
+    Trigger conditions: WEIGHT is filled AND the raw paste does NOT
+    contain any explicit "parcel/shipping/dispatch/package weight"
+    label. In that case we forcibly clear WEIGHT so the form prompts
+    the user for the real parcel weight.
+
+    The AI is instructed to do this in Rule 6b — this function is the
+    safety net that catches it when the AI ignores the rule.
+    """
+    weight_val = (fields.get("WEIGHT", "") or "").strip()
+    if not weight_val or weight_val == "-":
+        return
+    # Look for an explicit "parcel weight" / "shipping weight" /
+    # "dispatch weight" / "package weight" / "wt incl box" mention.
+    explicit_weight_re = re.compile(
+        r"(?i)\b(parcel|shipping|dispatch|package|courier|box|"
+        r"\u092A\u093E\u0930\u094D\u0938\u0932|"     # पार्सल
+        r"\u0aaa\u093e\u0ab0\u094d\u0ab8\u0ab2)"     # પાર્સલ
+        r"[^\n]{0,20}(weight|wt|\u0935\u091C\u0928|\u0935\u091C\u0928)"
+    )
+    if explicit_weight_re.search(raw_text or ""):
+        return  # explicit label found → trust the AI's value
+    # No explicit parcel-weight mention → AI almost certainly pulled
+    # this from the item name. Clear it.
+    _LOG.info(
+        "Smart-paste: cleared WEIGHT '%s' — no explicit parcel-weight "
+        "label in source (likely product weight from item name).",
+        weight_val,
+    )
+    fields["WEIGHT"] = ""
 
 
 def to_legacy_fields(ai_fields: Dict[str, str]) -> Dict[str, str]:
