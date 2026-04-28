@@ -3308,6 +3308,74 @@ test_plan:
             "Retry all" + "Clear errors" buttons and per-item ×
             controls.
 
+  - task: "Phase-2 incremental refactor: 3 admin endpoints extracted"
+    implemented: true
+    working: true
+    file: "/app/backend/routers/admin.py + /app/backend/server.py"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "main"
+        -comment: |
+            Phase-2 of the server.py modularisation. Three more admin
+            endpoints extracted into /app/backend/routers/admin.py
+            using the same proven late-binding pattern from Phase-1:
+
+            • GET    /admin/users
+            • GET    /admin/users/{user_id}
+            • POST   /admin/users/{user_id}/reset-password
+
+            Plus the AdminResetPasswordRequest pydantic model.
+
+            Pattern recap:
+              - admin_router defined at module-level (no deps).
+              - All handler bodies live inside init() — called by
+                server.py at the bottom of the file, after every helper
+                exists. init() does `from server import db,
+                get_current_user, _require_admin, _get_admin_config,
+                _log_pwd_attempt` (no circular import because we're
+                lazy).
+              - hash_password is imported from auth (safe — no
+                circular dep).
+
+            server.py changes:
+              - Removed the inline AdminResetPasswordRequest class and
+                the @api_router.post("/admin/users/...reset-password")
+                handler.
+              - Removed the inline @api_router.get("/admin/users") and
+                @api_router.get("/admin/users/{user_id}") handlers.
+              - Replaced both with breadcrumb comments pointing to the
+                new file.
+              - Note: there was an interim sed cleanup needed because a
+                previous targeted edit left an orphan function body
+                between two BaseModel declarations (caught by import
+                test). The sed-based deletion of lines 3364-3526
+                resolved it; subsequent `python -c "import server"`
+                returns clean.
+
+            Verification: 27/27 PASS via /app/backend_test.py covering:
+              - GET /admin/global-config (Phase-1 already extracted)
+              - GET /admin/users + adjacent admin endpoints (no regression)
+              - Auth flows (signup, login correct/wrong)
+              - Sheets Phase-5 SA-share
+              - Phase-2b device fingerprint anti-abuse
+
+            Plus targeted smoke tests of the 3 newly-moved endpoints:
+              - GET /admin/users?q=admin&limit=2 → 200 with 1 filtered row
+              - GET /admin/users/{admin_id} → 200 with email, 51
+                shipments, 20 recent_shipments
+              - POST /admin/users/{id}/reset-password full flow:
+                signup → old-login=200 → admin-reset=200 → old-login=401
+                → new-login=200 → reset-nonexistent=404. Test user
+                cleaned up post-test.
+
+            Pattern remains stable. Future phases can extract the
+            remaining /admin/plan-features (GET+PUT) and the
+            /admin/global-config PUT in another iteration, then move on
+            to /sheets/* endpoints.
+
 agent_communication:
     -agent: "main"
     -message: |
