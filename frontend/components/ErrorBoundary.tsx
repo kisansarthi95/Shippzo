@@ -22,8 +22,17 @@ import React from "react";
 import {
   View, Text, StyleSheet, TouchableOpacity, ScrollView, Platform, Alert,
 } from "react-native";
-import * as Updates from "expo-updates";
 import { Ionicons } from "@expo/vector-icons";
+
+// expo-updates is optional — only present in production builds.
+// Lazy-resolve so we don't crash dev/Go bundles that don't ship it.
+let Updates: any = null;
+try {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  Updates = require("expo-updates");
+} catch {
+  Updates = null;
+}
 
 type Props = { children: React.ReactNode };
 type State = {

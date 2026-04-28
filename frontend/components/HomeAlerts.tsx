@@ -91,18 +91,35 @@ export default function HomeAlerts() {
     } catch {/* silent */}
   }, []);
 
+  // Helper — push to checkout with the user's current plan + cycle
+  // pre-filled. Falls back to /plans when we don't know the cycle
+  // (e.g. legacy paid users who never had plan_billing_cycle stamped).
+  const oneTapRenew = useCallback(() => {
+    const cycle = usage?.plan_billing_cycle === "yearly" ? "yearly" : "monthly";
+    const plan = (usage?.plan || "").toString();
+    if (plan && ["silver", "gold", "platinum"].includes(plan)) {
+      router.push({
+        pathname: "/checkout",
+        params: { mode: "plan", plan, cycle },
+      });
+    } else {
+      router.push("/plans");
+    }
+  }, [router, usage?.plan, usage?.plan_billing_cycle]);
+
   const banners: Banner[] = [];
 
   // Plan expired — NEVER dismissable, blocks label creation.
   if (usage?.period === "month" && usage.plan_expired) {
+    const cycleLbl = usage.plan_billing_cycle === "yearly" ? "yearly" : "monthly";
     banners.push({
       key: "plan_expired",
       severity: "danger",
       icon: "alert-circle",
       title: "Subscription expired",
-      body: `Your ${usage.plan_name} plan has ended. Renew to keep printing labels.`,
-      ctaLabel: "Renew now",
-      onPress: () => router.push("/plans"),
+      body: `Your ${usage.plan_name} plan has ended. Tap to renew the same plan.`,
+      ctaLabel: `Renew ${usage.plan_name} (${cycleLbl})`,
+      onPress: oneTapRenew,
     });
   }
 
@@ -116,14 +133,15 @@ export default function HomeAlerts() {
     !dismissed.plan_expiring
   ) {
     const days = usage.plan_days_left;
+    const cycleLbl = usage.plan_billing_cycle === "yearly" ? "yearly" : "monthly";
     banners.push({
       key: "plan_expiring",
       severity: "warn",
       icon: "calendar-outline",
-      title: `Plan renews in ${days === 0 ? "<1" : days} day${days === 1 ? "" : "s"}`,
-      body: `Your ${usage.plan_name} subscription renews soon. Top-up not required if auto-renew is on.`,
-      ctaLabel: "Manage plan",
-      onPress: () => router.push("/plans"),
+      title: `Plan ends in ${days === 0 ? "<1" : days} day${days === 1 ? "" : "s"}`,
+      body: `Renew your ${usage.plan_name} ${cycleLbl} plan with one tap to avoid service interruption.`,
+      ctaLabel: `Renew now`,
+      onPress: oneTapRenew,
     });
   }
 
