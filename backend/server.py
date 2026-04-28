@@ -1095,6 +1095,9 @@ async def update_settings(
         update["smart_paste_instructions"] = (payload.smart_paste_instructions or "")[:8000]
     if payload.smart_paste_ai_enabled is not None:
         update["smart_paste_ai_enabled"] = bool(payload.smart_paste_ai_enabled)
+    # Phase-7d: Master Order ID auto-generate flag.
+    if payload.order_id_auto_generate is not None:
+        update["order_id_auto_generate"] = bool(payload.order_id_auto_generate)
     # Phase-4b+: AI credit rate card — clamp 0 ≤ x ≤ 2 (spec cap).
     for _f in ("ai_cost_simple", "ai_cost_medium", "ai_cost_complex"):
         _v = getattr(payload, _f)
@@ -2837,7 +2840,10 @@ async def smart_paste_create(
         {"_id": 0, "order_id_auto_generate": 1},
     ) or {}
     auto_gen = bool(settings_doc.get("order_id_auto_generate", True))
-    user_order_id = str(fields.get("order_id", "") or "").strip()
+    # Handle both `order_id` and the regex parser's `order_id_hint` fallback.
+    user_order_id = str(
+        fields.get("order_id") or fields.get("order_id_hint") or "",
+    ).strip()
 
     if auto_gen:
         master_oid = await generate_master_order_id()

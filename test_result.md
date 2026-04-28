@@ -3693,3 +3693,81 @@ agent_communication:
         Admin@12345 from /app/memory/test_credentials.md.
 
 
+
+---
+
+## Backend Test Run: Phase-7d Master Order ID System — RETEST after fixes (2026-04-28 PM6)
+
+backend:
+  - task: "Phase-7d Master Order ID auto-generation + toggle"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "testing"
+        -comment: |
+            RETEST after main agent applied the two fixes. 14/14 assertions
+            passed via /app/retest_moid.py against
+            https://logistics-hub-740.preview.emergentagent.com/api with
+            admin@test.com / Admin@12345.
+
+            === TEST 2 — User-supplied Order ID NOT overwritten ===
+            - PUT /api/settings {"order_id_auto_generate": true} → 200 OK ✅
+              (Bug #1 FIXED: update_settings now propagates the flag)
+              Response body included order_id_auto_generate=true.
+            - POST /api/smart-paste with the canonical paste containing
+              "ORDER_ID: ABC-001" (skip_llm=true):
+                response.master_order_id = "26042800008"  ✅
+                response.order_id        = "ABC-001"      ✅
+              Master OID matches YYMMDD+digits format (^\d{6}\d+$); user's
+              "ABC-001" is preserved verbatim in order_id.
+              (Bug #2 FIXED: smart_paste_create now reads order_id_hint
+              when order_id is empty)
+
+            === TEST 4 — Auto-gen OFF blocks save when no order_id ===
+            - PUT /api/settings {"order_id_auto_generate": false} → 200 OK ✅
+              Response body included order_id_auto_generate=false.
+            - POST /api/smart-paste WITHOUT ORDER_ID line → 422 ✅
+              detail = "Order ID is required when Auto-Generate is OFF.
+              Enter your own Order ID or enable Auto-Generate in Settings."
+              (matches the "Order ID is required" expectation).
+            - POST /api/smart-paste WITH "ORDER_ID: MY-555" → 200 ✅
+                response.master_order_id = ""        ✅ (empty string)
+                response.order_id        = "MY-555"  ✅
+            - Reset PUT /api/settings {"order_id_auto_generate": true} → 200 OK ✅
+
+            === CLEANUP ===
+            Both pending orders created during the retest were deleted
+            successfully (200 OK on both DELETEs). Note: 24 stray pending
+            orders remain in admin's queue from PRIOR test runs (not from
+            this retest). Recommend the main agent purge them via a
+            separate cleanup pass if the queue UI gets cluttered.
+
+            All previously failing assertions are now green. T1, T3, T5
+            from the first run remain green. The Phase-7d Master Order ID
+            system is fully working: auto-generate ON produces a fresh
+            YYMMDD+seq MOID and preserves any user-supplied order_id;
+            auto-generate OFF leaves master_order_id empty and requires
+            a user-supplied order_id (else 422).
+
+agent_communication:
+    -agent: "testing"
+    -message: |
+        Phase-7d Master Order ID retest — FULL PASS (14/14 assertions).
+        Both backend fixes verified working:
+          • PUT /api/settings now accepts {"order_id_auto_generate": true|false}
+            and persists/returns the value (was 400 "No fields to update").
+          • POST /api/smart-paste with user-supplied "ORDER_ID: <value>"
+            now preserves the user's value in response.order_id while
+            still generating a fresh master_order_id (was overwriting
+            user's value with the MOID).
+          • Auto-generate OFF correctly returns 422 when no order_id is
+            provided, and accepts the request (master_order_id="") when
+            user supplies one.
+        Test pending orders were cleaned up. No regressions observed.
+        Task can be marked complete.
+
