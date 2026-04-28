@@ -18,6 +18,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { useLocalSearchParams, useRouter, useFocusEffect } from "expo-router";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Api, Courier, SheetOrder } from "../../lib/api";
+import { SyncQueue } from "../../lib/syncQueue";
 import { scannerBridge } from "../../lib/scannerBridge";
 import { validateTrackingId } from "../../lib/trackingValidator";
 import { colors } from "../../lib/theme";
@@ -734,6 +735,30 @@ export default function AddShipment() {
           ]);
         }
       } catch (e: any) {
+        // Phase-5+: On a network-style failure for a *new* shipment, save
+        // to the offline queue instead of losing the user's data. Edits
+        // and pending-order links still need a server round-trip.
+        const isNetworkErr =
+          !e?.response &&
+          /network|timeout|abort|err_network/i.test(String(e?.message || ""));
+        if (!editingShipmentId && isNetworkErr) {
+          try {
+            await SyncQueue.enqueueShipmentCreate(payload, customerName);
+            resetForm();
+            Alert.alert(
+              "Saved offline",
+              "We couldn't reach the server. This shipment is queued and will sync automatically when you're back online.",
+              [{ text: "OK", onPress: () => router.replace("/(tabs)/shipments") }],
+            );
+            return;
+          } catch (qErr: any) {
+            Alert.alert(
+              "Couldn't queue",
+              qErr?.message || "Unable to save offline. Please try again with internet.",
+            );
+            return;
+          }
+        }
         Alert.alert("Error", e?.response?.data?.detail || e?.message || "Failed to save");
       } finally {
         setSaving(false);

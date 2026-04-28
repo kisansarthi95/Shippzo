@@ -195,6 +195,12 @@ export type SheetPreview = {
   sample_rows: Record<string, string>[];
   total_rows: number;
   auto_mapping: Record<string, string>;
+  access_method?: "service_account" | "public_csv";
+};
+
+export type SheetServiceAccount = {
+  email: string;
+  instructions: string;
 };
 
 export type SheetOrder = {
@@ -482,6 +488,8 @@ export const Api = {
 
   sheetsPreview: (url: string) =>
     api.post<SheetPreview>("/sheets/preview", { url }).then((r) => r.data),
+  sheetsServiceAccount: () =>
+    api.get<SheetServiceAccount>("/sheets/service-account").then((r) => r.data),
   sheetsOrders: () =>
     api
       .get<{

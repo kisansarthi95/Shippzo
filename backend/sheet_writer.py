@@ -59,6 +59,130 @@ def _get_worksheet():
         )
 
 
+def get_service_account_email() -> str:
+    """Return the client_email from the SA JSON. Used by the frontend to
+    show the user *which* email they should share their Sheet with.
+
+    Returns "" on any failure (e.g. JSON missing) so the UI can degrade
+    gracefully rather than crashing.
+    """
+    try:
+        import json as _json
+        key_path = os.getenv("GOOGLE_SA_JSON_PATH")
+        if not key_path or not os.path.isfile(key_path):
+            return ""
+        with open(key_path, "r", encoding="utf-8") as f:
+            data = _json.load(f)
+        return str(data.get("client_email") or "")
+    except Exception:
+        log.exception("Failed to read service account email")
+        return ""
+
+
+def _open_user_sheet(sheet_id: str, tab_name_or_gid: str = ""):
+    """Open ANY user-supplied sheet via the same Service Account.
+
+    The user must have shared their sheet with the service-account email
+    (Editor or Viewer). On 403 we raise a clear RuntimeError that the
+    caller can convert into a friendly HTTP error.
+
+    `tab_name_or_gid` may be:
+      - empty / "0" / a numeric gid → first worksheet (or matching gid)
+      - a tab title (e.g. "Orders") → that worksheet by name
+    """
+    key_path = os.getenv("GOOGLE_SA_JSON_PATH")
+    if not key_path or not os.path.isfile(key_path):
+        raise RuntimeError(f"Service account JSON not found at {key_path!r}")
+    if not sheet_id:
+        raise RuntimeError("Sheet ID is empty")
+
+    creds = Credentials.from_service_account_file(key_path, scopes=_SCOPES)
+    client = gspread.authorize(creds)
+    try:
+        ss = client.open_by_key(sheet_id)
+    except gspread.SpreadsheetNotFound:
+        raise RuntimeError("SHEET_NOT_FOUND")
+    except Exception as e:
+        msg = str(e)
+        if "403" in msg or "PERMISSION" in msg.upper() or "does not have permission" in msg.lower():
+            raise RuntimeError("SHEET_NOT_SHARED")
+        raise
+
+    # Resolve which worksheet to open.
+    if not tab_name_or_gid:
+        return ss.sheet1  # default: first worksheet
+
+    # Try numeric gid first (the URL fragment after gid=).
+    try:
+        gid_int = int(tab_name_or_gid)
+        for ws in ss.worksheets():
+            if int(getattr(ws, "id", -1)) == gid_int:
+                return ws
+        # gid not found → fall through to tab-name path
+    except (ValueError, TypeError):
+        pass
+
+    # Treat as tab name.
+    try:
+        return ss.worksheet(tab_name_or_gid)
+    except gspread.WorksheetNotFound:
+        # Last resort: first sheet.
+        return ss.sheet1
+
+
+def read_user_sheet(
+    sheet_id: str,
+    tab_name_or_gid: str = "",
+    *,
+    max_rows: int = 5000,
+) -> Dict[str, Any]:
+    """Read a user-linked Google Sheet via the Service Account.
+
+    Returns: {
+      "ok": True,
+      "headers": [...],           # row 1 trimmed
+      "rows": [{...}, {...}, ...], # header→value dicts (skips empty rows)
+      "tab": "<tab name>",
+      "total_rows": N,
+    }
+    Or {"ok": False, "error": "<short code>"} on failure where error is
+    one of:
+      "SHEET_NOT_SHARED"  – SA can't access this sheet (user must share)
+      "SHEET_NOT_FOUND"   – ID doesn't exist
+      "SA_MISSING"        – server-side SA JSON is missing
+      "<other>"           – raw exception string for unknowns
+    """
+    try:
+        ws = _open_user_sheet(sheet_id, tab_name_or_gid)
+        all_values = ws.get_all_values()
+    except RuntimeError as e:
+        return {"ok": False, "error": str(e)}
+    except Exception as e:  # pragma: no cover
+        log.exception("read_user_sheet failed")
+        return {"ok": False, "error": str(e)}
+
+    if not all_values:
+        return {"ok": True, "headers": [], "rows": [], "tab": ws.title, "total_rows": 0}
+
+    headers = [(h or "").strip() for h in all_values[0]]
+    out_rows: List[Dict[str, str]] = []
+    for r in all_values[1:max_rows + 1]:
+        if not any((c or "").strip() for c in r):
+            continue
+        rec: Dict[str, str] = {}
+        for i, h in enumerate(headers):
+            rec[h] = (r[i] if i < len(r) else "").strip()
+        out_rows.append(rec)
+
+    return {
+        "ok": True,
+        "headers": headers,
+        "rows": out_rows,
+        "tab": ws.title,
+        "total_rows": len(out_rows),
+    }
+
+
 def _find_next_empty_row(ws) -> int:
     """Return the 1-based row number just after the last non-empty row.
 

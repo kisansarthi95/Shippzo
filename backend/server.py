@@ -70,12 +70,16 @@ try:
     from sheet_writer import mark_row_deleted as sheet_mark_row_deleted
     from sheet_writer import parse_row_from_updated_range as sheet_parse_row_from_updated_range
     from sheet_writer import update_row_status as sheet_update_row_status
+    from sheet_writer import get_service_account_email as sheet_get_sa_email
+    from sheet_writer import read_user_sheet as sheet_read_user_sheet
 except Exception as _sheet_import_err:  # pragma: no cover
     sheet_append_order_row = None  # type: ignore
     sheet_probe_connection = None  # type: ignore
     sheet_mark_row_deleted = None  # type: ignore
     sheet_parse_row_from_updated_range = None  # type: ignore
     sheet_update_row_status = None  # type: ignore
+    sheet_get_sa_email = None  # type: ignore
+    sheet_read_user_sheet = None  # type: ignore
 
 
 ROOT_DIR = Path(__file__).parent
@@ -1122,12 +1126,97 @@ class SheetPreviewRequest(BaseModel):
     url: str
 
 
+@api_router.get("/sheets/service-account")
+async def get_sheets_service_account_email(
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    """Return the Service Account email so the user can share their Sheet
+    with it (Editor role). This keeps the user's Sheet PRIVATE — only the
+    SA is granted access — instead of forcing them to set "Anyone with
+    the link → Viewer" (the older public-CSV path).
+    """
+    email = sheet_get_sa_email() if sheet_get_sa_email else ""
+    return {
+        "email": email,
+        "instructions": (
+            "Open your Google Sheet → Share → paste this email → choose "
+            "'Editor' → Send. Then come back here and connect."
+        ),
+    }
+
+
 @api_router.post("/sheets/preview")
 async def sheets_preview(payload: SheetPreviewRequest):
     parsed = parse_sheet_url(payload.url)
+
+    # Phase-5: Service-Account-first read. Only fall back to the legacy
+    # public-CSV path if the SA can't access the sheet AND the user has
+    # made it public anyway.
+    if sheet_read_user_sheet is not None:
+        sa_resp = sheet_read_user_sheet(parsed["sheet_id"], parsed["gid"] or "0")
+        if sa_resp.get("ok"):
+            headers = sa_resp.get("headers", [])
+            rows = sa_resp.get("rows", [])
+            guess = auto_guess_mapping(headers)
+            return {
+                "sheet_id": parsed["sheet_id"],
+                "gid": parsed["gid"],
+                "headers": headers,
+                "sample_rows": rows[:5],
+                "total_rows": len(rows),
+                "auto_mapping": guess,
+                "access_method": "service_account",
+            }
+        err = (sa_resp.get("error") or "").strip()
+        # On "not shared" / "not found" we still try the legacy CSV path
+        # so users who have public sheets keep working with no migration.
+        if err in ("SHEET_NOT_SHARED", "SHEET_NOT_FOUND"):
+            try:
+                csv_text = await fetch_sheet_csv(parsed["sheet_id"], parsed["gid"])
+                data = parse_csv_rows(csv_text)
+                guess = auto_guess_mapping(data["headers"])
+                return {
+                    "sheet_id": parsed["sheet_id"],
+                    "gid": parsed["gid"],
+                    "headers": data["headers"],
+                    "sample_rows": data["rows"][:5],
+                    "total_rows": len(data["rows"]),
+                    "auto_mapping": guess,
+                    "access_method": "public_csv",
+                }
+            except HTTPException:
+                # Neither SA nor public works — surface the SA-share guide.
+                sa_email = sheet_get_sa_email() if sheet_get_sa_email else ""
+                raise HTTPException(
+                    status_code=403,
+                    detail=(
+                        "We can't open that sheet. Either:\n"
+                        f"  1. Share it with {sa_email or '<our service account>'} "
+                        "(Editor) — recommended; keeps it private, OR\n"
+                        "  2. Open Share → 'Anyone with the link → Viewer'.\n"
+                        "Then try again."
+                    ),
+                )
+        # Some other unexpected SA error → bubble through CSV path.
+        try:
+            csv_text = await fetch_sheet_csv(parsed["sheet_id"], parsed["gid"])
+            data = parse_csv_rows(csv_text)
+            guess = auto_guess_mapping(data["headers"])
+            return {
+                "sheet_id": parsed["sheet_id"],
+                "gid": parsed["gid"],
+                "headers": data["headers"],
+                "sample_rows": data["rows"][:5],
+                "total_rows": len(data["rows"]),
+                "auto_mapping": guess,
+                "access_method": "public_csv",
+            }
+        except HTTPException:
+            raise HTTPException(status_code=400, detail=f"Sheet read failed: {err or 'unknown error'}")
+
+    # Hard fallback (sheet_writer module unavailable) — legacy CSV path only.
     csv_text = await fetch_sheet_csv(parsed["sheet_id"], parsed["gid"])
     data = parse_csv_rows(csv_text)
-    # Auto-guess mapping
     guess = auto_guess_mapping(data["headers"])
     return {
         "sheet_id": parsed["sheet_id"],
@@ -1136,6 +1225,7 @@ async def sheets_preview(payload: SheetPreviewRequest):
         "sample_rows": data["rows"][:5],
         "total_rows": len(data["rows"]),
         "auto_mapping": guess,
+        "access_method": "public_csv",
     }
 
 
@@ -1185,8 +1275,41 @@ async def sheets_orders(current_user: Dict[str, Any] = Depends(get_current_user)
     cfg = s.sheet
     if not cfg.sheet_id:
         raise HTTPException(status_code=400, detail="Google Sheet not connected")
-    csv_text = await fetch_sheet_csv(cfg.sheet_id, cfg.gid or "0")
-    data = parse_csv_rows(csv_text)
+
+    # Phase-5: Service-Account-first read. If the user has shared their
+    # Sheet with our SA the sheet stays PRIVATE — no public-link required.
+    # Fall back to public-CSV path only if SA can't access AND CSV works.
+    data: Dict[str, Any] = {"headers": [], "rows": []}
+    access_method = "public_csv"
+    if sheet_read_user_sheet is not None:
+        sa_resp = sheet_read_user_sheet(cfg.sheet_id, cfg.gid or "0")
+        if sa_resp.get("ok"):
+            data = {"headers": sa_resp["headers"], "rows": sa_resp["rows"]}
+            access_method = "service_account"
+        elif sa_resp.get("error") in ("SHEET_NOT_SHARED", "SHEET_NOT_FOUND"):
+            try:
+                csv_text = await fetch_sheet_csv(cfg.sheet_id, cfg.gid or "0")
+                data = parse_csv_rows(csv_text)
+            except HTTPException:
+                sa_email = sheet_get_sa_email() if sheet_get_sa_email else ""
+                raise HTTPException(
+                    status_code=403,
+                    detail=(
+                        "Can't read your Google Sheet. Please share it with "
+                        f"{sa_email or '<our service account>'} (Editor) — "
+                        "this keeps your Sheet private."
+                    ),
+                )
+        else:
+            # Unknown SA error → try public path as last resort.
+            try:
+                csv_text = await fetch_sheet_csv(cfg.sheet_id, cfg.gid or "0")
+                data = parse_csv_rows(csv_text)
+            except HTTPException:
+                raise HTTPException(status_code=400, detail="Sheet read failed")
+    else:
+        csv_text = await fetch_sheet_csv(cfg.sheet_id, cfg.gid or "0")
+        data = parse_csv_rows(csv_text)
 
     # Detect header changes
     headers_changed = data["headers"] != cfg.headers
@@ -1233,6 +1356,7 @@ async def sheets_orders(current_user: Dict[str, Any] = Depends(get_current_user)
         "headers_changed": headers_changed,
         "orders": orders,
         "total": len(orders),
+        "access_method": access_method,
     }
 
 

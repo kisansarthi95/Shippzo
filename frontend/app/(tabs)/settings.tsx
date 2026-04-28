@@ -17,6 +17,7 @@ import {
   BackHandler,
 } from "react-native";
 import * as ImagePicker from "expo-image-picker";
+import * as Clipboard from "expo-clipboard";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter, useFocusEffect, useLocalSearchParams, useNavigation } from "expo-router";
@@ -252,6 +253,9 @@ export default function SettingsScreen() {
   const [pickerForField, setPickerForField] = useState<string | null>(null);
   const [connectedSheetId, setConnectedSheetId] = useState("");
   const [connectedHeaders, setConnectedHeaders] = useState<string[]>([]);
+  // Phase-5: Service Account email (for sharing private user sheets)
+  const [saEmail, setSaEmail] = useState<string>("");
+  const [accessMethod, setAccessMethod] = useState<"service_account" | "public_csv" | "">("");
 
   // Phase-4b+ Smart Paste AI customisation
   const [spaiEnabled, setSpaiEnabled] = useState(true);
@@ -495,6 +499,12 @@ export default function SettingsScreen() {
       setConnectedHeaders(s.sheet.headers || []);
       setMapping(s.sheet.column_mapping || {});
     }
+    // Phase-5: fetch the Service Account email so we can show users
+    // exactly which address to share their Sheet with. Lazy + best-
+    // effort — never blocks the rest of the screen on failure.
+    Api.sheetsServiceAccount()
+      .then((sa) => setSaEmail(sa?.email || ""))
+      .catch(() => {});
     // Bump load-version so the dirty-tracking useEffect captures a fresh
     // snapshot AFTER all the setters above have flushed into React state.
     setLoadVersion((v) => v + 1);
@@ -633,6 +643,7 @@ export default function SettingsScreen() {
       const p = await Api.sheetsPreview(sheetUrl.trim());
       setPreview(p);
       setMapping(p.auto_mapping || {});
+      setAccessMethod((p.access_method as any) || "");
       setSheetStatus("idle");
     } catch (e: any) {
       setSheetStatus("idle");
@@ -1236,13 +1247,57 @@ export default function SettingsScreen() {
           {/* Google Sheet */}
           {flagSheetImport ? (
           <Section title="Google Sheet (Orders source)" icon="logo-google">
+            {/* Phase-5: Service Account share panel — keeps user's
+                Sheet PRIVATE. Shown only on the connect view (not when
+                already connected). */}
+            {sheetStatus !== "connected" && saEmail ? (
+              <View style={styles.saShareBox} testID="sa-share-box">
+                <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+                  <Ionicons name="shield-checkmark" size={14} color="#1E40AF" />
+                  <Text style={styles.saShareTitle}>
+                    Recommended: Share privately with our service account
+                  </Text>
+                </View>
+                <Text style={styles.saShareSub}>
+                  Your sheet stays private — only this email can read it.
+                  Open your Google Sheet → Share → paste this email →
+                  pick "Editor" → Send.
+                </Text>
+                <View style={styles.saEmailRow}>
+                  <Text style={styles.saEmailTxt} numberOfLines={1} selectable>
+                    {saEmail}
+                  </Text>
+                  <TouchableOpacity
+                    testID="sa-email-copy"
+                    onPress={async () => {
+                      try {
+                        await Clipboard.setStringAsync(saEmail);
+                        Alert.alert("Copied", "Service account email copied. Paste it in your Sheet's Share dialog.");
+                      } catch {
+                        Alert.alert("Copy failed", "Long-press the email to select and copy manually.");
+                      }
+                    }}
+                    style={styles.saEmailCopyBtn}
+                  >
+                    <Ionicons name="copy-outline" size={14} color="#1E40AF" />
+                    <Text style={styles.saEmailCopyTxt}>Copy</Text>
+                  </TouchableOpacity>
+                </View>
+                <Text style={styles.saShareAlt}>
+                  Prefer the old way? You can also set the sheet to "Anyone
+                  with the link → Viewer" — works too, but anyone with the
+                  link can see customer data.
+                </Text>
+              </View>
+            ) : null}
+
             <View style={styles.sampleBox} testID="sheet-sample-box">
               <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
                 <Ionicons name="bulb-outline" size={14} color={colors.primary} />
                 <Text style={styles.sampleTitle}>First time? Use the sample template</Text>
               </View>
               <Text style={styles.sampleText}>
-                Download the sample CSV → open Google Sheets → File → Import → upload CSV → Replace current sheet. Share as "Anyone with the link → Viewer" and paste URL below.
+                Download the sample CSV → open Google Sheets → File → Import → upload CSV → Replace current sheet. Then share with the service account above (recommended) or "Anyone with the link → Viewer".
               </Text>
               <Text style={styles.sampleCols}>
                 Columns: Timestamp · Order ID · Name · Phone · Address · City · State · Pincode · Item · Amount · Payment Mode
@@ -1304,7 +1359,12 @@ export default function SettingsScreen() {
             ) : (
               <>
                 <Text style={styles.hint}>
-                  Share your sheet: File → Share → General access → "Anyone with the link → Viewer". Then paste link below.
+                  Two ways to share:{"\n"}
+                  • <Text style={{ fontWeight: "800" }}>Private (recommended):</Text>{" "}
+                  share your sheet with the service-account email above (Editor).{"\n"}
+                  • <Text style={{ fontWeight: "800" }}>Public:</Text>{" "}
+                  set "Anyone with the link → Viewer".{"\n"}
+                  Then paste your sheet URL below.
                 </Text>
                 <TextInput
                   testID="sheet-url-input"
@@ -1336,9 +1396,22 @@ export default function SettingsScreen() {
 
             {preview && (
               <View style={{ marginTop: 16 }}>
-                <Text style={styles.subTitle}>
-                  {preview.total_rows} rows · {preview.headers.length} columns
-                </Text>
+                <View style={{ flexDirection: "row", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                  <Text style={styles.subTitle}>
+                    {preview.total_rows} rows · {preview.headers.length} columns
+                  </Text>
+                  {accessMethod === "service_account" ? (
+                    <View style={styles.accessBadgePrivate}>
+                      <Ionicons name="lock-closed" size={10} color="#065F46" />
+                      <Text style={styles.accessBadgePrivateTxt}>Private · Service Account</Text>
+                    </View>
+                  ) : accessMethod === "public_csv" ? (
+                    <View style={styles.accessBadgePublic}>
+                      <Ionicons name="globe-outline" size={10} color="#92400E" />
+                      <Text style={styles.accessBadgePublicTxt}>Public link</Text>
+                    </View>
+                  ) : null}
+                </View>
                 <Text style={[styles.hint, { marginTop: 4 }]}>
                   Map each field to a column from your sheet:
                 </Text>
@@ -3069,6 +3142,62 @@ const styles = StyleSheet.create({
     marginTop: 10,
   },
   sampleBtnText: { color: "#fff", fontWeight: "800", fontSize: 13 },
+
+  // Phase-5: Service-Account share panel
+  saShareBox: {
+    padding: 12,
+    borderRadius: 10,
+    backgroundColor: "#EFF6FF",
+    borderWidth: 1,
+    borderColor: "#BFDBFE",
+    marginBottom: 12,
+  },
+  saShareTitle: {
+    fontSize: 12.5, fontWeight: "800", color: "#1E3A8A", flex: 1,
+  },
+  saShareSub: {
+    fontSize: 11.5, color: "#1E40AF", marginTop: 6, lineHeight: 16.5,
+  },
+  saEmailRow: {
+    marginTop: 10,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    backgroundColor: "#fff",
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderWidth: 1,
+    borderColor: "#BFDBFE",
+  },
+  saEmailTxt: {
+    flex: 1, fontSize: 12, fontFamily: "Courier", color: "#0F172A", fontWeight: "700",
+  },
+  saEmailCopyBtn: {
+    flexDirection: "row", alignItems: "center", gap: 4,
+    paddingHorizontal: 10, paddingVertical: 6,
+    borderRadius: 6, backgroundColor: "#DBEAFE",
+  },
+  saEmailCopyTxt: { color: "#1E40AF", fontSize: 11.5, fontWeight: "800" },
+  saShareAlt: {
+    fontSize: 11, color: "#475569", marginTop: 8, lineHeight: 15.5, fontStyle: "italic",
+  },
+  accessBadgePrivate: {
+    flexDirection: "row", alignItems: "center", gap: 4,
+    backgroundColor: "#D1FAE5", paddingHorizontal: 8, paddingVertical: 3,
+    borderRadius: 6,
+  },
+  accessBadgePrivateTxt: {
+    fontSize: 10.5, fontWeight: "800", color: "#065F46", letterSpacing: 0.3,
+  },
+  accessBadgePublic: {
+    flexDirection: "row", alignItems: "center", gap: 4,
+    backgroundColor: "#FEF3C7", paddingHorizontal: 8, paddingVertical: 3,
+    borderRadius: 6,
+  },
+  accessBadgePublicTxt: {
+    fontSize: 10.5, fontWeight: "800", color: "#92400E", letterSpacing: 0.3,
+  },
 
   infoBox: {
     flexDirection: "row",

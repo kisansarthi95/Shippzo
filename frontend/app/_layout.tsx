@@ -8,6 +8,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { AuthProvider, useAuth } from "../lib/auth";
 import { FeatureFlagsProvider } from "../lib/feature_flags";
 import ErrorBoundary from "../components/ErrorBoundary";
+import OfflineBanner from "../components/OfflineBanner";
 
 // Keep splash visible while we warm-up fonts
 SplashScreen.preventAutoHideAsync().catch(() => {});
@@ -83,6 +84,7 @@ export default function RootLayout() {
           <SafeAreaProvider>
             <StatusBar style="dark" />
             <AuthGate>
+              <OfflineBanner />
               <Stack
                 screenOptions={{
                   headerShown: false,

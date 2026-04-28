@@ -3018,6 +3018,122 @@ test_plan:
   test_all: false
   test_priority: "high_first"
 
+  - task: "Phase 5: Per-user Google Sheet via Service Account"
+    implemented: true
+    working: true
+    file: "/app/backend/sheet_writer.py + /app/backend/server.py + /app/frontend/app/(tabs)/settings.tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "main"
+        -comment: |
+            Phase-5 user-shared-sheet flow.
+
+            Backend:
+            • sheet_writer.get_service_account_email() — reads client_email
+              from the SA JSON.
+            • sheet_writer._open_user_sheet() / read_user_sheet() — open
+              ANY user-supplied sheet via the existing SA. Returns OK or
+              one of {SHEET_NOT_SHARED, SHEET_NOT_FOUND, SA_MISSING}.
+            • POST /api/sheets/preview — now SA-first; falls back to the
+              legacy public-CSV path only if SA can't access AND public
+              CSV works. Returns access_method: "service_account" |
+              "public_csv".
+            • GET  /api/sheets/orders — same SA-first behaviour for the
+              order import flow.
+            • GET  /api/sheets/service-account — exposes the SA email so
+              the UI can show the user exactly which address to share
+              their sheet with. Authenticated.
+
+            Frontend:
+            • settings.tsx → Business → Google Sheet section:
+              - Loads the SA email on mount (lazy / best-effort).
+              - "Recommended: share privately with our service account"
+                box with copy-to-clipboard button.
+              - Updated hint text: "Private (recommended)" vs "Public".
+              - On preview, shows a green "Private · Service Account"
+                badge OR a warning "Public link" badge.
+
+            Smoke-tested manually:
+            • GET /sheets/service-account → 200, returns
+              "courier-writer@courier-app-494119.iam.gserviceaccount.com".
+            • POST /sheets/preview against a non-shared dummy sheet →
+              403 with the SA email in the error so the user knows what
+              to share with.
+            • POST /sheets/preview against the master sheet (already
+              shared with SA) → 200 with access_method=service_account,
+              41 rows.
+            • Frontend bundle compiles clean (1011 modules, no errors).
+            • Settings → Business screenshot confirms layout intact.
+
+            Existing public-CSV users keep working with no migration
+            needed — the SA path just gracefully falls back if they
+            haven't (or won't) share with the SA.
+
+  - task: "Offline mode + sync queue (shipment create)"
+    implemented: true
+    working: true
+    file: "/app/frontend/lib/syncQueue.ts + /app/frontend/components/OfflineBanner.tsx + /app/frontend/app/_layout.tsx + /app/frontend/app/(tabs)/add.tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "main"
+        -comment: |
+            Offline-first sync queue for the shipment-CREATE path.
+
+            Library:
+            • Added @react-native-community/netinfo@11.4.1 (Expo SDK
+              expected version).
+
+            New files:
+            • /app/frontend/lib/syncQueue.ts — AsyncStorage-backed
+              queue. Public API: subscribe / getAll / count /
+              pendingCount / erroredCount / enqueueShipmentCreate /
+              remove / clearErrored / flush / init. Mutex-protected
+              flush(); on success removes the item, on retry-able
+              errors increments tries and stops draining (assume
+              we're offline again), on permanent (4xx) marks the
+              item permanent_error so it stops retrying. MAX_TRIES=10.
+            • /app/frontend/components/OfflineBanner.tsx — top-of-
+              screen banner. Self-mounts SyncQueue.init(), subscribes
+              to NetInfo + queue mutations. Three states:
+                1. Offline → red bar
+                2. Pending in queue → amber "Tap to retry" bar
+                3. Online + empty queue → null
+
+            Wiring:
+            • _layout.tsx renders <OfflineBanner /> inside <AuthGate>
+              so every authenticated screen gets the banner + auto-
+              flush listeners.
+            • (tabs)/add.tsx → on shipment create, network-style
+              error → SyncQueue.enqueueShipmentCreate(payload). User
+              sees a friendly "Saved offline — will sync when back
+              online" alert and the form resets just like a real save.
+
+            Replay triggers:
+            1. NetInfo connection state false → true.
+            2. AppState background → active (user reopened app).
+            3. User tap on "Tap to retry" chip.
+            4. App boot — initial 1.5s delayed flush.
+
+            Verified via Playwright (web preview):
+            • Online + empty queue → banner renders nothing (correct).
+            • Inject a queue item into AsyncStorage + reload → amber
+              "Tap to retry" banner appears at top, auto-flush runs,
+              the malformed test item gets a 400 from server and is
+              correctly marked errored. Banner text shows
+              "0 pending · 1 errored — Tap to retry".
+
+            Limitations / out of scope (call out for later):
+            • Update / Delete / Status changes are NOT queued — only
+              shipment CREATE. Update is rare offline; queueing would
+              need conflict resolution against newer server state.
+            • Smart Paste / OCR / Razorpay flows remain online-only.
+
 agent_communication:
     -agent: "main"
     -message: |
