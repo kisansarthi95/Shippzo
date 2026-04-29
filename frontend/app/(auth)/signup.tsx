@@ -1,7 +1,7 @@
 import React, { useState } from "react";
 import {
   View, Text, TextInput, TouchableOpacity, StyleSheet,
-  KeyboardAvoidingView, Platform, ScrollView, ActivityIndicator, Alert, Linking,
+  KeyboardAvoidingView, Platform, ScrollView, ActivityIndicator, Alert,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
@@ -184,14 +184,14 @@ export default function SignupScreen() {
                 I've read and agree to the{" "}
                 <Text
                   style={styles.policyLink}
-                  onPress={() => Linking.openURL("https://logistics-hub-740.preview.emergentagent.com/terms")}
+                  onPress={() => router.push("/refund-policy?tab=terms" as any)}
                 >
                   Terms of Service
                 </Text>
                 {"  &  "}
                 <Text
                   style={styles.policyLink}
-                  onPress={() => Linking.openURL("https://logistics-hub-740.preview.emergentagent.com/privacy")}
+                  onPress={() => router.push("/refund-policy?tab=privacy" as any)}
                 >
                   Privacy Policy
                 </Text>

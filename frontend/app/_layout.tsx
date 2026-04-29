@@ -171,10 +171,10 @@ function AuthGate({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (loading || oauthBusy) return;
     const inAuthGroup = segments[0] === "(auth)";
-    // 2026-04-30 — Public legal pages (/terms, /privacy) are always
-    // reachable without login. Signup checkbox links point to them,
-    // and users must be able to read them BEFORE creating an account.
-    const publicRoutes = new Set(["terms", "privacy"]);
+    // 2026-04-30 — /refund-policy is the canonical public legal screen
+    // (Terms / Refund / Privacy). Reachable without login so new users
+    // can review it from the signup checkbox before creating an account.
+    const publicRoutes = new Set(["refund-policy"]);
     const isPublic = publicRoutes.has(String(segments[0] || ""));
     if (!user && !inAuthGroup && !isPublic) {
       router.replace("/(auth)/login");

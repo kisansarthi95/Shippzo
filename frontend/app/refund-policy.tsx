@@ -18,12 +18,15 @@ import { Stack, useLocalSearchParams, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { colors } from "../lib/theme";
 
-type Tab = "refund" | "terms";
+type Tab = "refund" | "terms" | "privacy";
 
 export default function RefundPolicyScreen() {
   const router = useRouter();
   const params = useLocalSearchParams<{ tab?: string }>();
-  const initial: Tab = params.tab === "terms" ? "terms" : "refund";
+  const initial: Tab =
+    params.tab === "terms" ? "terms"
+    : params.tab === "privacy" ? "privacy"
+    : "refund";
   const [tab, setTab] = React.useState<Tab>(initial);
 
   const headerRight = useMemo(
@@ -62,10 +65,20 @@ export default function RefundPolicyScreen() {
             Terms of Service
           </Text>
         </TouchableOpacity>
+        <TouchableOpacity
+          onPress={() => setTab("privacy")}
+          style={[styles.tab, tab === "privacy" && styles.tabActive]}
+        >
+          <Text style={[styles.tabTxt, tab === "privacy" && styles.tabTxtActive]}>
+            Privacy
+          </Text>
+        </TouchableOpacity>
       </View>
 
       <ScrollView contentContainerStyle={styles.content}>
-        {tab === "refund" ? <RefundContent /> : <TermsContent />}
+        {tab === "refund"  ? <RefundContent /> :
+         tab === "terms"   ? <TermsContent />  :
+                             <PrivacyContent />}
       </ScrollView>
     </SafeAreaView>
   );
@@ -183,6 +196,39 @@ function TermsContent() {
         These terms are governed by the laws of India. Disputes are
         subject to the exclusive jurisdiction of courts in Ahmedabad,
         Gujarat.
+      </Text>
+    </>
+  );
+}
+
+function PrivacyContent() {
+  return (
+    <>
+      <Text style={styles.h1}>Privacy Policy</Text>
+      <Text style={styles.muted}>Last updated: June 2025</Text>
+
+      <Text style={styles.p}>
+        Your data stays in your account. We don't sell or share with third parties.
+      </Text>
+
+      <Text style={styles.h2}>What we store</Text>
+      <Text style={styles.p}>
+        Your account details, shipments, customer addresses, label settings, and payment
+        records. Each shop's data is logically isolated and accessible only to the
+        account owner.
+      </Text>
+
+      <Text style={styles.h2}>Integrations</Text>
+      <Text style={styles.p}>
+        Payments are processed by Razorpay. Optional Google Sheets sync runs only on
+        rows you link yourself. WhatsApp share opens the system app — we don't send
+        messages on your behalf.
+      </Text>
+
+      <Text style={styles.h2}>Your rights</Text>
+      <Text style={styles.p}>
+        You can export (CSV) or delete your data any time from the app. For full
+        account deletion email <Text style={styles.b}>support@your-brand.app</Text>.
       </Text>
     </>
   );
