@@ -48,6 +48,7 @@ export default function CheckoutScreen() {
     mode?: string;
     plan?: string;
     cycle?: string;
+    coupon?: string;
   }>();
   const router = useRouter();
   const { refresh } = useAuth();
@@ -59,6 +60,7 @@ export default function CheckoutScreen() {
   );
   const planKey = (params.plan || "") as PlanKey;
   const cycle = (params.cycle === "yearly" ? "yearly" : "monthly") as "monthly" | "yearly";
+  const couponCode = String(params.coupon || "").trim().toUpperCase();
 
   const [order, setOrder] = useState<AnyOrder | null>(null);
   const [loading, setLoading] = useState(true);
@@ -79,7 +81,7 @@ export default function CheckoutScreen() {
           if (!planKey || !["silver", "gold", "platinum"].includes(planKey)) {
             throw new Error("Invalid plan selected");
           }
-          const r = await Api.rzpCreatePlanOrder(planKey, cycle);
+          const r = await Api.rzpCreatePlanOrder(planKey, cycle, couponCode || undefined);
           if (cancelled) return;
           setOrder({ ...r, mode: "plan" });
         }
@@ -90,7 +92,7 @@ export default function CheckoutScreen() {
       }
     })();
     return () => { cancelled = true; };
-  }, [mode, amount, planKey, cycle]);
+  }, [mode, amount, planKey, cycle, couponCode]);
 
   const html = useMemo(() => {
     if (!order) return "";

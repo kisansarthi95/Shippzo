@@ -167,6 +167,25 @@ export default function AdminPricingScreen() {
           </Text>
         </View>
 
+        {/* 2026-04-30 — Coupons gateway. Coupons live in their own
+            collection, not in admin_config, so they get a dedicated
+            screen rather than an inline editor here. */}
+        <TouchableOpacity
+          testID="open-coupons-screen"
+          onPress={() => router.push("/admin/coupons")}
+          style={styles.couponsCard}
+        >
+          <View style={{ flex: 1 }}>
+            <Text style={styles.couponsTitle}>🎟  Coupons</Text>
+            <Text style={styles.couponsSub}>
+              Create / pause / delete discount codes that users can
+              apply at plan checkout. Festival offers, beta-tester codes,
+              re-activation codes — all managed here.
+            </Text>
+          </View>
+          <Ionicons name="chevron-forward" size={20} color={colors.primary} />
+        </TouchableOpacity>
+
         {/* ---- Plan price cards ---- */}
         {PAID_PLANS.map(({ key, name, tone }) => {
           const p = pricing[key];
@@ -438,6 +457,13 @@ const styles = StyleSheet.create({
     borderWidth: 1, borderColor: "#BAE6FD", marginBottom: 14,
   },
   infoTxt: { flex: 1, fontSize: 12, color: "#075985", lineHeight: 17 },
+  couponsCard: {
+    flexDirection: "row", alignItems: "center", gap: 12,
+    backgroundColor: "#FEF3C7", borderRadius: 12, padding: 14,
+    marginBottom: 16, borderWidth: 1, borderColor: "#FBBF24",
+  },
+  couponsTitle: { fontWeight: "800", fontSize: 15, color: "#92400E", marginBottom: 4 },
+  couponsSub:   { fontSize: 12, color: "#92400E", lineHeight: 17 },
   card: {
     backgroundColor: colors.surface, borderRadius: 14,
     borderWidth: 1, borderColor: "#E5E7EB", padding: 14, marginBottom: 14,

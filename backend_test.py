@@ -1,316 +1,295 @@
 """
-Phase-9 Unified Address Field — End-to-End Bug Fix Verification
-
-Tests:
-  1. Smart Paste with Gujarati address containing commas → address_line1
-     must preserve full string (not truncate at first comma).
-  2. GET /api/orders/pending/{id} confirms persistence.
-  3. Regression on shipments/stats, shipments, peek-master-id, feature-flags.
-  4. Smart Paste with English address with multiple commas — preserve all.
-  5. Cleanup: delete test pending orders.
-
-Backend URL: https://logistics-hub-740.preview.emergentagent.com/api
-Credentials: admin@test.com / Admin@12345
+Coupon System — Backend Verification
+Test plan per review request (2026-04-30).
 """
-
 import os
 import sys
 import json
-import time
-from typing import Dict, Any, List, Optional, Tuple
-
 import requests
+from typing import Any, Dict, Optional
+
 
 BASE = "https://logistics-hub-740.preview.emergentagent.com/api"
-EMAIL = "admin@test.com"
-PASSWORD = "Admin@12345"
-
-passed: List[str] = []
-failed: List[Tuple[str, str]] = []
-
-
-def assert_eq(name: str, got, expected) -> bool:
-    if got == expected:
-        passed.append(name)
-        print(f"  PASS  {name}")
-        return True
-    failed.append((name, f"expected {expected!r}, got {got!r}"))
-    print(f"  FAIL  {name} — expected {expected!r}, got {got!r}")
-    return False
+ADMIN_EMAIL = "admin@test.com"
+ADMIN_PASS = "Admin@12345"
+USER2_EMAIL = "user2@test.com"
+USER2_PASS = "User@12345"
 
 
-def assert_true(name: str, cond: bool, detail: str = "") -> bool:
-    if cond:
-        passed.append(name)
-        print(f"  PASS  {name}")
-        return True
-    failed.append((name, detail or "assertion false"))
-    print(f"  FAIL  {name} — {detail}")
-    return False
+def log(msg: str) -> None:
+    print(msg, flush=True)
 
 
-def login() -> str:
-    r = requests.post(
-        f"{BASE}/auth/login",
-        json={"email": EMAIL, "password": PASSWORD},
-        timeout=30,
-    )
-    r.raise_for_status()
-    body = r.json()
-    return body["token"]
+def login(email: str, password: str) -> str:
+    r = requests.post(f"{BASE}/auth/login", json={"email": email, "password": password}, timeout=30)
+    assert r.status_code == 200, f"login {email}: {r.status_code} {r.text}"
+    return r.json()["token"]
 
 
-def auth_headers(token: str) -> Dict[str, str]:
+def h(token: str) -> Dict[str, str]:
     return {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
 
 
-def main():
-    print(f"[BASE] {BASE}")
-    print("[1] Logging in...")
-    token = login()
-    print("    Logged in.")
-    H = auth_headers(token)
+RESULTS = []
 
-    created_pending_ids: List[str] = []
 
-    # =====================================================================
-    # TEST 1 — Smart Paste with Gujarati address (commas inside)
-    # =====================================================================
-    print("\n[T1] Smart Paste — Gujarati address with comma in line 3")
-    gj_paste = (
-        "આહિર વશરામભાઈ નામેરીભાઈ\n"
-        "9978049561\n"
-        "ગામ, રામવાવ તા. રાપર જી.કચ્છ\n"
-        "પિન 370165\n"
-        "COD ₹900\n"
-    )
-    expected_full_addr = "ગામ, રામવાવ તા. રાપર જી.કચ્છ"
+def record(name: str, ok: bool, detail: str = "") -> None:
+    RESULTS.append((name, ok, detail))
+    flag = "PASS" if ok else "FAIL"
+    log(f"[{flag}] {name}  {detail if detail else ''}")
 
-    r1 = requests.post(
-        f"{BASE}/smart-paste",
-        headers=H,
-        json={"text": gj_paste},
-        timeout=120,
-    )
-    print(f"    HTTP {r1.status_code}")
-    if r1.status_code != 200:
-        print(f"    Body: {r1.text[:600]}")
-    assert_eq("T1 status 200", r1.status_code, 200)
 
-    if r1.status_code == 200:
-        body1 = r1.json()
-        print(
-            "    Returned: address_line1=%r address_line2=%r city=%r state=%r pincode=%r"
-            % (
-                body1.get("address_line1"),
-                body1.get("address_line2"),
-                body1.get("city"),
-                body1.get("state"),
-                body1.get("pincode"),
-            )
-        )
-        pid_gj = body1.get("id")
-        if pid_gj:
-            created_pending_ids.append(pid_gj)
+def main() -> int:
+    # Login
+    try:
+        admin_tok = login(ADMIN_EMAIL, ADMIN_PASS)
+        user2_tok = login(USER2_EMAIL, USER2_PASS)
+    except Exception as e:
+        log(f"FATAL login error: {e}")
+        return 1
 
-        addr1 = body1.get("address_line1", "")
-        addr2 = body1.get("address_line2", "") or ""
+    payload_create = {
+        "code": "TEST25",
+        "discount_type": "percent",
+        "discount_value": 25,
+        "valid_from": "2026-04-01T00:00:00.000Z",
+        "valid_to": "2027-01-01T00:00:00.000Z",
+        "max_uses": 100,
+        "applies_to_plans": ["silver", "gold"],
+        "billing_cycles": ["yearly"],
+        "active": True,
+    }
 
-        # CRITICAL: full address must be preserved (with comma). This is the
-        # whole point of the Phase-9 fix — backend should not lose anything.
-        # Accept either: address_line1 == full string, OR
-        # the union of line1+line2 contains the full string verbatim.
-        union = (addr1 + " " + addr2).strip() if addr2 else addr1
-        assert_true(
-            "T1 address_line1 preserves comma+full string (verbatim or in line1+line2)",
-            expected_full_addr in addr1 or expected_full_addr in union,
-            f"expected to find {expected_full_addr!r} in {addr1!r} or {union!r}",
-        )
-        # Specifically, the comma must NOT have been lost:
-        assert_true(
-            "T1 returned address contains comma after 'ગામ'",
-            ("ગામ," in addr1) or ("ગામ," in union),
-            f"line1={addr1!r} union={union!r}",
-        )
+    # Preemptive cleanup if TEST25 exists
+    try:
+        r = requests.get(f"{BASE}/admin/coupons", headers=h(admin_tok), timeout=30)
+        if r.status_code == 200:
+            for c in r.json().get("coupons", []):
+                if c.get("code") == "TEST25":
+                    requests.delete(f"{BASE}/admin/coupons/{c['id']}", headers=h(admin_tok), timeout=30)
+                    log(f"Cleaned pre-existing TEST25 (id={c['id']})")
+    except Exception as e:
+        log(f"pre-cleanup warn: {e}")
 
-        # Pincode
-        assert_eq("T1 pincode == 370165", body1.get("pincode"), "370165")
+    coupon_id: Optional[str] = None
 
-        # City — should be 'રાપર' (per review). LLM/regex may variably surface
-        # this; treat as soft (warn only) but still report.
-        city = (body1.get("city") or "").strip()
-        if city == "રાપર":
-            passed.append("T1 city == રાપર (exact)")
-            print("  PASS  T1 city == રાપર (exact)")
-        else:
-            print(f"  WARN  T1 city extraction = {city!r} (expected 'રાપર' — soft check)")
+    # ── A. Admin CRUD ───────────────────────────────────────────────────
+    # 1. POST create
+    r = requests.post(f"{BASE}/admin/coupons", headers=h(admin_tok), json=payload_create, timeout=30)
+    ok = r.status_code == 200 and r.json().get("coupon", {}).get("status") == "active"
+    body = {}
+    try:
+        body = r.json()
+    except Exception:
+        pass
+    if ok:
+        coupon_id = body["coupon"]["id"]
+        record("A1 POST /admin/coupons → 200 + status=active", True, f"id={coupon_id}")
+    else:
+        record("A1 POST /admin/coupons → 200 + status=active", False,
+               f"status={r.status_code}, body={r.text[:300]}")
 
-        state = (body1.get("state") or "").strip()
-        if state == "કચ્છ" or state.endswith("કચ્છ"):
-            passed.append("T1 state == કચ્છ (exact or suffix)")
-            print("  PASS  T1 state == કચ્છ (exact or suffix)")
-        else:
-            print(f"  WARN  T1 state extraction = {state!r} (expected 'કચ્છ' — soft check)")
+    # 2. GET list contains TEST25 active
+    r = requests.get(f"{BASE}/admin/coupons", headers=h(admin_tok), timeout=30)
+    ok = r.status_code == 200
+    coupons = r.json().get("coupons", []) if ok else []
+    found = next((c for c in coupons if c.get("code") == "TEST25"), None)
+    record("A2 GET /admin/coupons contains TEST25 status=active",
+           bool(found and found.get("status") == "active"),
+           f"found={bool(found)} status={found.get('status') if found else None}")
 
-        # ===================================================================
-        # TEST 2 — GET pending by id
-        # ===================================================================
-        print(f"\n[T2] GET /orders/pending/{pid_gj} — confirm persistence")
-        r2 = requests.get(f"{BASE}/orders/pending/{pid_gj}", headers=H, timeout=30)
-        print(f"    HTTP {r2.status_code}")
-        assert_eq("T2 GET pending status 200", r2.status_code, 200)
-        if r2.status_code == 200:
-            body2 = r2.json()
-            addr1_p = body2.get("address_line1", "")
-            addr2_p = body2.get("address_line2", "") or ""
-            union_p = (addr1_p + " " + addr2_p).strip() if addr2_p else addr1_p
-            assert_true(
-                "T2 persisted address contains full comma'd string",
-                expected_full_addr in addr1_p or expected_full_addr in union_p,
-                f"line1={addr1_p!r} union={union_p!r}",
-            )
+    # 3. PUT active=false → paused, then active=true → active
+    if coupon_id:
+        r = requests.put(f"{BASE}/admin/coupons/{coupon_id}",
+                         headers=h(admin_tok), json={"active": False}, timeout=30)
+        paused_ok = r.status_code == 200 and r.json().get("coupon", {}).get("status") == "paused"
+        record("A3a PUT active=false → status=paused", paused_ok,
+               f"status={r.status_code}, returned={r.json().get('coupon', {}).get('status') if r.status_code == 200 else r.text[:200]}")
 
-    # =====================================================================
-    # TEST 3 — Regression GETs
-    # =====================================================================
-    print("\n[T3] Regression GETs")
-    r3a = requests.get(f"{BASE}/shipments/stats", headers=H, timeout=30)
-    print(f"    /shipments/stats → {r3a.status_code}")
-    assert_eq("T3a /shipments/stats == 200", r3a.status_code, 200)
-    if r3a.status_code == 200:
-        s = r3a.json()
-        assert_true(
-            "T3a shipments/stats has 'total' or known stat key",
-            isinstance(s, dict) and len(s) > 0,
-            f"body keys={list(s.keys()) if isinstance(s, dict) else type(s)}",
-        )
+        r = requests.put(f"{BASE}/admin/coupons/{coupon_id}",
+                         headers=h(admin_tok), json={"active": True}, timeout=30)
+        active_ok = r.status_code == 200 and r.json().get("coupon", {}).get("status") == "active"
+        record("A3b PUT active=true → status=active", active_ok,
+               f"returned={r.json().get('coupon', {}).get('status') if r.status_code == 200 else r.text[:200]}")
+    else:
+        record("A3a PUT active=false", False, "no coupon_id")
+        record("A3b PUT active=true", False, "no coupon_id")
 
-    r3b = requests.get(f"{BASE}/shipments", headers=H, timeout=30)
-    print(f"    /shipments → {r3b.status_code}")
-    assert_eq("T3b /shipments == 200", r3b.status_code, 200)
-    if r3b.status_code == 200:
-        body = r3b.json()
-        # body could be list or {items: [...]}
-        if isinstance(body, list):
-            count = len(body)
-        elif isinstance(body, dict) and "items" in body:
-            count = len(body["items"])
-        else:
-            count = -1
-        print(f"    shipments count={count}")
-        assert_true("T3b /shipments returned list-shape", count >= 0, f"body type={type(body)}")
+    # 4. POST same code → 409
+    r = requests.post(f"{BASE}/admin/coupons", headers=h(admin_tok), json=payload_create, timeout=30)
+    record("A4 POST duplicate code → 409 Conflict", r.status_code == 409,
+           f"got {r.status_code}, body={r.text[:200]}")
 
-    r3c = requests.get(f"{BASE}/orders/peek-master-id", headers=H, timeout=30)
-    print(f"    /orders/peek-master-id → {r3c.status_code}")
-    assert_eq("T3c /orders/peek-master-id == 200", r3c.status_code, 200)
-    if r3c.status_code == 200:
-        b = r3c.json()
-        assert_true(
-            "T3c peek-master-id has master_order_id key",
-            "master_order_id" in b,
-            f"keys={list(b.keys())}",
-        )
+    # 5. DELETE → 200, then absent
+    if coupon_id:
+        r = requests.delete(f"{BASE}/admin/coupons/{coupon_id}", headers=h(admin_tok), timeout=30)
+        del_ok = r.status_code == 200
+        record("A5a DELETE coupon → 200", del_ok, f"status={r.status_code}")
+        r2 = requests.get(f"{BASE}/admin/coupons", headers=h(admin_tok), timeout=30)
+        gone = not any(c.get("code") == "TEST25" for c in r2.json().get("coupons", []))
+        record("A5b GET no longer contains TEST25", gone, "")
+    else:
+        record("A5a DELETE", False, "no coupon_id")
+        record("A5b GET absent", False, "no coupon_id")
 
-    r3d = requests.get(f"{BASE}/me/feature-flags", headers=H, timeout=30)
-    print(f"    /me/feature-flags → {r3d.status_code}")
-    assert_eq("T3d /me/feature-flags == 200", r3d.status_code, 200)
-    if r3d.status_code == 200:
-        ff = r3d.json()
-        feats = ff.get("features") or []
-        # Some implementations might return dict of {key: bool}. Handle both.
-        if isinstance(feats, dict):
-            n = len(feats)
-        else:
-            n = len(feats)
-        print(f"    features count={n}")
-        assert_eq("T3d feature-flags features.length == 57", n, 57)
+    # ── B. User Validation ─────────────────────────────────────────────
+    # 6. Validate NOPE → ok=false, reason mentions missing/no such
+    r = requests.post(f"{BASE}/coupons/validate", headers=h(admin_tok),
+                      json={"code": "NOPE", "plan_key": "silver", "billing_cycle": "yearly"}, timeout=30)
+    body = r.json() if r.status_code == 200 else {}
+    reason = (body.get("reason") or "").lower()
+    record("B6 validate unknown code → ok=false + reason mentions 'no such'",
+           r.status_code == 200 and body.get("ok") is False and ("no such" in reason or "missing" in reason or "no coupon" in reason),
+           f"reason={body.get('reason')}")
 
-    # =====================================================================
-    # TEST 4 — Smart Paste with English-only address (3 commas)
-    # =====================================================================
-    print("\n[T4] Smart Paste — English address with 3 commas")
-    en_paste = (
-        "Test Customer\n"
-        "9876543210\n"
-        "123 Main Road, Near Park, Sector 12\n"
-        "Delhi 110001\n"
-        "COD ₹500\n"
-    )
-    expected_en_addr = "123 Main Road, Near Park, Sector 12"
+    # 7. Re-create TEST25
+    r = requests.post(f"{BASE}/admin/coupons", headers=h(admin_tok), json=payload_create, timeout=30)
+    if r.status_code == 200:
+        coupon_id = r.json()["coupon"]["id"]
+        log(f"Re-created TEST25 for B7 (id={coupon_id})")
+    else:
+        record("B7 setup (recreate TEST25)", False, f"status={r.status_code} body={r.text[:200]}")
+        coupon_id = None
 
-    r4 = requests.post(
-        f"{BASE}/smart-paste",
-        headers=H,
-        json={"text": en_paste},
-        timeout=120,
-    )
-    print(f"    HTTP {r4.status_code}")
-    if r4.status_code != 200:
-        print(f"    Body: {r4.text[:600]}")
-    assert_eq("T4 status 200", r4.status_code, 200)
-    if r4.status_code == 200:
-        body4 = r4.json()
-        print(
-            "    Returned: address_line1=%r address_line2=%r city=%r state=%r pincode=%r"
-            % (
-                body4.get("address_line1"),
-                body4.get("address_line2"),
-                body4.get("city"),
-                body4.get("state"),
-                body4.get("pincode"),
-            )
-        )
-        pid_en = body4.get("id")
-        if pid_en:
-            created_pending_ids.append(pid_en)
+    # 7. Validate test25 (lowercase) for silver/yearly
+    r = requests.post(f"{BASE}/coupons/validate", headers=h(admin_tok),
+                      json={"code": "test25", "plan_key": "silver", "billing_cycle": "yearly"}, timeout=30)
+    body = r.json() if r.status_code == 200 else {}
+    ok = body.get("ok") is True
+    base = int(body.get("base_inr") or 0)
+    disc = int(body.get("discount") or 0)
+    final = int(body.get("final_inr") or 0)
+    spct = int(body.get("savings_pct") or 0)
+    expected_disc = int(base * 0.25) if base > 0 else 0
+    check = (ok and base > 0 and disc == expected_disc and final == base - disc and spct == 25)
+    record("B7 validate case-insensitive silver/yearly → ok=true, 25% applied",
+           check,
+           f"base={base} disc={disc} expected={expected_disc} final={final} savings_pct={spct}")
+    SILVER_YEARLY_BASE = base
 
-        a1 = body4.get("address_line1", "") or ""
-        a2 = body4.get("address_line2", "") or ""
-        union_en = (a1 + " " + a2).strip() if a2 else a1
+    # 8. platinum → ok=false, reason mentions "Platinum"
+    r = requests.post(f"{BASE}/coupons/validate", headers=h(admin_tok),
+                      json={"code": "TEST25", "plan_key": "platinum", "billing_cycle": "yearly"}, timeout=30)
+    body = r.json() if r.status_code == 200 else {}
+    reason = (body.get("reason") or "")
+    record("B8 validate platinum → ok=false, reason mentions 'Platinum'",
+           body.get("ok") is False and "platinum" in reason.lower(),
+           f"ok={body.get('ok')} reason={reason}")
 
-        assert_true(
-            "T4 full English address (with 3 commas) preserved",
-            expected_en_addr in a1 or expected_en_addr in union_en,
-            f"line1={a1!r} union={union_en!r}",
-        )
-        # Comma count check — must keep all 2 internal commas
-        comma_count_a1 = a1.count(",")
-        comma_count_union = union_en.count(",")
-        assert_true(
-            "T4 address has at least 2 commas preserved (in line1 or union)",
-            comma_count_a1 >= 2 or comma_count_union >= 2,
-            f"line1 commas={comma_count_a1}, union commas={comma_count_union}",
-        )
-        assert_eq("T4 pincode == 110001", body4.get("pincode"), "110001")
+    # 9. monthly → ok=false, reason mentions "monthly"
+    r = requests.post(f"{BASE}/coupons/validate", headers=h(admin_tok),
+                      json={"code": "TEST25", "plan_key": "silver", "billing_cycle": "monthly"}, timeout=30)
+    body = r.json() if r.status_code == 200 else {}
+    reason = (body.get("reason") or "")
+    record("B9 validate silver/monthly → ok=false, reason mentions 'monthly'",
+           body.get("ok") is False and "monthly" in reason.lower(),
+           f"ok={body.get('ok')} reason={reason}")
 
-    # =====================================================================
-    # TEST 5 — Cleanup
-    # =====================================================================
-    print("\n[T5] Cleanup — delete test pending orders")
-    for pid in created_pending_ids:
-        try:
-            rd = requests.delete(f"{BASE}/orders/pending/{pid}", headers=H, timeout=30)
-            print(f"    DELETE /orders/pending/{pid} → {rd.status_code}")
-            assert_true(
-                f"T5 cleanup pending {pid[:8]}",
-                rd.status_code in (200, 204, 404),
-                f"got {rd.status_code}: {rd.text[:200]}",
-            )
-        except Exception as e:
-            print(f"    DELETE failed: {e}")
+    # ── C. Razorpay Apply ──────────────────────────────────────────────
+    # 10. create-order silver/yearly with TEST25
+    r = requests.post(f"{BASE}/plans/razorpay/create-order", headers=h(admin_tok),
+                      json={"plan_key": "silver", "billing_cycle": "yearly", "coupon_code": "TEST25"}, timeout=30)
+    body = r.json() if r.status_code == 200 else {}
+    coupon_meta = body.get("coupon", {}) or {}
+    amount_inr = int(body.get("amount_inr") or 0)
+    base_inr = int(body.get("base_inr") or 0)
+    c_applied = coupon_meta.get("applied") is True
+    c_disc = int(coupon_meta.get("discount") or 0)
+    check10 = (r.status_code == 200 and c_applied and c_disc > 0 and amount_inr < base_inr)
+    record("C10 create-order silver/yearly + TEST25 → applied + amount < base",
+           check10,
+           f"status={r.status_code} amount_inr={amount_inr} base_inr={base_inr} applied={c_applied} disc={c_disc}")
 
-    # =====================================================================
-    # SUMMARY
-    # =====================================================================
-    print("\n" + "=" * 70)
-    print(f"PASSED: {len(passed)}")
-    print(f"FAILED: {len(failed)}")
+    # 11. create-order WITHOUT coupon_code → amount == base, applied=false
+    r = requests.post(f"{BASE}/plans/razorpay/create-order", headers=h(admin_tok),
+                      json={"plan_key": "silver", "billing_cycle": "yearly"}, timeout=30)
+    body = r.json() if r.status_code == 200 else {}
+    coupon_meta = body.get("coupon", {}) or {}
+    amount_inr = int(body.get("amount_inr") or 0)
+    base_inr = int(body.get("base_inr") or 0)
+    check11 = (r.status_code == 200 and amount_inr == base_inr and coupon_meta.get("applied") is False)
+    record("C11 create-order silver/yearly (no coupon) → amount == base, applied=false",
+           check11,
+           f"status={r.status_code} amount_inr={amount_inr} base_inr={base_inr} applied={coupon_meta.get('applied')}")
+
+    # 12. with coupon_code=TEST25 but plan=platinum → 400 ("Not valid for Platinum plan")
+    r = requests.post(f"{BASE}/plans/razorpay/create-order", headers=h(admin_tok),
+                      json={"plan_key": "platinum", "billing_cycle": "yearly", "coupon_code": "TEST25"}, timeout=30)
+    detail = ""
+    try:
+        detail = r.json().get("detail", "")
+    except Exception:
+        detail = r.text[:200]
+    record("C12 platinum + TEST25 → 400 with 'Not valid for Platinum plan'",
+           r.status_code == 400 and "platinum" in detail.lower(),
+           f"status={r.status_code} detail={detail}")
+
+    # ── D. Non-admin lockout ───────────────────────────────────────────
+    r = requests.get(f"{BASE}/admin/coupons", headers=h(user2_tok), timeout=30)
+    record("D13a user2 GET /admin/coupons → 403", r.status_code == 403,
+           f"status={r.status_code}")
+    r = requests.post(f"{BASE}/admin/coupons", headers=h(user2_tok), json=payload_create, timeout=30)
+    record("D13b user2 POST /admin/coupons → 403", r.status_code == 403,
+           f"status={r.status_code}")
+    r = requests.post(f"{BASE}/coupons/validate", headers=h(user2_tok),
+                      json={"code": "TEST25", "plan_key": "silver", "billing_cycle": "yearly"}, timeout=30)
+    body = r.json() if r.status_code == 200 else {}
+    record("D13c user2 /coupons/validate → ok=true",
+           r.status_code == 200 and body.get("ok") is True,
+           f"status={r.status_code} ok={body.get('ok')}")
+
+    # ── E. Regression ──────────────────────────────────────────────────
+    # 14. plan-features registry.features length == 57
+    r = requests.get(f"{BASE}/admin/plan-features", headers=h(admin_tok), timeout=30)
+    body = r.json() if r.status_code == 200 else {}
+    feats = ((body.get("registry") or {}).get("features") or [])
+    record("E14 /admin/plan-features registry.features length == 57",
+           r.status_code == 200 and len(feats) == 57,
+           f"status={r.status_code} len={len(feats)}")
+
+    # 15. /settings and /shipments/stats 200
+    r = requests.get(f"{BASE}/settings", headers=h(admin_tok), timeout=30)
+    record("E15a GET /settings → 200", r.status_code == 200, f"status={r.status_code}")
+    r = requests.get(f"{BASE}/shipments/stats", headers=h(admin_tok), timeout=30)
+    record("E15b GET /shipments/stats → 200", r.status_code == 200, f"status={r.status_code}")
+
+    # 16. create-order gold/yearly without coupon → works with base price
+    r = requests.post(f"{BASE}/plans/razorpay/create-order", headers=h(admin_tok),
+                      json={"plan_key": "gold", "billing_cycle": "yearly"}, timeout=30)
+    body = r.json() if r.status_code == 200 else {}
+    amount_inr = int(body.get("amount_inr") or 0)
+    base_inr = int(body.get("base_inr") or 0)
+    cm = body.get("coupon", {}) or {}
+    record("E16 create-order gold/yearly (no coupon) → amount == base, applied=false",
+           r.status_code == 200 and amount_inr == base_inr and cm.get("applied") is False and amount_inr > 0,
+           f"status={r.status_code} amount={amount_inr} base={base_inr} applied={cm.get('applied')}")
+
+    # ── F. Cleanup ─────────────────────────────────────────────────────
+    # Find TEST25 id and delete
+    try:
+        r = requests.get(f"{BASE}/admin/coupons", headers=h(admin_tok), timeout=30)
+        cleaned = False
+        for c in r.json().get("coupons", []):
+            if c.get("code") == "TEST25":
+                rd = requests.delete(f"{BASE}/admin/coupons/{c['id']}", headers=h(admin_tok), timeout=30)
+                cleaned = rd.status_code == 200
+                break
+        record("F17 Final cleanup: DELETE TEST25", cleaned, "")
+    except Exception as e:
+        record("F17 cleanup", False, str(e))
+
+    # Summary
+    total = len(RESULTS)
+    passed = sum(1 for _, ok, _ in RESULTS if ok)
+    failed = total - passed
+    log("\n" + "=" * 60)
+    log(f"TOTAL: {total}  PASSED: {passed}  FAILED: {failed}")
     if failed:
-        print("\nFAILURES:")
-        for name, detail in failed:
-            print(f"  - {name}: {detail}")
-    print("=" * 70)
-    return 0 if not failed else 1
+        log("FAILED ITEMS:")
+        for name, ok, detail in RESULTS:
+            if not ok:
+                log(f"  - {name}: {detail}")
+    return 0 if failed == 0 else 1
 
 
 if __name__ == "__main__":

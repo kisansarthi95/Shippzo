@@ -19,6 +19,7 @@ import {
   StyleSheet,
   ScrollView,
   TouchableOpacity,
+  TextInput,
   ActivityIndicator,
   Alert,
   Platform,
@@ -77,6 +78,20 @@ export default function PlansScreen() {
   const [pricing, setPricing] = useState<Record<PlanKey, PlanPricingEntry> | null>(null);
   const [countdown, setCountdown] = useState<CountdownConfig | null>(null);
   const [secondsLeft, setSecondsLeft] = useState<number>(0);
+
+  // 2026-04-30 — Coupon UX state. Stored only in memory; the user re-types
+  // on every visit. We hold the *applied* coupon (validated server-side)
+  // in `appliedCoupon` and pass it through to /checkout via params.
+  const [couponInput, setCouponInput] = useState<string>("");
+  const [couponApplying, setCouponApplying] = useState<boolean>(false);
+  const [couponError, setCouponError] = useState<string>("");
+  const [appliedCoupon, setAppliedCoupon] = useState<{
+    code: string;
+    discount_type: "flat" | "percent";
+    discount_value: number;
+    // We re-validate per plan/cycle when displaying because eligibility
+    // can vary across plans (admin can scope to silver-only etc.).
+  } | null>(null);
   const tickerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const load = useCallback(async () => {
@@ -229,7 +244,12 @@ export default function PlansScreen() {
     const proceed = () => {
       router.push({
         pathname: "/checkout",
-        params: { mode: "plan", plan: key, cycle: billing },
+        params: {
+          mode: "plan",
+          plan: key,
+          cycle: billing,
+          coupon: appliedCoupon?.code || "",
+        },
       });
     };
     if (Platform.OS === "web") {
@@ -242,6 +262,54 @@ export default function PlansScreen() {
       { text: "Cancel", style: "cancel" },
       { text: "Pay now", onPress: proceed },
     ]);
+  };
+
+  // 2026-04-30 — Coupon apply / clear handlers. We validate against
+  // the user's CURRENT plan + cycle selection so the message reflects
+  // the same checkout the user is about to start.
+  const handleApplyCoupon = async () => {
+    const code = couponInput.trim().toUpperCase();
+    if (!code) {
+      setCouponError("Enter a code first");
+      return;
+    }
+    // Pick a "representative" plan for validation. We'll use Silver
+    // by default — at checkout the server re-validates per-plan
+    // anyway, so any per-plan exclusion will be caught there too.
+    // If user is currently looking at platinum, validate against that.
+    const probePlan: PlanKey = (current && current !== "free_trial" ? current : "silver") as PlanKey;
+    setCouponApplying(true);
+    setCouponError("");
+    try {
+      const r = await Api.validateCoupon(code, probePlan as any, billing);
+      if (!r.ok) {
+        setCouponError(r.reason || "Coupon not valid");
+        setAppliedCoupon(null);
+        return;
+      }
+      // Pull the actual coupon shape for display from a fresh GET would
+      // require admin perms. Instead, infer from the validate response:
+      // we know the discount + base + final. For percent vs flat we
+      // don't strictly need to know — we just pass the code through.
+      setAppliedCoupon({
+        code,
+        discount_type: "percent",
+        discount_value: r.savings_pct,
+      });
+      setCouponInput(code);
+    } catch (e: any) {
+      const msg = e?.response?.data?.detail || e?.message || "Could not apply coupon";
+      setCouponError(String(msg));
+      setAppliedCoupon(null);
+    } finally {
+      setCouponApplying(false);
+    }
+  };
+
+  const handleClearCoupon = () => {
+    setAppliedCoupon(null);
+    setCouponInput("");
+    setCouponError("");
   };
 
   const headerRight = useMemo(
@@ -394,6 +462,64 @@ export default function PlansScreen() {
               <Text style={styles.savePillTxt}>Save 25%</Text>
             </View>
           </TouchableOpacity>
+        </View>
+
+        {/* 2026-04-30 — "Have a coupon?" entry. Persists in memory for
+            the current visit and gets passed through to /checkout via
+            params.coupon. The actual discount is applied server-side
+            on /plans/razorpay/create-order. */}
+        <View style={styles.couponBox}>
+          {appliedCoupon ? (
+            <View style={styles.couponAppliedRow}>
+              <Ionicons name="checkmark-circle" size={18} color="#15803D" />
+              <View style={{ flex: 1 }}>
+                <Text style={styles.couponAppliedTitle}>
+                  Coupon applied: {appliedCoupon.code}
+                </Text>
+                <Text style={styles.couponAppliedSub}>
+                  {appliedCoupon.discount_value > 0
+                    ? `${appliedCoupon.discount_value}% off at checkout`
+                    : "Discount will apply at checkout"}
+                </Text>
+              </View>
+              <TouchableOpacity onPress={handleClearCoupon} testID="clear-coupon-btn">
+                <Ionicons name="close-circle" size={20} color="#94A3B8" />
+              </TouchableOpacity>
+            </View>
+          ) : (
+            <View style={styles.couponEntryRow}>
+              <Ionicons name="pricetag-outline" size={16} color="#475569" />
+              <TextInput
+                testID="coupon-input"
+                value={couponInput}
+                onChangeText={(t) => { setCouponInput(t.toUpperCase()); setCouponError(""); }}
+                placeholder="Have a coupon? Enter code"
+                placeholderTextColor="#94A3B8"
+                autoCapitalize="characters"
+                style={styles.couponInput}
+                editable={!couponApplying}
+                onSubmitEditing={handleApplyCoupon}
+              />
+              <TouchableOpacity
+                testID="apply-coupon-btn"
+                onPress={handleApplyCoupon}
+                disabled={couponApplying || !couponInput.trim()}
+                style={[
+                  styles.couponApplyBtn,
+                  (!couponInput.trim() || couponApplying) && { opacity: 0.5 },
+                ]}
+              >
+                {couponApplying ? (
+                  <ActivityIndicator size="small" color="#fff" />
+                ) : (
+                  <Text style={styles.couponApplyTxt}>Apply</Text>
+                )}
+              </TouchableOpacity>
+            </View>
+          )}
+          {!!couponError && !appliedCoupon ? (
+            <Text style={styles.couponErrTxt}>{couponError}</Text>
+          ) : null}
         </View>
 
         {loading ? (
@@ -797,6 +923,28 @@ const styles = StyleSheet.create({
     borderRadius: 6,
   },
   savePillTxt: { color: "#fff", fontSize: 10, fontWeight: "900", letterSpacing: 0.4 },
+
+  // 2026-04-30 — Coupon entry styles
+  couponBox: {
+    marginHorizontal: 16, marginBottom: 8, padding: 12, borderRadius: 12,
+    backgroundColor: "#FFFBEB", borderWidth: 1, borderColor: "#FCD34D",
+  },
+  couponEntryRow: { flexDirection: "row", alignItems: "center", gap: 8 },
+  couponInput: {
+    flex: 1, backgroundColor: "#fff", borderRadius: 8,
+    paddingHorizontal: 10, paddingVertical: Platform.OS === "ios" ? 10 : 6,
+    fontSize: 13, fontWeight: "700", color: "#1F2937", letterSpacing: 1,
+    borderWidth: 1, borderColor: "#E5E7EB",
+  },
+  couponApplyBtn: {
+    backgroundColor: "#7C3AED", paddingHorizontal: 14, paddingVertical: 9,
+    borderRadius: 8, minWidth: 64, alignItems: "center",
+  },
+  couponApplyTxt: { color: "#fff", fontWeight: "800", fontSize: 13 },
+  couponErrTxt: { color: "#B91C1C", fontSize: 11, marginTop: 6, fontWeight: "600" },
+  couponAppliedRow: { flexDirection: "row", alignItems: "center", gap: 10 },
+  couponAppliedTitle: { fontSize: 14, fontWeight: "800", color: "#15803D" },
+  couponAppliedSub:   { fontSize: 11, color: "#166534", marginTop: 1 },
   card: {
     borderRadius: 18,
     padding: 18,

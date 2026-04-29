@@ -63,6 +63,12 @@ import uuid
 from datetime import datetime, timezone, timedelta
 from dateutil.relativedelta import relativedelta
 
+# Coupon system (2026-04-30)
+from coupons import (
+    CouponCreate, CouponUpdate,
+    coupon_to_api, validate_coupon, new_coupon_doc, ensure_code_valid,
+)
+
 # Google Sheets writer (Service Account)
 try:
     from sheet_writer import append_order_row as sheet_append_order_row
@@ -4257,6 +4263,7 @@ class PlanRazorpayCreateOrderRequest(BaseModel):
     """Body for /api/plans/razorpay/create-order."""
     plan_key: str           # silver | gold | platinum
     billing_cycle: str      # monthly | yearly
+    coupon_code: Optional[str] = None  # 2026-04-30: optional discount code
 
 
 def _plan_billing_meta(
@@ -4312,7 +4319,29 @@ async def rzp_create_plan_order(
 
     cfg = await _get_admin_config()
     meta = _plan_billing_meta(cfg["plan_pricing"], payload.plan_key, payload.billing_cycle)
-    inr = int(meta["price_inr"])
+    base_inr = int(meta["price_inr"])
+
+    # ── 2026-04-30 — Apply coupon discount before creating Razorpay order ──
+    coupon_doc = None
+    coupon_meta = {"applied": False}
+    if payload.coupon_code:
+        code = ensure_code_valid(payload.coupon_code)
+        coupon_doc = await db.coupons.find_one({"code": code})
+        ok, reason, discount, final_inr = validate_coupon(
+            coupon_doc, payload.plan_key, payload.billing_cycle, base_inr
+        )
+        if not ok:
+            raise HTTPException(status_code=400, detail=f"Coupon: {reason}")
+        coupon_meta = {
+            "applied":   True,
+            "code":      code,
+            "discount":  discount,
+            "base_inr":  base_inr,
+            "final_inr": final_inr,
+        }
+        inr = final_inr
+    else:
+        inr = base_inr
 
     # Razorpay receipt: 40-char limit. Encode plan + cycle for ops debugging.
     cycle_short = "y" if payload.billing_cycle == "yearly" else "m"
@@ -4352,6 +4381,10 @@ async def rzp_create_plan_order(
         "bonus_months": meta["bonus_months"],
         "status": "created",
         "created_at": datetime.utcnow().isoformat() + "+00:00",
+        # Coupon trail (consumed on verify if payment succeeds)
+        "coupon_code":     coupon_meta.get("code"),
+        "coupon_discount": coupon_meta.get("discount") or 0,
+        "coupon_base_inr": base_inr,
     })
 
     plan_meta = PLAN_TABLE.get(payload.plan_key)
@@ -4370,6 +4403,119 @@ async def rzp_create_plan_order(
         "bonus_months": meta["bonus_months"],
         "user_email":   current_user.get("email", ""),
         "user_name":    current_user.get("name", current_user.get("email", "User")),
+        # 2026-04-30 — coupon echo so the client UI can show the savings
+        "coupon": coupon_meta,
+        "base_inr": base_inr,
+    }
+
+
+# ════════════════════════════════════════════════════════════════════════
+# Coupon system (2026-04-30) — admin CRUD + user validation
+# ════════════════════════════════════════════════════════════════════════
+
+
+async def _require_admin(current_user: Dict[str, Any]) -> None:
+    if not current_user or not current_user.get("is_admin"):
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+
+@api_router.get("/admin/coupons")
+async def admin_list_coupons(
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    await _require_admin(current_user)
+    cur = db.coupons.find({}, {"_id": 0}).sort("created_at", -1)
+    out: List[Dict[str, Any]] = []
+    async for c in cur:
+        out.append(coupon_to_api(c))
+    return {"coupons": out}
+
+
+@api_router.post("/admin/coupons")
+async def admin_create_coupon(
+    payload: CouponCreate,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    await _require_admin(current_user)
+    existing = await db.coupons.find_one({"code": payload.code})
+    if existing:
+        raise HTTPException(status_code=409, detail=f"Coupon '{payload.code}' already exists")
+    doc = new_coupon_doc(payload)
+    await db.coupons.insert_one(doc)
+    return {"ok": True, "coupon": coupon_to_api(doc)}
+
+
+@api_router.put("/admin/coupons/{coupon_id}")
+async def admin_update_coupon(
+    coupon_id: str,
+    payload: CouponUpdate,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    await _require_admin(current_user)
+    update_fields: Dict[str, Any] = {}
+    raw = payload.model_dump(exclude_unset=True)
+    for k, v in raw.items():
+        update_fields[k] = v
+    if not update_fields:
+        raise HTTPException(status_code=400, detail="No fields to update")
+    update_fields["updated_at"] = datetime.utcnow().replace(tzinfo=timezone.utc).isoformat()
+    res = await db.coupons.find_one_and_update(
+        {"id": coupon_id},
+        {"$set": update_fields},
+        return_document=True,
+    )
+    if not res:
+        raise HTTPException(status_code=404, detail="Coupon not found")
+    return {"ok": True, "coupon": coupon_to_api(res)}
+
+
+@api_router.delete("/admin/coupons/{coupon_id}")
+async def admin_delete_coupon(
+    coupon_id: str,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    await _require_admin(current_user)
+    res = await db.coupons.delete_one({"id": coupon_id})
+    if res.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Coupon not found")
+    return {"ok": True, "deleted": coupon_id}
+
+
+class CouponValidateRequest(BaseModel):
+    code: str
+    plan_key: str           # silver | gold | platinum
+    billing_cycle: str      # monthly | yearly
+
+
+@api_router.post("/coupons/validate")
+async def coupon_validate(
+    payload: CouponValidateRequest,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    """User-side: check whether a coupon applies to a plan/cycle and
+    return the discounted total. No DB writes happen here — the actual
+    consumption (used_count++) only fires on successful payment-verify.
+    """
+    code = ensure_code_valid(payload.code)
+    if payload.plan_key not in ("silver", "gold", "platinum"):
+        raise HTTPException(status_code=400, detail="Invalid plan_key")
+    if payload.billing_cycle not in ("monthly", "yearly"):
+        raise HTTPException(status_code=400, detail="Invalid billing_cycle")
+    cfg = await _get_admin_config()
+    meta = _plan_billing_meta(cfg["plan_pricing"], payload.plan_key, payload.billing_cycle)
+    base_inr = int(meta["price_inr"])
+    coupon = await db.coupons.find_one({"code": code})
+    ok, reason, discount, final_inr = validate_coupon(
+        coupon, payload.plan_key, payload.billing_cycle, base_inr
+    )
+    return {
+        "ok":         ok,
+        "reason":     reason,
+        "code":       code,
+        "base_inr":   base_inr,
+        "discount":   discount,
+        "final_inr":  final_inr,
+        "savings_pct": int((discount / base_inr) * 100) if (ok and base_inr > 0) else 0,
     }
 
 
@@ -4474,6 +4620,20 @@ async def rzp_verify_plan_subscription(
         "last_paid_at": datetime.utcnow().isoformat() + "+00:00",
     }
     await db.users.update_one({"id": current_user["id"]}, {"$set": set_payload})
+
+    # 2026-04-30 — Coupon consumption: bump used_count atomically on
+    # successful payment. We never block the user response if this
+    # write fails (the payment is already complete).
+    coupon_code = (order.get("coupon_code") or "").strip()
+    if coupon_code:
+        try:
+            await db.coupons.update_one(
+                {"code": coupon_code},
+                {"$inc": {"used_count": 1},
+                 "$set": {"updated_at": datetime.utcnow().replace(tzinfo=timezone.utc).isoformat()}},
+            )
+        except Exception:
+            logger.exception("Coupon used_count bump failed for code=%s", coupon_code)
 
     await db.razorpay_orders.update_one(
         {"_id": order["_id"]},

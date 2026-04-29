@@ -224,6 +224,36 @@ export type SheetOrder = {
 
 export type PlanKey = "free_trial" | "silver" | "gold" | "platinum";
 
+// 2026-04-30 — Coupon system types
+export type Coupon = {
+  id: string;
+  code: string;                     // UPPERCASE
+  discount_type: "flat" | "percent";
+  discount_value: number;
+  valid_from: string;               // ISO datetime
+  valid_to:   string;               // ISO datetime
+  max_uses:   number | null;        // null = unlimited
+  used_count: number;
+  applies_to_plans: ("silver" | "gold" | "platinum")[];  // empty = all paid
+  billing_cycles: ("monthly" | "yearly")[];               // empty = both
+  active: boolean;
+  status: "active" | "paused" | "scheduled" | "expired" | "exhausted";
+  created_at: string;
+  updated_at: string;
+};
+
+export type CouponCreatePayload = {
+  code: string;
+  discount_type: "flat" | "percent";
+  discount_value: number;
+  valid_from: string;
+  valid_to: string;
+  max_uses?: number | null;
+  applies_to_plans?: ("silver" | "gold" | "platinum")[];
+  billing_cycles?: ("monthly" | "yearly")[];
+  active?: boolean;
+};
+
 export type PlanPricingEntry = {
   monthly_price: number;
   monthly_anchor: number;
@@ -429,7 +459,11 @@ export const Api = {
       razorpay_signature,
     }).then((r) => r.data),
   // Phase-4d Razorpay Plan Subscriptions
-  rzpCreatePlanOrder: (plan_key: PlanKey, billing_cycle: "monthly" | "yearly") =>
+  rzpCreatePlanOrder: (
+    plan_key: PlanKey,
+    billing_cycle: "monthly" | "yearly",
+    coupon_code?: string,
+  ) =>
     api.post<{
       key_id: string;
       order_id: string;
@@ -445,7 +479,16 @@ export const Api = {
       bonus_months: number;
       user_email: string;
       user_name: string;
-    }>("/plans/razorpay/create-order", { plan_key, billing_cycle }).then((r) => r.data),
+      base_inr?: number;
+      coupon?: {
+        applied: boolean;
+        code?: string;
+        discount?: number;
+        base_inr?: number;
+        final_inr?: number;
+      };
+    }>("/plans/razorpay/create-order", { plan_key, billing_cycle, coupon_code: coupon_code || undefined })
+      .then((r) => r.data),
   rzpVerifyPlan: (
     razorpay_order_id: string,
     razorpay_payment_id: string,
@@ -465,6 +508,33 @@ export const Api = {
       razorpay_payment_id,
       razorpay_signature,
     }).then((r) => r.data),
+
+  // ── Coupons (2026-04-30) ──────────────────────────────────────
+  // Admin CRUD endpoints (gated server-side by is_admin):
+  adminListCoupons: () =>
+    api.get<{ coupons: Coupon[] }>("/admin/coupons").then((r) => r.data.coupons),
+  adminCreateCoupon: (payload: CouponCreatePayload) =>
+    api.post<{ ok: true; coupon: Coupon }>("/admin/coupons", payload).then((r) => r.data.coupon),
+  adminUpdateCoupon: (id: string, payload: Partial<CouponCreatePayload>) =>
+    api.put<{ ok: true; coupon: Coupon }>(`/admin/coupons/${id}`, payload).then((r) => r.data.coupon),
+  adminDeleteCoupon: (id: string) =>
+    api.delete<{ ok: true; deleted: string }>(`/admin/coupons/${id}`).then((r) => r.data),
+  // User-facing validate. Never writes — only the payment-verify path
+  // bumps `used_count` after a successful Razorpay charge.
+  validateCoupon: (
+    code: string,
+    plan_key: PlanKey,
+    billing_cycle: "monthly" | "yearly",
+  ) =>
+    api.post<{
+      ok: boolean;
+      reason: string;
+      code: string;
+      base_inr: number;
+      discount: number;
+      final_inr: number;
+      savings_pct: number;
+    }>("/coupons/validate", { code, plan_key, billing_cycle }).then((r) => r.data),
   // Phase-4d notification prefs + subscription mgmt
   getNotificationPrefs: () =>
     api.get<NotificationPrefs>("/me/notification-prefs").then((r) => r.data),
