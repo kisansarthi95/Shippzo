@@ -1225,6 +1225,30 @@ backend:
             soft-delete tombstone all work end-to-end with the user-sheet
             auto-mirror DISABLED. Architecture lock-in is live.
 
+frontend:
+  - task: "Settings: 'Auto-Sync to Your Sheet · Coming Soon' Premium badge"
+    implemented: true
+    working: true
+    file: "/app/frontend/app/(tabs)/settings.tsx"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "main"
+        -comment: |
+            Visually verified via screenshot at 390x844 viewport
+            (admin@test.com login, /settings?section=business).
+            Amber callout renders right after the connected-sheet panel:
+              • Time icon (left)
+              • Title: "Auto-Sync to Your Sheet  ·  Coming Soon"
+              • Gujarati subtitle explaining Premium gating + pointing
+                to "Restore My Orders".
+              • PREMIUM tag (right) on dark background.
+              • "Restore My Orders" button stays directly below it,
+                still functional.
+            No layout/clipping issues; no console errors.
+
 agent_communication:
     -agent: "main"
     -message: |
