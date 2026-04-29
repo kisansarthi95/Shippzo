@@ -157,15 +157,13 @@ export default function ScannerModal() {
     // Reset the error hint on a good scan.
     setErrorHint(null);
 
-    // First check if this tracking already exists
-    try {
-      const existing = await Api.getShipmentByTracking(v);
-      if (existing?.id) {
-        router.replace(`/label/${existing.id}`);
-        return;
-      }
-    } catch {
-      // 404 means new — proceed
+    // First check if this tracking already exists. The Api wrapper now
+    // returns null on 404 (no match), so we don't need a try/catch — and
+    // RN's "Uncaught (in promise) AxiosError 404" dev warning never fires.
+    const existing = await Api.getShipmentByTracking(v);
+    if (existing?.id) {
+      router.replace(`/label/${existing.id}`);
+      return;
     }
     if (params.returnTo === "add") {
       // New tracking ID + user wants to create a shipment.

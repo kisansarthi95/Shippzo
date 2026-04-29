@@ -621,8 +621,21 @@ export const Api = {
         revenue_total: number;
       }>("/shipments/stats")
       .then((r) => r.data),
+  /**
+   * Lookup an existing shipment by tracking_id. Returns null when no
+   * match (HTTP 404) instead of throwing, so callers don't have to
+   * try/catch — and React Native's "Uncaught (in promise) AxiosError
+   * 404" dev warning never fires for the expected "tracking ID is new"
+   * code path.
+   */
   getShipmentByTracking: (tracking_id: string) =>
-    api.get<Shipment>(`/shipments/by-tracking/${encodeURIComponent(tracking_id)}`).then((r) => r.data),
+    api
+      .get<Shipment>(`/shipments/by-tracking/${encodeURIComponent(tracking_id)}`)
+      .then((r) => r.data)
+      .catch((err) => {
+        if (err?.response?.status === 404) return null as any;
+        throw err;
+      }),
   bulkFetch: (ids: string[]) =>
     api.post<Shipment[]>(`/shipments/bulk-fetch`, { ids }).then((r) => r.data),
   getShipment: (id: string) =>
