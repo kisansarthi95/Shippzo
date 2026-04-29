@@ -1438,6 +1438,9 @@ export default function SettingsScreen() {
           {/* Google Sheet */}
           {flagSheetImport ? (
           <Section title="Google Sheet (Orders source)" icon="logo-google">
+            <Text style={[styles.hint, { marginTop: -2, marginBottom: 8, color: "#1E3A8A", fontWeight: "700" }]}>
+              App delete થાય તો પણ orders safe રહેશે
+            </Text>
             {/* Phase-5: Service Account share panel — keeps user's
                 Sheet PRIVATE. Shown only on the connect view (not when
                 already connected). */}
@@ -1560,42 +1563,42 @@ export default function SettingsScreen() {
                   ]}
                   onPress={async () => {
                     Alert.alert(
-                      "Sync from Master Sheet",
-                      "How would you like to sync?\n\n" +
-                      "• Refresh (overwrite): clears your sheet's data rows and re-pulls all your orders from Master. Reflects admin edits & deletions.\n\n" +
-                      "• Append only: adds only new rows (skips any row already present, matched by Master Order ID or composite key).",
+                      "Restore My Orders",
+                      "કેવી રીતે restore કરવા છે?\n\n" +
+                      "• Full Restore: બધા orders નવેસરથી load થશે — existing data replace થશે.\n\n" +
+                      "• Add Missing Orders: ફક્ત missing orders add થશે — existing data safe રહેશે.",
                       [
                         { text: "Cancel", style: "cancel" },
                         {
-                          text: "Append only",
+                          text: "Add Missing Orders",
                           onPress: async () => {
                             try {
                               const r = await Api.syncFromMaster(false);
                               Alert.alert(
-                                "✅ Sync complete",
-                                `Mode: append\nNew rows added: ${r.rows_synced}\nMaster total rows: ${r.master_total_rows}\nTab: ${r.tab}`,
+                                "Restore My Orders",
+                                `${r.rows_synced} orders successfully restored ✓`,
                               );
                             } catch (e: any) {
                               Alert.alert(
-                                "Sync failed",
+                                "Restore failed",
                                 e?.response?.data?.detail || e?.message || "Try again.",
                               );
                             }
                           },
                         },
                         {
-                          text: "Refresh",
+                          text: "Full Restore",
                           style: "destructive",
                           onPress: async () => {
                             try {
                               const r = await Api.syncFromMaster(true);
                               Alert.alert(
-                                "✅ Sync complete",
-                                `Mode: overwrite\nRows synced: ${r.rows_synced}\nMaster total rows: ${r.master_total_rows}\nTab: ${r.tab}`,
+                                "Restore My Orders",
+                                `${r.rows_synced} orders successfully restored ✓`,
                               );
                             } catch (e: any) {
                               Alert.alert(
-                                "Sync failed",
+                                "Restore failed",
                                 e?.response?.data?.detail || e?.message || "Try again.",
                               );
                             }
@@ -1607,7 +1610,7 @@ export default function SettingsScreen() {
                 >
                   <Ionicons name="cloud-download-outline" size={16} color="#7C3AED" />
                   <Text style={[styles.outlineBtnText, { color: "#7C3AED", fontWeight: "800" }]}>
-                    Sync from Master Sheet
+                    Restore My Orders
                   </Text>
                 </TouchableOpacity>
               </View>
