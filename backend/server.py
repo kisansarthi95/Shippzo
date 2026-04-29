@@ -1079,7 +1079,7 @@ async def get_courier_limits(current_user: Dict[str, Any] = Depends(get_current_
         "current_count": int(current_count),
         "can_add": bool(can_add),
         "is_unlimited": bool(is_unlimited),
-        "suggested_upgrade": _next_tier_suggestion(plan_key),
+        "suggested_upgrade": None if is_admin else _next_tier_suggestion(plan_key),
     }
 
 
