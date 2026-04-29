@@ -4412,18 +4412,16 @@ async def rzp_create_plan_order(
 # ════════════════════════════════════════════════════════════════════════
 # Coupon system (2026-04-30) — admin CRUD + user validation
 # ════════════════════════════════════════════════════════════════════════
-
-
-async def _require_admin(current_user: Dict[str, Any]) -> None:
-    if not current_user or not current_user.get("is_admin"):
-        raise HTTPException(status_code=403, detail="Admin access required")
+# Note: `_require_admin(current_user)` is defined earlier (sync). Do NOT
+# redefine it here — Python would shadow the first definition and break
+# every other admin endpoint that calls it without `await`.
 
 
 @api_router.get("/admin/coupons")
 async def admin_list_coupons(
     current_user: Dict[str, Any] = Depends(get_current_user),
 ):
-    await _require_admin(current_user)
+    _require_admin(current_user)
     cur = db.coupons.find({}, {"_id": 0}).sort("created_at", -1)
     out: List[Dict[str, Any]] = []
     async for c in cur:
@@ -4436,7 +4434,7 @@ async def admin_create_coupon(
     payload: CouponCreate,
     current_user: Dict[str, Any] = Depends(get_current_user),
 ):
-    await _require_admin(current_user)
+    _require_admin(current_user)
     existing = await db.coupons.find_one({"code": payload.code})
     if existing:
         raise HTTPException(status_code=409, detail=f"Coupon '{payload.code}' already exists")
@@ -4451,7 +4449,7 @@ async def admin_update_coupon(
     payload: CouponUpdate,
     current_user: Dict[str, Any] = Depends(get_current_user),
 ):
-    await _require_admin(current_user)
+    _require_admin(current_user)
     update_fields: Dict[str, Any] = {}
     raw = payload.model_dump(exclude_unset=True)
     for k, v in raw.items():
@@ -4474,7 +4472,7 @@ async def admin_delete_coupon(
     coupon_id: str,
     current_user: Dict[str, Any] = Depends(get_current_user),
 ):
-    await _require_admin(current_user)
+    _require_admin(current_user)
     res = await db.coupons.delete_one({"id": coupon_id})
     if res.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Coupon not found")
@@ -4508,6 +4506,16 @@ async def coupon_validate(
     ok, reason, discount, final_inr = validate_coupon(
         coupon, payload.plan_key, payload.billing_cycle, base_inr
     )
+    # For percent coupons, surface the admin's *configured* percentage
+    # directly (e.g. 25) rather than back-computing from the floored
+    # discount (which would be 24 for base=1791, discount=447). For
+    # flat coupons we still compute from the actual money savings.
+    savings_pct = 0
+    if ok and base_inr > 0:
+        if coupon and coupon.get("discount_type") == "percent":
+            savings_pct = int(coupon.get("discount_value") or 0)
+        else:
+            savings_pct = int((discount / base_inr) * 100)
     return {
         "ok":         ok,
         "reason":     reason,
@@ -4515,7 +4523,7 @@ async def coupon_validate(
         "base_inr":   base_inr,
         "discount":   discount,
         "final_inr":  final_inr,
-        "savings_pct": int((discount / base_inr) * 100) if (ok and base_inr > 0) else 0,
+        "savings_pct": savings_pct,
     }
 
 
