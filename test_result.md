@@ -4528,3 +4528,83 @@ agent_communication:
 
         Re-test after the composite-key fix is shipped.
 
+
+---
+
+## Backend Test Run: Phase-C Sync-From-Master — RETEST after composite-key dedup fix (2026-04-29)
+
+backend:
+  - task: "POST /api/sheets/sync-from-master endpoint (Phase-C) — append-mode dedup"
+    implemented: true
+    working: true
+    file: "/app/backend/sheet_writer.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "testing"
+        -comment: |
+            RETEST PASS (4/4 calls behave exactly as required by the
+            review acceptance criteria). Both fixes are confirmed live:
+              (a) canonical-position fallback for `master_order_id`
+                  column when the header cell is blank, AND
+              (b) composite-key dedup
+                  (timestamp | user_id | order_id | name | phone) for
+                  legacy rows where master_order_id is empty.
+
+            Test executed at http://localhost:8001/api as admin
+            (admin@test.com / Admin@12345). Reused the existing
+            user-sheet config from the last test run
+            (sheet_id=1troW3K7P_uaE_7moo6_CioPczUosSiZyoPmCBBcekxA,
+            gid=1923470660 — same Master spreadsheet used as the
+            "user sheet" target per review request). No PUT /settings
+            change needed — config still present.
+
+            Numbers (rows_synced) from this run:
+              [1/4] BASELINE  (overwrite=true)  → 324
+              [2/4] APPEND #1 (overwrite=false) →   0   PASS
+              [3/4] APPEND #2 (overwrite=false) →   0   PASS  (idempotent)
+              [4/4] OVERWRITE (overwrite=true)  → 324   PASS  (matches BASELINE)
+
+            All 4 response bodies returned ok=true, correct mode
+            ("overwrite" / "append"), tab="All Master Data",
+            master_total_rows=324, sheet_id matches.
+
+            • The dedup path now correctly skips both the rows that
+              have master_order_id (matched on `existing_ids`) AND
+              the legacy rows with empty master_order_id (matched on
+              composite key `_composite_key()` built from canonical
+              indices ts/user_id/order_id/name/phone — exactly as
+              required by the previous testing-agent recommendation).
+            • The overwrite call after two appends produces exactly
+              the same row count as the original baseline → no row
+              bloat.
+
+            NOTE: BASELINE is now 324 (not the pristine 84) because
+            of the previous broken-dedup test runs that left
+            duplicates in the spreadsheet. From this point forward,
+            the dedup logic is correctly self-stabilising — repeated
+            append calls produce 0 new rows. The 324-row state is
+            consistent across overwrite and append calls.
+
+agent_communication:
+    -agent: "testing"
+    -message: |
+        Phase-C sync-from-master append-mode dedup — RETEST PASS.
+
+        Both bug fixes verified live:
+          1. Canonical-position fallback for master_order_id column
+             index (handles blank header cell).
+          2. Composite-key dedup (timestamp | user_id | order_id |
+             name | phone) for legacy rows with empty master_order_id.
+
+        Acceptance criteria results (admin@test.com, BASELINE):
+          BASELINE   (overwrite=true)  → rows_synced=324
+          APPEND #1  (overwrite=false) → rows_synced=0   ✅
+          APPEND #2  (overwrite=false) → rows_synced=0   ✅
+          OVERWRITE  (overwrite=true)  → rows_synced=324 ✅ (matches BASELINE)
+
+        4/4 calls behaved as expected. No row duplication on append
+        after baseline overwrite. Idempotent across repeated appends.
+        OVERALL: PASS. Task closed.

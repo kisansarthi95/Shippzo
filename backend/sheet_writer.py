@@ -341,10 +341,16 @@ def sync_master_to_user_sheet(
                 target_range, matched_rows, value_input_option="USER_ENTERED",
             )
     else:
-        # 4b) Append-only — dedup by master_order_id column if present.
-        # First try header-based lookup; fall back to canonical position
-        # (COLUMNS list above) so dedup still works when the human-readable
-        # header row hasn't been hand-edited to include the new column names.
+        # 4b) Append-only — dedup against existing rows in the user sheet.
+        #
+        # Two-tier dedup so legacy rows (which were written before
+        # Phase-B added the master_order_id column and therefore have
+        # an EMPTY value at that position) are still deduped reliably:
+        #
+        #   • PRIMARY  — exact match on `master_order_id` when present.
+        #   • FALLBACK — composite key (timestamp | user_id | order_id |
+        #                name | phone) for rows where master_order_id
+        #                is empty.
         moid_idx: Optional[int] = None
         for i, h in enumerate(master_header):
             if h.strip().lower().replace(" ", "_") in (
@@ -353,28 +359,63 @@ def sync_master_to_user_sheet(
                 moid_idx = i
                 break
         if moid_idx is None and "master_order_id" in COLUMNS:
-            # Phase-B canonical position fallback — index in COLUMNS list.
-            canonical_idx = COLUMNS.index("master_order_id")
-            if canonical_idx < len(master_values[0]) or True:
-                # We trust the schema even if header cell is blank.
-                moid_idx = canonical_idx
-        # Read existing user rows to find already-present master IDs.
+            # Phase-B canonical-position fallback when the header cell
+            # is blank (admin hasn't hand-written headers yet).
+            moid_idx = COLUMNS.index("master_order_id")
+
+        # Resolve canonical positions for the composite fallback key.
+        # Falls back to COLUMNS list when human-readable header is blank.
+        def _hidx(*names: str, canonical: str) -> Optional[int]:
+            wanted = {n.lower().replace(" ", "_") for n in names}
+            for i, h in enumerate(master_header):
+                if h.strip().lower().replace(" ", "_") in wanted:
+                    return i
+            if canonical in COLUMNS:
+                return COLUMNS.index(canonical)
+            return None
+
+        ts_idx    = _hidx("timestamp",        canonical="timestamp")
+        uid_idx   = _hidx("user_id", "userid", canonical="user_id")
+        oid_idx   = _hidx("order_id", "orderid", canonical="order_id")
+        name_idx  = _hidx("name", "customer_name", canonical="name")
+        phone_idx = _hidx("phone", "customer_phone", canonical="phone")
+
+        def _composite_key(row: List[str]) -> str:
+            def _g(i: Optional[int]) -> str:
+                if i is None or i >= len(row):
+                    return ""
+                return (row[i] or "").strip()
+            return "|".join([
+                _g(ts_idx), _g(uid_idx), _g(oid_idx), _g(name_idx), _g(phone_idx),
+            ])
+
+        # Read existing user rows to find already-present master IDs +
+        # composite keys.
         existing_user_values = user_ws.get_all_values()
         existing_ids: set = set()
-        if existing_user_values and moid_idx is not None:
+        existing_keys: set = set()
+        if existing_user_values:
             for r in existing_user_values[1:]:
-                if moid_idx < len(r):
+                if not any((c or "").strip() for c in r):
+                    continue
+                if moid_idx is not None and moid_idx < len(r):
                     val = (r[moid_idx] or "").strip()
                     if val:
                         existing_ids.add(val)
+                existing_keys.add(_composite_key(r))
         new_rows = []
         for row in matched_rows:
-            mid = (row[moid_idx] or "").strip() if moid_idx is not None else ""
+            mid = (row[moid_idx] or "").strip() if moid_idx is not None and moid_idx < len(row) else ""
             if mid and mid in existing_ids:
+                continue
+            ck = _composite_key(row)
+            if ck and ck in existing_keys:
                 continue
             new_rows.append(row)
             if mid:
                 existing_ids.add(mid)
+            if ck:
+                existing_keys.add(ck)
         if new_rows:
             next_row = _find_next_empty_row(user_ws)
             need = next_row + len(new_rows)
