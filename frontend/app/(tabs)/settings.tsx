@@ -1020,7 +1020,7 @@ export default function SettingsScreen() {
                 <Text style={styles.spaiBadgeTxt}>AI powered</Text>
               </View>
               <Text style={styles.spaiHint}>
-                WhatsApp-style પેસ્ટ ને LLM automatically ફોર્મ માં convert કરે છે — ChatGPT bounce ખતમ. દરેક user પોતાના વ્યવસાય પ્રમાણે અલગ instructions રાખી શકે.
+                WhatsApp નો customer message અહીંયા paste કરો — form આપોઆપ ભરાઈ જશે. તમારા વ્યવસાય પ્રમાણે પોતાની instructions પણ રાખી શકો.
               </Text>
             </View>
 
@@ -1038,12 +1038,14 @@ export default function SettingsScreen() {
               />
             </View>
 
-            {/* Phase-7d: Master Order ID auto-generate toggle */}
+            {/* Auto-generate Order ID toggle — user-facing copy intentionally
+                minimal; internal "Master Order ID" terminology + YYMMDD pattern
+                are implementation details that shouldn't leak to end users. */}
             <View style={styles.toggleRow}>
               <View style={{ flex: 1 }}>
                 <Text style={styles.toggleLbl}>Auto-Generate Order ID</Text>
                 <Text style={styles.toggleSub}>
-                  ON: System Master Order ID assign કરશે (YYMMDD + 5-digit, eg 2604290001) — તમારી "Your Order ID" ખાલી હોય તો ત્યાં copy થશે. OFF: તમે manual પોતાનો Order ID આપો.
+                  ON: તમારા દરેક નવા order માટે unique Order ID આપોઆપ generate થશે. OFF: તમે પોતાનો Order ID manual લખો.
                 </Text>
               </View>
               <Switch
@@ -1065,7 +1067,7 @@ export default function SettingsScreen() {
               <View style={{ flex: 1 }}>
                 <Text style={styles.toggleLbl}>Auto-fill in New Shipment</Text>
                 <Text style={styles.toggleSub}>
-                  ON: New Shipment form ખુલતા જ Order ID input માં Master ID auto-fill થશે. OFF: ID system માં generate થશે પણ form input ખાલી રહેશે — તમે પોતાનો custom ID ટાઇપ કરો.
+                  ON: New Shipment form ખુલતા જ auto-generate થયેલ Order ID form માં આવી જશે. OFF: form input ખાલી રહેશે — જો જરૂર હોય તો તમે પોતાનો custom ID ટાઇપ કરો.
                 </Text>
               </View>
               <Switch
@@ -1134,7 +1136,7 @@ export default function SettingsScreen() {
                       const ok = await new Promise<boolean>((resolve) => {
                         Alert.alert(
                           "Lowering counter?",
-                          `Counter is currently at ${cur}. Setting it to ${seq} could create duplicate Master Order IDs with existing shipments. Continue?`,
+                          `Counter is currently at ${cur}. Setting it to ${seq} could create duplicate Order IDs with existing shipments. Continue?`,
                           [
                             { text: "Cancel", style: "cancel", onPress: () => resolve(false) },
                             { text: "Force", style: "destructive", onPress: () => resolve(true) },
@@ -1152,7 +1154,7 @@ export default function SettingsScreen() {
                       setOidCounterInput("");
                       Alert.alert(
                         "✅ Counter updated",
-                        `Next Master Order ID will be ${r.next_master_order_id}.`,
+                        `Next Order ID will be ${r.next_master_order_id}.`,
                       );
                     } catch (e: any) {
                       Alert.alert(
