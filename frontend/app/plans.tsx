@@ -472,16 +472,29 @@ function PlanCard({
   const bullets = buildBullets(plan);
 
   // Resolve display price + anchor + period label.
+  //
+  // 2026-04-30 Pricing UX rewrite: when the user is on the YEARLY tab,
+  // we now show the *per-month equivalent* price (₹149 instead of
+  // ₹1,791) so the number feels small and approachable. The full
+  // yearly total is still charged at checkout (12 × monthly) — we
+  // just surface it as a sub-line under the card and in the confirm
+  // dialog. All per-month numbers are `Math.floor` to avoid decimals
+  // ("no points in the UI" — user instruction).
   const isFree = plan.price_inr === 0;
   let displayPrice = plan.price_inr;
   let anchorPrice = 0;
   let perLabel = isFree ? "" : "/ month";
   let yearlySub = "";
+  let yearlyTotal = 0;        // full amount billed at checkout
+  let yearlyTotalAnchor = 0;  // struck-through full anchor
   if (!isFree && pricing) {
     if (billing === "yearly") {
-      displayPrice = pricing.yearly_price || pricing.monthly_price * 12;
-      anchorPrice = pricing.yearly_anchor || 0;
-      perLabel = "/ year";
+      yearlyTotal = pricing.yearly_price || pricing.monthly_price * 12;
+      yearlyTotalAnchor = pricing.yearly_anchor || 0;
+      // Show monthly-equivalent in the main price slot.
+      displayPrice = Math.floor(yearlyTotal / 12);
+      anchorPrice = yearlyTotalAnchor > 0 ? Math.floor(yearlyTotalAnchor / 12) : 0;
+      perLabel = "/ month";
       const total = pricing.yearly_base_months + pricing.yearly_bonus_months;
       yearlySub = pricing.yearly_bonus_months > 0
         ? `${pricing.yearly_base_months} + ${pricing.yearly_bonus_months} months FREE (${total} months total)`
@@ -581,6 +594,14 @@ function PlanCard({
       ) : null}
       {!isFree && billing === "yearly" && yearlySub && pricing?.yearly_bonus_months === 0 ? (
         <Text style={styles.yearlySub}>{yearlySub}</Text>
+      ) : null}
+      {/* 2026-04-30 — Annual-billed total line. Explicitly tells the
+          user "paid once a year, ₹X total for 12 + 1 months" so the
+          small per-month figure doesn't feel misleading. */}
+      {!isFree && billing === "yearly" && yearlyTotal > 0 ? (
+        <Text style={styles.yearlySub}>
+          Billed ₹{yearlyTotal.toLocaleString("en-IN")} once a year
+        </Text>
       ) : null}
 
       <View style={styles.divider} />
