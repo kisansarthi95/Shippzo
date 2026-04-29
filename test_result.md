@@ -101,6 +101,40 @@
 #====================================================================================================
 # Testing Data - Main Agent and testing sub agent both should log testing data below this section
 #====================================================================================================
+## Iteration: Phase-B Master Sheet Dual-Write (2026-04-29)
+
+### Backend
+- `/app/backend/sheet_writer.py`:
+  - **`COLUMNS`** extended from 14 → 19 columns: appended `user_name`, `master_order_id`, `alt_phone`, `token_amount`, `weight` at the END (existing columns kept in original positions for backward-compat).
+  - **`append_order_row()`** signature extended with the 5 new keyword args (defaults `""`/`""`/etc). Writes to A:S range (19 cols) instead of A:N (14).
+  - **`append_order_row_to_user_sheet()`** — NEW. Mirrors the same row to a user's own per-user sheet (sheet_id + tab/gid passed in). Auto-creates the header row on first write to a fresh sheet. Best-effort by design; caller must swallow exceptions.
+
+- `/app/backend/server.py`:
+  - Imports the new `sheet_append_user` helper (with safe fallback).
+  - **`smart_paste_create`** now passes the 5 new fields to master sheet append (`user_name`, `master_order_id`, `alt_phone`, `token_amount`, `weight`).
+  - **NEW step 1b**: After master sheet append, if user has `Settings.sheet.sheet_id` linked, mirror the row to their personal sheet via `sheet_append_user`. Errors here are logged (`User-sheet write skipped: <reason>`) but DO NOT fail the order — Master Sheet is the source of truth.
+
+### Validation — **18/18 backend tests PASS** (deep_testing_backend_v2):
+- ✅ Smart Paste 200 with master_order_id/alt_phone/token_amount/weight all populated
+- ✅ Master Sheet `A77:S77` write OK (19 columns, real Service Account)
+- ✅ User-sheet append OK (admin has personal sheet linked) 
+- ✅ POST /shipments extended payload works (manual create)
+- ✅ Sheets probe returns ok:true
+- ✅ Backward compat: existing 14-col header sheets still accept 19-col writes (gspread expands range automatically)
+
+### Notes
+- The Master Sheet's HEADER row (row 1) was NOT auto-rewritten — admins should manually add headers `User Name | Master Order ID | Alt Phone | Token Amount | Weight` to columns O–S to keep human-readable column names. Data writes work either way.
+- Per-user sheets get auto-headers on first write.
+- Phase C (Master → User filtered sync back) NOT implemented yet — deferred to next session.
+
+### No Regressions
+- POST /shipments
+- Smart Paste create / check-duplicate
+- Master Order ID generation
+- Sheet probe / read endpoints
+
+---
+
 ## Iteration: Phase-7f IST Timezone Fix + Counter Customization (2026-04-28 PM7)
 
 ### Problem 1 — Date prefix wrong in early-morning hours (IST vs UTC)
