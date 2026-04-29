@@ -238,6 +238,7 @@ export type Coupon = {
   billing_cycles: ("monthly" | "yearly")[];               // empty = both
   active: boolean;
   status: "active" | "paused" | "scheduled" | "expired" | "exhausted";
+  restricted_to_users?: string[];    // 2026-04-30 Phase-2 — allow-list
   created_at: string;
   updated_at: string;
 };
@@ -252,6 +253,7 @@ export type CouponCreatePayload = {
   applies_to_plans?: ("silver" | "gold" | "platinum")[];
   billing_cycles?: ("monthly" | "yearly")[];
   active?: boolean;
+  restricted_to_users?: string[];
 };
 
 export type PlanPricingEntry = {
@@ -519,6 +521,24 @@ export const Api = {
     api.put<{ ok: true; coupon: Coupon }>(`/admin/coupons/${id}`, payload).then((r) => r.data.coupon),
   adminDeleteCoupon: (id: string) =>
     api.delete<{ ok: true; deleted: string }>(`/admin/coupons/${id}`).then((r) => r.data),
+  adminCouponAnalytics: () =>
+    api.get<{
+      totals: { redemptions: number; total_discount: number; total_revenue: number };
+      coupons: Array<{
+        code: string;
+        redemptions: number;
+        total_discount: number;
+        total_revenue: number;
+        plans: string[];
+        cycles: string[];
+        last_redeemed?: string;
+        status: string;
+        discount_type?: string;
+        discount_value?: number;
+      }>;
+      total_coupons: number;
+      status_counts: Record<string, number>;
+    }>("/admin/coupons/analytics").then((r) => r.data),
   // User-facing validate. Never writes — only the payment-verify path
   // bumps `used_count` after a successful Razorpay charge.
   validateCoupon: (

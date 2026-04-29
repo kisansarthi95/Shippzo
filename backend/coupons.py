@@ -52,6 +52,22 @@ class CouponCreate(BaseModel):
     applies_to_plans: List[str] = Field(default_factory=list)
     billing_cycles: List[str] = Field(default_factory=list)
     active: bool = True
+    # 2026-04-30 Phase-2: optional allow-list of user emails. If
+    # non-empty, only those users can redeem this coupon. Emails are
+    # normalised to lowercase on write + compared case-insensitively.
+    restricted_to_users: List[str] = Field(default_factory=list)
+
+    @field_validator("restricted_to_users")
+    @classmethod
+    def _emails(cls, v: List[str]) -> List[str]:
+        if not v:
+            return []
+        out: List[str] = []
+        for e in v:
+            s = (e or "").strip().lower()
+            if s and "@" in s:
+                out.append(s)
+        return out
 
     @field_validator("code")
     @classmethod
@@ -113,6 +129,7 @@ class CouponUpdate(BaseModel):
     applies_to_plans: Optional[List[str]] = None
     billing_cycles: Optional[List[str]] = None
     active: Optional[bool] = None
+    restricted_to_users: Optional[List[str]] = None
 
 
 def _now_iso() -> str:
@@ -157,11 +174,15 @@ def validate_coupon(
     plan_key: str,
     billing_cycle: str,
     base_inr: int,
+    user_email: Optional[str] = None,
 ) -> Tuple[bool, str, int, int]:
     """Check whether a coupon can be applied.
 
     Returns (ok, reason, discount_inr, final_inr). On failure, discount is
     0 and final == base.
+
+    `user_email` is optional; if the coupon has a `restricted_to_users`
+    allow-list, the email must appear in it. Case-insensitive match.
     """
     base_inr = int(base_inr or 0)
     if not doc:
@@ -186,6 +207,11 @@ def validate_coupon(
     if bcs and billing_cycle not in bcs:
         label = "yearly billing" if billing_cycle == "yearly" else "monthly billing"
         return False, f"Not valid on {label}", 0, base_inr
+    # Allow-list check (2026-04-30 Phase-2)
+    restricted = [str(e).strip().lower() for e in (doc.get("restricted_to_users") or []) if e]
+    if restricted:
+        if not user_email or user_email.strip().lower() not in restricted:
+            return False, "This coupon is not available for your account", 0, base_inr
     # ---- Compute discount ----
     dtype = doc.get("discount_type")
     dval = float(doc.get("discount_value") or 0)
@@ -218,6 +244,7 @@ def new_coupon_doc(payload: CouponCreate) -> Dict[str, Any]:
         "applies_to_plans": payload.applies_to_plans,
         "billing_cycles": payload.billing_cycles,
         "active": bool(payload.active),
+        "restricted_to_users": payload.restricted_to_users,
         "created_at": now,
         "updated_at": now,
     }

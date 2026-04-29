@@ -4328,7 +4328,8 @@ async def rzp_create_plan_order(
         code = ensure_code_valid(payload.coupon_code)
         coupon_doc = await db.coupons.find_one({"code": code})
         ok, reason, discount, final_inr = validate_coupon(
-            coupon_doc, payload.plan_key, payload.billing_cycle, base_inr
+            coupon_doc, payload.plan_key, payload.billing_cycle, base_inr,
+            user_email=current_user.get("email"),
         )
         if not ok:
             raise HTTPException(status_code=400, detail=f"Coupon: {reason}")
@@ -4479,6 +4480,81 @@ async def admin_delete_coupon(
     return {"ok": True, "deleted": coupon_id}
 
 
+@api_router.get("/admin/coupons/analytics")
+async def admin_coupon_analytics(
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    """Usage analytics dashboard for coupons. Aggregates from
+    `razorpay_orders` (status==paid AND coupon_code set) to produce:
+      • Total redemptions across all coupons
+      • Total discount amount given to customers (₹)
+      • Per-coupon breakdown: redemptions, total discount, plan mix
+      • Top-5 most-redeemed coupons
+    The numbers are computed live from Mongo so they stay honest
+    without a separate events table.
+    """
+    _require_admin(current_user)
+    # Fetch all coupons to join their metadata (discount_type/value)
+    coupons: List[Dict[str, Any]] = []
+    async for c in db.coupons.find({}, {"_id": 0}):
+        coupons.append(c)
+    code_to_coupon = {c.get("code"): c for c in coupons}
+
+    # Aggregate over successful paid Razorpay orders. `verified_at` is
+    # set only after signature+payment_captured/authorized.
+    pipeline = [
+        {"$match": {
+            "purpose": "plan_subscription",
+            "status": {"$in": ["paid", "captured"]},
+            "coupon_code": {"$exists": True, "$nin": [None, ""]},
+        }},
+        {"$group": {
+            "_id": "$coupon_code",
+            "redemptions":    {"$sum": 1},
+            "total_discount": {"$sum": {"$ifNull": ["$coupon_discount", 0]}},
+            "total_revenue":  {"$sum": {"$ifNull": ["$amount_inr", 0]}},
+            "plans":          {"$addToSet": "$plan_key"},
+            "cycles":         {"$addToSet": "$billing_cycle"},
+            "last_redeemed":  {"$max": "$created_at"},
+        }},
+        {"$sort": {"redemptions": -1}},
+    ]
+    per_coupon: List[Dict[str, Any]] = []
+    totals = {"redemptions": 0, "total_discount": 0, "total_revenue": 0}
+    async for row in db.razorpay_orders.aggregate(pipeline):
+        code = row.get("_id")
+        meta = code_to_coupon.get(code, {})
+        per_coupon.append({
+            "code":           code,
+            "discount_type":  meta.get("discount_type"),
+            "discount_value": meta.get("discount_value"),
+            "redemptions":    int(row.get("redemptions") or 0),
+            "total_discount": int(row.get("total_discount") or 0),
+            "total_revenue":  int(row.get("total_revenue") or 0),
+            "plans":          sorted([p for p in (row.get("plans") or []) if p]),
+            "cycles":         sorted([c for c in (row.get("cycles") or []) if c]),
+            "last_redeemed":  row.get("last_redeemed"),
+            "status": (coupon_to_api(meta).get("status") if meta else "deleted"),
+        })
+        totals["redemptions"]    += int(row.get("redemptions") or 0)
+        totals["total_discount"] += int(row.get("total_discount") or 0)
+        totals["total_revenue"]  += int(row.get("total_revenue") or 0)
+
+    # Count coupons by live status (from registry serializer)
+    status_counts = {"active": 0, "paused": 0, "scheduled": 0, "expired": 0, "exhausted": 0}
+    for c in coupons:
+        s = coupon_to_api(c).get("status", "active")
+        status_counts[s] = status_counts.get(s, 0) + 1
+
+    return {
+        "totals":     totals,
+        "coupons":    per_coupon,
+        "top5":       per_coupon[:5],
+        "total_coupons": len(coupons),
+        "status_counts": status_counts,
+    }
+
+
 class CouponValidateRequest(BaseModel):
     code: str
     plan_key: str           # silver | gold | platinum
@@ -4504,7 +4580,8 @@ async def coupon_validate(
     base_inr = int(meta["price_inr"])
     coupon = await db.coupons.find_one({"code": code})
     ok, reason, discount, final_inr = validate_coupon(
-        coupon, payload.plan_key, payload.billing_cycle, base_inr
+        coupon, payload.plan_key, payload.billing_cycle, base_inr,
+        user_email=current_user.get("email"),
     )
     # For percent coupons, surface the admin's *configured* percentage
     # directly (e.g. 25) rather than back-computing from the floored

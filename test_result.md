@@ -5704,3 +5704,100 @@ agent_communication:
         No further testing required on backend. Main agent can
         summarise + finish.
 
+
+---
+
+## Backend Test Run: Coupon System Phase-2 — Analytics + Restricted-to-Users (2026-04-29)
+
+backend:
+  - task: "Coupon System Phase-2 (Analytics + Restricted-to-Users)"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py, /app/backend/coupons.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "testing"
+        -comment: |
+            All 26 assertions passed via /app/backend_test.py against
+            https://logistics-hub-740.preview.emergentagent.com/api.
+
+            A. ANALYTICS ENDPOINT
+            ✅ A1: GET /admin/coupons/analytics as admin → 200 with full
+                 shape verified:
+                   totals = {redemptions:0, total_discount:0, total_revenue:0}
+                   coupons = [] (empty list, correct type)
+                   total_coupons = 0 (int)
+                   status_counts = {active:0, paused:0, scheduled:0,
+                                    expired:0, exhausted:0} (all 5 keys)
+                 Also present: top5 (extra convenience key).
+            ✅ A2: GET /admin/coupons/analytics as user2 → 403
+                 body={"detail":"Admin access required"}.
+
+            B. RESTRICTED-TO-USERS ALLOW-LIST
+            ✅ B3: POST /admin/coupons as admin with restricted_to_users
+                 =["ADMIN@TEST.com"," "] → 200. Response restricted_to_users
+                 = ["admin@test.com"] (lowercased + blanks stripped, exactly
+                 as the spec demands). Verified via both POST response AND
+                 GET /admin/coupons list read-back — identical value.
+            ✅ B4: POST /coupons/validate as admin with
+                 {code:"TESTUSR1", plan_key:"silver", billing_cycle:"yearly"}
+                 → 200, ok=true, code=TESTUSR1, base_inr=1791, discount=358,
+                 final_inr=1433, savings_pct=20 (admin email matches the
+                 allow-list).
+            ✅ B5: Same payload as user2@test.com → 200 with ok=false,
+                 reason="This coupon is not available for your account"
+                 (contains "not available" — matches spec).
+            ✅ B6: POST /plans/razorpay/create-order as user2 with
+                 coupon_code=TESTUSR1 → 400, detail="Coupon: This coupon
+                 is not available for your account". Backend correctly
+                 blocks checkout at the Razorpay order step for users
+                 outside the allow-list.
+
+            C. REGRESSION
+            ✅ C7: Created helper unrestricted coupon TESTOPEN1 (10% off,
+                 empty allow-list). POST /coupons/validate as user2 →
+                 200, ok=true, discount=179, savings_pct=10. Unrestricted
+                 flow still works for non-admin users.
+            ✅ C8: Pre-existing endpoints unaffected:
+                   GET /settings → 200
+                   GET /shipments/stats → 200
+                   GET /admin/plan-features → 200
+
+            D. CLEANUP
+            ✅ D9: DELETE /admin/coupons/{TESTUSR1 id} → 200 with
+                   {"ok":true,"deleted":"<id>"}. Helper coupon TESTOPEN1
+                   also deleted (200).
+
+            No test artefacts remain in the coupons collection.
+            All three new/modified code paths are verified end-to-end
+            against the live preview backend.
+
+agent_communication:
+    -agent: "testing"
+    -message: |
+        Coupon System Phase-2 backend fully verified — 26/26 assertions
+        passed on first run against the live preview URL.
+
+        Highlights:
+        • GET /api/admin/coupons/analytics returns the exact contract
+          shape required (totals / coupons / total_coupons /
+          status_counts). Admin-only gate works (user2 gets 403).
+        • Allow-list normalisation is correct: emails lowercased,
+          whitespace-only entries stripped, saved value returns
+          ["admin@test.com"] for input ["ADMIN@TEST.com"," "].
+        • validate_coupon() honours user_email allow-list at both call
+          sites: POST /api/coupons/validate (returns ok=false with the
+          expected "not available" reason) AND
+          POST /api/plans/razorpay/create-order (returns 400 with
+          "Coupon: …" detail).
+        • Regression clean: unrestricted coupon validates ok=true for
+          user2; /settings, /shipments/stats, /admin/plan-features all
+          still return 200.
+        • Cleanup complete — TESTUSR1 and helper TESTOPEN1 deleted.
+
+        No code changes were made by the testing agent. Main agent can
+        summarise + finish.
+
