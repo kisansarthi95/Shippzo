@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request
+from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, BackgroundTasks
 from fastapi.responses import PlainTextResponse
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
@@ -1468,7 +1468,10 @@ def auto_guess_mapping(headers: List[str]) -> Dict[str, str]:
 
 
 @api_router.get("/sheets/orders")
-async def sheets_orders(current_user: Dict[str, Any] = Depends(get_current_user)):
+async def sheets_orders(
+    background_tasks: BackgroundTasks,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
     doc = await db.settings.find_one({"user_id": current_user["id"]}, {"_id": 0})
     if not doc:
         raise HTTPException(status_code=400, detail="Settings not configured")
@@ -1552,6 +1555,24 @@ async def sheets_orders(current_user: Dict[str, Any] = Depends(get_current_user)
             "already_shipped": row_key in imported_keys,
             "raw": row,
         })
+    # ---- Auto-backup any new user-sheet rows to Master Sheet (background) ----
+    # This is fire-and-forget — the user gets their list immediately and
+    # the sync runs after the response is sent. Per-row dedup state is
+    # stored in `user_sheet_master_backups` so repeat reads don't double
+    # the master rows.
+    user_name_for_log = (
+        current_user.get("full_name")
+        or current_user.get("name")
+        or (current_user.get("email", "").split("@")[0])
+    )
+    background_tasks.add_task(
+        _sync_user_sheet_to_master_bg,
+        current_user["id"],
+        user_name_for_log or "",
+        list(data.get("rows") or []),
+        dict(mapping),
+    )
+
     return {
         "headers": data["headers"],
         "headers_changed": headers_changed,
@@ -1575,6 +1596,161 @@ def _row_key(row: Dict[str, str], mapping: Dict[str, str], idx: int) -> str:
     if not parts:
         parts.append(str(idx))
     return "|".join(parts).strip()[:200]
+
+
+# ---------------------------------------------------------------------------
+# Background: User-Sheet → Master-Sheet auto-backup
+# ---------------------------------------------------------------------------
+# When the user opens the "Sheet Orders" tab in the app we trigger a
+# silent, fire-and-forget backup of any new rows in their personal
+# Google Sheet to the central Master Sheet. This way rows that the
+# user types DIRECTLY into their own sheet (not through Smart Paste
+# or Add Shipment) are still archived to master without any manual
+# action — honouring the universal "data backup is mandatory on every
+# plan" policy.
+#
+# Dedup state lives in the `user_sheet_master_backups` collection,
+# keyed by (user_id, row_key). On first read we ensure the unique
+# index exists.
+_USER_SHEET_BACKUP_INDEX_READY = False
+
+
+async def _ensure_user_sheet_backup_index() -> None:
+    """Idempotently create the unique compound index on first call."""
+    global _USER_SHEET_BACKUP_INDEX_READY
+    if _USER_SHEET_BACKUP_INDEX_READY:
+        return
+    try:
+        await db.user_sheet_master_backups.create_index(
+            [("user_id", 1), ("row_key", 1)], unique=True, name="uid_rowkey_unique",
+        )
+        _USER_SHEET_BACKUP_INDEX_READY = True
+    except Exception:
+        # If it already exists or Mongo is busy, just proceed — the
+        # unique constraint will still be honoured if it was created
+        # in a previous boot.
+        _USER_SHEET_BACKUP_INDEX_READY = True
+
+
+def _row_to_master_payload(
+    row: Dict[str, str], mapping: Dict[str, str]
+) -> Dict[str, str]:
+    """Translate a user-sheet row + column mapping into the kwargs that
+    `sheet_writer.append_order_row` expects. Missing fields become "".
+    """
+    def m(key: str) -> str:
+        col = mapping.get(key)
+        if not col:
+            return ""
+        return str(row.get(col, "") or "").strip()
+
+    return {
+        "order_id": m("order_id"),
+        "name": m("customer_name"),
+        "phone": m("phone"),
+        "address": m("address"),
+        "city": m("city"),
+        "state": m("state"),
+        "pincode": m("pincode"),
+        "item_type": m("item"),
+        "amount": m("amount"),
+        "payment_mode": m("payment_mode"),
+        "weight": m("weight"),
+        "alt_phone": m("alt_phone"),
+        "token_amount": m("token_amount"),
+    }
+
+
+async def _sync_user_sheet_to_master_bg(
+    user_id: str,
+    user_name: str,
+    rows: List[Dict[str, str]],
+    mapping: Dict[str, str],
+) -> None:
+    """Background task: append any user-sheet rows that haven't been
+    backed up yet to the Master Sheet, then record the row_key in
+    `user_sheet_master_backups` so subsequent reads skip them.
+
+    Errors are swallowed (this is best-effort, foreground response
+    must not break) and only surfaced via logger so admins can spot
+    quota / auth issues in the logs.
+    """
+    if sheet_append_order_row is None or not rows:
+        return
+    try:
+        await _ensure_user_sheet_backup_index()
+        # Pull all already-backed-up keys for this user in one query.
+        existing_cursor = db.user_sheet_master_backups.find(
+            {"user_id": user_id}, {"_id": 0, "row_key": 1},
+        )
+        existing = {d["row_key"] async for d in existing_cursor}
+    except Exception:
+        existing = set()
+
+    # Allocate skipped rows up to a sane batch size so a 5000-row sheet
+    # doesn't block the worker forever. The next /sheets/orders call
+    # will pick up the rest.
+    BATCH_LIMIT = 50
+    appended = 0
+    for idx, row in enumerate(rows):
+        if appended >= BATCH_LIMIT:
+            break
+        key = _row_key(row, mapping, idx)
+        if not key or key in existing:
+            continue
+        # Composite-key fallback safety: if the row has only ONE part
+        # AND that part is a small integer like a row index, skip — we
+        # don't want to back up obvious blanks.
+        if "|" not in key and key.isdigit() and len(key) <= 3:
+            continue
+        payload = _row_to_master_payload(row, mapping)
+        # Strict empty-row guard: skip if name+phone+address are all
+        # empty (likely a stray blank row in the user's sheet).
+        if not (payload["name"] or payload["phone"] or payload["address"]):
+            continue
+        try:
+            sheet_meta = sheet_append_order_row(
+                user_id=user_id,
+                user_name=user_name or user_id[:8],
+                master_order_id="",  # user's own sheet rows have no master id
+                notice="auto-backup from user sheet",
+                status="Pending",
+                **payload,
+            )
+            sheet_row_num = None
+            if sheet_parse_row_from_updated_range and sheet_meta:
+                try:
+                    sheet_row_num = sheet_parse_row_from_updated_range(
+                        sheet_meta.get("updated_range")
+                    )
+                except Exception:
+                    sheet_row_num = None
+            await db.user_sheet_master_backups.insert_one({
+                "user_id": user_id,
+                "row_key": key,
+                "sheet_row_num": sheet_row_num,
+                "backed_up_at": utcnow_iso(),
+            })
+            existing.add(key)
+            appended += 1
+        except Exception as e:
+            # DuplicateKeyError → already inserted via a parallel call.
+            # Anything else (sheet write failure, quota, auth) → log
+            # and move on; we'll retry on the next page-load.
+            try:
+                from pymongo.errors import DuplicateKeyError
+                if isinstance(e, DuplicateKeyError):
+                    existing.add(key)
+                    continue
+            except Exception:
+                pass
+            logger.warning(f"User-sheet → Master backup row_key={key!r} failed: {e}")
+            continue
+
+    if appended:
+        logger.info(
+            f"User-sheet → Master backup: appended {appended} new row(s) for user {user_id}"
+        )
 
 
 # -------- Shipments --------
