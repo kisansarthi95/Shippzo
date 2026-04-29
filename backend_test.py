@@ -1,289 +1,324 @@
 """
-Backend tests for Courier Partner plan-cap logic.
+Backend re-verification test — Courier partner limit for Platinum plan
+(spec change: Platinum now capped at 5, no longer unlimited).
 
-Verifies:
-- GET  /api/couriers/limits  (auth required, plan-aware response)
-- POST /api/couriers         (403 with actionable detail at plan cap)
-- Admin bypass + platinum bypass
-- Plan-upgrade simulation (gold -> platinum) via direct Mongo mutation
-- Route-order sanity: /couriers/{id} still resolves a real id
-- Regression: /couriers list still returns user couriers
-
-Cleans up everything it creates and restores user2.plan after mutation.
+Review contract:
+  1. Admin — GET /api/couriers/limits → is_admin=true, is_unlimited=true,
+     limit=null, suggested_upgrade=null.
+  2. Platinum simulation on user2 (direct Mongo set user2.plan="platinum"):
+     - limits: plan=platinum, plan_label=Platinum, is_admin=false,
+               is_unlimited=false, limit=5, suggested_upgrade=null,
+               can_add=true (<5 couriers).
+     - Create couriers until 5 total — each POST → 200.
+     - limits now: current_count=5, can_add=false, suggested_upgrade=null.
+     - 6th POST → 403, detail contains "Your Platinum plan allows only
+       5 courier partners" AND "contact support" (case-insensitive),
+       MUST NOT contain "Upgrade to".
+     - Cleanup all created couriers + restore user2.plan.
+  3. Gold regression: user2.plan="gold" — limit=2, suggested="Platinum",
+     3rd courier POST → 403 detail contains "Upgrade to Platinum".
+  4. Silver regression: user2.plan="silver" — limit=1, can_add=false,
+     suggested="Gold".
 """
-
 import os
 import sys
+import json
 import asyncio
-from typing import Any, Dict, List, Optional, Tuple
 
 import requests
 from motor.motor_asyncio import AsyncIOMotorClient
 
-from dotenv import load_dotenv
-load_dotenv("/app/backend/.env")
-
-FRONTEND_ENV = "/app/frontend/.env"
-PUBLIC_URL: Optional[str] = None
-with open(FRONTEND_ENV) as fh:
-    for line in fh:
-        line = line.strip()
-        if line.startswith("EXPO_PUBLIC_BACKEND_URL="):
-            PUBLIC_URL = line.split("=", 1)[1].strip().strip('"').strip("'")
-            break
-
-if not PUBLIC_URL:
-    print("ERROR: EXPO_PUBLIC_BACKEND_URL not set"); sys.exit(2)
-
-API = f"{PUBLIC_URL}/api"
-print(f"[INFO] Using API base: {API}")
-
-MONGO_URL = os.environ["MONGO_URL"]
-DB_NAME = os.environ["DB_NAME"]
+BASE = "https://logistics-hub-740.preview.emergentagent.com/api"
 
 ADMIN_EMAIL = "admin@test.com"
 ADMIN_PASS = "Admin@12345"
-USER_EMAIL = "user2@test.com"
-USER_PASS = "User@12345"
+USER2_EMAIL = "user2@test.com"
+USER2_PASS = "User@12345"
 
-results: List[Tuple[str, bool, str]] = []
-
-
-def record(name: str, ok: bool, detail: str = "") -> bool:
-    status = "PASS" if ok else "FAIL"
-    print(f"[{status}] {name} :: {detail}")
-    results.append((name, ok, detail))
-    return ok
+MONGO_URL = os.environ.get("MONGO_URL", "mongodb://localhost:27017")
+DB_NAME = os.environ.get("DB_NAME", "test_database")
 
 
-def login(email: str, password: str) -> Dict[str, Any]:
-    r = requests.post(f"{API}/auth/login", json={"email": email, "password": password}, timeout=30)
+class Result:
+    def __init__(self):
+        self.passed = 0
+        self.failed = 0
+        self.failures = []
+
+    def check(self, cond, label, extra=""):
+        if cond:
+            self.passed += 1
+            print(f"  PASS  {label}")
+        else:
+            self.failed += 1
+            msg = f"{label}" + (f"  [{extra}]" if extra else "")
+            self.failures.append(msg)
+            print(f"  FAIL  {msg}")
+
+
+def login(email, password):
+    r = requests.post(f"{BASE}/auth/login", json={"email": email, "password": password}, timeout=20)
+    r.raise_for_status()
+    body = r.json()
+    return body["token"], body
+
+
+def auth_hdr(tok):
+    return {"Authorization": f"Bearer {tok}"}
+
+
+def get_limits(tok):
+    r = requests.get(f"{BASE}/couriers/limits", headers=auth_hdr(tok), timeout=20)
     r.raise_for_status()
     return r.json()
 
 
-def auth_h(token: str) -> Dict[str, str]:
-    return {"Authorization": f"Bearer {token}"}
+def list_couriers(tok):
+    r = requests.get(f"{BASE}/couriers", headers=auth_hdr(tok), timeout=20)
+    r.raise_for_status()
+    return r.json()
 
 
-def get_limits(token: str) -> Tuple[int, Dict[str, Any]]:
-    r = requests.get(f"{API}/couriers/limits", headers=auth_h(token), timeout=30)
-    try:
-        body = r.json()
-    except Exception:
-        body = {"_raw": r.text}
-    return r.status_code, body
-
-
-def list_couriers(token: str) -> Tuple[int, List[Dict[str, Any]]]:
-    r = requests.get(f"{API}/couriers", headers=auth_h(token), timeout=30)
-    try:
-        body = r.json()
-    except Exception:
-        body = []
-    return r.status_code, body
-
-
-def create_courier(token: str, name: str, prefix: str = "T") -> Tuple[int, Dict[str, Any]]:
+def create_courier(tok, name, prefix):
     payload = {
         "name": name,
         "series_prefix": prefix,
         "next_number": 1,
-        "number_padding": 4,
+        "number_padding": 5,
+        "contact_phone": "",
+        "tracking_url_template": "",
     }
-    r = requests.post(f"{API}/couriers", headers=auth_h(token), json=payload, timeout=30)
+    return requests.post(f"{BASE}/couriers", headers=auth_hdr(tok), json=payload, timeout=20)
+
+
+def delete_courier(tok, cid):
+    return requests.delete(f"{BASE}/couriers/{cid}", headers=auth_hdr(tok), timeout=20)
+
+
+async def set_user_plan(email, plan_value):
+    """Directly flip user.plan in Mongo (bypasses billing flow). Returns
+    previous plan value so caller can restore it."""
+    cli = AsyncIOMotorClient(MONGO_URL)
+    db = cli[DB_NAME]
+    doc = await db.users.find_one({"email": email}, {"plan": 1})
+    prev = (doc or {}).get("plan", "")
+    await db.users.update_one({"email": email}, {"$set": {"plan": plan_value}})
+    cli.close()
+    return prev
+
+
+async def get_user_plan(email):
+    cli = AsyncIOMotorClient(MONGO_URL)
+    db = cli[DB_NAME]
+    doc = await db.users.find_one({"email": email}, {"plan": 1})
+    cli.close()
+    return (doc or {}).get("plan", "")
+
+
+def run():
+    r = Result()
+
+    # --- Login both users -------------------------------------------------
+    admin_tok, admin_info = login(ADMIN_EMAIL, ADMIN_PASS)
+    user2_tok, user2_info = login(USER2_EMAIL, USER2_PASS)
+    print(f"Admin id={admin_info.get('id')} is_admin={admin_info.get('is_admin')}")
+    print(f"User2 id={user2_info.get('id')} plan={user2_info.get('plan')}")
+
+    # =====================================================================
+    # 1) Admin → unlimited
+    # =====================================================================
+    print("\n[1] Admin limits (unlimited)")
+    lim = get_limits(admin_tok)
+    print("  ", json.dumps(lim))
+    r.check(lim.get("is_admin") is True, "admin.is_admin == true")
+    r.check(lim.get("is_unlimited") is True, "admin.is_unlimited == true")
+    r.check(lim.get("limit") is None, "admin.limit is null", str(lim.get("limit")))
+    r.check(lim.get("suggested_upgrade") is None,
+            "admin.suggested_upgrade is null", str(lim.get("suggested_upgrade")))
+
+    # =====================================================================
+    # 2) Platinum simulation on user2
+    # =====================================================================
+    print("\n[2] Platinum simulation on user2")
+    prev_plan = asyncio.run(set_user_plan(USER2_EMAIL, "platinum"))
+    print(f"  user2.plan pre-test={prev_plan!r} → now 'platinum'")
+
+    created_ids = []
     try:
-        body = r.json()
-    except Exception:
-        body = {"_raw": r.text}
-    return r.status_code, body
+        # Clean baseline: count existing couriers
+        existing = list_couriers(user2_tok)
+        initial_count = len(existing)
+        print(f"  user2 existing couriers: {initial_count}")
 
+        # Limits snapshot BEFORE we create anything
+        lim = get_limits(user2_tok)
+        print("  platinum.limits (before):", json.dumps(lim))
+        r.check(lim.get("plan") == "platinum", "platinum.plan == 'platinum'", str(lim.get("plan")))
+        r.check(lim.get("plan_label") == "Platinum",
+                "platinum.plan_label == 'Platinum'", str(lim.get("plan_label")))
+        r.check(lim.get("is_admin") is False, "platinum.is_admin == false")
+        r.check(lim.get("is_unlimited") is False, "platinum.is_unlimited == false")
+        r.check(lim.get("limit") == 5, "platinum.limit == 5", str(lim.get("limit")))
+        r.check(lim.get("suggested_upgrade") is None,
+                "platinum.suggested_upgrade is null",
+                str(lim.get("suggested_upgrade")))
+        if initial_count < 5:
+            r.check(lim.get("can_add") is True,
+                    f"platinum.can_add == true (since count={initial_count} < 5)")
 
-def delete_courier(token: str, cid: str) -> int:
-    r = requests.delete(f"{API}/couriers/{cid}", headers=auth_h(token), timeout=30)
-    return r.status_code
+        # Fill to 5 total
+        to_create = max(0, 5 - initial_count)
+        print(f"  Creating {to_create} couriers to reach cap of 5…")
+        for i in range(to_create):
+            resp = create_courier(user2_tok, f"PlatTest{i+1}", f"PT{i+1}")
+            r.check(resp.status_code == 200,
+                    f"POST courier #{initial_count + i + 1} → 200",
+                    f"status={resp.status_code} body={resp.text[:200]}")
+            if resp.status_code == 200:
+                created_ids.append(resp.json()["id"])
 
+        # Limits after hitting cap
+        lim2 = get_limits(user2_tok)
+        print("  platinum.limits (at cap):", json.dumps(lim2))
+        r.check(lim2.get("current_count") == 5,
+                "platinum.current_count == 5", str(lim2.get("current_count")))
+        r.check(lim2.get("can_add") is False,
+                "platinum.can_add == false at cap")
+        r.check(lim2.get("suggested_upgrade") is None,
+                "platinum.suggested_upgrade is null at cap",
+                str(lim2.get("suggested_upgrade")))
 
-def get_courier(token: str, cid: str) -> Tuple[int, Dict[str, Any]]:
-    r = requests.get(f"{API}/couriers/{cid}", headers=auth_h(token), timeout=30)
-    try:
-        body = r.json()
-    except Exception:
-        body = {"_raw": r.text}
-    return r.status_code, body
+        # 6th courier should 403 with specific message
+        resp6 = create_courier(user2_tok, "PlatTest6", "PT6")
+        print(f"  6th POST status={resp6.status_code} body={resp6.text[:300]}")
+        r.check(resp6.status_code == 403, "6th POST → 403",
+                f"got {resp6.status_code}")
+        detail = ""
+        try:
+            detail = (resp6.json() or {}).get("detail", "")
+        except Exception:
+            pass
+        detail_low = detail.lower()
+        r.check("your platinum plan allows only 5 courier partners" in detail_low,
+                "detail contains 'Your Platinum plan allows only 5 courier partners'",
+                detail)
+        r.check("contact support" in detail_low,
+                "detail contains 'contact support' (case-insensitive)", detail)
+        r.check("upgrade to" not in detail_low,
+                "detail does NOT contain 'Upgrade to'", detail)
+        # 6th request should not have created a courier
+        if resp6.status_code == 200:
+            try:
+                created_ids.append(resp6.json()["id"])
+            except Exception:
+                pass
 
+        # =================================================================
+        # 3) Gold regression (on same user2)
+        # =================================================================
+        print("\n[3] Gold regression")
+        # Cleanup created couriers first so we can test gold cap.
+        print(f"  Cleaning {len(created_ids)} couriers created during platinum test")
+        for cid in list(created_ids):
+            dr = delete_courier(user2_tok, cid)
+            if dr.status_code == 200:
+                created_ids.remove(cid)
+            else:
+                print(f"   delete {cid} → {dr.status_code} {dr.text[:120]}")
 
-async def _set_plan(user_id: str, plan: str) -> Dict[str, Any]:
-    client = AsyncIOMotorClient(MONGO_URL)
-    db = client[DB_NAME]
-    res = await db.users.find_one_and_update(
-        {"id": user_id}, {"$set": {"plan": plan}}, return_document=True
-    )
-    client.close()
-    return res or {}
+        asyncio.run(set_user_plan(USER2_EMAIL, "gold"))
+        # refresh to confirm
+        after_gold = list_couriers(user2_tok)
+        print(f"  user2 courier count after cleanup: {len(after_gold)}")
+        lim_g = get_limits(user2_tok)
+        print("  gold.limits:", json.dumps(lim_g))
+        r.check(lim_g.get("plan") == "gold", "gold.plan == 'gold'", str(lim_g.get("plan")))
+        r.check(lim_g.get("limit") == 2, "gold.limit == 2", str(lim_g.get("limit")))
+        r.check(lim_g.get("suggested_upgrade") == "Platinum",
+                "gold.suggested_upgrade == 'Platinum'",
+                str(lim_g.get("suggested_upgrade")))
 
+        # If user2 already has less than 2, fill up to 2
+        gold_created = []
+        cur_count = lim_g.get("current_count", 0)
+        while cur_count < 2:
+            resp = create_courier(user2_tok, f"GoldTest{cur_count+1}", f"GT{cur_count+1}")
+            r.check(resp.status_code == 200,
+                    f"Gold POST up to cap #{cur_count+1} → 200",
+                    f"status={resp.status_code} body={resp.text[:200]}")
+            if resp.status_code == 200:
+                gold_created.append(resp.json()["id"])
+                cur_count += 1
+            else:
+                break
 
-def set_plan(user_id: str, plan: str) -> Dict[str, Any]:
-    return asyncio.get_event_loop().run_until_complete(_set_plan(user_id, plan))
+        # 3rd courier on gold → 403 with 'Upgrade to Platinum'
+        resp3g = create_courier(user2_tok, "GoldTest3", "GT3")
+        print(f"  Gold 3rd POST status={resp3g.status_code} body={resp3g.text[:300]}")
+        r.check(resp3g.status_code == 403,
+                "gold 3rd POST → 403", f"got {resp3g.status_code}")
+        detail_g = ""
+        try:
+            detail_g = (resp3g.json() or {}).get("detail", "")
+        except Exception:
+            pass
+        r.check("Upgrade to Platinum" in detail_g,
+                "gold 403 detail contains 'Upgrade to Platinum'", detail_g)
+        if resp3g.status_code == 200:
+            try:
+                gold_created.append(resp3g.json()["id"])
+            except Exception:
+                pass
 
+        # Clean up gold-created couriers
+        for cid in gold_created:
+            delete_courier(user2_tok, cid)
 
-def main() -> int:
-    try:
-        admin = login(ADMIN_EMAIL, ADMIN_PASS)
-        record("admin login", True, f"id={admin.get('id','')[:8]}")
-    except Exception as e:
-        record("admin login", False, str(e)); return 1
-    try:
-        user = login(USER_EMAIL, USER_PASS)
-        record("user2 login", True, f"id={user.get('id','')[:8]} plan={user.get('plan')}")
-    except Exception as e:
-        record("user2 login", False, str(e)); return 1
+        # =================================================================
+        # 4) Silver regression
+        # =================================================================
+        print("\n[4] Silver regression")
+        asyncio.run(set_user_plan(USER2_EMAIL, "silver"))
+        lim_s = get_limits(user2_tok)
+        print("  silver.limits:", json.dumps(lim_s))
+        r.check(lim_s.get("plan") == "silver",
+                "silver.plan == 'silver'", str(lim_s.get("plan")))
+        r.check(lim_s.get("limit") == 1, "silver.limit == 1", str(lim_s.get("limit")))
+        r.check(lim_s.get("suggested_upgrade") == "Gold",
+                "silver.suggested_upgrade == 'Gold'",
+                str(lim_s.get("suggested_upgrade")))
+        # With the 1 seeded default courier, can_add should be False
+        if lim_s.get("current_count", 0) >= 1:
+            r.check(lim_s.get("can_add") is False,
+                    "silver.can_add == false (already at 1)",
+                    str(lim_s.get("can_add")))
 
-    admin_tok = admin["token"]
-    user_tok = user["token"]
-    user_id = user["id"]
-    original_plan = user.get("plan") or "free_trial"
-
-    r = requests.get(f"{API}/couriers/limits", timeout=30)
-    record("/couriers/limits requires auth", r.status_code in (401, 403), f"got {r.status_code}")
-
-    sc, body = get_limits(user_tok)
-    print(f"[INFO] user2 limits initial: {body}")
-    record("user2 GET /couriers/limits 200", sc == 200, f"status={sc}")
-    user2_plan_key = body.get("plan")
-    record("user2 plan in {free_trial, silver}", user2_plan_key in ("free_trial", "silver"), f"plan={user2_plan_key}")
-    record("user2 limit == 1", body.get("limit") == 1, f"limit={body.get('limit')}")
-    record("user2 current_count == 1 (default seeded courier)", body.get("current_count") == 1, f"current_count={body.get('current_count')}")
-    record("user2 can_add == False", body.get("can_add") is False, f"can_add={body.get('can_add')}")
-    record("user2 is_unlimited == False", body.get("is_unlimited") is False, f"is_unlimited={body.get('is_unlimited')}")
-    record("user2 is_admin == False", body.get("is_admin") is False, f"is_admin={body.get('is_admin')}")
-    record("user2 suggested_upgrade in {Silver, Gold}", body.get("suggested_upgrade") in ("Silver", "Gold"), f"suggested_upgrade={body.get('suggested_upgrade')}")
-
-    sc, body = create_courier(user_tok, "Test Cap")
-    record("user2 POST /couriers 403 at cap", sc == 403, f"status={sc} body={body}")
-    detail = (body.get("detail") if isinstance(body, dict) else "") or ""
-    record("403 detail mentions plan label (Silver or Free Trial)", ("Silver plan" in detail) or ("Free Trial plan" in detail), f"detail='{detail}'")
-    record("403 detail says 'Upgrade to <NextTier>'", ("Upgrade to Gold" in detail) or ("Upgrade to Silver" in detail), f"detail='{detail}'")
-
-    sc, body = get_limits(admin_tok)
-    print(f"[INFO] admin limits: {body}")
-    record("admin GET /couriers/limits 200", sc == 200, f"status={sc}")
-    record("admin is_admin == True", body.get("is_admin") is True, f"is_admin={body.get('is_admin')}")
-    record("admin is_unlimited == True", body.get("is_unlimited") is True, f"is_unlimited={body.get('is_unlimited')}")
-    record("admin limit == None", body.get("limit") is None, f"limit={body.get('limit')}")
-    record("admin can_add == True", body.get("can_add") is True, f"can_add={body.get('can_add')}")
-
-    sc, body = create_courier(admin_tok, "PlanCap Admin Test")
-    admin_courier_id = body.get("id") if sc == 200 else None
-    record("admin POST /couriers succeeds (any count)", sc == 200, f"status={sc} id={admin_courier_id}")
-    if admin_courier_id:
-        del_sc = delete_courier(admin_tok, admin_courier_id)
-        record("admin cleanup DELETE /couriers/{id}", del_sc == 200, f"status={del_sc}")
-
-    sc, ad_couriers = list_couriers(admin_tok)
-    record("admin GET /couriers list 200", sc == 200, f"count={len(ad_couriers) if isinstance(ad_couriers, list) else 'n/a'}")
-    if isinstance(ad_couriers, list) and ad_couriers:
-        sample_id = ad_couriers[0]["id"]
-        sc, sample = get_courier(admin_tok, sample_id)
-        record("GET /couriers/{valid_id} returns specific courier", sc == 200 and sample.get("id") == sample_id, f"status={sc} id={sample.get('id')}")
-    else:
-        record("admin had at least 1 seeded courier for sanity check", False, "list empty")
-
-    sc, u_couriers = list_couriers(user_tok)
-    record("user2 GET /couriers list 200", sc == 200, f"status={sc}")
-    record("user2 list contains exactly 1 courier", isinstance(u_couriers, list) and len(u_couriers) == 1, f"count={len(u_couriers) if isinstance(u_couriers, list) else 'n/a'}")
-
-    created_in_gold: List[str] = []
-    try:
-        upd = set_plan(user_id, "gold")
-        record("Mongo: set user2 plan = gold", upd.get("plan") == "gold", f"plan={upd.get('plan')}")
-
-        sc, body = get_limits(user_tok)
-        print(f"[INFO] user2 limits as GOLD (existing token): {body}")
-        if body.get("plan") != "gold":
-            user2 = login(USER_EMAIL, USER_PASS)
-            user_tok = user2["token"]
-            sc, body = get_limits(user_tok)
-            print(f"[INFO] user2 limits after re-login (GOLD): {body}")
-
-        record("GOLD: GET /couriers/limits plan=gold", body.get("plan") == "gold", f"plan={body.get('plan')}")
-        record("GOLD: limit == 2", body.get("limit") == 2, f"limit={body.get('limit')}")
-        record("GOLD: current_count == 1", body.get("current_count") == 1, f"current_count={body.get('current_count')}")
-        record("GOLD: can_add == True", body.get("can_add") is True, f"can_add={body.get('can_add')}")
-        record("GOLD: suggested_upgrade == Platinum", body.get("suggested_upgrade") == "Platinum", f"suggested_upgrade={body.get('suggested_upgrade')}")
-
-        sc, body = create_courier(user_tok, "Gold Slot 2", prefix="G")
-        if sc == 200 and body.get("id"):
-            created_in_gold.append(body["id"])
-        record("GOLD: POST /couriers (2nd) 200", sc == 200, f"status={sc} body={body if sc!=200 else 'ok'}")
-
-        sc, body = get_limits(user_tok)
-        record("GOLD: after add - current_count == 2", body.get("current_count") == 2, f"current_count={body.get('current_count')}")
-        record("GOLD: after add - can_add == False", body.get("can_add") is False, f"can_add={body.get('can_add')}")
-
-        sc, body = create_courier(user_tok, "Gold Slot 3 should fail", prefix="X")
-        record("GOLD: POST /couriers (3rd) 403", sc == 403, f"status={sc}")
-        detail = (body.get("detail") if isinstance(body, dict) else "") or ""
-        record("GOLD: 403 detail mentions 'Gold plan'", "Gold plan" in detail, f"detail='{detail}'")
-        record("GOLD: 403 detail says 'Upgrade to Platinum'", "Upgrade to Platinum" in detail, f"detail='{detail}'")
-    except Exception as e:
-        record("GOLD plan simulation block", False, f"exception: {e}")
     finally:
-        for cid in created_in_gold:
-            delete_courier(user_tok, cid)
+        # Final cleanup — restore plan + delete any stragglers
+        print("\n[cleanup] restoring user2.plan and deleting stragglers")
+        # Clean leftover created couriers
+        try:
+            all_c = list_couriers(user2_tok)
+            for c in all_c:
+                if c.get("name", "").startswith(("PlatTest", "GoldTest")):
+                    dr = delete_courier(user2_tok, c["id"])
+                    print(f"  cleanup delete {c['name']} → {dr.status_code}")
+        except Exception as e:
+            print(f"  cleanup list/delete error: {e}")
+        restored = prev_plan if prev_plan else "silver"
+        asyncio.run(set_user_plan(USER2_EMAIL, restored))
+        print(f"  user2.plan restored to {restored!r}")
 
-    created_in_plat: List[str] = []
-    try:
-        upd = set_plan(user_id, "platinum")
-        record("Mongo: set user2 plan = platinum", upd.get("plan") == "platinum")
-
-        user2 = login(USER_EMAIL, USER_PASS)
-        user_tok = user2["token"]
-
-        sc, body = get_limits(user_tok)
-        print(f"[INFO] user2 limits as PLATINUM: {body}")
-        record("PLATINUM: plan=platinum", body.get("plan") == "platinum", f"plan={body.get('plan')}")
-        record("PLATINUM: is_unlimited == True", body.get("is_unlimited") is True, f"is_unlimited={body.get('is_unlimited')}")
-        record("PLATINUM: limit == None", body.get("limit") is None, f"limit={body.get('limit')}")
-        record("PLATINUM: can_add == True", body.get("can_add") is True, f"can_add={body.get('can_add')}")
-
-        for label in ("Platinum 1", "Platinum 2", "Platinum 3"):
-            sc, body = create_courier(user_tok, label, prefix="P")
-            if sc == 200 and body.get("id"):
-                created_in_plat.append(body["id"])
-            record(f"PLATINUM: POST /couriers '{label}' succeeds", sc == 200, f"status={sc}")
-    except Exception as e:
-        record("PLATINUM plan simulation block", False, f"exception: {e}")
-    finally:
-        for cid in created_in_plat:
-            delete_courier(user_tok, cid)
-
-    try:
-        upd = set_plan(user_id, original_plan)
-        record(f"Mongo: restored user2 plan = {original_plan}", (upd.get("plan") or "") == original_plan, f"plan={upd.get('plan')}")
-    except Exception as e:
-        record("Restore user2 original plan", False, str(e))
-
-    user2 = login(USER_EMAIL, USER_PASS)
-    user_tok = user2["token"]
-    sc, u_couriers = list_couriers(user_tok)
-    record("Final regression: user2 list still works", sc == 200, f"status={sc}")
-    record("Final regression: user2 has exactly 1 courier (cleanup ok)", isinstance(u_couriers, list) and len(u_couriers) == 1, f"count={len(u_couriers) if isinstance(u_couriers, list) else 'n/a'}")
-    sc, body = get_limits(user_tok)
-    record("Final regression: limit reverted to 1", body.get("limit") == 1 and body.get("current_count") == 1, f"body={body}")
-
-    passed = sum(1 for _, ok, _ in results if ok)
-    total = len(results)
-    print("\n=========================")
-    print(f"PASSED: {passed}/{total}")
-    print(f"FAILED: {total - passed}")
-    if total - passed:
-        print("Failures:")
-        for name, ok, detail in results:
-            if not ok:
-                print(f"  - {name} :: {detail}")
-    return 0 if passed == total else 1
+    # =====================================================================
+    print("\n" + "=" * 60)
+    print(f"RESULT  passed={r.passed}  failed={r.failed}")
+    if r.failures:
+        print("FAILURES:")
+        for f in r.failures:
+            print(f"  - {f}")
+    print("=" * 60)
+    return 0 if r.failed == 0 else 1
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(run())

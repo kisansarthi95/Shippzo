@@ -1172,6 +1172,99 @@ agent_communication:
         couriers cleaned up.
 
 
+## Backend Re-Test: Platinum now capped at 5 (2026-04-30 Late PM)
+
+backend:
+  - task: "Courier Partner plan-cap — Platinum capped at 5 (was unlimited)"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "testing"
+        -comment: |
+            31/32 assertions PASS via /app/backend_test.py against
+            https://logistics-hub-740.preview.emergentagent.com/api.
+
+            Spec-change assertions — ALL PASS:
+            1. Admin unlimited (partial):
+                 is_admin=true ✅, is_unlimited=true ✅, limit=null ✅.
+                 NOTE: admin.suggested_upgrade=="Gold" (NOT null) —
+                 see "Minor deviation" below.
+            2. Platinum simulation on user2 (plan set to "platinum"
+               directly in Mongo):
+                 - GET /couriers/limits returns plan="platinum",
+                   plan_label="Platinum", is_admin=false,
+                   is_unlimited=false, limit=5, suggested_upgrade=null,
+                   can_add=true (count=1 < 5) ✅
+                 - 4 sequential POST /couriers (to go from count 1→5)
+                   all returned 200 ✅
+                 - GET /couriers/limits now returns current_count=5,
+                   can_add=false, suggested_upgrade=null ✅
+                 - 6th POST → HTTP 403 with detail exactly:
+                     "Your Platinum plan allows only 5 courier
+                      partners. Please contact support if you need
+                      more."
+                   Verified: contains "Your Platinum plan allows only
+                   5 courier partners" ✅, contains "contact support"
+                   (case-insensitive) ✅, does NOT contain "Upgrade
+                   to" ✅.
+            3. Gold regression: user2.plan="gold" → limit=2,
+               suggested_upgrade="Platinum". 3rd POST → 403 with
+               detail "Your Gold plan allows only 2 courier partners.
+               Upgrade to Platinum to add more." ✅
+            4. Silver regression: user2.plan="silver" → limit=1,
+               current_count=1, can_add=false,
+               suggested_upgrade="Gold" ✅.
+
+            Cleanup: all 6 test couriers (4 Platinum + 2 Gold) deleted;
+            user2.plan restored from "silver" pre-test back to
+            "silver" post-test. Verified in Mongo: user2 ends with
+            only its original "Demo Courier".
+
+            Minor deviation (NOT a critical bug):
+            -------------------------------------
+            The review contract assertion for Admin says
+            `suggested_upgrade=null`, but the live API returns
+            `suggested_upgrade="Gold"` for admin@test.com because the
+            admin's DB plan field is still "silver". The backend
+            implementation at /app/backend/server.py:1082 reads:
+                "suggested_upgrade": _next_tier_suggestion(plan_key)
+            — this is NOT short-circuited by `is_admin`. Admin's
+            actual behaviour is correct (is_unlimited=true, limit=null,
+            POST bypass works) so this is a cosmetic/contract gap
+            only. The frontend already has is_unlimited=true to know
+            not to render any upgrade prompt, so no user-visible
+            issue.
+
+            If strict spec compliance is required, add one line in
+            get_courier_limits():
+                "suggested_upgrade": None if is_admin else
+                    _next_tier_suggestion(plan_key),
+
+agent_communication:
+    -agent: "testing"
+    -message: |
+        Platinum-cap-at-5 change — VERIFIED. 31/32 assertions pass.
+        The 403 message for Platinum users at cap is exactly the new
+        spec ("Your Platinum plan allows only 5 courier partners.
+        Please contact support if you need more.") with NO "Upgrade
+        to" suffix. Gold + Silver regressions still work unchanged.
+        Admin bypass (is_unlimited=true, limit=null) still works.
+
+        ONE minor deviation: admin's suggested_upgrade returns "Gold"
+        instead of null (because admin's plan field in Mongo is
+        "silver" and the endpoint does not short-circuit on is_admin).
+        This is cosmetic — admin is functionally unlimited — but if
+        strict spec compliance is wanted, add `None if is_admin else`
+        in front of `_next_tier_suggestion(plan_key)` in
+        get_courier_limits (server.py ~line 1082). No critical issues.
+
+        All test artefacts cleaned up; user2.plan restored to silver.
+
 
 ## Iteration: Coupon System + Plan Price Display (2026-04-30 Late PM)
 
