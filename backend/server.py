@@ -3163,12 +3163,23 @@ async def smart_paste_create(
             detail="Google Sheets integration not configured on server.",
         )
 
-    # ---- 1b) Phase-B: best-effort write to the user's OWN sheet ----
-    # If the user has linked their personal sheet via Settings.sheet,
-    # mirror the same row there so they have a private copy. We swallow
-    # all exceptions — Master Sheet is the source of truth.
-    user_sheet_meta: Dict[str, Any] = {"ok": False, "skipped": True}
-    if sheet_append_user is not None:
+    # ---- 1b) Phase-B / Phase-D: best-effort write to the user's OWN sheet ----
+    # PHASE-D (2026-04-29): Disabled by default. The user's sheet is now
+    # READ-ONLY from the system's perspective — orders are only written
+    # to the central Master Sheet, and the user can pull a personal copy
+    # via the "Restore My Orders" button (Phase-C).
+    # The auto-mirror feature is gated behind a future Premium plan.
+    # When that plan ships, set `admin_config.auto_write_user_sheet = true`
+    # to re-enable system-side dual-write.
+    user_sheet_meta: Dict[str, Any] = {"ok": False, "skipped": True, "reason": "auto-write disabled (Premium feature)"}
+    try:
+        adm_cfg = await db.admin_config.find_one(
+            {"_id": "default"}, {"_id": 0, "auto_write_user_sheet": 1},
+        ) or {}
+        auto_write_user_sheet = bool(adm_cfg.get("auto_write_user_sheet", False))
+    except Exception:
+        auto_write_user_sheet = False
+    if auto_write_user_sheet and sheet_append_user is not None:
         try:
             usr_settings = await db.settings.find_one(
                 {"user_id": current_user["id"]},

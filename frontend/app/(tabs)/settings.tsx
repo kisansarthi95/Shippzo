@@ -1550,6 +1550,47 @@ export default function SettingsScreen() {
                   </TouchableOpacity>
                 </View>
 
+                {/* Phase-D: "Coming Soon" — Auto-Sync to Your Sheet
+                    (gated behind future Premium plan). Currently the
+                    user's sheet is read-only from the system; orders only
+                    write to the central Master Sheet. The user pulls a
+                    personal copy via "Restore My Orders" below. */}
+                <View
+                  style={{
+                    marginTop: 10,
+                    backgroundColor: "#FEF3C7",
+                    borderColor: "#FCD34D",
+                    borderWidth: 1,
+                    borderRadius: 10,
+                    padding: 10,
+                    flexDirection: "row",
+                    alignItems: "center",
+                    gap: 8,
+                  }}
+                >
+                  <Ionicons name="time-outline" size={18} color="#92400E" />
+                  <View style={{ flex: 1 }}>
+                    <Text style={{ fontSize: 13, fontWeight: "800", color: "#92400E" }}>
+                      Auto-Sync to Your Sheet  ·  Coming Soon
+                    </Text>
+                    <Text style={{ fontSize: 11, color: "#78350F", marginTop: 2 }}>
+                      દરેક નવો order આપોઆપ તમારી પોતાની sheet માં લખાય — Premium plan માં available થશે. હાલ "Restore My Orders" થી manual pull કરો.
+                    </Text>
+                  </View>
+                  <View
+                    style={{
+                      backgroundColor: "#92400E",
+                      paddingHorizontal: 8,
+                      paddingVertical: 3,
+                      borderRadius: 6,
+                    }}
+                  >
+                    <Text style={{ color: "#fff", fontSize: 10, fontWeight: "900", letterSpacing: 0.6 }}>
+                      PREMIUM
+                    </Text>
+                  </View>
+                </View>
+
                 {/* Phase-C: Sync rows from Master Sheet (filtered by user_id). */}
                 <TouchableOpacity
                   testID="sheet-sync-from-master-btn"
