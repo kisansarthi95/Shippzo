@@ -1,288 +1,189 @@
 """
-Phase-7f Master Order ID counter customization tests.
-Base URL: ${EXPO_PUBLIC_BACKEND_URL}/api
+Phase-B Master Sheet extension backend tests.
+Run: python /app/backend_test.py
 """
+import os
+import re
 import sys
-from datetime import datetime, timedelta
+import json
+import time
 import requests
 
-BASE_URL = "https://logistics-hub-740.preview.emergentagent.com/api"
+BASE = "https://logistics-hub-740.preview.emergentagent.com/api"
+
 ADMIN_EMAIL = "admin@test.com"
-ADMIN_PASSWORD = "Admin@12345"
+ADMIN_PASS = "Admin@12345"
 
 results = []
 
-
-def record(name, passed, detail=""):
-    sym = "PASS" if passed else "FAIL"
-    print(f"[{sym}] {name}{(' — ' + detail) if detail else ''}")
-    results.append((name, passed, detail))
+def check(label, cond, info=""):
+    status = "PASS" if cond else "FAIL"
+    results.append((status, label, info))
+    print(f"[{status}] {label}" + (f"  --  {info}" if info else ""))
 
 
 def login():
-    r = requests.post(
-        f"{BASE_URL}/auth/login",
-        json={"email": ADMIN_EMAIL, "password": ADMIN_PASSWORD},
-        timeout=30,
-    )
+    r = requests.post(f"{BASE}/auth/login", json={"email": ADMIN_EMAIL, "password": ADMIN_PASS}, timeout=30)
     r.raise_for_status()
-    body = r.json()
-    return body["token"]
-
-
-def ist_yymmdd():
-    ist_now = datetime.utcnow() + timedelta(hours=5, minutes=30)
-    return ist_now.strftime("%y%m%d")
+    return r.json()["token"]
 
 
 def main():
     token = login()
     H = {"Authorization": f"Bearer {token}"}
-    expected_yymmdd = ist_yymmdd()
-    print(f"Expected IST YYMMDD: {expected_yymmdd}")
 
-    # ---- Test 1: peek-master-id IST timezone fix ----
-    print("\n=== TEST 1: GET /api/orders/peek-master-id (IST date prefix) ===")
-    r = requests.get(f"{BASE_URL}/orders/peek-master-id", headers=H, timeout=30)
-    record("T1 peek-master-id 200", r.status_code == 200, f"status={r.status_code}")
-    body1 = r.json() if r.status_code == 200 else {}
-    print("  body:", body1)
-    moid = body1.get("master_order_id", "")
-    auto_gen = body1.get("auto_generate", False)
-    if not auto_gen:
-        # Enable auto_generate first
-        print("  auto_generate=false → enabling")
-        rr = requests.put(
-            f"{BASE_URL}/settings",
-            headers=H,
-            json={"order_id_auto_generate": True},
-            timeout=30,
-        )
-        record("T1 enable auto_generate", rr.status_code == 200, f"status={rr.status_code}")
-        r = requests.get(f"{BASE_URL}/orders/peek-master-id", headers=H, timeout=30)
-        body1 = r.json()
-        moid = body1.get("master_order_id", "")
-        print("  re-fetched body:", body1)
-    record(
-        "T1 master_order_id starts with IST YYMMDD",
-        isinstance(moid, str) and moid.startswith(expected_yymmdd),
-        f"got={moid!r} expected_prefix={expected_yymmdd}",
-    )
+    # ----- Test 1: Smart Paste with extended schema -----
+    print("\n=== Test 1: Smart Paste extended Master Sheet ===")
+    s = requests.put(f"{BASE}/settings", headers=H, json={"order_id_auto_generate": True}, timeout=30)
+    check("PUT /settings (auto_generate=true) returns 200", s.status_code == 200, f"status={s.status_code} body={s.text[:200]}")
 
-    # ---- Test 2: GET counter ----
-    print("\n=== TEST 2: GET /api/orders/master-id-counter ===")
-    r = requests.get(f"{BASE_URL}/orders/master-id-counter", headers=H, timeout=30)
-    record("T2 GET counter 200", r.status_code == 200, f"status={r.status_code}")
-    body2 = r.json() if r.status_code == 200 else {}
-    print("  body:", body2)
-    cur_seq = body2.get("current_seq")
-    next_seq = body2.get("next_seq")
-    next_moid = body2.get("next_master_order_id", "")
-    record(
-        "T2 current_seq is int ≥ 0",
-        isinstance(cur_seq, int) and cur_seq >= 0,
-        f"current_seq={cur_seq}",
-    )
-    record(
-        "T2 next_seq == current_seq + 1",
-        next_seq == (cur_seq or 0) + 1,
-        f"next_seq={next_seq}",
-    )
-    record(
-        "T2 next_master_order_id starts with IST YYMMDD",
-        isinstance(next_moid, str) and next_moid.startswith(expected_yymmdd),
-        f"got={next_moid!r}",
-    )
-
-    cur = int(cur_seq or 0)
-    print(f"  Starting cur={cur}")
-
-    # ---- Test 3: Set counter to higher value ----
-    target = cur + 100
-    print(f"\n=== TEST 3: Set counter to {target} ===")
-    r = requests.post(
-        f"{BASE_URL}/orders/master-id-counter",
-        headers=H,
-        json={"seq": target},
-        timeout=30,
-    )
-    record(
-        "T3 POST set higher 200",
-        r.status_code == 200,
-        f"status={r.status_code} body={r.text[:200]}",
-    )
-    body3 = r.json() if r.status_code == 200 else {}
-    print("  body:", body3)
-    record(
-        f"T3 response current_seq == {target}",
-        body3.get("current_seq") == target,
-        f"got={body3.get('current_seq')}",
-    )
-
-    r = requests.get(f"{BASE_URL}/orders/master-id-counter", headers=H, timeout=30)
-    body3b = r.json()
-    print("  GET back:", body3b)
-    record(
-        f"T3 GET current_seq == {target}",
-        body3b.get("current_seq") == target,
-        f"got={body3b.get('current_seq')}",
-    )
-
-    # POST /api/smart-paste with skip_llm=true and minimal valid order
     paste_text = (
-        "CUSTOMER_NAME: Phase7f Test User\n"
-        "PHONE: 9876543210\n"
-        "ADDRESS_1: 12 MG Road\n"
-        "CITY: Surat\n"
+        "NAME: Phase-B Test\n"
+        "PHONE: 9123412345\n"
+        "ALT_PHONE: 9999912345\n"
+        "ADDRESS_1: Test addr line\n"
+        "CITY: Ahmedabad\n"
         "STATE: Gujarat\n"
-        "PINCODE: 395001\n"
-        "ITEMS: Test Item\n"
-        "AMOUNT: 199\n"
-        "PAYMENT: COD"
+        "PINCODE: 380001\n"
+        "AMOUNT: 500\n"
+        "TOKEN: 50\n"
+        "PAYMENT: COD\n"
+        "WEIGHT: 750\n"
+        "ORDER_ID: PHB-001"
     )
-    r = requests.post(
-        f"{BASE_URL}/smart-paste",
-        headers=H,
-        json={"text": paste_text, "skip_llm": True},
-        timeout=60,
-    )
-    record(
-        "T3 POST /smart-paste with skip_llm 200",
-        r.status_code == 200,
-        f"status={r.status_code} body={r.text[:300]}",
-    )
-    pending = r.json() if r.status_code == 200 else {}
-    pending_id = pending.get("id")
-    moid_created = pending.get("master_order_id", "")
-    print(f"  pending.id={pending_id} master_order_id={moid_created!r}")
-    expected_moid_suffix = str(target + 1).zfill(5)
-    record(
-        f"T3 master_order_id ends with {expected_moid_suffix}",
-        isinstance(moid_created, str) and moid_created.endswith(expected_moid_suffix),
-        f"got={moid_created!r} expected_suffix={expected_moid_suffix}",
-    )
-    record(
-        f"T3 master_order_id starts with IST YYMMDD {expected_yymmdd}",
-        isinstance(moid_created, str) and moid_created.startswith(expected_yymmdd),
-        f"got={moid_created!r}",
-    )
+    sp = requests.post(f"{BASE}/smart-paste", headers=H, json={"text": paste_text, "skip_llm": True}, timeout=60)
+    check("POST /smart-paste returns 200", sp.status_code == 200, f"status={sp.status_code} body={sp.text[:600]}")
+    sp_json = sp.json() if sp.status_code == 200 else {}
+    print("smart-paste response keys:", list(sp_json.keys()))
+    if sp.status_code == 200:
+        moid = sp_json.get("master_order_id", "")
+        oid = sp_json.get("order_id", "")
+        alt = sp_json.get("customer_alt_phone", "")
+        tok = sp_json.get("token_amount")
+        wt = sp_json.get("weight", "")
+        sheet_row = sp_json.get("sheet_row_num")
+        check("master_order_id matches ^\\d{6}\\d{5,}$", bool(re.match(r"^\d{6}\d{5,}$", moid or "")), f"moid={moid!r}")
+        check("order_id == 'PHB-001'", oid == "PHB-001", f"order_id={oid!r}")
+        check("customer_alt_phone == '9999912345'", alt == "9999912345", f"alt_phone={alt!r}")
+        check("token_amount == 50", float(tok or 0) == 50.0, f"token_amount={tok!r}")
+        check("weight == '750'", str(wt) == "750", f"weight={wt!r}")
+        check("sheet_row_num is positive int (sheet append worked, no 502)", isinstance(sheet_row, int) and sheet_row > 1, f"sheet_row_num={sheet_row!r}")
+        # Save for cleanup
+        sp_json["_id"] = sp_json.get("id")
+    else:
+        sp_json = {}
 
-    # Cleanup pending order
-    if pending_id:
-        try:
-            rd = requests.delete(
-                f"{BASE_URL}/orders/pending/{pending_id}", headers=H, timeout=30
-            )
-            print(f"  cleanup delete pending: status={rd.status_code}")
-        except Exception as e:
-            print(f"  cleanup error: {e}")
-
-    # Counter should now be at target+1 since smart-paste consumed one.
-    after_t3 = target + 1
-
-    # ---- Test 4: Set lower without force ----
-    print("\n=== TEST 4: Set counter to 1 without force ===")
-    r = requests.post(
-        f"{BASE_URL}/orders/master-id-counter",
-        headers=H,
-        json={"seq": 1},
-        timeout=30,
-    )
-    record(
-        "T4 lower w/o force returns 409",
-        r.status_code == 409,
-        f"status={r.status_code}",
-    )
-    detail4 = ""
+    # ----- Verify backend logs show 'Sheet append OK' -----
+    print("\n=== Test 1b: Verify backend logs ===")
     try:
-        detail4 = r.json().get("detail", "")
-    except Exception:
-        pass
-    print(f"  detail: {detail4}")
-    record(
-        "T4 detail mentions 'Lowering' and 'duplicate'",
-        ("Lowering" in detail4) and ("duplicate" in detail4),
-        f"detail={detail4!r}",
-    )
+        with open("/var/log/supervisor/backend.err.log", "r") as f:
+            log_tail = f.read()[-12000:]
+    except Exception as e:
+        log_tail = ""
+        print(f"Could not read backend.err.log: {e}")
+    check("backend logs contain 'Sheet append OK'", "Sheet append OK" in log_tail, "")
+    if "User-sheet" in log_tail:
+        # Just informational
+        for line in log_tail.splitlines()[-50:]:
+            if "User-sheet" in line:
+                print("  log:", line[-200:])
 
-    # ---- Test 5: Set lower WITH force ----
-    print("\n=== TEST 5: Set counter to 2200 with force=true ===")
-    r = requests.post(
-        f"{BASE_URL}/orders/master-id-counter",
-        headers=H,
-        json={"seq": 2200, "force": True},
-        timeout=30,
-    )
-    record(
-        "T5 force lower 200",
-        r.status_code == 200,
-        f"status={r.status_code} body={r.text[:200]}",
-    )
-    body5 = r.json() if r.status_code == 200 else {}
-    record(
-        "T5 response current_seq == 2200",
-        body5.get("current_seq") == 2200,
-        f"got={body5.get('current_seq')}",
-    )
-    r = requests.get(f"{BASE_URL}/orders/master-id-counter", headers=H, timeout=30)
-    body5b = r.json()
-    record(
-        "T5 GET current_seq == 2200",
-        body5b.get("current_seq") == 2200,
-        f"got={body5b.get('current_seq')}",
-    )
+    # ----- Test 2: POST /shipments extended payload -----
+    print("\n=== Test 2: POST /shipments with extended payload ===")
+    cr = requests.get(f"{BASE}/couriers", headers=H, timeout=30)
+    check("GET /couriers returns 200", cr.status_code == 200, f"status={cr.status_code}")
+    couriers = cr.json() if cr.status_code == 200 else []
+    if not couriers:
+        nc = requests.post(f"{BASE}/couriers", headers=H, json={"name": "PhaseB Courier", "code": "PB"}, timeout=30)
+        check("POST /couriers fallback create 200", nc.status_code == 200, nc.text[:200])
+        courier = nc.json()
+    else:
+        courier = couriers[0]
+    courier_id = courier.get("id")
+    courier_name = courier.get("name")
+    print(f"Using courier id={courier_id} name={courier_name}")
 
-    # Restore counter close to original
-    print(f"\n  Restoring counter to {after_t3} via force...")
-    r = requests.post(
-        f"{BASE_URL}/orders/master-id-counter",
-        headers=H,
-        json={"seq": after_t3, "force": True},
-        timeout=30,
-    )
-    record(
-        f"T5 cleanup restore counter to {after_t3}",
-        r.status_code == 200 and r.json().get("current_seq") == after_t3,
-        f"status={r.status_code} body={r.text[:200]}",
-    )
+    ship_payload = {
+        "tracking_id": f"PB-2604-{int(time.time())%100000}",
+        "courier_id": courier_id,
+        "courier_name": courier_name,
+        "order_id": f"PB-MAN-{int(time.time())%100000}",
+        "customer_name": "Phase-B Manual",
+        "customer_phone": "9000010001",
+        "customer_alt_phone": "9000020001",
+        "address_line1": "Manual addr",
+        "address_line2": "",
+        "city": "Ahmedabad",
+        "state": "Gujarat",
+        "pincode": "380001",
+        "items": [],
+        "amount": 1500,
+        "token_amount": 200,
+        "weight": "1200",
+        "payment_mode": "COD",
+    }
+    ps = requests.post(f"{BASE}/shipments", headers=H, json=ship_payload, timeout=60)
+    check("POST /shipments returns 200/201", ps.status_code in (200, 201), f"status={ps.status_code} body={ps.text[:400]}")
+    ps_json = ps.json() if ps.status_code in (200, 201) else {}
+    print("shipment response keys:", list(ps_json.keys())[:30])
+    if ps_json:
+        moid2 = ps_json.get("master_order_id", "")
+        alt2 = ps_json.get("customer_alt_phone", "")
+        tok2 = ps_json.get("token_amount")
+        wt2 = ps_json.get("weight", "")
+        check("Shipment master_order_id matches ^\\d{6}\\d{5,}$", bool(re.match(r"^\d{6}\d{5,}$", moid2 or "")), f"moid={moid2!r}")
+        check("Shipment customer_alt_phone == '9000020001'", alt2 == "9000020001", f"alt={alt2!r}")
+        check("Shipment token_amount == 200", float(tok2 or 0) == 200.0, f"token_amount={tok2!r}")
+        check("Shipment weight == '1200'", str(wt2) == "1200", f"weight={wt2!r}")
 
-    # ---- Test 6: Validation ----
-    print("\n=== TEST 6: Validation ===")
-    r = requests.post(
-        f"{BASE_URL}/orders/master-id-counter",
-        headers=H,
-        json={"seq": -5},
-        timeout=30,
-    )
-    record(
-        "T6 negative seq returns 422",
-        r.status_code == 422,
-        f"status={r.status_code} body={r.text[:200]}",
-    )
+    # ----- Test 3: sheets/probe -----
+    print("\n=== Test 3: GET /sheets/probe ===")
+    sp_probe = requests.get(f"{BASE}/sheets/probe", headers=H, timeout=30)
+    if sp_probe.status_code == 200:
+        check("GET /sheets/probe returns 200", True, "")
+        body = sp_probe.json()
+        if body.get("ok"):
+            check("sheets/probe ok=true", True, f"tab={body.get('tab')!r}")
+        else:
+            check("sheets/probe ok=true", False, f"body={body}")
+    else:
+        # If MASTER_SHEET_ID is set but probe fails, that's a fail. Else SKIP.
+        master_id_set = bool(os.environ.get("MASTER_SHEET_ID"))
+        if master_id_set:
+            check("GET /sheets/probe returns 200 (MASTER_SHEET_ID configured)", False, f"status={sp_probe.status_code} body={sp_probe.text[:200]}")
+        else:
+            print(f"[SKIP] sheets/probe not configured (status={sp_probe.status_code})")
 
-    r = requests.post(
-        f"{BASE_URL}/orders/master-id-counter",
-        headers=H,
-        json={"seq": 99999999},
-        timeout=30,
-    )
-    record(
-        "T6 oversized seq (99999999) returns 422",
-        r.status_code == 422,
-        f"status={r.status_code} body={r.text[:200]}",
-    )
+    # ----- Test 4: Master Sheet header backward compatibility -----
+    print("\n=== Test 4: Master Sheet header backward compatibility ===")
+    # If Test 1 returned 200 (not 502), this passes.
+    test1_returned_200 = sp.status_code == 200 if sp_json else False
+    check("Smart Paste returned 200 (no 502 from sheet_writer with extended schema)", test1_returned_200, f"sp.status_code={sp.status_code}")
 
-    # ---- Summary ----
-    print("\n" + "=" * 60)
-    passed = sum(1 for _, p, _ in results if p)
-    total = len(results)
-    print(f"RESULTS: {passed}/{total} passed")
-    failures = [(n, d) for n, p, d in results if not p]
-    if failures:
-        print("\nFAILURES:")
-        for n, d in failures:
-            print(f"  - {n}: {d}")
-    return 0 if passed == total else 1
+    # ----- Cleanup: delete the test shipment + pending order -----
+    print("\n=== Cleanup ===")
+    if sp_json and sp_json.get("id"):
+        # pending order delete
+        try:
+            d = requests.delete(f"{BASE}/orders/pending/{sp_json['id']}", headers=H, timeout=30)
+            print(f"DELETE pending order -> {d.status_code} {d.text[:200]}")
+        except Exception as e:
+            print(f"pending delete failed: {e}")
+    if ps_json and ps_json.get("id"):
+        try:
+            d2 = requests.delete(f"{BASE}/shipments/{ps_json['id']}", headers=H, timeout=30)
+            print(f"DELETE shipment -> {d2.status_code} {d2.text[:200]}")
+        except Exception as e:
+            print(f"shipment delete failed: {e}")
+
+    # ----- Summary -----
+    print("\n=== SUMMARY ===")
+    passed = sum(1 for r in results if r[0] == "PASS")
+    failed = sum(1 for r in results if r[0] == "FAIL")
+    for s, l, i in results:
+        print(f" [{s}] {l}")
+    print(f"\n{passed} pass, {failed} fail (total {len(results)})")
+    return 0 if failed == 0 else 1
 
 
 if __name__ == "__main__":

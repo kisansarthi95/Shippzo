@@ -25,14 +25,17 @@ _SCOPES = [
     "https://www.googleapis.com/auth/drive",
 ]
 
-# Column order MUST match the Master Sheet headers exactly (left → right):
-#   Timestamp | User ID | Order ID | Name | Phone | Address | City |
-#   State | Pincode | Item Type (Product Name) | Amount (Total Value) |
-#   Payment Mode | Status | Notice
+# Column order MUST match the Master Sheet headers exactly (left → right).
+# Phase-B (2026-04) — extended schema with user_name, master_order_id,
+# alt_phone, token_amount, weight. Existing columns kept in original
+# positions for backward compatibility; new columns appended at END so
+# admins can safely add the new header cells without shifting old data.
 COLUMNS = [
     "timestamp", "user_id", "order_id", "name", "phone", "address",
     "city", "state", "pincode", "item_type", "amount",
     "payment_mode", "status", "notice",
+    # ── Phase-B extensions ──
+    "user_name", "master_order_id", "alt_phone", "token_amount", "weight",
 ]
 
 
@@ -227,6 +230,12 @@ def append_order_row(
     payment_mode: str = "",
     status: str = "Pending",
     notice: str = "",
+    # Phase-B extensions (default empty so existing callers keep working).
+    user_name: str = "",
+    master_order_id: str = "",
+    alt_phone: str = "",
+    token_amount: Any = "",
+    weight: str = "",
 ) -> Dict[str, Any]:
     """
     Append one row to the Master Sheet at the first guaranteed-empty row.
@@ -234,8 +243,12 @@ def append_order_row(
     Unlike gspread's `append_row`, this writes to an explicit row index
     computed via `_find_next_empty_row`, so rows that were previously
     soft-deleted (Status="DELETED") are preserved forever — no accidental
-    overwrite. Returns {"ok": True, "updated_range": "'Tab'!A<n>:N<n>",
+    overwrite. Returns {"ok": True, "updated_range": "'Tab'!A<n>:S<n>",
     "tab": ..., "sheet_id": ...} on success. Raises on failure.
+
+    Phase-B note: 19 columns total. New columns (user_name, master_order_id,
+    alt_phone, token_amount, weight) are appended at the END so existing
+    rows / headers don't shift positions.
     """
     ws = _get_worksheet()
     ts = datetime.now(timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M:%S")
@@ -245,6 +258,12 @@ def append_order_row(
         city, state, pincode, item_type,
         str(amount) if amount not in (None, "") else "",
         payment_mode, status, notice,
+        # ── Phase-B extensions (positions 15–19) ──
+        user_name,
+        master_order_id,
+        alt_phone,
+        str(token_amount) if token_amount not in (None, "") else "",
+        weight,
     ]
     next_row = _find_next_empty_row(ws)
     # Auto-grow the sheet if we're about to write past its allocated rows.
@@ -254,8 +273,8 @@ def append_order_row(
         except Exception:
             pass  # non-fatal; update() below will still work or raise cleanly.
 
-    # Columns A..N (14 cols) — build A1 range for the exact row.
-    last_col_letter = _col_letter(len(COLUMNS))  # "N" for 14 columns
+    # Columns A..S (19 cols) — build A1 range for the exact row.
+    last_col_letter = _col_letter(len(COLUMNS))  # "S" for 19 columns
     target_range = f"A{next_row}:{last_col_letter}{next_row}"
 
     ws.update(target_range, [row_values], value_input_option="USER_ENTERED")
@@ -268,6 +287,84 @@ def append_order_row(
         "updated_range": updated_range,
         "tab": ws.title,
         "sheet_id": os.getenv("MASTER_SHEET_ID", ""),
+    }
+
+
+def append_order_row_to_user_sheet(
+    sheet_id: str,
+    tab_name: str = "",
+    *,
+    # Same argument shape as append_order_row.
+    user_id: str = "",
+    order_id: str = "",
+    name: str = "",
+    phone: str = "",
+    address: str = "",
+    city: str = "",
+    state: str = "",
+    pincode: str = "",
+    item_type: str = "",
+    amount: Any = "",
+    payment_mode: str = "",
+    status: str = "Pending",
+    notice: str = "",
+    user_name: str = "",
+    master_order_id: str = "",
+    alt_phone: str = "",
+    token_amount: Any = "",
+    weight: str = "",
+) -> Dict[str, Any]:
+    """Phase-B: Write the SAME row to the user's own (per-user) sheet so
+    they have a personal copy without admin / cross-tenant leakage.
+
+    Best-effort by design — caller MUST swallow exceptions (the master
+    sheet is the source of truth). Auto-creates a header row on the
+    very first write to a fresh user tab.
+
+    Note: `tab_name` may be a worksheet title OR a numeric `gid` —
+    `_open_user_sheet` handles both.
+    """
+    if not sheet_id:
+        return {"ok": False, "skipped": True, "reason": "no sheet_id"}
+    ws = _open_user_sheet(sheet_id, tab_name or "0")
+    ts = datetime.now(timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M:%S")
+    row_values = [
+        ts, user_id, order_id, name, phone, address,
+        city, state, pincode, item_type,
+        str(amount) if amount not in (None, "") else "",
+        payment_mode, status, notice,
+        user_name,
+        master_order_id,
+        alt_phone,
+        str(token_amount) if token_amount not in (None, "") else "",
+        weight,
+    ]
+    # Auto-create header row if the sheet appears empty (no header yet).
+    try:
+        first_row = ws.row_values(1)
+    except Exception:
+        first_row = []
+    if not first_row:
+        try:
+            header = [c.replace("_", " ").title() for c in COLUMNS]
+            ws.update("A1:S1", [header], value_input_option="USER_ENTERED")
+        except Exception:
+            log.warning("Could not write header row to user sheet — appending anyway")
+
+    next_row = _find_next_empty_row(ws)
+    if hasattr(ws, "row_count") and next_row > int(ws.row_count):
+        try:
+            ws.add_rows(max(100, next_row - int(ws.row_count)))
+        except Exception:
+            pass
+    last_col = _col_letter(len(COLUMNS))
+    target_range = f"A{next_row}:{last_col}{next_row}"
+    ws.update(target_range, [row_values], value_input_option="USER_ENTERED")
+    return {
+        "ok": True,
+        "updated_range": f"'{ws.title}'!{target_range}",
+        "tab": ws.title,
+        "sheet_id": sheet_id,
     }
 
 

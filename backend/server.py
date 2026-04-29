@@ -66,6 +66,7 @@ from dateutil.relativedelta import relativedelta
 # Google Sheets writer (Service Account)
 try:
     from sheet_writer import append_order_row as sheet_append_order_row
+    from sheet_writer import append_order_row_to_user_sheet as sheet_append_user
     from sheet_writer import probe_connection as sheet_probe_connection
     from sheet_writer import mark_row_deleted as sheet_mark_row_deleted
     from sheet_writer import parse_row_from_updated_range as sheet_parse_row_from_updated_range
@@ -74,6 +75,7 @@ try:
     from sheet_writer import read_user_sheet as sheet_read_user_sheet
 except Exception as _sheet_import_err:  # pragma: no cover
     sheet_append_order_row = None  # type: ignore
+    sheet_append_user = None  # type: ignore
     sheet_probe_connection = None  # type: ignore
     sheet_mark_row_deleted = None  # type: ignore
     sheet_parse_row_from_updated_range = None  # type: ignore
@@ -3064,17 +3066,29 @@ async def smart_paste_create(
             item_type_text = (
                 ", ".join(items_val) if isinstance(items_val, list) else str(items_val)
             )
+            # Phase-B: pass the new columns (user_name, master_order_id,
+            # alt_phone, token_amount, weight) for the extended Master Sheet.
+            user_name_val = (
+                current_user.get("full_name")
+                or current_user.get("email", "").split("@")[0]
+                or current_user.get("id", "")[:8]
+            )
             sheet_meta = sheet_append_order_row(
                 user_id=current_user["id"],
+                user_name=user_name_val,
+                master_order_id=fields.get("master_order_id", "") or "",
                 order_id=fields.get("order_id", "") or "",
                 name=fields.get("customer_name", "") or "",
                 phone=fields.get("customer_phone", "") or "",
+                alt_phone=fields.get("customer_alt_phone", "") or "",
                 address=addr,
                 city=fields.get("city", "") or "",
                 state=fields.get("state", "") or "",
                 pincode=fields.get("pincode", "") or "",
                 item_type=item_type_text,
                 amount=fields.get("amount", "") or "",
+                token_amount=fields.get("token_amount", "") or "",
+                weight=str(fields.get("weight", "") or ""),
                 payment_mode=fields.get("payment_mode", "") or "",
                 status="Pending",
                 notice="via Smart Paste",
@@ -3092,6 +3106,53 @@ async def smart_paste_create(
             status_code=503,
             detail="Google Sheets integration not configured on server.",
         )
+
+    # ---- 1b) Phase-B: best-effort write to the user's OWN sheet ----
+    # If the user has linked their personal sheet via Settings.sheet,
+    # mirror the same row there so they have a private copy. We swallow
+    # all exceptions — Master Sheet is the source of truth.
+    user_sheet_meta: Dict[str, Any] = {"ok": False, "skipped": True}
+    if sheet_append_user is not None:
+        try:
+            usr_settings = await db.settings.find_one(
+                {"user_id": current_user["id"]},
+                {"_id": 0, "sheet": 1},
+            ) or {}
+            user_sheet_cfg = (usr_settings.get("sheet") or {}) if isinstance(
+                usr_settings.get("sheet"), dict
+            ) else {}
+            user_sheet_id = str(user_sheet_cfg.get("sheet_id") or "").strip()
+            user_sheet_tab = str(user_sheet_cfg.get("gid") or user_sheet_cfg.get("tab") or "0").strip()
+            if user_sheet_id:
+                user_sheet_meta = sheet_append_user(
+                    sheet_id=user_sheet_id,
+                    tab_name=user_sheet_tab,
+                    user_id=current_user["id"],
+                    user_name=user_name_val,
+                    master_order_id=fields.get("master_order_id", "") or "",
+                    order_id=fields.get("order_id", "") or "",
+                    name=fields.get("customer_name", "") or "",
+                    phone=fields.get("customer_phone", "") or "",
+                    alt_phone=fields.get("customer_alt_phone", "") or "",
+                    address=addr,
+                    city=fields.get("city", "") or "",
+                    state=fields.get("state", "") or "",
+                    pincode=fields.get("pincode", "") or "",
+                    item_type=item_type_text,
+                    amount=fields.get("amount", "") or "",
+                    token_amount=fields.get("token_amount", "") or "",
+                    weight=str(fields.get("weight", "") or ""),
+                    payment_mode=fields.get("payment_mode", "") or "",
+                    status="Pending",
+                    notice="via Smart Paste",
+                )
+                logger.info(
+                    f"User-sheet append OK: {user_sheet_meta.get('updated_range')}"
+                )
+        except Exception as e:
+            # Non-fatal — Master Sheet succeeded. Log + continue.
+            logger.warning(f"User-sheet write skipped: {e}")
+            user_sheet_meta = {"ok": False, "error": str(e)}
 
     # ---- 2) Now save locally (Mongo) so the app can show the queue fast ----
     # Extract the row number from the append response so we can later

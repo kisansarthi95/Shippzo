@@ -4082,3 +4082,102 @@ agent_communication:
         original at end of test (current_seq=112). Pending test order
         cleaned up. Ready for main agent to summarise/finish.
 
+
+
+---
+
+## Backend Test Run: Phase-B Master Sheet Extension (2026-04-29)
+
+backend:
+  - task: "Phase-B Master Sheet extension (19-col schema, master_order_id/alt_phone/token_amount/weight/user_name)"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py, /app/backend/sheet_writer.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "testing"
+        -comment: |
+            18/18 assertions PASS via /app/backend_test.py against
+            https://logistics-hub-740.preview.emergentagent.com/api with
+            admin@test.com / Admin@12345.
+
+            Test 1 — Smart Paste with extended schema (skip_llm=true):
+              • PUT /settings {"order_id_auto_generate":true} → 200.
+              • POST /smart-paste with the prescribed payload (NAME / PHONE /
+                ALT_PHONE / ADDRESS_1 / CITY / STATE / PINCODE / AMOUNT /
+                TOKEN / PAYMENT / WEIGHT / ORDER_ID) → 200.
+              Response shipment fields verified:
+                master_order_id="26042902206" (matches ^\d{6}\d{5,}$),
+                order_id="PHB-001",
+                customer_alt_phone="9999912345",
+                token_amount=50.0,
+                weight="750",
+                sheet_row_num=77 (positive int → real sheet append).
+              No 502 raised — Phase-B's added columns work without breaking
+              existing pipeline.
+
+            Test 1b — Backend logs:
+              tail of /var/log/supervisor/backend.err.log shows
+              "Sheet append OK: 'All Master Data'!A77:S77" (NB: 19-col
+              range A:S, confirming new schema width). Bonus: admin's
+              settings DOES have a personal sheet linked, so "User-sheet
+              append OK: 'All Master Data'!A78:S78" was also emitted —
+              both Master Sheet AND user-sheet writes succeeded.
+
+            Test 2 — POST /shipments extended payload (manual create):
+              • GET /couriers → reused existing "Nandan Courier"
+                (id=f48dc9c4-19cb-4014-a05b-1f3de3002796).
+              • POST /shipments with full extended body (token_amount=200,
+                customer_alt_phone="9000020001", weight="1200", etc.) → 200.
+              Response shipment verified:
+                master_order_id="26042902207" (auto-generated, matches regex),
+                customer_alt_phone="9000020001",
+                token_amount=200.0,
+                weight="1200".
+
+            Test 3 — GET /sheets/probe:
+              200 with body {"ok":true,"tab":"All Master Data",...} —
+              MASTER_SHEET_ID is configured, integration alive.
+
+            Test 4 — Backward compatibility:
+              Smart Paste returned 200 (no 502). gspread's
+              ws.update("A:S", ...) writes 19 columns even when the sheet
+              previously had 14-col headers; rows 77+ now carry full
+              19-col data.
+
+            Cleanup: pending order id=ce74db9b-… deleted (sheet row 77
+            tombstoned, status_cell M77, notice_cell N77). Manual
+            shipment a5e06a31-… deleted (sheet.attempted=false because
+            it had no sheet_row_num — legacy path, expected). No test
+            artefacts left behind.
+
+            Real Service Account writes — NOT mocked. Row numbers and
+            cell addresses come straight from Google Sheets API responses.
+
+agent_communication:
+    -agent: "testing"
+    -message: |
+        Phase-B Master Sheet extension — FULL PASS (18/18 assertions).
+        Verified end-to-end:
+          • Smart Paste persists ALL new columns (master_order_id,
+            customer_alt_phone, token_amount, weight) and writes them to
+            the Master Sheet via the new 19-col `A:S` range.
+          • Backend log marker "Sheet append OK: 'All Master Data'!A77:S77"
+            confirms the wider range is in effect (vs prior A:N).
+          • User-sheet write ALSO succeeded for admin (admin has a
+            personal sheet linked) — so the new helper
+            `append_order_row_to_user_sheet` works as designed.
+          • POST /shipments accepts customer_alt_phone + token_amount +
+            weight on the manual-create path and auto-allocates
+            master_order_id when Auto-Generate is ON.
+          • /sheets/probe still healthy → no integration regression.
+          • Backward compat OK: even though existing sheets only had
+            14-column headers, the explicit-range write to A:S
+            populated the new columns without raising 502.
+        Cleanup performed; admin Mongo state unchanged except for the
+        master_order_id counter increment (expected). Ready for main
+        agent to summarise/finish.
+
