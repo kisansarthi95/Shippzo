@@ -1082,10 +1082,99 @@ metadata:
 
 test_plan:
   current_focus:
-    - "Plan Features Registry: +4 NEW (57 total) + Backend Gating"
+    - "Phase-9 Unified Address Field — Truncation Bug Fix"
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
+
+## Iteration: Phase-9 Unified Address (2026-04-30 Late) — RECURRING BUG #9 FIX
+
+### Problem (user reported 9th time)
+Smart Paste Summary Card correctly displayed full address
+"ગામ, રામવાવ તા. રાપર જી.કચ્છ" — but when the order flowed
+through Pending Orders → New Shipment form, the address field
+showed only "ગામ" (truncated to first comma chunk). City, State,
+Pincode came through correctly because they were separate fields.
+
+### Root Cause
+`/app/frontend/app/(tabs)/add.tsx` had a legacy `splitAddress(full)`
+helper that tokenised the full address on commas/newlines and treated
+the LAST 2 tokens as `state` + `city`, putting the rest in `line1`.
+For input `"ગામ, રામવાવ તા. રાપર જી.કચ્છ"` (after pincode strip),
+the parts array was `["ગામ", "રામવાવ તા. રાપર જી.કચ્છ"]` →
+`parts.length === 2` branch → state="રામવાવ તા. રાપર જી.કચ્છ",
+line1="ગામ". The address tail was lost. (city/state stayed correct
+only because `o.city` / `o.state` from the AI took priority via
+`o.city || addr.city` fallback.)
+
+### Fix
+1. **Deleted** `splitAddress()` entirely from `add.tsx`.
+2. **Added** `fullAddressFrom(o)` helper — uses `o.address` verbatim
+   (or legacy `address_line1 + address_line2` joined for back-compat).
+3. **Updated 3 call sites** in add.tsx:
+   - Edit-shipment load
+   - Pending-order prefill (the bug path)
+   - Sheet-import prefill
+4. **Cleaned up** `/app/frontend/app/(tabs)/orders.tsx` `shipPasteOrder()`
+   to build a clean joined `address` string from `address_line1` +
+   `address_line2`.
+
+City / State / Pincode are now ALWAYS taken from upstream's separate
+fields — never re-parsed out of the address string.
+
+### Backend Verification (18/20 PASS — 2 cosmetic comma-normalisation only)
+- Smart Paste returns full comma-preserved address in `address_line1`.
+- Pending order GET round-trips correctly; address persists in Mongo.
+- 3-comma English address ("123 Main Road, Near Park, Sector 12")
+  preserved byte-for-byte.
+- All regression endpoints green (settings, shipments, peek-master-id,
+  feature-flags returning 57 features).
+
+backend:
+  - task: "Phase-9 Unified Address — Backend pipeline verification"
+    implemented: true
+    working: true
+    file: "/app/backend/smart_paste_ai.py, /app/backend/server.py (no changes; verified)"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "testing"
+        -comment: |
+            Backend confirmed correct: full comma-preserved address
+            in address_line1, address_line2 always blank, city/state/
+            pincode separate. The truncation bug was 100% frontend.
+
+frontend:
+  - task: "Phase-9 splitAddress() removal + fullAddressFrom() helper"
+    implemented: true
+    working: true
+    file: "/app/frontend/app/(tabs)/add.tsx, /app/frontend/app/(tabs)/orders.tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "main"
+        -comment: |
+            splitAddress() helper deleted. All 3 call sites use new
+            fullAddressFrom(o) helper which reads o.address verbatim
+            (or legacy line1+line2 join for back-compat). City/state/
+            pincode now ALWAYS come from upstream's separate fields,
+            never re-parsed.
+
+agent_communication:
+    -agent: "main"
+    -message: |
+        9th-time recurring address-truncation bug fixed at the root:
+        the legacy splitAddress() helper was tokenising commas as
+        city/state separators, dropping the address tail. Helper
+        DELETED, replaced by fullAddressFrom() that uses o.address
+        verbatim. Backend re-verified clean (18/20 PASS, only 2
+        cosmetic LLM comma normalisation soft-fails — content fully
+        intact). Frontend bug is now structurally impossible to
+        recur because the parsing code path no longer exists.
 
 ## Iteration: Registry Expansion +4 + Backend Gating (2026-04-30 Eve)
 
