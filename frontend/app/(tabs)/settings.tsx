@@ -1546,6 +1546,70 @@ export default function SettingsScreen() {
                     <Ionicons name="trash-outline" size={16} color={colors.dangerText} />
                   </TouchableOpacity>
                 </View>
+
+                {/* Phase-C: Sync rows from Master Sheet (filtered by user_id). */}
+                <TouchableOpacity
+                  testID="sheet-sync-from-master-btn"
+                  style={[
+                    styles.outlineBtn,
+                    {
+                      marginTop: 8,
+                      backgroundColor: "#F5F3FF",
+                      borderColor: "#DDD6FE",
+                    },
+                  ]}
+                  onPress={async () => {
+                    Alert.alert(
+                      "Sync from Master Sheet",
+                      "How would you like to sync?\n\n" +
+                      "• Refresh (overwrite): clears your sheet's data rows and re-pulls all your orders from Master. Reflects admin edits & deletions.\n\n" +
+                      "• Append only: adds only new rows (skips any row already present, matched by Master Order ID or composite key).",
+                      [
+                        { text: "Cancel", style: "cancel" },
+                        {
+                          text: "Append only",
+                          onPress: async () => {
+                            try {
+                              const r = await Api.syncFromMaster(false);
+                              Alert.alert(
+                                "✅ Sync complete",
+                                `Mode: append\nNew rows added: ${r.rows_synced}\nMaster total rows: ${r.master_total_rows}\nTab: ${r.tab}`,
+                              );
+                            } catch (e: any) {
+                              Alert.alert(
+                                "Sync failed",
+                                e?.response?.data?.detail || e?.message || "Try again.",
+                              );
+                            }
+                          },
+                        },
+                        {
+                          text: "Refresh",
+                          style: "destructive",
+                          onPress: async () => {
+                            try {
+                              const r = await Api.syncFromMaster(true);
+                              Alert.alert(
+                                "✅ Sync complete",
+                                `Mode: overwrite\nRows synced: ${r.rows_synced}\nMaster total rows: ${r.master_total_rows}\nTab: ${r.tab}`,
+                              );
+                            } catch (e: any) {
+                              Alert.alert(
+                                "Sync failed",
+                                e?.response?.data?.detail || e?.message || "Try again.",
+                              );
+                            }
+                          },
+                        },
+                      ],
+                    );
+                  }}
+                >
+                  <Ionicons name="cloud-download-outline" size={16} color="#7C3AED" />
+                  <Text style={[styles.outlineBtnText, { color: "#7C3AED", fontWeight: "800" }]}>
+                    Sync from Master Sheet
+                  </Text>
+                </TouchableOpacity>
               </View>
             ) : (
               <>

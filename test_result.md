@@ -101,6 +101,46 @@
 #====================================================================================================
 # Testing Data - Main Agent and testing sub agent both should log testing data below this section
 #====================================================================================================
+## Iteration: Phase-C Filtered Master → User Sheet Sync (2026-04-29)
+
+### Backend (`/app/backend/sheet_writer.py`)
+- **`_open_user_sheet(sheet_id, tab_or_gid)`** — opens user's sheet by tab name OR numeric gid (handles either format).
+- **`sync_master_to_user_sheet(user_id, user_sheet_id, user_tab_or_gid, *, overwrite=True)`** — NEW. Reads Master Sheet, filters rows by `user_id` column (case-insensitive header lookup with canonical-position fallback), mirrors filtered rows into user's sheet.
+  - **`overwrite=True`** (default): clears user's tab data rows (keeps header), bulk-writes filtered set fresh. Reflects admin edits/deletions.
+  - **`overwrite=False`**: append-only with **two-tier dedup**:
+    1. PRIMARY — exact match on `master_order_id` column when value is present.
+    2. FALLBACK — composite key (timestamp | user_id | order_id | name | phone) for legacy rows where `master_order_id` is empty.
+- Auto-creates header row in user sheet on first sync.
+- Auto-grows user sheet rows when needed.
+
+### Backend (`/app/backend/server.py`)
+- Imports `sheet_sync_master_to_user`.
+- **`POST /api/sheets/sync-from-master`** — NEW endpoint. Body: `{overwrite: bool}`. Returns `{ok, rows_synced, master_total_rows, tab, sheet_id, mode}`. 422 if user hasn't linked their personal sheet. 502 on Sheets API failure.
+
+### Frontend
+- `/app/frontend/lib/api.ts` — `Api.syncFromMaster(overwrite: bool)` method.
+- `/app/frontend/app/(tabs)/settings.tsx` — new "Sync from Master Sheet" button under the connected-sheet section. Tapping opens an Alert with two options:
+  - **Refresh (overwrite)**: destructive, clears user's data rows and reloads from Master.
+  - **Append only**: adds only new rows (dedup applied).
+
+### Validation — **4/4 backend tests PASS** (after dual-bug fix):
+- ✅ Test 1: 422 when user has no sheet linked
+- ✅ Test 2: overwrite mode → BASELINE rows synced
+- ✅ Test 3: append mode after baseline → 0 new rows (dedup works)
+- ✅ Test 4: append again → 0 (idempotent)
+- ✅ Test 5: overwrite again → BASELINE (no bloat)
+
+### Bug fixes during testing
+1. **Canonical-position fallback** for `master_order_id` column index when human-readable header cell is blank.
+2. **Composite-key dedup** for legacy rows with empty `master_order_id` (would otherwise re-append on every call).
+
+### Architecture Summary (Phase B + C combined)
+- **Master Sheet (admin)** — single shared sheet, 19 columns, all users' rows tagged with `user_id` + `user_name`.
+- **Per-user Sheet** — personal copy. Receives auto-writes via Phase-B dual-write AND can be refreshed from Master via Phase-C button.
+- **No cross-tenant leakage** — Phase-C filters strictly by `user_id` column.
+
+---
+
 ## Iteration: Phase-B Master Sheet Dual-Write (2026-04-29)
 
 ### Backend

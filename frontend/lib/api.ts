@@ -574,6 +574,21 @@ export const Api = {
   smartPasteCreate: (text: string, skipLlm: boolean = false) =>
     api.post<PendingOrder>("/smart-paste", { text, skip_llm: skipLlm }).then((r) => r.data),
 
+  // Phase-C: Pull every Master-Sheet row tagged with the caller's
+  // user_id into the caller's own personal sheet. `overwrite=true`
+  // (default) clears the user's tab data rows first to reflect any
+  // admin edits. `false` appends only new rows (dedup by master_order_id
+  // / composite key for legacy rows).
+  syncFromMaster: (overwrite: boolean = true) =>
+    api.post<{
+      ok: boolean;
+      rows_synced: number;
+      master_total_rows: number;
+      tab: string;
+      sheet_id: string;
+      mode: "overwrite" | "append";
+    }>("/sheets/sync-from-master", { overwrite }).then((r) => r.data),
+
   // Phase-7e: Live preview of the next Master Order ID for the New
   // Shipment form. Does NOT consume the counter — actual ID is allocated
   // at save time. Frontend may pass the previewed value back via
