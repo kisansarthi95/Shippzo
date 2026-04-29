@@ -223,6 +223,17 @@ export default function SettingsScreen() {
   const [showPreview, setShowPreview] = useState(true);
   const [etaDays, setEtaDays] = useState("7");
   const [couriers, setCouriers] = useState<Courier[]>([]);
+  // Plan-enforced courier partner cap — silver=1, gold=2, platinum/admin=unlimited.
+  const [courierLimits, setCourierLimits] = useState<{
+    plan: string;
+    plan_label: string;
+    is_admin: boolean;
+    limit: number | null;
+    current_count: number;
+    can_add: boolean;
+    is_unlimited: boolean;
+    suggested_upgrade: string;
+  } | null>(null);
   const [brandName, setBrandName] = useState("");
   const [brandLogo, setBrandLogo] = useState("");
   const [preferLogo, setPreferLogo] = useState(true);
@@ -486,6 +497,10 @@ export default function SettingsScreen() {
     setCopyTemplate(s.copy_template);
     setEtaDays(String(s.default_eta_days));
     setCouriers(cs);
+    // Best-effort fetch of the plan-enforced courier cap. Never blocks.
+    Api.getCourierLimits()
+      .then((lim) => setCourierLimits(lim))
+      .catch(() => setCourierLimits(null));
     setBrandName(s.brand?.name || "");
     setBrandLogo(s.brand?.logo_base64 || "");
     setPreferLogo((s as any).prefer_logo !== false);
@@ -2577,6 +2592,41 @@ export default function SettingsScreen() {
           {section === "couriers" && (<>
           {/* Couriers */}
           <Section title="Courier Partners" icon="rocket-outline">
+            {courierLimits && (
+              <View
+                testID="courier-limit-banner"
+                style={[
+                  styles.limitBanner,
+                  !courierLimits.can_add && styles.limitBannerFull,
+                ]}
+              >
+                <Ionicons
+                  name={
+                    courierLimits.is_unlimited
+                      ? "infinite"
+                      : courierLimits.can_add
+                      ? "information-circle"
+                      : "lock-closed"
+                  }
+                  size={16}
+                  color={
+                    courierLimits.can_add ? colors.textMuted : "#B45309"
+                  }
+                />
+                <Text
+                  style={[
+                    styles.limitBannerText,
+                    !courierLimits.can_add && { color: "#92400E" },
+                  ]}
+                >
+                  {courierLimits.is_unlimited
+                    ? `${courierLimits.plan_label} plan · Unlimited courier partners`
+                    : `${courierLimits.plan_label} plan · ${courierLimits.current_count} of ${courierLimits.limit} courier partner${
+                        (courierLimits.limit || 0) === 1 ? "" : "s"
+                      } used`}
+                </Text>
+              </View>
+            )}
             {couriers.map((c) => (
               <TouchableOpacity
                 key={c.id}
@@ -2599,14 +2649,27 @@ export default function SettingsScreen() {
                 <Ionicons name="chevron-forward" size={20} color={colors.textMuted} />
               </TouchableOpacity>
             ))}
-            <TouchableOpacity
-              testID="add-courier-btn"
-              style={[styles.saveBtn, { marginTop: 10 }]}
-              onPress={() => router.push("/courier/new")}
-            >
-              <Ionicons name="add" size={18} color="#fff" />
-              <Text style={styles.saveBtnText}>Add Courier Partner</Text>
-            </TouchableOpacity>
+            {courierLimits && !courierLimits.can_add ? (
+              <TouchableOpacity
+                testID="upgrade-to-add-courier-btn"
+                style={[styles.saveBtn, { marginTop: 10, backgroundColor: "#F59E0B" }]}
+                onPress={() => router.push("/plans")}
+              >
+                <Ionicons name="rocket" size={18} color="#fff" />
+                <Text style={styles.saveBtnText}>
+                  Upgrade to {courierLimits.suggested_upgrade} to add more
+                </Text>
+              </TouchableOpacity>
+            ) : (
+              <TouchableOpacity
+                testID="add-courier-btn"
+                style={[styles.saveBtn, { marginTop: 10 }]}
+                onPress={() => router.push("/courier/new")}
+              >
+                <Ionicons name="add" size={18} color="#fff" />
+                <Text style={styles.saveBtnText}>Add Courier Partner</Text>
+              </TouchableOpacity>
+            )}
           </Section>
           </>)}
 
@@ -3365,6 +3428,28 @@ const styles = StyleSheet.create({
   },
   courierName: { fontWeight: "800", color: colors.text, fontSize: 14 },
   courierSub: { fontSize: 12, color: colors.textMuted, marginTop: 2 },
+  limitBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: "#E5E7EB",
+    backgroundColor: "#F9FAFB",
+    marginBottom: 10,
+  },
+  limitBannerFull: {
+    backgroundColor: "#FEF3C7",
+    borderColor: "#FCD34D",
+  },
+  limitBannerText: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: colors.textMuted,
+    flex: 1,
+  },
   mono: { fontFamily: "Courier", fontWeight: "800", color: colors.text },
 
   connectedBox: {

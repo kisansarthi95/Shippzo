@@ -1087,6 +1087,92 @@ test_plan:
   test_all: false
   test_priority: "high_first"
 
+## Backend Test Run: Courier Partner Plan-Cap (2026-04-29)
+
+backend:
+  - task: "Courier Partner plan-cap (GET /couriers/limits + POST /couriers cap enforcement)"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "testing"
+        -comment: |
+            All 49/49 assertions passed via /app/backend_test.py against
+            https://logistics-hub-740.preview.emergentagent.com/api.
+
+            Coverage verified:
+            1. /api/couriers/limits requires bearer token (returns 401 without).
+            2. user2@test.com (plan=silver, current_count=1):
+                 limit=1, can_add=false, is_unlimited=false, is_admin=false,
+                 plan_label="Silver", suggested_upgrade="Gold".
+            3. POST /api/couriers as user2 with valid payload returned EXACTLY:
+                 HTTP 403, detail="Your Silver plan allows only 1 courier
+                 partner. Upgrade to Gold to add more."
+            4. admin@test.com:
+                 is_admin=true, is_unlimited=true, limit=null,
+                 can_add=true (current_count=4 in DB).
+                 POST /api/couriers succeeded as admin and cleanup DELETE
+                 returned 200 (admin bypass works).
+            5. GOLD plan simulation (user2.plan = "gold" via direct Mongo
+               update on db.users):
+                 - GET /couriers/limits → limit=2, current_count=1,
+                   can_add=true, suggested_upgrade="Platinum".
+                 - POST 2nd courier → 200 OK.
+                 - GET → current_count=2, can_add=false.
+                 - POST 3rd courier → 403, detail="Your Gold plan allows
+                   only 2 courier partners. Upgrade to Platinum to add more."
+                 - Cleanup deleted the 2nd courier.
+            6. PLATINUM plan simulation (user2.plan = "platinum"):
+                 - GET → is_unlimited=true, limit=null, can_add=true.
+                 - 3 sequential POST /couriers all returned 200.
+                 - Cleanup deleted all 3.
+            7. Route-order sanity: GET /api/couriers/{valid_uuid} returns
+               the specific courier (200, id matches) — no collision with
+               /couriers/limits route (limits route is registered before
+               the parametric /{courier_id} route).
+            8. Regression: GET /api/couriers as user2 still lists exactly
+               1 courier (the seeded default). user2.plan was restored to
+               "silver" (its starting value) at end of test.
+
+            Notes:
+            - user2's starting plan was "silver" (not "free_trial" as the
+              review guess suggested) — likely due to trial promotion or
+              previous tests. Both plans give limit=1, so the cap behavior
+              is identical and all assertions hold.
+            - Backend reads `plan` from the DB-loaded user inside
+              get_current_user, so direct Mongo mutation is reflected on
+              the next request without needing a fresh token. The test
+              does a defensive re-login when the platinum plan is set.
+            - Plural/singular grammar in detail message verified
+              ("1 courier partner" vs "2 courier partners").
+            - The frontend `Authorization: Bearer …` was the only missing
+              guard; unauthenticated requests are rejected with 401.
+
+            All test artefacts cleaned up. user2.plan restored to original
+            ("silver"). user2 ends the test with the same single seeded
+            courier it started with.
+
+agent_communication:
+    -agent: "testing"
+    -message: |
+        Courier Partner plan-cap backend logic — FULLY VERIFIED. 49/49
+        assertions passed end-to-end against the public API. The new
+        GET /api/couriers/limits endpoint returns the exact contract
+        promised in the review (plan, plan_label, is_admin, limit,
+        current_count, can_add, is_unlimited, suggested_upgrade), the
+        POST /api/couriers endpoint correctly enforces per-plan caps
+        with HTTP 403 + actionable detail, admins bypass the check, and
+        platinum users are unlimited. Route order is correct (limits is
+        not shadowed by /{courier_id}). No code changes were made
+        during testing. user2.plan restored to "silver" and all created
+        couriers cleaned up.
+
+
+
 ## Iteration: Coupon System + Plan Price Display (2026-04-30 Late PM)
 
 ### What changed
@@ -5800,4 +5886,69 @@ agent_communication:
 
         No code changes were made by the testing agent. Main agent can
         summarise + finish.
+
+
+
+#====================================================================================================
+# Courier Partner Plan Limits — 2026-05-xx PM (main agent hand-off to deep_testing_backend_v2)
+#====================================================================================================
+
+backend:
+  - task: "Courier Partner cap per plan (Silver=1, Gold=2, Platinum/admin=unlimited)"
+    implemented: true
+    working: "NA"
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: |
+            Added COURIER_LIMITS mapping + helpers to /app/backend/server.py
+            (free_trial=1, silver=1, gold=2, platinum=None meaning unlimited).
+            Two changes:
+              1) NEW endpoint  GET /api/couriers/limits
+                 Returns JSON:
+                   { plan, plan_label, is_admin, limit (null=unlimited),
+                     current_count, can_add, is_unlimited, suggested_upgrade }
+                 Admins always see is_unlimited=true.
+              2) Enforcement added to POST /api/couriers:
+                 Non-admins whose courier count already equals their plan
+                 cap get HTTP 403 with a clear detail message like
+                 "Your Silver plan allows only 1 courier partner.
+                  Upgrade to Gold to add more."
+                 Admins and platinum tier skip the check entirely.
+
+            Please verify:
+              • GET /api/couriers/limits for a fresh silver user with the
+                auto-seeded default courier returns current_count=1,
+                limit=1, can_add=false, is_unlimited=false,
+                suggested_upgrade="Gold".
+              • POST /api/couriers on the same account returns 403 with
+                the "Upgrade to Gold" message.
+              • A gold user can add up to 2 couriers; the 3rd POST
+                returns 403 with "Upgrade to Platinum".
+              • Platinum and admin accounts can add unlimited couriers
+                (POST succeeds repeatedly) and GET /couriers/limits shows
+                is_unlimited=true.
+              • Existing endpoints still work: GET /couriers still lists
+                all, GET /couriers/{id} still fetches by id (route-order
+                sanity — /couriers/limits is registered BEFORE
+                /couriers/{courier_id}).
+
+test_plan:
+  current_focus:
+    - "Courier Partner cap per plan (Silver=1, Gold=2, Platinum/admin=unlimited)"
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"
+
+agent_communication:
+    -agent: "main"
+    -message: |
+        Implemented per-plan courier partner cap. New endpoint
+        GET /api/couriers/limits + 403-enforced POST /api/couriers.
+        Need backend verification with the matrix in the task notes
+        (free_trial, silver, gold, platinum, admin).
 

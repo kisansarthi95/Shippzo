@@ -1002,10 +1002,78 @@ async def root():
 
 # -------- Couriers --------
 
+# Courier-partner limit per subscription plan.
+# Platinum (and admins) are unlimited. free_trial + silver get 1 partner so
+# the default seeded "Nandan Courier" works out of the box but no new
+# partner can be added without upgrading. Gold users may run two carriers
+# in parallel (the common "India Post + private courier" pattern).
+COURIER_LIMITS: Dict[str, Optional[int]] = {
+    "free_trial": 1,
+    "silver": 1,
+    "gold": 2,
+    "platinum": None,  # Unlimited
+}
+
+# Human-readable label shown in upgrade prompts.
+_PLAN_LABELS = {
+    "free_trial": "Free Trial",
+    "silver": "Silver",
+    "gold": "Gold",
+    "platinum": "Platinum",
+}
+
+
+def _courier_limit_for_plan(plan_key: str) -> Optional[int]:
+    """Return the max couriers allowed on this plan, or None for unlimited."""
+    plan_key = (plan_key or "free_trial").lower()
+    if plan_key not in COURIER_LIMITS:
+        # Unknown / legacy plan codes fall back to silver's cap.
+        return COURIER_LIMITS["silver"]
+    return COURIER_LIMITS[plan_key]
+
+
+def _next_tier_suggestion(plan_key: str) -> str:
+    """Suggest the next reasonable tier so upgrade CTAs are concrete."""
+    order = ["free_trial", "silver", "gold", "platinum"]
+    try:
+        i = order.index((plan_key or "free_trial").lower())
+    except ValueError:
+        return "Gold"
+    nxt = order[min(i + 1, len(order) - 1)]
+    return _PLAN_LABELS.get(nxt, "Gold")
+
+
 @api_router.get("/couriers", response_model=List[Courier])
 async def list_couriers(current_user: Dict[str, Any] = Depends(get_current_user)):
     docs = await db.couriers.find({"user_id": current_user["id"]}, {"_id": 0}).sort("created_at", 1).to_list(200)
     return [Courier(**d) for d in docs]
+
+
+@api_router.get("/couriers/limits")
+async def get_courier_limits(current_user: Dict[str, Any] = Depends(get_current_user)):
+    """Return the caller's current courier count + the cap dictated by
+    their plan. Used by the frontend to render `X / Y used` badges and
+    to swap the "Add Courier Partner" CTA for an upgrade prompt when
+    the cap is reached.
+
+    Admins always see `is_unlimited: true`.
+    """
+    plan_key = (current_user.get("plan") or "free_trial").lower()
+    is_admin = bool(current_user.get("is_admin"))
+    current_count = await db.couriers.count_documents({"user_id": current_user["id"]})
+    limit = None if is_admin else _courier_limit_for_plan(plan_key)
+    is_unlimited = limit is None
+    can_add = True if is_unlimited else (current_count < int(limit))
+    return {
+        "plan": plan_key,
+        "plan_label": _PLAN_LABELS.get(plan_key, plan_key.title()),
+        "is_admin": is_admin,
+        "limit": limit,                   # None means unlimited
+        "current_count": int(current_count),
+        "can_add": bool(can_add),
+        "is_unlimited": bool(is_unlimited),
+        "suggested_upgrade": _next_tier_suggestion(plan_key),
+    }
 
 
 @api_router.post("/couriers", response_model=Courier)
@@ -1013,6 +1081,27 @@ async def create_courier(
     payload: CourierCreate,
     current_user: Dict[str, Any] = Depends(get_current_user),
 ):
+    # Enforce per-plan courier partner cap. Admins bypass the check so
+    # internal support accounts can set up demo data freely.
+    if not current_user.get("is_admin"):
+        plan_key = (current_user.get("plan") or "free_trial").lower()
+        limit = _courier_limit_for_plan(plan_key)
+        if limit is not None:
+            current_count = await db.couriers.count_documents(
+                {"user_id": current_user["id"]}
+            )
+            if current_count >= int(limit):
+                plan_label = _PLAN_LABELS.get(plan_key, plan_key.title())
+                suggest = _next_tier_suggestion(plan_key)
+                raise HTTPException(
+                    status_code=403,
+                    detail=(
+                        f"Your {plan_label} plan allows only {limit} "
+                        f"courier partner"
+                        + ("" if int(limit) == 1 else "s")
+                        + f". Upgrade to {suggest} to add more."
+                    ),
+                )
     courier = Courier(**payload.model_dump())
     doc = courier.model_dump()
     doc["user_id"] = current_user["id"]

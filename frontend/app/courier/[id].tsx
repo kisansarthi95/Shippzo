@@ -99,7 +99,30 @@ export default function CourierEdit() {
       }
       router.back();
     } catch (e: any) {
-      Alert.alert("Error", e?.message || "Failed");
+      // Plan-enforced courier cap hit (silver=1 / gold=2). Backend replies
+      // with a 403 + actionable message — show an upgrade CTA that takes
+      // the user straight to the Plans screen.
+      if (e?.response?.status === 403 && isNew) {
+        const detail =
+          e?.response?.data?.detail ||
+          "You've reached your plan's courier partner limit.";
+        Alert.alert(
+          "Courier partner limit reached",
+          detail,
+          [
+            { text: "Cancel", style: "cancel" },
+            {
+              text: "See Plans",
+              onPress: () => router.replace("/plans"),
+            },
+          ],
+        );
+      } else {
+        Alert.alert(
+          "Error",
+          e?.response?.data?.detail || e?.message || "Failed",
+        );
+      }
     } finally {
       setSaving(false);
     }

@@ -369,6 +369,19 @@ export const Api = {
   getCourier: (id: string) => api.get<Courier>(`/couriers/${id}`).then((r) => r.data),
   createCourier: (data: Partial<Courier>) =>
     api.post<Courier>("/couriers", data).then((r) => r.data),
+  getCourierLimits: () =>
+    api
+      .get<{
+        plan: string;
+        plan_label: string;
+        is_admin: boolean;
+        limit: number | null;
+        current_count: number;
+        can_add: boolean;
+        is_unlimited: boolean;
+        suggested_upgrade: string;
+      }>("/couriers/limits")
+      .then((r) => r.data),
   updateCourier: (id: string, data: Partial<Courier>) =>
     api.put<Courier>(`/couriers/${id}`, data).then((r) => r.data),
   deleteCourier: (id: string) => api.delete(`/couriers/${id}`).then((r) => r.data),
