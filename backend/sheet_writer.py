@@ -342,14 +342,22 @@ def sync_master_to_user_sheet(
             )
     else:
         # 4b) Append-only — dedup by master_order_id column if present.
-        # Find master_order_id column index.
-        moid_idx = None
+        # First try header-based lookup; fall back to canonical position
+        # (COLUMNS list above) so dedup still works when the human-readable
+        # header row hasn't been hand-edited to include the new column names.
+        moid_idx: Optional[int] = None
         for i, h in enumerate(master_header):
             if h.strip().lower().replace(" ", "_") in (
                 "master_order_id", "masterorderid",
             ):
                 moid_idx = i
                 break
+        if moid_idx is None and "master_order_id" in COLUMNS:
+            # Phase-B canonical position fallback — index in COLUMNS list.
+            canonical_idx = COLUMNS.index("master_order_id")
+            if canonical_idx < len(master_values[0]) or True:
+                # We trust the schema even if header cell is blank.
+                moid_idx = canonical_idx
         # Read existing user rows to find already-present master IDs.
         existing_user_values = user_ws.get_all_values()
         existing_ids: set = set()

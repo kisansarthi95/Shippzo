@@ -4225,7 +4225,7 @@ backend:
     implemented: true
     working: false
     file: "/app/backend/server.py, /app/backend/sheet_writer.py"
-    stuck_count: 1
+    stuck_count: 2
     priority: "high"
     needs_retesting: false
     status_history:
@@ -4366,4 +4366,165 @@ agent_communication:
 
         Main agent: please fix the dedup logic and re-test ONLY Test 3
         (other 20 assertions are green).
+
+---
+
+## Backend Test Run: Phase-C Sync-From-Master — RETEST after fallback fix (2026-04-29)
+
+backend:
+  - task: "POST /api/sheets/sync-from-master endpoint (Phase-C) — append-mode dedup"
+    implemented: true
+    working: false
+    file: "/app/backend/sheet_writer.py"
+    stuck_count: 2
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: false
+        -agent: "testing"
+        -comment: |
+            RETEST FAILED. Bug fix (canonical-index fallback for
+            moid_idx when "Master Order ID" header cell is blank) is
+            ONLY PARTIALLY effective. The fallback DOES engage and
+            does help dedup the small subset of rows that have a
+            populated master_order_id, but the BULK of legacy rows
+            (which have an EMPTY master_order_id cell) still get
+            re-appended on every call → duplication continues.
+
+            Test executed at http://localhost:8001/api as admin
+            (admin@test.com). User-sheet config from prior test run
+            still set (sheet_id=1troW3K7P_…, gid=1923470660 — same
+            spreadsheet as Master, reused per review request).
+
+            Numbers from this run (rows_synced):
+              BASELINE  (overwrite=true,  call #1) :  84
+              Test 1    (overwrite=false, call #1) :  80   (expected 0) FAIL
+              Test 2    (overwrite=false, call #2) : 160   (expected 0) FAIL
+              Test 3    (overwrite=true,  call #2) : 324   (expected 84) FAIL
+
+            Pattern: of the 84 admin rows in the master, only ~4 had
+            a non-empty master_order_id (Phase-7d-and-later orders).
+            The other 80 were legacy rows with an empty moid cell.
+
+            ROOT CAUSE — incomplete dedup logic in
+            sync_master_to_user_sheet() at
+            /app/backend/sheet_writer.py:370-377:
+              new_rows = []
+              for row in matched_rows:
+                  mid = (row[moid_idx] or "").strip() if moid_idx is not None else ""
+                  if mid and mid in existing_ids:
+                      continue
+                  new_rows.append(row)         # ← rows with empty mid
+                                               #   ALWAYS land here
+                  if mid:
+                      existing_ids.add(mid)
+
+            When `mid` is empty (legacy row), the `if mid and mid in
+            existing_ids` guard is short-circuited by `mid` being
+            falsy → the row is unconditionally appended. So the
+            canonical-index fallback alone does not fix the user-
+            visible bug; it only dedups the minority subset that
+            already has a moid.
+
+            REPRODUCTION (proof the fallback engages but is
+            insufficient):
+              • BASELINE overwrite wrote 84 rows. Of those, 4 had a
+                master_order_id, 80 had blank moid.
+              • Append #1 → fallback set moid_idx=15, found 4 moids
+                in existing_ids, skipped those 4 rows, but ALL 80
+                legacy rows passed through dedup (because their
+                mid="" short-circuits) and got appended.
+                Sheet now has 84+80 = 164 rows, of which 8 have moid
+                (4 originals + 4 dupes) and 156 have blank moid.
+              • Append #2 → existing_ids contains those 4 unique
+                moids. Master now has 164 rows. Of those, 4 unique
+                moid rows are skipped. 160 blank-moid rows are
+                appended. Sheet now has 324 rows.
+              • Overwrite #2 → reads master (324 rows, all admin
+                user_id), filters by user_id (324 still match),
+                clears user sheet, writes 324 rows back. Restores
+                "BASELINE+duplicates", does NOT restore to 84.
+
+            SHEET STATE AT END OF RETEST:
+              GET /sheets/probe → row_count=326, col_count=19, tab
+              "All Master Data". Sheet is now BLOATED with ~240
+              extra duplicate rows compared to original 84-row
+              admin baseline. Cleanup is non-trivial because the
+              original 84 unique rows are no longer distinguishable
+              from the duplicates without per-row identity.
+
+            REQUIRED FIX (main agent — TWO complementary changes):
+
+            1. Composite dedup key for legacy rows that lack
+               master_order_id. Suggested key:
+                 sha1(f"{timestamp}|{user_id}|{phone}|{order_id}|{name}|{address}")
+               Pseudo-code in sync_master_to_user_sheet():
+                 def _row_key(row):
+                     mid = row[moid_idx] if moid_idx is not None else ""
+                     mid = (mid or "").strip()
+                     if mid:
+                         return ("moid", mid)
+                     # Composite fallback for legacy rows
+                     ts    = (row[0]  if len(row) > 0  else "").strip()
+                     uid   = (row[1]  if len(row) > 1  else "").strip()
+                     oid   = (row[2]  if len(row) > 2  else "").strip()
+                     name  = (row[3]  if len(row) > 3  else "").strip()
+                     phone = (row[4]  if len(row) > 4  else "").strip()
+                     return ("legacy", ts, uid, oid, name, phone)
+                 existing_keys = {_row_key(r) for r in existing_user_values[1:]}
+                 new_rows = [r for r in matched_rows
+                             if _row_key(r) not in existing_keys]
+
+            2. (Already shipped) Canonical-index fallback for
+               moid_idx — keep it for the moid path of (1).
+
+            ACCEPTANCE CRITERIA for next retest:
+              BASELINE (overwrite=true):    rows_synced = N (>0)
+              Append #1 (overwrite=false):  rows_synced = 0
+              Append #2 (overwrite=false):  rows_synced = 0
+              Overwrite #2 (overwrite=true):rows_synced = N (matches BASELINE)
+
+            SHEET CLEANUP (main agent):
+              The shared test sheet "1troW3K7P_…" / tab "All Master
+              Data" is now polluted with ~240 duplicate admin rows.
+              Either:
+              (a) restore from a backup if available, OR
+              (b) accept the bloated state for now and start using a
+                  separate per-user sheet for Phase-C tests (per the
+                  prior testing-agent recommendation that was
+                  reiterated in the previous run's status_history).
+
+agent_communication:
+    -agent: "testing"
+    -message: |
+        Phase-C sync-from-master append-mode dedup — RETEST FAILED.
+        Bug fix (canonical-index fallback) is partial and does not
+        solve the user-visible duplication issue.
+
+        Numbers: BASELINE=84 → append #1=80 dupes added (expected 0)
+        → append #2=160 more dupes (expected 0) → overwrite=324
+        (expected 84).
+
+        ROOT CAUSE (real, not header-related): the dedup loop in
+        sync_master_to_user_sheet() short-circuits on empty
+        master_order_id, so EVERY legacy row (which is the majority
+        of real-world data) is appended unconditionally on every
+        append-mode call. The canonical-index fallback now correctly
+        finds moid_idx=15, BUT 80 of the 84 admin rows have an
+        empty moid value — so the fallback only helps the 4 newer
+        rows; the other 80 still duplicate.
+
+        REQUIRED CHANGE (main agent): implement a composite dedup
+        key for legacy rows lacking master_order_id (suggested:
+        ts|user_id|order_id|name|phone, hashed). Detailed pseudo-code
+        in the status_history above.
+
+        SIDE EFFECT: the shared test spreadsheet is now bloated
+        from 84 → 326 rows due to this run. Recommend switching
+        Phase-C tests to a SEPARATE per-user sheet (echoing the
+        previous testing-agent note from the first Phase-C run),
+        and either restoring a backup or accepting the bloat for
+        now.
+
+        Re-test after the composite-key fix is shipped.
 
