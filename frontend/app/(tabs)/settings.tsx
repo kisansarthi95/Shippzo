@@ -1812,9 +1812,9 @@ export default function SettingsScreen() {
                       — None —
                     </Text>
                   </TouchableOpacity>
-                  {(preview?.headers || []).map((h) => (
+                  {(preview?.headers || []).map((h, idx) => (
                     <TouchableOpacity
-                      key={h}
+                      key={`${idx}-${h}`}
                       style={styles.pickerItem}
                       onPress={() => {
                         if (pickerForField) {
@@ -1823,7 +1823,7 @@ export default function SettingsScreen() {
                         setPickerForField(null);
                       }}
                     >
-                      <Text style={styles.pickerItemText}>{h}</Text>
+                      <Text style={styles.pickerItemText}>{h || `(empty col ${idx + 1})`}</Text>
                     </TouchableOpacity>
                   ))}
                 </ScrollView>
