@@ -82,6 +82,9 @@ export default function Shipments() {
   const flagPrint       = useFeatureFlag("shipment_print_btn");
   const flagBulkPrint   = useFeatureFlag("bulk_print");
   const flagMarkDeliv   = useFeatureFlag("shipment_mark_delivered");
+  // NEW (2026-04-30 PM2) — Bulk select toggle + CSV export are tier-gated
+  const flagBulkSelect  = useFeatureFlag("shipments_bulk_select");
+  const flagCsvExport   = useFeatureFlag("csv_export_orders");
   const [items, setItems] = useState<Shipment[]>([]);
   const [couriers, setCouriers] = useState<Courier[]>([]);
   const [search, setSearch] = useState("");
@@ -419,7 +422,7 @@ export default function Shipments() {
       <View style={styles.header}>
         <Text style={styles.title}>Shipments</Text>
         <View style={{ flexDirection: "row", gap: 8 }}>
-          {flagBulkPrint ? (
+          {flagBulkSelect && flagBulkPrint ? (
             <TouchableOpacity
               testID="bulk-mode-toggle" style={[styles.iconBtn, selectMode && { backgroundColor: colors.primary, borderColor: colors.primary }]}
               onPress={() => {
@@ -434,12 +437,14 @@ export default function Shipments() {
               />
             </TouchableOpacity>
           ) : null}
+          {flagCsvExport && (
           <TouchableOpacity
             testID="export-csv-btn" style={styles.iconBtn}
             onPress={() => Linking.openURL(Api.csvUrl())}
           >
             <Ionicons name="download-outline" size={20} color={colors.text} />
           </TouchableOpacity>
+          )}
         </View>
       </View>
 

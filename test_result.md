@@ -1082,10 +1082,170 @@ metadata:
 
 test_plan:
   current_focus:
-    - "Plan Features Registry: 14 new features registered + auto-migration"
+    - "Plan Features Registry: +4 NEW (57 total) + Backend Gating"
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
+
+## Iteration: Registry Expansion +4 + Backend Gating (2026-04-30 Eve)
+
+### What changed
+- 4 NEW features registered (53 → 57 total):
+    1. `repeat_customer_banner`         — Customer Intelligence (silver+/gold+)
+    2. `csv_export_orders`              — Shipments List (silver+/gold+)
+    3. `shipments_bulk_select`          — Shipments List (gold+)
+    4. `whatsapp_per_courier_template`  — WhatsApp (gold+)
+
+- New backend helper `user_has_feature(user, key)` in `server.py`
+  (admin bypass + plan lookup + plan_features doc check).
+
+- Backend gates wired:
+    a. Two-Way Status Sync on PUT /shipments/{id} (line ~1911-1924) —
+       silently skipped for plans without `sheet_two_way_status_sync`.
+    b. Two-Way Status Sync on Ship-Now flow (line ~3464-3484) — same.
+    c. Soft-delete tombstone on DELETE /shipments/{id} (line ~1952-1971) —
+       gated by `sheet_soft_delete_tombstone`.
+    d. Soft-delete tombstone on DELETE /orders/pending/{id}
+       (line ~3331-3351) — same gate.
+
+- Frontend UI gates wired:
+    • Repeat customer banner in `index.tsx` — hidden when
+      `repeat_customer_banner` flag off.
+    • CSV export icon in `shipments.tsx` header — hidden when
+      `csv_export_orders` flag off.
+    • Bulk-select toggle icon in `shipments.tsx` header — hidden
+      when `shipments_bulk_select` flag off.
+    • whatsapp_per_courier_template — registered for future use
+      (no current UI render site to gate; reserved for upcoming
+      per-courier WA template editor).
+
+### Test Plan (deep_testing_backend_v2)
+
+1. **Registry size**: GET /api/admin/plan-features → registry.features
+   length == 57. The 4 new keys present with correct categories.
+2. **Defaults applied**:
+   - `gold` plan list contains: csv_export_orders, shipments_bulk_select,
+     repeat_customer_banner, whatsapp_per_courier_template
+   - `silver` plan list contains: csv_export_orders, repeat_customer_banner,
+     but NOT shipments_bulk_select, NOT whatsapp_per_courier_template
+   - `free_trial` does not contain any of the 4
+   - `platinum` contains all 4 (auto-injected via ALL_KEYS)
+3. **Admin /me/feature-flags** returns 57 features.
+4. **Free-trial user /me/feature-flags** returns features list that
+   excludes shipments_bulk_select and whatsapp_per_courier_template.
+5. **Backend gating regression — Two-Way Status Sync**:
+   - Login admin@test.com (has `sheet_two_way_status_sync` via gold/platinum).
+   - Create a shipment via Smart Paste (gets a sheet_row_num).
+   - Mark Delivered via PUT /shipments/{id}.
+   - Backend log should still show "Sheet status sync OK: row=X → Delivered".
+6. **Backend gating regression — Soft-Delete tombstone**:
+   - Same admin user, create+delete a pending order.
+   - Response should have `sheet.attempted=true` and `sheet.ok=true`.
+7. **PUT /api/admin/plan-features** round-trip works for the 4 new keys.
+8. **Regression**: existing 53 keys unaffected, smart-paste create still
+   works, GET /api/settings still works.
+
+### Credentials
+admin@test.com / Admin@12345
+
+backend:
+  - task: "Plan Features Registry +4 keys + Backend Gating"
+    implemented: true
+    working: true
+    file: "/app/backend/feature_registry.py, /app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: |
+            Added 4 features: repeat_customer_banner,
+            csv_export_orders, shipments_bulk_select,
+            whatsapp_per_courier_template (57 total now).
+            Added user_has_feature(user, key) helper.
+            Gated 4 backend code paths:
+            - Two-Way Status Sync (PUT shipment + Ship-Now flow)
+            - Soft-Delete tombstone (DELETE shipment + DELETE pending)
+            Frontend UI hooks added in index.tsx, shipments.tsx.
+        -working: true
+        -agent: "testing"
+        -comment: |
+            All 63/63 assertions PASSED via /app/backend_test.py against
+            https://logistics-hub-740.preview.emergentagent.com/api.
+
+            1. Registry size — GET /api/admin/plan-features (admin):
+               registry.features length == 57. All 4 new keys present:
+               • repeat_customer_banner  (label "Repeat customer banner
+                 (with Use button)", category "Customer Intelligence")
+               • csv_export_orders       (label "Export orders/shipments
+                 to CSV", category "Shipments List")
+               • shipments_bulk_select   (label "Bulk select / multi-pick
+                 mode", category "Shipments List")
+               • whatsapp_per_courier_template (label "Per-courier
+                 WhatsApp templates", category "WhatsApp")
+
+            2. Per-plan defaults verified:
+               • gold includes ALL 4 new keys ✅
+               • silver includes csv_export_orders + repeat_customer_banner;
+                 EXCLUDES shipments_bulk_select & whatsapp_per_courier_template ✅
+               • free_trial excludes all 4 ✅
+               • platinum has all 57 keys (superset of registry) ✅
+
+            3. Admin GET /me/feature-flags returns is_admin=true,
+               features length == 57, all 4 new keys present.
+
+            4. PUT /api/admin/plan-features round-trip for csv_export_orders
+               on 'gold': toggle OFF then GET shows it removed; toggle ON
+               then GET shows it restored. Response 200 in both cases.
+
+            5. Backend gate — Two-Way Status Sync: created Smart Paste
+               pending order (sheet_row_num=330), shipped via courier
+               (carries sheet_row_num forward), PUT /shipments/{id}
+               status=Delivered → 200 with delivered_at populated. Backend
+               log line confirmed: "Sheet status sync OK: row=330".
+               Cleanup deleted the test shipment (sheet tombstoned).
+
+            6. Backend gate — Soft-Delete tombstone: created another Smart
+               Paste pending order, DELETE /api/orders/pending/{id} →
+               response {"ok": true, "sheet": {"attempted": true,
+               "ok": true, "row": <row>, "tab": "All Master Data",
+               "status_cell": "M<row>", "notice_cell": "N<row>"}}.
+               Gate passes for admin (is_admin bypass) and Sheet writer
+               actually wrote the tombstone (real Service Account write,
+               not mocked).
+
+            7. Regression: 53 pre-existing keys still in registry,
+               GET /settings 200, GET /sheets/probe 200. PUT
+               /api/admin/plan-features round-trip for OLD key
+               (smart_paste_ai on free_trial) — toggle OFF then restore
+               works; admin's existing-key edits still persist correctly.
+
+            All response shapes match the contract. No regressions.
+
+agent_communication:
+    -agent: "testing"
+    -message: |
+        Plan Features Registry +4 expansion verified — 63/63 assertions
+        passed. Registry size is exactly 57; the 4 new keys
+        (repeat_customer_banner, csv_export_orders, shipments_bulk_select,
+        whatsapp_per_courier_template) carry the correct labels and
+        categories, the per-plan defaults match the spec exactly
+        (gold has all 4; silver has csv_export_orders +
+        repeat_customer_banner only; free_trial has none; platinum has
+        all 57 via ALL_KEYS auto-injection), admin /me/feature-flags
+        returns is_admin=true with 57 features, and PUT
+        /api/admin/plan-features round-trips correctly for both new and
+        old keys. Backend gates for `sheet_two_way_status_sync`
+        (verified live by status sync log line "Sheet status sync OK:
+        row=330" after PUT shipment status=Delivered) and
+        `sheet_soft_delete_tombstone` (verified by sheet.attempted=true
+        + sheet.ok=true on DELETE pending) work transparently for the
+        admin's is_admin bypass. No regressions on /settings,
+        /sheets/probe, or OLD-key admin toggles. Test fixtures (one
+        ship row + one pending row) were cleaned up — sheet rows were
+        tombstoned (auditable) per design. Ready for main agent to
+        summarise and finish.
 
 ## Iteration: Plan Features Registry — 14 NEW (2026-04-30 PM)
 

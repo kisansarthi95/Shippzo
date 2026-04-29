@@ -93,6 +93,9 @@ FEATURE_REGISTRY: Dict[str, Dict[str, str]] = {
     "shipment_delete_btn":       {"label": "Delete button",                "category": "Shipments List"},
     "shipment_mark_delivered":   {"label": "Mark Delivered button",        "category": "Shipments List"},
     "shipment_print_btn":        {"label": "Per-row Print button",         "category": "Shipments List"},
+    # NEW (2026-04-30 PM2) — Bulk select + CSV export are tier-gated
+    "shipments_bulk_select":     {"label": "Bulk select / multi-pick mode", "category": "Shipments List"},
+    "csv_export_orders":         {"label": "Export orders/shipments to CSV", "category": "Shipments List"},
 
     # ── Label Design ─────────────────────────────────────────────
     "label_brand_logo":          {"label": "Brand logo on label",          "category": "Label Design"},
@@ -133,6 +136,8 @@ FEATURE_REGISTRY: Dict[str, Dict[str, str]] = {
     "repeat_customer_detect":    {"label": "Repeat customer detection",    "category": "Customer Intelligence"},
     "repeat_items_dialog":       {"label": "Reuse old items prompt",       "category": "Customer Intelligence"},
     "pending_orders_inbox":      {"label": "Pending Orders tab",           "category": "Customer Intelligence"},
+    # NEW (2026-04-30 PM2) — Yellow "Repeat customer" banner with Use button
+    "repeat_customer_banner":    {"label": "Repeat customer banner (with Use button)", "category": "Customer Intelligence"},
 
     # ── Offline Mode (NEW category, 2026-04-30) ──────────────────
     "offline_mode":              {"label": "Offline Mode (master switch)", "category": "Offline Mode"},
@@ -148,6 +153,8 @@ FEATURE_REGISTRY: Dict[str, Dict[str, str]] = {
     "whatsapp_template_editor":  {"label": "Custom message templates",     "category": "WhatsApp"},
     "whatsapp_eta_customization":{"label": "ETA days configuration",       "category": "WhatsApp"},
     "whatsapp_copy_template":    {"label": "Separate copy template",       "category": "WhatsApp"},
+    # NEW (2026-04-30 PM2) — Per-courier WhatsApp message templates (Gold+ tier feature)
+    "whatsapp_per_courier_template": {"label": "Per-courier WhatsApp templates", "category": "WhatsApp"},
 
     # ── AI & Wallet ──────────────────────────────────────────────
     "ai_rate_customization":     {"label": "Custom AI rate card",          "category": "AI & Wallet"},
@@ -188,6 +195,7 @@ DEFAULT_PLAN_FEATURES: Dict[str, List[str]] = {
         "smart_paste_duplicate_check",   # NEW
         "shipment_copy_btn", "shipment_whatsapp_btn", "shipment_edit_btn",
         "shipment_delete_btn", "shipment_print_btn", "shipment_mark_delivered",
+        "csv_export_orders",             # NEW (2026-04-30 PM2) — Silver+
         "label_brand_logo", "label_brand_name", "label_brand_tagline",
         "label_field_toggles",
         "sheet_import", "sheet_two_way_sync",
@@ -198,6 +206,7 @@ DEFAULT_PLAN_FEATURES: Dict[str, List[str]] = {
         "scanner_manual_entry",          # NEW
         "scanner_sound_feedback",        # NEW
         "repeat_customer_detect", "pending_orders_inbox",
+        "repeat_customer_banner",        # NEW (2026-04-30 PM2) — Silver+
         "bulk_print", "pdf_download", "print_preview",
         "whatsapp_template_editor", "whatsapp_eta_customization",
         "form_alt_phone", "form_box_dimensions",
@@ -208,6 +217,8 @@ DEFAULT_PLAN_FEATURES: Dict[str, List[str]] = {
         "smart_paste_duplicate_check",   # NEW
         "shipment_copy_btn", "shipment_whatsapp_btn", "shipment_edit_btn",
         "shipment_delete_btn", "shipment_print_btn", "shipment_mark_delivered",
+        "shipments_bulk_select",         # NEW (2026-04-30 PM2) — Gold+
+        "csv_export_orders",             # NEW
         "label_brand_logo", "label_brand_name", "label_brand_tagline",
         "label_custom_fields", "label_field_toggles", "label_logo_shape",
         "label_size_options",
@@ -221,9 +232,11 @@ DEFAULT_PLAN_FEATURES: Dict[str, List[str]] = {
         "multiple_couriers", "auto_tracking", "manual_tracking_scan",
         "scanner_sound_feedback", "scanner_double_confirm", "scanner_manual_entry",  # NEW (full scanner UX)
         "repeat_customer_detect", "repeat_items_dialog", "pending_orders_inbox",
+        "repeat_customer_banner",        # NEW
         "offline_mode", "offline_create_shipment", "offline_sync_queue_view",  # NEW (offline for Gold+)
         "bulk_print", "pdf_download", "print_preview",
         "whatsapp_template_editor", "whatsapp_eta_customization", "whatsapp_copy_template",
+        "whatsapp_per_courier_template",  # NEW (2026-04-30 PM2) — Gold+ exclusive
         "ai_rate_customization",
         "form_alt_phone", "form_box_dimensions", "form_token_amount", "form_shipment_notes",
     ],

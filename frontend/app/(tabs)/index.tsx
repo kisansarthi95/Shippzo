@@ -148,6 +148,7 @@ export default function Dashboard() {
 
   // Plan-gated: hide duplicate-banner UI when admin disables this feature.
   const flagDupCheck = useFeatureFlag("smart_paste_duplicate_check");
+  const flagRepeatBanner = useFeatureFlag("repeat_customer_banner");
 
 
   // Human-readable labels + placeholders for each schema field.
@@ -742,7 +743,7 @@ export default function Dashboard() {
             </View>
 
             {/* Repeat-customer / duplicate-shipment banner */}
-            {!!suggestedCustomer && (
+            {!!suggestedCustomer && flagRepeatBanner && (
               <View style={styles.dupBanner}>
                 <Ionicons name="person-circle-outline" size={16} color="#1E40AF" />
                 <Text style={styles.dupBannerTxt} numberOfLines={2}>

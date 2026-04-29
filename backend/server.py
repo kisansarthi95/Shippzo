@@ -1903,12 +1903,16 @@ async def update_shipment(
 
     # Best-effort write-back to Google Sheets. Never blocks the local
     # update — logs and moves on so the app stays fast/available.
+    # Plan-gated: `sheet_two_way_status_sync` must be enabled for the user's
+    # plan (admin checkbox in Plan Features panel). Free-tier users get the
+    # write blocked silently to enforce monetisation.
     if (
         new_status is not None
         and prev_doc is not None
         and (prev_doc.get("status") or "") != new_status
         and prev_doc.get("sheet_row_num")
         and sheet_update_row_status is not None
+        and await user_has_feature(current_user, "sheet_two_way_status_sync")
     ):
         try:
             tracking = prev_doc.get("tracking_id") or res.get("tracking_id") or ""
@@ -1947,7 +1951,13 @@ async def delete_shipment(
 
     sheet_result: Dict[str, Any] = {"attempted": False}
     row_num = doc.get("sheet_row_num")
-    if row_num and sheet_mark_row_deleted is not None:
+    # Plan-gated: `sheet_soft_delete_tombstone` controls whether deletion
+    # leaves an audit-trail row in the Master Sheet.
+    if (
+        row_num
+        and sheet_mark_row_deleted is not None
+        and await user_has_feature(current_user, "sheet_soft_delete_tombstone")
+    ):
         sheet_result["attempted"] = True
         try:
             reason = (
@@ -3326,7 +3336,12 @@ async def delete_pending_order(
 
     sheet_result: Dict[str, Any] = {"attempted": False}
     row_num = doc.get("sheet_row_num")
-    if row_num and sheet_mark_row_deleted is not None:
+    # Plan-gated: same flag as shipment soft-delete tombstone.
+    if (
+        row_num
+        and sheet_mark_row_deleted is not None
+        and await user_has_feature(current_user, "sheet_soft_delete_tombstone")
+    ):
         sheet_result["attempted"] = True
         try:
             reason = (
@@ -3464,8 +3479,14 @@ async def ship_pending_order(
     # ---- Two-Way Status Sync: bump the Master Sheet row from
     # "Pending" to "Dispatched" and stamp the tracking ID into Notice.
     # Best-effort: sheet failures are logged but never block the flow.
+    # Plan-gated: `sheet_two_way_status_sync` controls whether the user's
+    # plan unlocks this auto-update behaviour. Free-tier users skip it.
     sheet_row = order.get("sheet_row_num")
-    if sheet_row and sheet_update_row_status is not None:
+    if (
+        sheet_row
+        and sheet_update_row_status is not None
+        and await user_has_feature(current_user, "sheet_two_way_status_sync")
+    ):
         try:
             sheet_update_row_status(
                 int(sheet_row),
@@ -3765,6 +3786,26 @@ async def wallet_quote(
 from feature_registry import (
     FEATURE_REGISTRY, ALL_KEYS, DEFAULT_PLAN_FEATURES, get_registry_payload
 )
+
+
+async def user_has_feature(user: dict, feature_key: str) -> bool:
+    """Server-side gate. Returns True if `user` is allowed to use
+    `feature_key` based on their plan and the admin's plan_features
+    configuration. Admins bypass all gates.
+
+    Use this from any backend endpoint or background task to enforce
+    plan limits — e.g.,
+        if not await user_has_feature(current_user, "sheet_two_way_status_sync"):
+            return  # silently skip, or raise 403 depending on context
+    """
+    if not user:
+        return False
+    if user.get("is_admin"):
+        return True
+    plan = (user.get("plan") or "free_trial").lower()
+    plans = await _get_plan_features_doc()
+    enabled = set(plans.get(plan, []) or [])
+    return feature_key in enabled
 
 
 async def _get_plan_features_doc() -> Dict[str, List[str]]:
