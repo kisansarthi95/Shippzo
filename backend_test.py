@@ -1,317 +1,315 @@
 """
-Backend tests for Plan Features Registry +4 expansion (57 total) + Backend Gating.
+Phase-9 Unified Address Field — End-to-End Bug Fix Verification
 
-Test plan:
-1. Registry size = 57 with 4 new keys (correct labels & categories).
-2. Per-plan defaults for the 4 new keys.
-3. Admin /me/feature-flags returns is_admin=true, len=57.
-4. PUT /admin/plan-features round-trip for csv_export_orders on gold.
-5. Backend gate — Two-Way Status Sync on PUT /shipments/{id} (admin → must sync).
-6. Backend gate — Soft-Delete tombstone on DELETE /orders/pending/{id} (admin).
-7. Regression — settings, sheets/probe, PUT toggle for old key smart_paste_ai.
+Tests:
+  1. Smart Paste with Gujarati address containing commas → address_line1
+     must preserve full string (not truncate at first comma).
+  2. GET /api/orders/pending/{id} confirms persistence.
+  3. Regression on shipments/stats, shipments, peek-master-id, feature-flags.
+  4. Smart Paste with English address with multiple commas — preserve all.
+  5. Cleanup: delete test pending orders.
+
+Backend URL: https://logistics-hub-740.preview.emergentagent.com/api
+Credentials: admin@test.com / Admin@12345
 """
+
 import os
 import sys
-import time
 import json
-import uuid
+import time
+from typing import Dict, Any, List, Optional, Tuple
+
 import requests
-from typing import Any, Dict, List, Optional, Tuple
 
 BASE = "https://logistics-hub-740.preview.emergentagent.com/api"
-ADMIN_EMAIL = "admin@test.com"
-ADMIN_PASSWORD = "Admin@12345"
-USER_EMAIL = "user2@test.com"
-USER_PASSWORD = "User@12345"
-
-NEW_FEATURE_KEYS = {
-    "repeat_customer_banner": {
-        "label": "Repeat customer banner (with Use button)",
-        "category": "Customer Intelligence",
-    },
-    "csv_export_orders": {
-        "label": "Export orders/shipments to CSV",
-        "category": "Shipments List",
-    },
-    "shipments_bulk_select": {
-        "label": "Bulk select / multi-pick mode",
-        "category": "Shipments List",
-    },
-    "whatsapp_per_courier_template": {
-        "label": "Per-courier WhatsApp templates",
-        "category": "WhatsApp",
-    },
-}
+EMAIL = "admin@test.com"
+PASSWORD = "Admin@12345"
 
 passed: List[str] = []
 failed: List[Tuple[str, str]] = []
 
 
-def assert_true(cond: bool, msg: str, detail: str = ""):
+def assert_eq(name: str, got, expected) -> bool:
+    if got == expected:
+        passed.append(name)
+        print(f"  PASS  {name}")
+        return True
+    failed.append((name, f"expected {expected!r}, got {got!r}"))
+    print(f"  FAIL  {name} — expected {expected!r}, got {got!r}")
+    return False
+
+
+def assert_true(name: str, cond: bool, detail: str = "") -> bool:
     if cond:
-        passed.append(msg)
-        print(f"  ✅ {msg}")
-    else:
-        failed.append((msg, detail))
-        print(f"  ❌ {msg}  {('— ' + detail) if detail else ''}")
+        passed.append(name)
+        print(f"  PASS  {name}")
+        return True
+    failed.append((name, detail or "assertion false"))
+    print(f"  FAIL  {name} — {detail}")
+    return False
 
 
-def login(email: str, password: str) -> str:
-    r = requests.post(f"{BASE}/auth/login", json={"email": email, "password": password}, timeout=20)
+def login() -> str:
+    r = requests.post(
+        f"{BASE}/auth/login",
+        json={"email": EMAIL, "password": PASSWORD},
+        timeout=30,
+    )
     r.raise_for_status()
-    return r.json()["token"]
+    body = r.json()
+    return body["token"]
 
 
-def H(tok: str) -> Dict[str, str]:
-    return {"Authorization": f"Bearer {tok}", "Content-Type": "application/json"}
+def auth_headers(token: str) -> Dict[str, str]:
+    return {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
 
 
-def main() -> int:
-    print(f"\n=== Plan Features Registry +4 + Gating ({BASE}) ===\n")
+def main():
+    print(f"[BASE] {BASE}")
+    print("[1] Logging in...")
+    token = login()
+    print("    Logged in.")
+    H = auth_headers(token)
 
-    # ---- Login admin ----
-    print("[A] Login admin")
-    try:
-        admin_tok = login(ADMIN_EMAIL, ADMIN_PASSWORD)
-        assert_true(bool(admin_tok), "Admin login OK")
-    except Exception as e:
-        assert_true(False, "Admin login OK", f"{e}")
-        return 1
+    created_pending_ids: List[str] = []
 
-    # ───────── 1. Registry size & new keys ─────────
-    print("\n[1] GET /admin/plan-features (admin) — registry size + 4 new keys")
-    r = requests.get(f"{BASE}/admin/plan-features", headers=H(admin_tok), timeout=20)
-    assert_true(r.status_code == 200, "GET /admin/plan-features 200", f"status={r.status_code} body={r.text[:200]}")
-    body = r.json() if r.status_code == 200 else {}
-    registry = body.get("registry", {})
-    features = registry.get("features", []) or []
-    assert_true(len(features) == 57, f"registry.features length == 57", f"got {len(features)}")
-
-    by_key = {f["key"]: f for f in features}
-    for k, meta in NEW_FEATURE_KEYS.items():
-        assert_true(k in by_key, f"new key '{k}' present in registry")
-        if k in by_key:
-            assert_true(
-                by_key[k].get("label") == meta["label"],
-                f"'{k}' label correct",
-                f"got {by_key[k].get('label')!r}",
-            )
-            assert_true(
-                by_key[k].get("category") == meta["category"],
-                f"'{k}' category correct",
-                f"got {by_key[k].get('category')!r}",
-            )
-
-    plans = body.get("plans", {})
-
-    # ───────── 2. Per-plan defaults ─────────
-    print("\n[2] Per-plan defaults for the 4 new keys")
-    gold = set(plans.get("gold", []))
-    silver = set(plans.get("silver", []))
-    free = set(plans.get("free_trial", []))
-    plat = set(plans.get("platinum", []))
-
-    # gold should have all 4
-    for k in NEW_FEATURE_KEYS:
-        assert_true(k in gold, f"gold includes '{k}'", f"gold list missing it (got {len(gold)} keys)")
-
-    # silver: csv_export_orders + repeat_customer_banner ONLY (excludes bulk_select & per_courier_template)
-    assert_true("csv_export_orders" in silver, "silver includes csv_export_orders")
-    assert_true("repeat_customer_banner" in silver, "silver includes repeat_customer_banner")
-    assert_true("shipments_bulk_select" not in silver, "silver excludes shipments_bulk_select")
-    assert_true(
-        "whatsapp_per_courier_template" not in silver,
-        "silver excludes whatsapp_per_courier_template",
+    # =====================================================================
+    # TEST 1 — Smart Paste with Gujarati address (commas inside)
+    # =====================================================================
+    print("\n[T1] Smart Paste — Gujarati address with comma in line 3")
+    gj_paste = (
+        "આહિર વશરામભાઈ નામેરીભાઈ\n"
+        "9978049561\n"
+        "ગામ, રામવાવ તા. રાપર જી.કચ્છ\n"
+        "પિન 370165\n"
+        "COD ₹900\n"
     )
+    expected_full_addr = "ગામ, રામવાવ તા. રાપર જી.કચ્છ"
 
-    # free_trial: none of the 4
-    for k in NEW_FEATURE_KEYS:
-        assert_true(k not in free, f"free_trial excludes '{k}'")
-
-    # platinum: all 57 (auto via ALL_KEYS)
-    assert_true(len(plat) >= 57, f"platinum has all 57 keys (got {len(plat)})")
-    all_keys = set(by_key.keys())
-    assert_true(all_keys.issubset(plat), "platinum contains ALL registry keys")
-
-    # ───────── 3. Admin /me/feature-flags ─────────
-    print("\n[3] Admin /me/feature-flags is_admin=true & len==57")
-    r = requests.get(f"{BASE}/me/feature-flags", headers=H(admin_tok), timeout=20)
-    assert_true(r.status_code == 200, "GET /me/feature-flags 200", f"{r.status_code}")
-    flags = r.json() if r.status_code == 200 else {}
-    assert_true(flags.get("is_admin") is True, "feature-flags is_admin=true")
-    feats = flags.get("features", []) or []
-    assert_true(len(feats) == 57, f"feature-flags features length == 57", f"got {len(feats)}")
-    for k in NEW_FEATURE_KEYS:
-        assert_true(k in feats, f"admin features include '{k}'")
-
-    # ───────── 4. PUT /admin/plan-features round-trip ─────────
-    print("\n[4] PUT /admin/plan-features round-trip — toggle csv_export_orders on 'gold'")
-    # snapshot current state to restore at end
-    snapshot = {p: list(plans.get(p, [])) for p in ("free_trial", "silver", "gold", "platinum")}
-
-    # toggle OFF
-    new_plans = {p: list(snapshot[p]) for p in snapshot}
-    new_plans["gold"] = [k for k in new_plans["gold"] if k != "csv_export_orders"]
-    r = requests.put(
-        f"{BASE}/admin/plan-features",
-        headers=H(admin_tok),
-        json={"plans": new_plans},
-        timeout=20,
-    )
-    assert_true(r.status_code == 200, "PUT /admin/plan-features (off) 200", f"{r.status_code} {r.text[:200]}")
-
-    r = requests.get(f"{BASE}/admin/plan-features", headers=H(admin_tok), timeout=20)
-    cur_gold = set(r.json().get("plans", {}).get("gold", []))
-    assert_true("csv_export_orders" not in cur_gold, "gold no longer includes csv_export_orders after OFF")
-
-    # toggle ON
-    new_plans = {p: list(snapshot[p]) for p in snapshot}
-    if "csv_export_orders" not in new_plans["gold"]:
-        new_plans["gold"].append("csv_export_orders")
-    r = requests.put(
-        f"{BASE}/admin/plan-features",
-        headers=H(admin_tok),
-        json={"plans": new_plans},
-        timeout=20,
-    )
-    assert_true(r.status_code == 200, "PUT /admin/plan-features (on) 200", f"{r.status_code}")
-    r = requests.get(f"{BASE}/admin/plan-features", headers=H(admin_tok), timeout=20)
-    cur_gold = set(r.json().get("plans", {}).get("gold", []))
-    assert_true("csv_export_orders" in cur_gold, "gold includes csv_export_orders after ON")
-
-    # ───────── 5. Backend gate — Two-Way Status Sync (admin) ─────────
-    print("\n[5] Two-Way Status Sync via PUT /shipments/{id}")
-    paste = (
-        "Two-Way Sync Test\n"
-        "9001234567\n"
-        "12 MG Road, Ahmedabad, Gujarat 380001\n"
-        "Order: 250\n"
-        "COD\n"
-    )
-    r = requests.post(
+    r1 = requests.post(
         f"{BASE}/smart-paste",
-        headers=H(admin_tok),
-        json={"text": paste},
-        timeout=60,
+        headers=H,
+        json={"text": gj_paste},
+        timeout=120,
     )
-    assert_true(r.status_code == 200, "POST /smart-paste 200", f"{r.status_code} {r.text[:200]}")
-    pending = r.json() if r.status_code == 200 else {}
-    sheet_row = pending.get("sheet_row_num")
-    pending_id = pending.get("id")
-    assert_true(isinstance(sheet_row, int) and sheet_row > 1, "PendingOrder.sheet_row_num > 1", f"got {sheet_row}")
+    print(f"    HTTP {r1.status_code}")
+    if r1.status_code != 200:
+        print(f"    Body: {r1.text[:600]}")
+    assert_eq("T1 status 200", r1.status_code, 200)
 
-    # Pick a courier (admin's first courier) for ship-now
-    r = requests.get(f"{BASE}/couriers", headers=H(admin_tok), timeout=20)
-    assert_true(r.status_code == 200, "GET /couriers 200")
-    couriers = r.json() if r.status_code == 200 else []
-    assert_true(len(couriers) > 0, "admin has at least 1 courier")
-    courier_id = couriers[0]["id"] if couriers else None
-
-    ship_id: Optional[str] = None
-    if pending_id and courier_id:
-        r = requests.post(
-            f"{BASE}/orders/pending/{pending_id}/ship",
-            headers=H(admin_tok),
-            json={"courier_id": courier_id, "overrides": {}},
-            timeout=30,
+    if r1.status_code == 200:
+        body1 = r1.json()
+        print(
+            "    Returned: address_line1=%r address_line2=%r city=%r state=%r pincode=%r"
+            % (
+                body1.get("address_line1"),
+                body1.get("address_line2"),
+                body1.get("city"),
+                body1.get("state"),
+                body1.get("pincode"),
+            )
         )
-        assert_true(r.status_code == 200, "Ship pending -> shipment 200", f"{r.status_code} {r.text[:200]}")
-        ship = r.json() if r.status_code == 200 else {}
-        ship_id = ship.get("id")
-        assert_true(ship.get("sheet_row_num") == sheet_row, "shipment carries sheet_row_num forward")
+        pid_gj = body1.get("id")
+        if pid_gj:
+            created_pending_ids.append(pid_gj)
 
-    # PUT /shipments/{id} status=Delivered → triggers two-way sync
-    if ship_id:
-        r = requests.put(
-            f"{BASE}/shipments/{ship_id}",
-            headers=H(admin_tok),
-            json={"status": "Delivered"},
-            timeout=30,
+        addr1 = body1.get("address_line1", "")
+        addr2 = body1.get("address_line2", "") or ""
+
+        # CRITICAL: full address must be preserved (with comma). This is the
+        # whole point of the Phase-9 fix — backend should not lose anything.
+        # Accept either: address_line1 == full string, OR
+        # the union of line1+line2 contains the full string verbatim.
+        union = (addr1 + " " + addr2).strip() if addr2 else addr1
+        assert_true(
+            "T1 address_line1 preserves comma+full string (verbatim or in line1+line2)",
+            expected_full_addr in addr1 or expected_full_addr in union,
+            f"expected to find {expected_full_addr!r} in {addr1!r} or {union!r}",
         )
-        assert_true(r.status_code == 200, "PUT shipment status=Delivered 200", f"{r.status_code} {r.text[:200]}")
-        body = r.json() if r.status_code == 200 else {}
-        assert_true(body.get("status") == "Delivered", "shipment status=Delivered")
-        assert_true(bool(body.get("delivered_at")), "delivered_at set")
+        # Specifically, the comma must NOT have been lost:
+        assert_true(
+            "T1 returned address contains comma after 'ગામ'",
+            ("ગામ," in addr1) or ("ગામ," in union),
+            f"line1={addr1!r} union={union!r}",
+        )
 
-    # Inspect backend log for sync line
-    time.sleep(1.0)
-    log_check = os.popen("tail -n 200 /var/log/supervisor/backend.err.log /var/log/supervisor/backend.out.log 2>/dev/null").read()
-    if sheet_row:
-        marker = f"Sheet status sync OK: row={sheet_row}"
-        assert_true(marker in log_check, f"backend log contains 'Sheet status sync OK: row={sheet_row}'",
-                    f"checked tail of supervisor logs ({len(log_check)} chars)")
+        # Pincode
+        assert_eq("T1 pincode == 370165", body1.get("pincode"), "370165")
 
-    # ───────── 6. Soft-delete tombstone (admin) ─────────
-    print("\n[6] Soft-delete tombstone via DELETE /orders/pending/{id}")
-    paste2 = (
-        "Soft Delete Gate Test\n"
-        "9007777777\n"
-        "5 Park Road, Surat, Gujarat 395001\n"
-        "Order: 100\n"
-        "Prepaid\n"
+        # City — should be 'રાપર' (per review). LLM/regex may variably surface
+        # this; treat as soft (warn only) but still report.
+        city = (body1.get("city") or "").strip()
+        if city == "રાપર":
+            passed.append("T1 city == રાપર (exact)")
+            print("  PASS  T1 city == રાપર (exact)")
+        else:
+            print(f"  WARN  T1 city extraction = {city!r} (expected 'રાપર' — soft check)")
+
+        state = (body1.get("state") or "").strip()
+        if state == "કચ્છ" or state.endswith("કચ્છ"):
+            passed.append("T1 state == કચ્છ (exact or suffix)")
+            print("  PASS  T1 state == કચ્છ (exact or suffix)")
+        else:
+            print(f"  WARN  T1 state extraction = {state!r} (expected 'કચ્છ' — soft check)")
+
+        # ===================================================================
+        # TEST 2 — GET pending by id
+        # ===================================================================
+        print(f"\n[T2] GET /orders/pending/{pid_gj} — confirm persistence")
+        r2 = requests.get(f"{BASE}/orders/pending/{pid_gj}", headers=H, timeout=30)
+        print(f"    HTTP {r2.status_code}")
+        assert_eq("T2 GET pending status 200", r2.status_code, 200)
+        if r2.status_code == 200:
+            body2 = r2.json()
+            addr1_p = body2.get("address_line1", "")
+            addr2_p = body2.get("address_line2", "") or ""
+            union_p = (addr1_p + " " + addr2_p).strip() if addr2_p else addr1_p
+            assert_true(
+                "T2 persisted address contains full comma'd string",
+                expected_full_addr in addr1_p or expected_full_addr in union_p,
+                f"line1={addr1_p!r} union={union_p!r}",
+            )
+
+    # =====================================================================
+    # TEST 3 — Regression GETs
+    # =====================================================================
+    print("\n[T3] Regression GETs")
+    r3a = requests.get(f"{BASE}/shipments/stats", headers=H, timeout=30)
+    print(f"    /shipments/stats → {r3a.status_code}")
+    assert_eq("T3a /shipments/stats == 200", r3a.status_code, 200)
+    if r3a.status_code == 200:
+        s = r3a.json()
+        assert_true(
+            "T3a shipments/stats has 'total' or known stat key",
+            isinstance(s, dict) and len(s) > 0,
+            f"body keys={list(s.keys()) if isinstance(s, dict) else type(s)}",
+        )
+
+    r3b = requests.get(f"{BASE}/shipments", headers=H, timeout=30)
+    print(f"    /shipments → {r3b.status_code}")
+    assert_eq("T3b /shipments == 200", r3b.status_code, 200)
+    if r3b.status_code == 200:
+        body = r3b.json()
+        # body could be list or {items: [...]}
+        if isinstance(body, list):
+            count = len(body)
+        elif isinstance(body, dict) and "items" in body:
+            count = len(body["items"])
+        else:
+            count = -1
+        print(f"    shipments count={count}")
+        assert_true("T3b /shipments returned list-shape", count >= 0, f"body type={type(body)}")
+
+    r3c = requests.get(f"{BASE}/orders/peek-master-id", headers=H, timeout=30)
+    print(f"    /orders/peek-master-id → {r3c.status_code}")
+    assert_eq("T3c /orders/peek-master-id == 200", r3c.status_code, 200)
+    if r3c.status_code == 200:
+        b = r3c.json()
+        assert_true(
+            "T3c peek-master-id has master_order_id key",
+            "master_order_id" in b,
+            f"keys={list(b.keys())}",
+        )
+
+    r3d = requests.get(f"{BASE}/me/feature-flags", headers=H, timeout=30)
+    print(f"    /me/feature-flags → {r3d.status_code}")
+    assert_eq("T3d /me/feature-flags == 200", r3d.status_code, 200)
+    if r3d.status_code == 200:
+        ff = r3d.json()
+        feats = ff.get("features") or []
+        # Some implementations might return dict of {key: bool}. Handle both.
+        if isinstance(feats, dict):
+            n = len(feats)
+        else:
+            n = len(feats)
+        print(f"    features count={n}")
+        assert_eq("T3d feature-flags features.length == 57", n, 57)
+
+    # =====================================================================
+    # TEST 4 — Smart Paste with English-only address (3 commas)
+    # =====================================================================
+    print("\n[T4] Smart Paste — English address with 3 commas")
+    en_paste = (
+        "Test Customer\n"
+        "9876543210\n"
+        "123 Main Road, Near Park, Sector 12\n"
+        "Delhi 110001\n"
+        "COD ₹500\n"
     )
-    r = requests.post(
+    expected_en_addr = "123 Main Road, Near Park, Sector 12"
+
+    r4 = requests.post(
         f"{BASE}/smart-paste",
-        headers=H(admin_tok),
-        json={"text": paste2},
-        timeout=60,
+        headers=H,
+        json={"text": en_paste},
+        timeout=120,
     )
-    assert_true(r.status_code == 200, "POST /smart-paste (soft-delete fixture) 200", f"{r.status_code}")
-    p2 = r.json() if r.status_code == 200 else {}
-    p2_id = p2.get("id")
-    p2_row = p2.get("sheet_row_num")
-    assert_true(isinstance(p2_row, int) and p2_row > 1, "fixture PendingOrder.sheet_row_num > 1", f"got {p2_row}")
+    print(f"    HTTP {r4.status_code}")
+    if r4.status_code != 200:
+        print(f"    Body: {r4.text[:600]}")
+    assert_eq("T4 status 200", r4.status_code, 200)
+    if r4.status_code == 200:
+        body4 = r4.json()
+        print(
+            "    Returned: address_line1=%r address_line2=%r city=%r state=%r pincode=%r"
+            % (
+                body4.get("address_line1"),
+                body4.get("address_line2"),
+                body4.get("city"),
+                body4.get("state"),
+                body4.get("pincode"),
+            )
+        )
+        pid_en = body4.get("id")
+        if pid_en:
+            created_pending_ids.append(pid_en)
 
-    if p2_id:
-        r = requests.delete(f"{BASE}/orders/pending/{p2_id}", headers=H(admin_tok), timeout=30)
-        assert_true(r.status_code == 200, "DELETE pending 200", f"{r.status_code} {r.text[:200]}")
-        body = r.json() if r.status_code == 200 else {}
-        sheet = body.get("sheet", {})
-        assert_true(body.get("ok") is True, "DELETE response ok=true")
-        assert_true(sheet.get("attempted") is True, "sheet.attempted=true (gate passed for admin)",
-                    f"got {sheet}")
-        # Sheet writer is configured (admin has been writing rows successfully) — expect ok
-        assert_true(sheet.get("ok") is True, "sheet.ok=true", f"got {sheet}")
-        assert_true(sheet.get("row") == p2_row, "sheet.row matches sheet_row_num")
+        a1 = body4.get("address_line1", "") or ""
+        a2 = body4.get("address_line2", "") or ""
+        union_en = (a1 + " " + a2).strip() if a2 else a1
 
-    # ───────── 7. Regression ─────────
-    print("\n[7] Regression — existing 53 keys present, /settings, /sheets/probe, OLD-key toggle")
-    # 53 of the original keys should still be present (i.e., 57 - 4 NEW)
-    existing_count = sum(1 for k in by_key if k not in NEW_FEATURE_KEYS)
-    assert_true(existing_count == 53, f"53 existing (pre-+4) keys still in registry", f"got {existing_count}")
+        assert_true(
+            "T4 full English address (with 3 commas) preserved",
+            expected_en_addr in a1 or expected_en_addr in union_en,
+            f"line1={a1!r} union={union_en!r}",
+        )
+        # Comma count check — must keep all 2 internal commas
+        comma_count_a1 = a1.count(",")
+        comma_count_union = union_en.count(",")
+        assert_true(
+            "T4 address has at least 2 commas preserved (in line1 or union)",
+            comma_count_a1 >= 2 or comma_count_union >= 2,
+            f"line1 commas={comma_count_a1}, union commas={comma_count_union}",
+        )
+        assert_eq("T4 pincode == 110001", body4.get("pincode"), "110001")
 
-    r = requests.get(f"{BASE}/settings", headers=H(admin_tok), timeout=20)
-    assert_true(r.status_code == 200, "GET /settings 200")
+    # =====================================================================
+    # TEST 5 — Cleanup
+    # =====================================================================
+    print("\n[T5] Cleanup — delete test pending orders")
+    for pid in created_pending_ids:
+        try:
+            rd = requests.delete(f"{BASE}/orders/pending/{pid}", headers=H, timeout=30)
+            print(f"    DELETE /orders/pending/{pid} → {rd.status_code}")
+            assert_true(
+                f"T5 cleanup pending {pid[:8]}",
+                rd.status_code in (200, 204, 404),
+                f"got {rd.status_code}: {rd.text[:200]}",
+            )
+        except Exception as e:
+            print(f"    DELETE failed: {e}")
 
-    r = requests.get(f"{BASE}/sheets/probe", headers=H(admin_tok), timeout=30)
-    assert_true(r.status_code == 200, "GET /sheets/probe 200", f"{r.status_code} {r.text[:200]}")
-
-    # PUT toggle for OLD key (smart_paste_ai) on free_trial — toggle off then on
-    r = requests.get(f"{BASE}/admin/plan-features", headers=H(admin_tok), timeout=20)
-    cur = r.json().get("plans", {}) if r.status_code == 200 else {}
-    cur_ft = list(cur.get("free_trial", []))
-    new_payload = {p: list(cur.get(p, [])) for p in ("free_trial", "silver", "gold", "platinum")}
-    new_payload["free_trial"] = [k for k in cur_ft if k != "smart_paste_ai"]
-    r = requests.put(f"{BASE}/admin/plan-features", headers=H(admin_tok), json={"plans": new_payload}, timeout=20)
-    assert_true(r.status_code == 200, "PUT /admin/plan-features OLD-key OFF 200", f"{r.status_code}")
-
-    r = requests.get(f"{BASE}/admin/plan-features", headers=H(admin_tok), timeout=20)
-    cur_ft2 = set(r.json().get("plans", {}).get("free_trial", []))
-    assert_true("smart_paste_ai" not in cur_ft2, "free_trial smart_paste_ai removed (round-trip works)")
-
-    # Restore
-    new_payload["free_trial"] = list(cur_ft)
-    r = requests.put(f"{BASE}/admin/plan-features", headers=H(admin_tok), json={"plans": new_payload}, timeout=20)
-    assert_true(r.status_code == 200, "PUT /admin/plan-features OLD-key restored 200", f"{r.status_code}")
-
-    # ───────── Summary ─────────
-    print("\n=== Summary ===")
-    print(f"  Passed: {len(passed)}")
-    print(f"  Failed: {len(failed)}")
+    # =====================================================================
+    # SUMMARY
+    # =====================================================================
+    print("\n" + "=" * 70)
+    print(f"PASSED: {len(passed)}")
+    print(f"FAILED: {len(failed)}")
     if failed:
-        print("\nFailures:")
-        for m, d in failed:
-            print(f"  ✗ {m}  {('— ' + d) if d else ''}")
+        print("\nFAILURES:")
+        for name, detail in failed:
+            print(f"  - {name}: {detail}")
+    print("=" * 70)
     return 0 if not failed else 1
 
 

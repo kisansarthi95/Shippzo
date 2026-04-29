@@ -30,45 +30,35 @@ const LS_LAST_PAYMENT = "@csm/lastPaymentMode";
 const LS_LAST_TRACK_MODE = "@csm/lastTrackMode";
 
 /**
- * Parse a free-form address string into the form's structured fields.
+ * Phase-9 unified-address fix (2026-04-30):
+ * The address is now ONE string from end to end. We never split it into
+ * line1/line2, never try to extract city/state from comma-separated
+ * tokens, and never re-parse it. The Smart Paste AI / Google Sheet /
+ * pending-order flows all provide `city`, `state`, `pincode` as
+ * separate fields anyway, so the address string can be used verbatim.
  *
- * Phase-6 (2026-04-28): we no longer split into line1/line2. Everything
- * non-city/state/pincode goes into a single "line1" return key, capped
- * at 300 characters. line2 is kept in the return shape only for
- * back-compat with the form state — it's always empty.
+ * This finally kills the recurring "address gets truncated to first
+ * comma chunk" bug that plagued the New Shipment form for 9+ rounds:
+ * the legacy `splitAddress(full)` helper was tokenising on commas and
+ * dropping everything after the first comma into city/state slots,
+ * even though those slots were already correctly populated upstream.
+ *
+ * The legacy `splitAddress` helper was DELETED. Use `o.address`
+ * (or `o.address_line1` for the rare back-compat case where the
+ * server still produced legacy split fields) as the FULL address.
  */
-function splitAddress(full: string): {
-  line1: string;
-  line2: string;
-  city: string;
-  state: string;
-  pincode: string;
-} {
-  const clean = (full || "").trim();
-  if (!clean) return { line1: "", line2: "", city: "", state: "", pincode: "" };
-  const pinMatch = clean.match(/(\d{6})/);
-  const pincode = pinMatch ? pinMatch[1] : "";
-  // Strip the pincode from the working text so it doesn't leak into
-  // line1 (it shows up in the dedicated Pincode field instead).
-  let working = pincode ? clean.replace(pincode, "") : clean;
-  const parts = working.split(/[,\n]/).map((p) => p.trim()).filter(Boolean);
-  let city = "";
-  let state = "";
-  let line1 = "";
-  if (parts.length >= 3) {
-    state = parts[parts.length - 1] || "";
-    city  = parts[parts.length - 2] || "";
-    line1 = parts.slice(0, -2).join(", ");
-  } else if (parts.length === 2) {
-    state = parts[1] || "";
-    line1 = parts[0] || "";
-  } else {
-    line1 = parts.join(", ");
-  }
-  // Trim to the 300-char cap (defensive) — backend post-processor and
-  // form maxLength also enforce this.
-  if (line1.length > 300) line1 = line1.slice(0, 300);
-  return { line1, line2: "", city, state, pincode };
+function fullAddressFrom(o: any): string {
+  // Priority order:
+  //   1. The unified `o.address` string (new pipeline)
+  //   2. Legacy `address_line1` + `address_line2` joined (very old data
+  //      that was written before the single-field migration)
+  //   3. Empty string fallback.
+  const unified = String(o?.address || "").trim();
+  if (unified) return unified.slice(0, 300);
+  const l1 = String(o?.address_line1 || "").trim();
+  const l2 = String(o?.address_line2 || "").trim();
+  if (l1 && l2 && l2 !== "-") return `${l1}, ${l2}`.slice(0, 300);
+  return (l1 || l2).slice(0, 300);
 }
 
 export default function AddShipment() {
@@ -354,16 +344,10 @@ export default function AddShipment() {
         setCustomerName(s.customer_name || "");
         setCustomerPhone(s.customer_phone || "");
         setCustomerAltPhone((s as any).customer_alt_phone || "");
-        // Phase-6 single-address-field merge: collapse legacy line1 +
-        // line2 into the single field. New form only writes line1.
-        const legacyL1 = (s.address_line1 || "").trim();
-        const legacyL2 = (s.address_line2 || "").trim();
-        let merged = legacyL1;
-        if (legacyL2 && legacyL2 !== "-") {
-          merged = legacyL1 ? `${legacyL1}, ${legacyL2}` : legacyL2;
-        }
-        if (merged.length > 300) merged = merged.slice(0, 300);
-        setAddr1(merged);
+        // Phase-9 unified-address (2026-04-30): use FULL address verbatim.
+        // Supports the legacy `address_line1` + `address_line2` shape too
+        // for old shipment docs that pre-date the migration.
+        setAddr1(fullAddressFrom(s));
         setAddr2("");
         setCity(s.city || "");
         setState(s.state || "");
@@ -432,26 +416,22 @@ export default function AddShipment() {
     if (params.prefill) {
       try {
         const o = JSON.parse(String(params.prefill));
-        const addr = splitAddress(o.address || "");
         setOrderId(o.order_id || "");
         setCustomerName(o.customer_name || "");
         setCustomerPhone(o.phone || "");
         setCustomerAltPhone(o.alt_phone || o.customer_alt_phone || "");
-        // Phase-6: support either a structured prefill (separate
-        // line1 + line2) or the new flat "address" string. In all
-        // cases we collapse into a single 300-char line1.
-        const incomingL1 = (o.address_line1 || "").trim();
-        const incomingL2 = (o.address_line2 || "").trim();
-        let merged = incomingL1 || addr.line1;
-        if (incomingL2 && incomingL2 !== "-") {
-          merged = merged ? `${merged}, ${incomingL2}` : incomingL2;
-        }
-        if (merged.length > 300) merged = merged.slice(0, 300);
-        setAddr1(merged);
+        // Phase-9 unified-address (2026-04-30): use FULL address verbatim.
+        // City / State / Pincode arrive as separate fields from upstream
+        // (Smart Paste AI / Pending Orders / Sheet) and are NEVER parsed
+        // out of the address string. This kills the recurring truncation
+        // bug where "ગામ, રામવાવ તા. રાપર જી.કચ્છ" was getting cut to
+        // just "ગામ" because a comma was being interpreted as a city
+        // boundary.
+        setAddr1(fullAddressFrom(o));
         setAddr2("");
-        setCity(o.city || addr.city);
-        setState(o.state || addr.state);
-        setPincode(o.pincode || addr.pincode);
+        setCity(String(o.city || "").trim());
+        setState(String(o.state || "").trim());
+        setPincode(String(o.pincode || "").trim());
         const amt = String(o.amount || "").replace(/[^\d.]/g, "");
         setAmount(amt);
         const items = String(o.item || "")
@@ -555,16 +535,16 @@ export default function AddShipment() {
   }, [sheetConnected]);
 
   const pickOrder = (o: SheetOrder) => {
-    const addr = splitAddress(o.address);
     setOrderId(o.order_id);
     setCustomerName(o.customer_name);
     setCustomerPhone(o.phone);
-    // Phase-6 single-address-field — no more line2 split.
-    setAddr1((addr.line1 || "").slice(0, 300));
+    // Phase-9 unified-address (2026-04-30): use FULL address verbatim,
+    // never split. Sheet provides city/state/pincode as separate cols.
+    setAddr1(fullAddressFrom(o));
     setAddr2("");
-    setCity(o.city || addr.city);
-    setState(o.state || addr.state);
-    setPincode(o.pincode || addr.pincode);
+    setCity(String(o.city || "").trim());
+    setState(String(o.state || "").trim());
+    setPincode(String(o.pincode || "").trim());
     const amt = (o.amount || "").replace(/[^\d.]/g, "");
     setAmount(amt);
     const items = (o.item || "")

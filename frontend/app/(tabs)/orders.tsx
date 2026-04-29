@@ -46,6 +46,15 @@ export default function OrdersFromSheet() {
     // Same flow as Sheet orders — navigate to Add with prefill.
     // User can edit fields, choose courier, and pick tracking ID
     // (auto/manual/scan). Add screen will finalize the pending order.
+    //
+    // Phase-9 unified-address (2026-04-30): pass the FULL address as
+    // ONE string. We still attach the legacy split fields for any
+    // unforeseen back-compat path, but Add screen's `fullAddressFrom`
+    // helper consumes `address` first and never re-parses it.
+    const fullAddr = [order.address_line1, order.address_line2]
+      .map((s) => String(s || "").trim())
+      .filter(Boolean)
+      .join(", ");
     router.push({
       pathname: "/(tabs)/add",
       params: {
@@ -54,10 +63,7 @@ export default function OrdersFromSheet() {
           customer_name: order.customer_name,
           phone: order.customer_phone,
           alt_phone: (order as any).customer_alt_phone || "",
-          address:
-            [order.address_line1, order.address_line2]
-              .filter(Boolean)
-              .join(", ") || order.address_line1,
+          address: fullAddr,
           city: order.city,
           state: order.state,
           pincode: order.pincode,
