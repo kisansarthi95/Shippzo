@@ -5896,11 +5896,11 @@ agent_communication:
 backend:
   - task: "Courier Partner cap per plan (Silver=1, Gold=2, Platinum/admin=unlimited)"
     implemented: true
-    working: "NA"
+    working: true
     file: "/app/backend/server.py"
     stuck_count: 0
     priority: "high"
-    needs_retesting: true
+    needs_retesting: false
     status_history:
         -working: "NA"
         -agent: "main"
