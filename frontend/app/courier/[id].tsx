@@ -10,11 +10,14 @@ import { useLocalSearchParams, useRouter } from "expo-router";
 import { Api, Courier } from "../../lib/api";
 import { cleanPhone } from "../../lib/format";
 import { colors } from "../../lib/theme";
+import { useFeatureFlag } from "../../lib/feature_flags";
 
 export default function CourierEdit() {
   const router = useRouter();
   const { id } = useLocalSearchParams<{ id: string }>();
   const isNew = id === "new";
+  // Plan-gated: hide Customer-ID-on-label input for tiers without it.
+  const flagLabelCustomerId = useFeatureFlag("label_customer_id");
 
   const [loading, setLoading] = useState(!isNew);
   const [saving, setSaving] = useState(false);
@@ -334,6 +337,7 @@ export default function CourierEdit() {
                 placeholder="https://courier.com/track?id={tracking_id}"
                 placeholderTextColor="#9CA3AF" autoCapitalize="none" style={styles.input} />
             </Field>
+            {flagLabelCustomerId && (
             <Field label="Customer ID (prints on label)">
               <Text style={styles.hint}>
                 Optional. Shown as small text below the courier name on the printed label
@@ -344,6 +348,7 @@ export default function CourierEdit() {
                 placeholder="e.g. 1000057527"
                 placeholderTextColor="#9CA3AF" autoCapitalize="none" style={styles.input} />
             </Field>
+            )}
             <Field label="Notes">
               <TextInput testID="courier-notes-input" value={notes} onChangeText={setNotes}
                 placeholder="Anything to remember" placeholderTextColor="#9CA3AF"

@@ -25,6 +25,7 @@ import { Api, Shipment } from "../../lib/api";
 import { colors } from "../../lib/theme";
 import UsageMeter from "../../components/UsageMeter";
 import HomeAlerts from "../../components/HomeAlerts";
+import { useFeatureFlag } from "../../lib/feature_flags";
 
 type Stats = {
   total: number;
@@ -144,6 +145,9 @@ export default function Dashboard() {
   const [chatSending, setChatSending] = useState(false);
   const [suggestedCustomer, setSuggestedCustomer] = useState<any | null>(null);
   const [dupFound, setDupFound] = useState<any[]>([]);
+
+  // Plan-gated: hide duplicate-banner UI when admin disables this feature.
+  const flagDupCheck = useFeatureFlag("smart_paste_duplicate_check");
 
 
   // Human-readable labels + placeholders for each schema field.
@@ -372,7 +376,9 @@ export default function Dashboard() {
       setChatFields(legacyFields);
       setChatComplexity((dup.ai?.complexity as any) || "");
       setChatReason(dup.ai?.reason || "");
-      setDupFound(dup.duplicates || []);
+      // Plan-gate: if duplicate-detection is OFF for this user's plan,
+      // never expose the duplicate banner even if the backend returns it.
+      setDupFound(flagDupCheck ? (dup.duplicates || []) : []);
       setSuggestedCustomer(null);
       resetSheetHeight();
       setChatOpen(true);

@@ -3768,28 +3768,78 @@ from feature_registry import (
 
 
 async def _get_plan_features_doc() -> Dict[str, List[str]]:
-    """Fetch (or seed) the plan->features mapping. Adds new registry keys
-    to Platinum automatically so admin doesn't have to re-tick on every
-    deploy.
+    """Fetch (or seed) the plan->features mapping.
+
+    On first read, seeds the doc with DEFAULT_PLAN_FEATURES.
+
+    On subsequent reads:
+      • Always keeps Platinum in sync with ALL_KEYS so power users get
+        every newly-shipped feature automatically.
+      • For NEW feature keys that didn't exist when the doc was first
+        seeded, auto-injects them into each plan's saved list IF the
+        registry's DEFAULT_PLAN_FEATURES says that feature should be on
+        for that plan. This way the admin sees a sensible pre-state in
+        the panel for new features without having to tick 14 boxes
+        across 3 plans manually after a deploy. Tracked via a
+        `known_keys` field on the doc — once a key has been migrated
+        for a plan, subsequent admin un-ticks are respected (we never
+        re-inject a key the admin has explicitly removed).
     """
     doc = await db.plan_features.find_one({"_id": "default"})
     if not doc:
+        # First-time seed
         seeded = {p: list(v) for p, v in DEFAULT_PLAN_FEATURES.items()}
-        await db.plan_features.insert_one({"_id": "default", "plans": seeded})
+        await db.plan_features.insert_one({
+            "_id": "default",
+            "plans": seeded,
+            "known_keys": list(ALL_KEYS),
+        })
         return seeded
+
     plans = doc.get("plans", {}) or {}
-    # Auto-grant any newly-added registry keys to Platinum so power users
-    # always have the latest. Other plans stay opt-in (default OFF).
-    plat = set(plans.get("platinum", []))
-    plat.update(ALL_KEYS)
-    if plat != set(plans.get("platinum", [])):
-        plans["platinum"] = list(plat)
-        await db.plan_features.update_one(
-            {"_id": "default"}, {"$set": {"plans": plans}}
-        )
-    # Also ensure every plan key exists (free_trial, silver, gold, platinum)
+    known_keys: set = set(doc.get("known_keys") or [])
+    new_keys: set = set(ALL_KEYS) - known_keys
+
+    dirty = False
+
+    # ── Migration A: auto-inject defaults for brand-new feature keys ──
+    if new_keys:
+        for plan_key, plan_defaults in DEFAULT_PLAN_FEATURES.items():
+            current_set = set(plans.get(plan_key, []))
+            for nk in new_keys:
+                # Only inject if the registry says this plan should
+                # have it on by default.
+                if nk in plan_defaults and nk not in current_set:
+                    current_set.add(nk)
+            plans[plan_key] = list(current_set)
+        dirty = True
+
+    # ── Migration B: Platinum always gets EVERY current key ──
+    plat_set = set(plans.get("platinum", []))
+    if not plat_set.issuperset(ALL_KEYS):
+        plat_set.update(ALL_KEYS)
+        plans["platinum"] = list(plat_set)
+        dirty = True
+
+    # ── Migration C: ensure every plan slug exists ──
     for k in DEFAULT_PLAN_FEATURES.keys():
-        plans.setdefault(k, list(DEFAULT_PLAN_FEATURES[k]))
+        if k not in plans:
+            plans[k] = list(DEFAULT_PLAN_FEATURES[k])
+            dirty = True
+
+    if dirty:
+        await db.plan_features.update_one(
+            {"_id": "default"},
+            {"$set": {"plans": plans, "known_keys": list(set(ALL_KEYS))}},
+            upsert=True,
+        )
+    elif new_keys:
+        # No plan changes but mark keys as known so we don't re-evaluate
+        # injection on every read.
+        await db.plan_features.update_one(
+            {"_id": "default"},
+            {"$set": {"known_keys": list(set(ALL_KEYS))}},
+        )
     return plans
 
 

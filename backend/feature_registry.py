@@ -1,6 +1,41 @@
 """
 Feature Registry — central catalogue of every toggleable feature in the app.
 
+═══════════════════════════════════════════════════════════════════════════
+🚨 STANDING RULE — READ BEFORE ADDING ANY USER-FACING FEATURE 🚨
+═══════════════════════════════════════════════════════════════════════════
+
+Whenever a NEW user-facing feature is built (anywhere in the app — backend
+endpoint, frontend screen, button, toggle, modal, etc.), it MUST be:
+
+  1. Registered in this file's `FEATURE_REGISTRY` dict below — pick or
+     create an appropriate `category`, and write a short user-friendly
+     `label` (this is what the admin sees in the panel).
+
+  2. Seeded with a sensible default in `DEFAULT_PLAN_FEATURES` below for
+     every plan tier (free_trial / silver / gold / platinum). Platinum
+     gets EVERYTHING automatically because its list is `list(ALL_KEYS)`.
+     For others, decide which plan should see this feature by default.
+     Conservative principle: lock new features behind paid tiers unless
+     they're clearly basic.
+
+  3. Wired in the relevant UI code with `useFeatureFlag("key_here")` —
+     the component must render only when the flag is on. Backend
+     endpoints can also gate behaviour by reading the user's plan.
+
+The admin's "Plan Features" panel is data-driven from this registry, so
+adding a row here automatically gives the admin a checkbox for that
+feature in every plan tab — no UI code changes are required there.
+
+▶ DO NOT remove or rename existing keys. If a feature is being retired,
+  leave its row in place and remove it from all plan defaults instead;
+  that way already-saved admin choices in production keep working and
+  no database migration is required.
+
+▶ When you migrate or rename a feature, add an `aliases` block in
+  `_get_plan_features_doc()` (server.py) so old keys still resolve.
+═══════════════════════════════════════════════════════════════════════════
+
 Why this exists
 ---------------
 The admin should be able to tick/untick which features are visible to users
@@ -12,7 +47,7 @@ Instead, we keep ONE registry here. Adding a feature =
     1) Add a row below.
     2) Wrap the corresponding UI in `useFeatureFlag(key)` on the frontend.
 That's it. The admin panel will pick up the new row automatically and ship
-with `default=False` so it stays hidden until an admin opts it in for a plan.
+with the per-plan defaults declared in `DEFAULT_PLAN_FEATURES`.
 
 Default values
 --------------
@@ -29,8 +64,11 @@ CATEGORY_ORDER = [
     "Shipments List",
     "Label Design",
     "Google Sheets",
+    "Master Order ID",
     "Couriers & Tracking",
+    "Scanner",
     "Customer Intelligence",
+    "Offline Mode",
     "Print & PDF",
     "WhatsApp",
     "AI & Wallet",
@@ -45,6 +83,8 @@ FEATURE_REGISTRY: Dict[str, Dict[str, str]] = {
     "smart_paste_image_ocr":     {"label": "Photo / Aadhaar OCR",          "category": "Smart Paste"},
     "smart_paste_chat_refine":   {"label": "Chat-style refine flow",       "category": "Smart Paste"},
     "smart_paste_custom_prompt": {"label": "Custom AI instructions",       "category": "Smart Paste"},
+    # NEW (2026-04-30) — Pre-save duplicate detection
+    "smart_paste_duplicate_check": {"label": "Pre-save duplicate detection", "category": "Smart Paste"},
 
     # ── Shipments List per-row buttons ───────────────────────────
     "shipment_copy_btn":         {"label": "Copy button",                  "category": "Shipments List"},
@@ -62,21 +102,42 @@ FEATURE_REGISTRY: Dict[str, Dict[str, str]] = {
     "label_field_toggles":       {"label": "Show/hide label fields",       "category": "Label Design"},
     "label_logo_shape":          {"label": "Logo shape (square / wide)",   "category": "Label Design"},
     "label_size_options":        {"label": "A4 / A5 / Thermal sizes",      "category": "Label Design"},
+    # NEW (2026-04-30) — Customer ID & Content Budget on label
+    "label_customer_id":         {"label": "Customer ID on label (per courier)", "category": "Label Design"},
+    "label_content_budget":      {"label": "Content budget indicator (3 max)",   "category": "Label Design"},
 
     # ── Google Sheets ────────────────────────────────────────────
     "sheet_import":              {"label": "Import orders from sheet",     "category": "Google Sheets"},
     "sheet_two_way_sync":        {"label": "Two-way sync (write back)",    "category": "Google Sheets"},
     "sheet_column_mapping":      {"label": "Custom column mapping",        "category": "Google Sheets"},
+    # NEW (2026-04-30) — Phase-C Restore + Two-way status + soft-delete
+    "sheet_restore_my_orders":   {"label": "Restore My Orders (Phase-C)",  "category": "Google Sheets"},
+    "sheet_two_way_status_sync": {"label": "App status → Sheet auto sync", "category": "Google Sheets"},
+    "sheet_soft_delete_tombstone": {"label": "Soft-delete preserves audit row", "category": "Google Sheets"},
+
+    # ── Master Order ID (NEW category, 2026-04-30) ───────────────
+    "master_order_id_counter_custom": {"label": "Counter customization (e.g. start at 2200)", "category": "Master Order ID"},
+    "master_order_id_autofill_new":   {"label": "Auto-fill in New Shipment form",             "category": "Master Order ID"},
 
     # ── Couriers & Tracking ──────────────────────────────────────
     "multiple_couriers":         {"label": "More than 1 courier partner",  "category": "Couriers & Tracking"},
     "auto_tracking":             {"label": "Auto-generate tracking ID",    "category": "Couriers & Tracking"},
     "manual_tracking_scan":      {"label": "Scan barcode for tracking",    "category": "Couriers & Tracking"},
 
+    # ── Scanner (NEW category, 2026-04-30) ───────────────────────
+    "scanner_sound_feedback":    {"label": "Beep / buzz feedback on scan", "category": "Scanner"},
+    "scanner_double_confirm":    {"label": "Double-confirm scan accuracy", "category": "Scanner"},
+    "scanner_manual_entry":      {"label": "Manual tracking ID entry",     "category": "Scanner"},
+
     # ── Customer Intelligence ────────────────────────────────────
     "repeat_customer_detect":    {"label": "Repeat customer detection",    "category": "Customer Intelligence"},
     "repeat_items_dialog":       {"label": "Reuse old items prompt",       "category": "Customer Intelligence"},
     "pending_orders_inbox":      {"label": "Pending Orders tab",           "category": "Customer Intelligence"},
+
+    # ── Offline Mode (NEW category, 2026-04-30) ──────────────────
+    "offline_mode":              {"label": "Offline Mode (master switch)", "category": "Offline Mode"},
+    "offline_create_shipment":   {"label": "Save shipment offline",        "category": "Offline Mode"},
+    "offline_sync_queue_view":   {"label": "View offline sync queue",      "category": "Offline Mode"},
 
     # ── Print & PDF ──────────────────────────────────────────────
     "bulk_print":                {"label": "Bulk print labels",            "category": "Print & PDF"},
@@ -108,11 +169,14 @@ DEFAULT_PLAN_FEATURES: Dict[str, List[str]] = {
     "free_trial": [
         "smart_paste_ai", "smart_paste_voice", "smart_paste_image_ocr",
         "smart_paste_chat_refine",
+        "smart_paste_duplicate_check",  # NEW — basic safety net for everyone
         "shipment_copy_btn", "shipment_whatsapp_btn", "shipment_edit_btn",
         "shipment_delete_btn", "shipment_print_btn", "shipment_mark_delivered",
         "label_brand_name", "label_field_toggles",
         "sheet_import",
+        "master_order_id_autofill_new",  # NEW — basic UX, no cost
         "multiple_couriers", "auto_tracking",
+        "scanner_manual_entry",          # NEW — manual entry is free for all
         "repeat_customer_detect",
         "pdf_download", "print_preview",
         "whatsapp_template_editor",
@@ -121,12 +185,18 @@ DEFAULT_PLAN_FEATURES: Dict[str, List[str]] = {
     "silver": [
         "smart_paste_ai", "smart_paste_voice", "smart_paste_image_ocr",
         "smart_paste_chat_refine",
+        "smart_paste_duplicate_check",   # NEW
         "shipment_copy_btn", "shipment_whatsapp_btn", "shipment_edit_btn",
         "shipment_delete_btn", "shipment_print_btn", "shipment_mark_delivered",
         "label_brand_logo", "label_brand_name", "label_brand_tagline",
         "label_field_toggles",
         "sheet_import", "sheet_two_way_sync",
+        "sheet_restore_my_orders",       # NEW — Phase-C restore for paid tiers
+        "sheet_soft_delete_tombstone",   # NEW — audit trail for paid tiers
+        "master_order_id_autofill_new",  # NEW
         "multiple_couriers", "auto_tracking",
+        "scanner_manual_entry",          # NEW
+        "scanner_sound_feedback",        # NEW
         "repeat_customer_detect", "pending_orders_inbox",
         "bulk_print", "pdf_download", "print_preview",
         "whatsapp_template_editor", "whatsapp_eta_customization",
@@ -135,14 +205,23 @@ DEFAULT_PLAN_FEATURES: Dict[str, List[str]] = {
     "gold": [
         "smart_paste_ai", "smart_paste_voice", "smart_paste_image_ocr",
         "smart_paste_chat_refine", "smart_paste_custom_prompt",
+        "smart_paste_duplicate_check",   # NEW
         "shipment_copy_btn", "shipment_whatsapp_btn", "shipment_edit_btn",
         "shipment_delete_btn", "shipment_print_btn", "shipment_mark_delivered",
         "label_brand_logo", "label_brand_name", "label_brand_tagline",
         "label_custom_fields", "label_field_toggles", "label_logo_shape",
         "label_size_options",
+        "label_customer_id", "label_content_budget",  # NEW
         "sheet_import", "sheet_two_way_sync", "sheet_column_mapping",
+        "sheet_restore_my_orders",       # NEW
+        "sheet_two_way_status_sync",     # NEW — full-power sheet sync for Gold+
+        "sheet_soft_delete_tombstone",   # NEW
+        "master_order_id_counter_custom",  # NEW — Gold+ shops need legacy series continuity
+        "master_order_id_autofill_new",    # NEW
         "multiple_couriers", "auto_tracking", "manual_tracking_scan",
+        "scanner_sound_feedback", "scanner_double_confirm", "scanner_manual_entry",  # NEW (full scanner UX)
         "repeat_customer_detect", "repeat_items_dialog", "pending_orders_inbox",
+        "offline_mode", "offline_create_shipment", "offline_sync_queue_view",  # NEW (offline for Gold+)
         "bulk_print", "pdf_download", "print_preview",
         "whatsapp_template_editor", "whatsapp_eta_customization", "whatsapp_copy_template",
         "ai_rate_customization",

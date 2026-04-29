@@ -1,336 +1,359 @@
 """
-Phase-D backend verification — User Sheet Read-Only Mode.
+Backend tests — Plan Features Registry verification.
+Tests the 14 NEW feature additions and auto-migration for the admin
+plan-features endpoints.
 
 Live backend: https://logistics-hub-740.preview.emergentagent.com/api
-Credentials: admin@test.com / Admin@12345
 """
 import json
-import re
+import os
 import sys
 import time
-from typing import Any, Dict, List, Optional
-
+import uuid
 import requests
 
-BASE = "https://logistics-hub-740.preview.emergentagent.com/api"
-EMAIL = "admin@test.com"
-PASSWORD = "Admin@12345"
+BASE_URL = "https://logistics-hub-740.preview.emergentagent.com/api"
 
-PASS: List[str] = []
-FAIL: List[str] = []
+ADMIN_EMAIL = "admin@test.com"
+ADMIN_PASSWORD = "Admin@12345"
+
+PASS = 0
+FAIL = 0
+FAILURES = []
 
 
-def ok(label: str, cond: bool, extra: str = "") -> None:
+def assert_(cond, msg):
+    global PASS, FAIL
     if cond:
-        PASS.append(label)
-        print(f"  ✅ {label}")
+        PASS += 1
+        print(f"  ✅ {msg}")
     else:
-        FAIL.append(f"{label} :: {extra}")
-        print(f"  ❌ {label} :: {extra}")
+        FAIL += 1
+        FAILURES.append(msg)
+        print(f"  ❌ {msg}")
 
 
-def login() -> str:
-    r = requests.post(
-        f"{BASE}/auth/login",
-        json={"email": EMAIL, "password": PASSWORD},
-        timeout=30,
-    )
-    assert r.status_code == 200, f"login failed: {r.status_code} {r.text}"
-    return r.json()["token"]
+def section(title):
+    print(f"\n{'='*78}\n{title}\n{'='*78}")
 
 
-def H(token: str) -> Dict[str, str]:
-    return {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+# Expected 14 new keys per review
+NEW_KEYS = {
+    "sheet_restore_my_orders": "Google Sheets",
+    "sheet_two_way_status_sync": "Google Sheets",
+    "sheet_soft_delete_tombstone": "Google Sheets",
+    "master_order_id_counter_custom": "Master Order ID",
+    "master_order_id_autofill_new": "Master Order ID",
+    "smart_paste_duplicate_check": "Smart Paste",
+    "scanner_sound_feedback": "Scanner",
+    "scanner_double_confirm": "Scanner",
+    "scanner_manual_entry": "Scanner",
+    "offline_mode": "Offline Mode",
+    "offline_create_shipment": "Offline Mode",
+    "offline_sync_queue_view": "Offline Mode",
+    "label_customer_id": "Label Design",
+    "label_content_budget": "Label Design",
+}
+
+# Some existing ("legacy") keys that must remain (sample of 39)
+EXISTING_KEYS_SAMPLE = [
+    "smart_paste_ai", "smart_paste_voice", "smart_paste_image_ocr",
+    "shipment_copy_btn", "shipment_whatsapp_btn", "shipment_print_btn",
+    "label_brand_logo", "label_brand_name", "label_custom_fields",
+    "sheet_import", "sheet_two_way_sync", "sheet_column_mapping",
+    "multiple_couriers", "auto_tracking", "manual_tracking_scan",
+    "repeat_customer_detect", "pending_orders_inbox",
+    "bulk_print", "pdf_download", "print_preview",
+    "whatsapp_template_editor", "whatsapp_eta_customization",
+    "whatsapp_copy_template", "ai_rate_customization", "wallet_topup",
+    "form_alt_phone", "form_box_dimensions",
+    "form_token_amount", "form_shipment_notes",
+]
 
 
-def tail_backend_log(n: int = 400) -> str:
-    """Read the latest n lines from /var/log/supervisor/backend.err.log"""
-    try:
-        with open("/var/log/supervisor/backend.err.log", "r", errors="ignore") as f:
-            lines = f.readlines()
-        return "".join(lines[-n:])
-    except Exception as e:
-        return f"<unable to read backend log: {e}>"
+def login(email, password):
+    r = requests.post(f"{BASE_URL}/auth/login", json={"email": email, "password": password})
+    if r.status_code != 200:
+        print(f"LOGIN FAILED for {email}: {r.status_code} {r.text}")
+        return None
+    return r.json()
 
 
-def main() -> int:
-    print(f"\n=== Phase-D Verification :: {BASE} ===\n")
+def signup(email, password, name="Feat Tester", shop="Feat Shop", phone=None):
+    if phone is None:
+        # 10-digit unique phone
+        phone = "9" + str(int(time.time()))[-9:]
+    r = requests.post(f"{BASE_URL}/auth/signup", json={
+        "email": email, "password": password, "name": name,
+        "shop_name": shop, "phone": phone,
+    })
+    return r
 
-    print("[1] Login admin@test.com")
-    token = login()
-    print(f"  token len={len(token)}")
-    ok("login → token issued", len(token) > 20, "no token")
 
-    # Mark log position by reading current size to slice afterwards
-    log_before = tail_backend_log(2000)
-    log_before_len = len(log_before)
+def main():
+    section("STEP 1: Login admin@test.com")
+    admin = login(ADMIN_EMAIL, ADMIN_PASSWORD)
+    if not admin:
+        print("FATAL: cannot continue without admin token")
+        sys.exit(1)
+    admin_token = admin["token"]
+    admin_hdr = {"Authorization": f"Bearer {admin_token}"}
+    print(f"  Admin token acquired (is_admin={admin.get('is_admin')})")
+    assert_(admin.get("is_admin") is True, "Admin login returns is_admin=true")
 
-    print("\n[2] Smart Paste create")
-    paste_text = (
-        "Name: Phase D Test\n"
-        "Mobile: 9112233445\n"
-        "Address: Sample Street 12\n"
-        "City: Surat\n"
-        "State: Gujarat\n"
-        "Pincode: 395001\n"
-        "COD ₹ 199\n"
-    )
-    r = requests.post(
-        f"{BASE}/smart-paste",
-        headers=H(token),
-        json={"text": paste_text},
-        timeout=60,
-    )
-    ok("POST /smart-paste → 200", r.status_code == 200, f"{r.status_code} {r.text[:300]}")
-    body = r.json() if r.status_code == 200 else {}
-    print(f"  body keys: {list(body.keys())}")
+    # ---------------------------------------------------------------
+    section("STEP 2: GET /admin/plan-features")
+    r = requests.get(f"{BASE_URL}/admin/plan-features", headers=admin_hdr)
+    assert_(r.status_code == 200, f"GET /admin/plan-features returns 200 (got {r.status_code})")
+    if r.status_code != 200:
+        print(r.text[:500])
+        sys.exit(1)
 
-    pending_id = body.get("id")
-    moid = body.get("master_order_id", "")
-    ok("response has id", bool(pending_id), f"got {pending_id!r}")
-    ok(
-        "master_order_id is 11+ digits and positive",
-        isinstance(moid, str) and moid.isdigit() and len(moid) >= 11 and int(moid) > 0,
-        f"got {moid!r}",
-    )
-    ok(
-        "customer_name == 'Phase D Test'",
-        body.get("customer_name") == "Phase D Test",
-        f"got {body.get('customer_name')!r}",
-    )
-    ok(
-        "customer_phone == '9112233445'",
-        body.get("customer_phone") == "9112233445",
-        f"got {body.get('customer_phone')!r}",
-    )
-    ok(
-        "pincode == '395001'",
-        str(body.get("pincode")) == "395001",
-        f"got {body.get('pincode')!r}",
-    )
-    ok(
-        "payment_mode == 'COD'",
-        body.get("payment_mode") == "COD",
-        f"got {body.get('payment_mode')!r}",
-    )
-    ok(
-        "amount == 199.0",
-        float(body.get("amount") or 0) == 199.0,
-        f"got {body.get('amount')!r}",
-    )
-    sheet_row_num = body.get("sheet_row_num")
-    ok(
-        "sheet_row_num is positive int",
-        isinstance(sheet_row_num, int) and sheet_row_num > 1,
-        f"got {sheet_row_num!r}",
-    )
+    body = r.json()
+    registry = body.get("registry", {})
+    plans = body.get("plans", {})
+    features = registry.get("features", [])
+    categories = registry.get("categories", [])
 
-    print("\n[3] Verify Mongo persistence")
-    if pending_id:
-        r = requests.get(
-            f"{BASE}/orders/pending/{pending_id}",
-            headers=H(token),
-            timeout=30,
-        )
-        ok(
-            "GET /orders/pending/{id} → 200",
-            r.status_code == 200,
-            f"{r.status_code} {r.text[:200]}",
-        )
-        if r.status_code == 200:
-            doc = r.json()
-            ok(
-                "doc round-trip: customer_name preserved",
-                doc.get("customer_name") == "Phase D Test",
-                f"got {doc.get('customer_name')}",
-            )
-            ok(
-                "doc round-trip: master_order_id preserved",
-                doc.get("master_order_id") == moid,
-                f"got {doc.get('master_order_id')}",
-            )
+    # 53 features
+    assert_(len(features) == 53, f"registry.features length == 53 (got {len(features)})")
 
-    print("\n[4] Verify Master Sheet probe")
-    r = requests.get(f"{BASE}/sheets/probe", headers=H(token), timeout=30)
-    ok(
-        "GET /sheets/probe → 200",
-        r.status_code == 200,
-        f"{r.status_code} {r.text[:200]}",
-    )
-    probe = r.json() if r.status_code == 200 else {}
-    ok(
-        "sheets probe ok=true",
-        probe.get("ok") is True,
-        f"got {probe!r}",
-    )
+    # Build map key → feature
+    feat_map = {f["key"]: f for f in features}
 
-    print("\n[5] CRITICAL — Verify NO user-sheet write happened")
-    # Wait briefly to allow any async log flush
-    time.sleep(1.5)
-    # Anchor: find the line that contains our master append (A{sheet_row_num}:S{sheet_row_num}
-    # or A{sheet_row_num}:N{sheet_row_num}). Inspect everything AFTER that anchor.
-    log_full = tail_backend_log(4000)
-    anchor_pat = re.compile(
-        rf"Sheet append OK:.*?A{sheet_row_num}:[NS]{sheet_row_num}"
-    ) if isinstance(sheet_row_num, int) else None
-    new_log = log_full
-    if anchor_pat is not None:
-        m = None
-        for m in anchor_pat.finditer(log_full):
-            pass
-        if m is not None:
-            new_log = log_full[m.start():]
-    print(f"  scanning {len(new_log)} chars AFTER our master-append anchor")
+    # All 14 new keys present with right category
+    for key, expected_cat in NEW_KEYS.items():
+        f = feat_map.get(key)
+        assert_(f is not None, f"NEW key '{key}' present in registry")
+        if f:
+            assert_(f.get("category") == expected_cat,
+                    f"NEW key '{key}' has category '{expected_cat}' (got '{f.get('category')}')")
+            assert_(bool(f.get("label")) and isinstance(f.get("label"), str),
+                    f"NEW key '{key}' has a non-empty label")
 
-    ok(
-        "backend log contains 'Sheet append OK' (master sheet)",
-        "Sheet append OK" in new_log and (
-            f"A{sheet_row_num}" in new_log if isinstance(sheet_row_num, int) else True
-        ),
-        "did not find master append marker in recent log",
-    )
+    # Categories includes 3 new ones
+    for cat in ["Master Order ID", "Scanner", "Offline Mode"]:
+        assert_(cat in categories, f"categories includes '{cat}'")
 
-    # CRITICAL: NO user-sheet append OK lines AFTER our master append
-    user_append_present = "User-sheet append OK" in new_log
-    ok(
-        "NO 'User-sheet append OK' line after our master append",
-        not user_append_present,
-        "User-sheet append OK was emitted AFTER our master append — auto-write should be DISABLED",
-    )
+    # Plans dict has 4 keys
+    for plan_key in ["free_trial", "silver", "gold", "platinum"]:
+        assert_(plan_key in plans, f"plans has key '{plan_key}'")
 
-    # Also expect NO "User-sheet write skipped" because the block doesn't run
-    user_skip_present = "User-sheet write skipped" in new_log
-    ok(
-        "NO 'User-sheet write skipped' line after our master append (gate skips block)",
-        not user_skip_present,
-        "User-sheet write skipped emitted — should not even attempt the block",
-    )
+    # Platinum is superset of all 53 keys
+    plat_set = set(plans.get("platinum", []))
+    all_keys = set(feat_map.keys())
+    missing_in_plat = all_keys - plat_set
+    assert_(len(missing_in_plat) == 0,
+            f"plans.platinum is superset of all 53 keys (missing: {missing_in_plat})")
+    assert_(len(plat_set) >= 53, f"plans.platinum has >=53 keys (got {len(plat_set)})")
 
-    print("\n[6] Phase-C regression — POST /sheets/sync-from-master append mode")
-    r = requests.post(
-        f"{BASE}/sheets/sync-from-master",
-        headers=H(token),
-        json={"overwrite": False},
-        timeout=120,
-    )
-    print(f"  status={r.status_code} body={r.text[:300]}")
-    if r.status_code == 422:
-        # Admin's sheet might not be linked — fetch settings to investigate
-        rs = requests.get(f"{BASE}/settings", headers=H(token), timeout=30)
-        print(f"  settings.sheet={rs.json().get('sheet') if rs.status_code == 200 else 'err'}")
-        ok(
-            "sync-from-master 200 (admin has linked sheet)",
-            False,
-            "Got 422 — admin doesn't have personal sheet linked",
-        )
+    # Gold defaults
+    gold_set = set(plans.get("gold", []))
+    for k in ["scanner_sound_feedback", "offline_mode", "label_customer_id",
+              "master_order_id_counter_custom", "scanner_double_confirm",
+              "offline_sync_queue_view", "label_content_budget",
+              "sheet_two_way_status_sync"]:
+        assert_(k in gold_set, f"plans.gold includes NEW key '{k}'")
+
+    # Silver tier
+    silver_set = set(plans.get("silver", []))
+    assert_("sheet_restore_my_orders" in silver_set,
+            "plans.silver includes 'sheet_restore_my_orders'")
+    assert_("scanner_sound_feedback" in silver_set,
+            "plans.silver includes 'scanner_sound_feedback'")
+    assert_("offline_mode" not in silver_set,
+            "plans.silver does NOT include 'offline_mode'")
+
+    # Free trial — only basic
+    ft_set = set(plans.get("free_trial", []))
+    assert_("smart_paste_duplicate_check" in ft_set,
+            "plans.free_trial includes 'smart_paste_duplicate_check'")
+    assert_("scanner_manual_entry" in ft_set,
+            "plans.free_trial includes 'scanner_manual_entry'")
+    assert_("master_order_id_autofill_new" in ft_set,
+            "plans.free_trial includes 'master_order_id_autofill_new'")
+    assert_("offline_mode" not in ft_set,
+            "plans.free_trial does NOT include 'offline_mode'")
+    assert_("master_order_id_counter_custom" not in ft_set,
+            "plans.free_trial does NOT include 'master_order_id_counter_custom'")
+    assert_("sheet_two_way_status_sync" not in ft_set,
+            "plans.free_trial does NOT include 'sheet_two_way_status_sync'")
+
+    # ---------------------------------------------------------------
+    section("STEP 3: GET /me/feature-flags (admin)")
+    r = requests.get(f"{BASE_URL}/me/feature-flags", headers=admin_hdr)
+    assert_(r.status_code == 200, f"GET /me/feature-flags returns 200 (got {r.status_code})")
+    body3 = r.json()
+    assert_(body3.get("is_admin") is True, "/me/feature-flags is_admin=true for admin")
+    feats = body3.get("features", [])
+    assert_(len(feats) == 53, f"admin /me/feature-flags has 53 features (got {len(feats)})")
+    assert_(set(feats) == all_keys,
+            "admin features list == ALL_KEYS (set equality)")
+
+    # ---------------------------------------------------------------
+    section("STEP 4: PUT /admin/plan-features round-trip")
+    # Take current plans, remove scanner_sound_feedback from silver
+    new_silver = [k for k in plans["silver"] if k != "scanner_sound_feedback"]
+    assert_("scanner_sound_feedback" not in new_silver,
+            "Local mutation: scanner_sound_feedback removed from silver list")
+
+    put_payload = {
+        "plans": {
+            "free_trial": list(plans["free_trial"]),
+            "silver": new_silver,
+            "gold": list(plans["gold"]),
+            "platinum": list(plans["platinum"]),
+        }
+    }
+    r = requests.put(f"{BASE_URL}/admin/plan-features",
+                     json=put_payload, headers=admin_hdr)
+    assert_(r.status_code == 200, f"PUT (remove) returns 200 (got {r.status_code}): {r.text[:200]}")
+
+    # GET after PUT
+    r = requests.get(f"{BASE_URL}/admin/plan-features", headers=admin_hdr)
+    after_remove = r.json().get("plans", {})
+    assert_("scanner_sound_feedback" not in set(after_remove.get("silver", [])),
+            "After PUT remove: silver does NOT contain 'scanner_sound_feedback'")
+
+    # Put it back
+    new_silver_back = list(set(after_remove["silver"]) | {"scanner_sound_feedback"})
+    put_payload2 = {
+        "plans": {
+            "free_trial": list(after_remove.get("free_trial", [])),
+            "silver": new_silver_back,
+            "gold": list(after_remove.get("gold", [])),
+            "platinum": list(after_remove.get("platinum", [])),
+        }
+    }
+    r = requests.put(f"{BASE_URL}/admin/plan-features",
+                     json=put_payload2, headers=admin_hdr)
+    assert_(r.status_code == 200, f"PUT (add back) returns 200 (got {r.status_code})")
+
+    r = requests.get(f"{BASE_URL}/admin/plan-features", headers=admin_hdr)
+    after_add = r.json().get("plans", {})
+    assert_("scanner_sound_feedback" in set(after_add.get("silver", [])),
+            "After PUT add-back: silver contains 'scanner_sound_feedback'")
+
+    # ---------------------------------------------------------------
+    section("STEP 5: New free_trial user feature-flags")
+    ts = int(time.time())
+    new_email = f"feature_test_{ts}_{uuid.uuid4().hex[:6]}@example.com"
+    new_password = "FeatTest@123"
+    # Use a plausible 10-digit phone
+    sr = signup(new_email, new_password, name="Feature Tester",
+                shop="Feature Test Shop", phone="9" + str(ts)[-9:])
+    if sr.status_code != 200:
+        # try alternate phone
+        sr = signup(new_email, new_password, name="Feature Tester",
+                    shop="Feature Test Shop",
+                    phone="9" + uuid.uuid4().hex[:9].translate(str.maketrans("abcdef", "012345")))
+    assert_(sr.status_code == 200,
+            f"New user signup returns 200 (got {sr.status_code}): {sr.text[:300]}")
+    new_user_token = None
+    if sr.status_code == 200:
+        new_user_token = sr.json().get("token")
+        new_user_plan = sr.json().get("plan", "")
+        print(f"  New user plan: '{new_user_plan}'")
     else:
-        ok(
-            "POST /sheets/sync-from-master → 200",
-            r.status_code == 200,
-            f"{r.status_code} {r.text[:300]}",
-        )
-        if r.status_code == 200:
-            sync_body = r.json()
-            ok(
-                "sync ok=true",
-                sync_body.get("ok") is True,
-                f"got {sync_body}",
-            )
-            ok(
-                "sync mode == 'append'",
-                sync_body.get("mode") == "append",
-                f"got mode={sync_body.get('mode')!r}",
-            )
-            ok(
-                "sync rows_synced is int",
-                isinstance(sync_body.get("rows_synced"), int),
-                f"got {sync_body.get('rows_synced')!r}",
-            )
-            ok(
-                "sync master_total_rows is int",
-                isinstance(sync_body.get("master_total_rows"), int),
-                f"got {sync_body.get('master_total_rows')!r}",
-            )
+        # try login fallback
+        l = login(new_email, new_password)
+        if l:
+            new_user_token = l.get("token")
 
-    print("\n[7] Master Order ID counter regression")
-    r = requests.get(f"{BASE}/orders/peek-master-id", headers=H(token), timeout=30)
-    ok(
-        "GET /orders/peek-master-id → 200",
-        r.status_code == 200,
-        f"{r.status_code} {r.text[:200]}",
-    )
+    if new_user_token:
+        new_user_hdr = {"Authorization": f"Bearer {new_user_token}"}
+        r = requests.get(f"{BASE_URL}/me/feature-flags", headers=new_user_hdr)
+        assert_(r.status_code == 200, f"new user /me/feature-flags 200 (got {r.status_code})")
+        b = r.json()
+        assert_(b.get("is_admin") is False, "New user is_admin=false")
+        feats = set(b.get("features", []))
+        # Should be a subset of admin's all_keys
+        assert_(feats.issubset(all_keys),
+                f"New user features ⊆ ALL_KEYS (extras: {feats - all_keys})")
+        # Plan-specific assertions (free_trial OR could be paywall if device dup)
+        plan_for = b.get("plan", "")
+        print(f"  /me/feature-flags reports plan='{plan_for}', features count={len(feats)}")
+        # If plan is free_trial → assertions per review
+        if plan_for == "free_trial":
+            assert_("offline_mode" not in feats,
+                    "free_trial user does NOT have 'offline_mode'")
+            assert_("smart_paste_duplicate_check" in feats,
+                    "free_trial user HAS 'smart_paste_duplicate_check'")
+            # Subset of plans.free_trial
+            ft_feats_after = set(after_add.get("free_trial", []))
+            assert_(feats == ft_feats_after,
+                    f"free_trial user features == plans.free_trial list "
+                    f"(diff: extra={feats-ft_feats_after}, missing={ft_feats_after-feats})")
+        else:
+            print(f"  ⚠️  New user got plan='{plan_for}' (not free_trial). "
+                  f"This can happen if device-fingerprint denied trial. "
+                  f"Skipping free_trial-specific subset assertion.")
+            # Still verify NOT offline_mode (free_trial wouldn't have it; "" plan also wouldn't)
+            assert_("offline_mode" not in feats or plan_for == "platinum",
+                    f"non-platinum user does NOT have 'offline_mode' (plan={plan_for})")
+
+    # ---------------------------------------------------------------
+    section("STEP 6: Regression — existing 39 features")
+    r = requests.get(f"{BASE_URL}/admin/plan-features", headers=admin_hdr)
+    body6 = r.json()
+    keys_now = {f["key"] for f in body6["registry"]["features"]}
+    for k in EXISTING_KEYS_SAMPLE:
+        assert_(k in keys_now, f"existing key '{k}' still in registry")
+
+    # PUT round-trip on smart_paste_ai for gold
+    plans_now = body6["plans"]
+    gold_list = list(plans_now["gold"])
+    had_smart = "smart_paste_ai" in gold_list
+    # Remove it
+    new_gold = [k for k in gold_list if k != "smart_paste_ai"]
+    pp = {"plans": {p: plans_now[p] if p != "gold" else new_gold
+                    for p in ["free_trial","silver","gold","platinum"]}}
+    r = requests.put(f"{BASE_URL}/admin/plan-features", json=pp, headers=admin_hdr)
+    assert_(r.status_code == 200, "PUT smart_paste_ai removal from gold → 200")
+    r = requests.get(f"{BASE_URL}/admin/plan-features", headers=admin_hdr)
+    assert_("smart_paste_ai" not in set(r.json()["plans"]["gold"]),
+            "After PUT: gold no longer has smart_paste_ai")
+    # Restore
+    pp2 = {"plans": {p: plans_now[p] if p != "gold" else gold_list
+                     for p in ["free_trial","silver","gold","platinum"]}}
+    r = requests.put(f"{BASE_URL}/admin/plan-features", json=pp2, headers=admin_hdr)
+    assert_(r.status_code == 200, "PUT smart_paste_ai restore on gold → 200")
+    r = requests.get(f"{BASE_URL}/admin/plan-features", headers=admin_hdr)
+    final_gold = set(r.json()["plans"]["gold"])
+    if had_smart:
+        assert_("smart_paste_ai" in final_gold,
+                "After restore PUT: gold has smart_paste_ai")
+    else:
+        print("  (smart_paste_ai was not in gold originally — skipping restore check)")
+
+    # ---------------------------------------------------------------
+    section("STEP 7: Regression — core endpoints")
+    r = requests.get(f"{BASE_URL}/sheets/probe", headers=admin_hdr)
+    assert_(r.status_code == 200, f"GET /sheets/probe → 200 (got {r.status_code})")
     if r.status_code == 200:
-        peek = r.json()
-        ok(
-            "peek has master_order_id key",
-            "master_order_id" in peek,
-            f"got keys={list(peek.keys())}",
-        )
-        ok(
-            "peek has auto_generate key",
-            "auto_generate" in peek,
-            f"got keys={list(peek.keys())}",
-        )
-        ok(
-            "peek has autofill_in_new_shipment key",
-            "autofill_in_new_shipment" in peek,
-            f"got keys={list(peek.keys())}",
-        )
+        assert_(r.json().get("ok") is True, f"sheets/probe ok=true (got {r.json()})")
 
-    print("\n[8] Settings regression")
-    r = requests.get(f"{BASE}/settings", headers=H(token), timeout=30)
-    ok(
-        "GET /settings → 200",
-        r.status_code == 200,
-        f"{r.status_code} {r.text[:200]}",
-    )
+    r = requests.get(f"{BASE_URL}/orders/peek-master-id", headers=admin_hdr)
+    assert_(r.status_code == 200, f"GET /orders/peek-master-id → 200 (got {r.status_code})")
     if r.status_code == 200:
-        s = r.json()
-        for key in ("sheet", "order_id_auto_generate", "order_id_autofill_in_new_shipment", "custom_fields"):
-            ok(
-                f"settings has '{key}'",
-                key in s,
-                f"missing — got keys={list(s.keys())[:20]}",
-            )
+        b = r.json()
+        # Must have valid keys
+        for k in ["master_order_id", "auto_generate", "autofill_in_new_shipment"]:
+            assert_(k in b, f"peek-master-id has key '{k}'")
 
-    print("\n[9] Cleanup — DELETE pending order (soft-delete tombstones master row)")
-    if pending_id:
-        r = requests.delete(
-            f"{BASE}/orders/pending/{pending_id}",
-            headers=H(token),
-            timeout=60,
-        )
-        ok(
-            "DELETE /orders/pending/{id} → 200",
-            r.status_code == 200,
-            f"{r.status_code} {r.text[:200]}",
-        )
-        if r.status_code == 200:
-            d = r.json()
-            ok(
-                "delete response ok=true",
-                d.get("ok") is True,
-                f"got {d}",
-            )
-            sh = d.get("sheet") or {}
-            ok(
-                "delete response sheet.attempted == true",
-                sh.get("attempted") is True,
-                f"got {sh}",
-            )
-            ok(
-                "delete response sheet.ok == true (row tombstoned)",
-                sh.get("ok") is True,
-                f"got {sh}",
-            )
+    r = requests.get(f"{BASE_URL}/settings", headers=admin_hdr)
+    assert_(r.status_code == 200, f"GET /settings → 200 (got {r.status_code})")
 
-    print(f"\n=== RESULT: {len(PASS)} pass / {len(FAIL)} fail ===")
-    if FAIL:
-        print("\nFailing assertions:")
-        for f in FAIL:
-            print(f"  - {f}")
-        return 1
-    return 0
+    # ---------------------------------------------------------------
+    section("FINAL RESULTS")
+    total = PASS + FAIL
+    print(f"\n  PASSED: {PASS}/{total}")
+    print(f"  FAILED: {FAIL}/{total}")
+    if FAILURES:
+        print("\n  Failed assertions:")
+        for f in FAILURES:
+            print(f"    - {f}")
+    return 0 if FAIL == 0 else 1
 
 
 if __name__ == "__main__":

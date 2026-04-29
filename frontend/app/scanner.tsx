@@ -18,6 +18,7 @@ import {
 } from "../lib/scanFeedback";
 import { colors } from "../lib/theme";
 import { validateTrackingId, findMatchingCourier } from "../lib/trackingValidator";
+import { useFeatureFlag } from "../lib/feature_flags";
 
 // Storage key for the user's "double-confirm scan" preference (per device).
 const DOUBLE_CONFIRM_KEY = "@scanner_double_confirm_v1";
@@ -40,6 +41,11 @@ export default function ScannerModal() {
   const [errorHint, setErrorHint] = useState<string | null>(null);
 
   const isWeb = Platform.OS === "web";
+
+  // Plan-gated feature flags (admin can toggle each off per plan).
+  const flagSoundFeedback   = useFeatureFlag("scanner_sound_feedback");
+  const flagDoubleConfirm   = useFeatureFlag("scanner_double_confirm");
+  const flagManualEntry     = useFeatureFlag("scanner_manual_entry");
 
   // Pre-load the beep player as soon as scanner mounts — avoids first-scan delay.
   useEffect(() => {
@@ -254,6 +260,7 @@ export default function ScannerModal() {
         </TouchableOpacity>
         <Text style={styles.title}>Scan Tracking ID</Text>
         <View style={{ flexDirection: "row", gap: 6 }}>
+          {flagDoubleConfirm && (
           <TouchableOpacity
             testID="double-confirm-toggle"
             onPress={toggleDoubleConfirm}
@@ -266,6 +273,8 @@ export default function ScannerModal() {
               color="#fff"
             />
           </TouchableOpacity>
+          )}
+          {flagSoundFeedback && (
           <TouchableOpacity
             testID="sound-toggle"
             onPress={() => setSoundOn((v) => !v)}
@@ -278,6 +287,7 @@ export default function ScannerModal() {
               color="#fff"
             />
           </TouchableOpacity>
+          )}
         </View>
       </View>
 
@@ -285,8 +295,10 @@ export default function ScannerModal() {
         <View style={styles.webBox}>
           <Ionicons name="barcode-outline" size={48} color="#fff" />
           <Text style={styles.webText}>
-            Camera scanning works on the Expo Go mobile app. On web, enter manually below:
+            Camera scanning works on the Expo Go mobile app. {flagManualEntry ? "On web, enter manually below:" : ""}
           </Text>
+          {flagManualEntry && (
+          <>
           <TextInput
             testID="manual-tracking-input"
             value={manualValue}
@@ -304,6 +316,8 @@ export default function ScannerModal() {
           >
             <Text style={styles.submitBtnText}>Use Tracking ID</Text>
           </TouchableOpacity>
+          </>
+          )}
         </View>
       ) : !permission ? (
         <View style={styles.center}>

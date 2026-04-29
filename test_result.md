@@ -1081,10 +1081,255 @@ metadata:
   run_ui: false
 
 test_plan:
-  current_focus: []
+  current_focus:
+    - "Plan Features Registry: 14 new features registered + auto-migration"
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
+
+## Iteration: Plan Features Registry — 14 NEW (2026-04-30 PM)
+
+### Problem / User Mandate
+The user wants every recently-built feature (Restore My Orders, Two-Way
+Status Sync, Soft-Delete tombstone, Master Order ID counter, Auto-fill in
+New Shipment, Smart Paste duplicate detect, Scanner sound/double-confirm/
+manual entry, Offline mode trio, Customer ID on label, Content Budget
+indicator) to be plan-toggleable from the admin panel. He also wants this
+to be a STANDING RULE: every new user-facing feature must auto-land in
+the registry going forward.
+
+### Backend Changes
+- `/app/backend/feature_registry.py` REWRITTEN with:
+    - 14 new keys (categories: Smart Paste / Google Sheets / Master Order
+      ID NEW / Scanner NEW / Offline Mode NEW / Label Design)
+    - Updated DEFAULT_PLAN_FEATURES with sensible per-plan defaults
+      (free_trial: minimal, silver: +sheets/+sound/+restore, gold:
+      everything inc. offline + counter custom + customer id + budget,
+      platinum: all)
+    - Big banner comment at top with "STANDING RULE — READ BEFORE
+      ADDING ANY USER-FACING FEATURE" — checklist for future agents
+- `/app/backend/server.py` `_get_plan_features_doc()` rewritten with
+  Migration A (auto-inject defaults for brand-new feature keys into
+  every plan's saved list), Migration B (Platinum always = ALL_KEYS),
+  Migration C (ensure plan slugs exist). Uses `known_keys` field on
+  the doc to detect newly-added registry keys without re-injecting on
+  every read once the admin has explicitly removed them.
+
+### Frontend Changes (UI gating with `useFeatureFlag`)
+- `/app/frontend/app/(tabs)/settings.tsx`:
+    - Restore My Orders button gated by `sheet_restore_my_orders`
+    - Auto-fill in New Shipment toggle gated by `master_order_id_autofill_new`
+    - Order ID Sequence Number (counter customization) gated by
+      `master_order_id_counter_custom`
+    - Offline Sync Queue section gated by `offline_sync_queue_view`
+    - Content Budget indicator gated by `label_content_budget`
+- `/app/frontend/app/scanner.tsx`:
+    - Sound toggle gated by `scanner_sound_feedback`
+    - Double-confirm toggle gated by `scanner_double_confirm`
+    - Manual entry input gated by `scanner_manual_entry`
+- `/app/frontend/app/courier/[id].tsx`:
+    - Customer ID input gated by `label_customer_id`
+- `/app/frontend/app/(tabs)/index.tsx`:
+    - Duplicate banner suppressed by `smart_paste_duplicate_check`
+- (Backend-driven gates `sheet_two_way_status_sync` /
+  `sheet_soft_delete_tombstone` / `offline_mode` /
+  `offline_create_shipment` are registered but their actual code paths
+  remain on. They appear as admin-toggleable checkboxes today; backend
+  gating can be added incrementally without registry changes.)
+
+### Test Plan (deep_testing_backend_v2)
+1. Login admin@test.com → /api/admin/plan-features should return 53
+   total features in registry (39 old + 14 new), with categories
+   "Master Order ID", "Scanner", "Offline Mode" present.
+2. Each of the 14 new keys must appear in the response's `registry.features`.
+3. Admin doc auto-migration: previously-saved doc gets new keys
+   injected per `DEFAULT_PLAN_FEATURES`. e.g., `gold` should now
+   include all 14 new keys (or the subset listed for gold).
+   `platinum` should equal ALL_KEYS (53 entries).
+4. `/api/me/feature-flags` for admin returns is_admin=true and
+   features = ALL_KEYS (53 entries).
+5. PUT /api/admin/plan-features can set/clear new keys for any plan;
+   subsequent GET reflects the change.
+6. Regression: 39 existing keys still present and correctly mapped.
+7. Regression: existing endpoints (smart-paste create, sheets probe)
+   still work end-to-end.
+
+### Credentials
+admin@test.com / Admin@12345 (is_admin=true, has personal sheet linked)
+
+backend:
+  - task: "Plan Features Registry — 14 new keys + auto-migration"
+    implemented: true
+    working: true
+    file: "/app/backend/feature_registry.py, /app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: |
+            Added 14 features to FEATURE_REGISTRY (53 total now).
+            New categories: Master Order ID, Scanner, Offline Mode.
+            DEFAULT_PLAN_FEATURES updated per-plan.
+            _get_plan_features_doc() now auto-migrates new keys into
+            existing admin docs using a `known_keys` tracker. Platinum
+            always reflects ALL_KEYS at runtime.
+        -working: true
+        -agent: "testing"
+        -comment: |
+            ALL 127/127 assertions PASSED via /app/backend_test.py
+            against https://logistics-hub-740.preview.emergentagent.com/api.
+
+            STEP 1 — Admin login: admin@test.com authenticated, is_admin=true.
+
+            STEP 2 — GET /api/admin/plan-features:
+              ✅ registry.features.length == 53 (39 existing + 14 new).
+              ✅ All 14 NEW keys present with correct category and label:
+                 sheet_restore_my_orders / sheet_two_way_status_sync /
+                 sheet_soft_delete_tombstone (Google Sheets);
+                 master_order_id_counter_custom /
+                 master_order_id_autofill_new (Master Order ID);
+                 smart_paste_duplicate_check (Smart Paste);
+                 scanner_sound_feedback / scanner_double_confirm /
+                 scanner_manual_entry (Scanner);
+                 offline_mode / offline_create_shipment /
+                 offline_sync_queue_view (Offline Mode);
+                 label_customer_id / label_content_budget (Label Design).
+              ✅ registry.categories includes the 3 new categories
+                 "Master Order ID", "Scanner", "Offline Mode".
+              ✅ plans dict has all 4 keys (free_trial, silver, gold,
+                 platinum).
+              ✅ plans.platinum is a SUPERSET of all 53 keys (Migration B
+                 verified — Platinum has exactly 53 keys).
+              ✅ plans.gold includes scanner_sound_feedback, offline_mode,
+                 label_customer_id, master_order_id_counter_custom,
+                 scanner_double_confirm, offline_sync_queue_view,
+                 label_content_budget, sheet_two_way_status_sync.
+              ✅ plans.silver includes sheet_restore_my_orders and
+                 scanner_sound_feedback, but NOT offline_mode.
+              ✅ plans.free_trial includes smart_paste_duplicate_check,
+                 scanner_manual_entry, master_order_id_autofill_new
+                 and does NOT include offline_mode,
+                 master_order_id_counter_custom, sheet_two_way_status_sync.
+
+            STEP 3 — GET /api/me/feature-flags (admin):
+              ✅ is_admin=true.
+              ✅ features.length == 53 (admin always gets ALL_KEYS).
+              ✅ Set equality: features == ALL_KEYS (no extras/missing).
+
+            STEP 4 — PUT /api/admin/plan-features round-trip:
+              ✅ PUT after removing scanner_sound_feedback from silver
+                 → 200; subsequent GET shows it removed.
+              ✅ PUT adding it back → 200; subsequent GET shows it
+                 restored.
+
+            STEP 5 — Fresh free_trial signup
+              (feature_test_<ts>_<rand>@example.com / FeatTest@123):
+              ✅ Signup 200 with plan="free_trial".
+              ✅ /me/feature-flags is_admin=false, plan=free_trial.
+              ✅ features count = 23, all subset of ALL_KEYS.
+              ✅ features set EXACTLY equals plans.free_trial list
+                 (no extras, no missing).
+              ✅ free_trial user does NOT have offline_mode.
+              ✅ free_trial user HAS smart_paste_duplicate_check.
+
+            STEP 6 — Regression on existing 39 features:
+              ✅ All 29 sampled existing keys still in registry
+                 (smart_paste_ai, bulk_print, pdf_download, sheet_import,
+                 sheet_two_way_sync, multiple_couriers, auto_tracking,
+                 form_alt_phone, etc.).
+              ✅ PUT round-trip on smart_paste_ai for gold
+                 (remove → re-add) works correctly; final state restored.
+
+            STEP 7 — Regression on core endpoints:
+              ✅ GET /api/sheets/probe → 200, ok=true,
+                 tab="All Master Data" (row_count=426, col_count=19).
+              ✅ GET /api/orders/peek-master-id → 200 with valid keys
+                 (master_order_id, auto_generate, autofill_in_new_shipment).
+              ✅ GET /api/settings → 200.
+
+            No mocks. All endpoints hit live preview backend.
+            No regressions detected. Auto-migration logic
+            (_get_plan_features_doc) verified end-to-end via the
+            known_keys tracker — new keys land in existing admin
+            doc according to DEFAULT_PLAN_FEATURES seeds, and
+            Platinum always equals ALL_KEYS at runtime.
+
+frontend:
+  - task: "Plan-feature gates wired into 9 UI surfaces"
+    implemented: true
+    working: "NA"
+    file: "/app/frontend/app/(tabs)/settings.tsx, /app/frontend/app/scanner.tsx, /app/frontend/app/courier/[id].tsx, /app/frontend/app/(tabs)/index.tsx"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: false
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: |
+            Wired useFeatureFlag at 9 UI sites (Restore button,
+            Counter custom, Autofill toggle, Offline queue,
+            Content Budget, Scanner triple, Customer-ID input,
+            Smart Paste dup banner). Admin sees full 53-checkbox
+            matrix in /admin/plan-features.
+
+agent_communication:
+    -agent: "main"
+    -message: |
+        Please verify the Plan Features Registry expansion:
+        (a) GET /api/admin/plan-features returns registry.features
+            with len=53, includes 14 new keys with category mapping
+            (Master Order ID, Scanner, Offline Mode are NEW
+            categories, plus additions to existing categories).
+        (b) Auto-migration: existing admin doc's plans get the new
+            keys auto-added per DEFAULT_PLAN_FEATURES. Platinum
+            should have all 53.
+        (c) PUT /api/admin/plan-features round-trip works for new
+            keys.
+        (d) /api/me/feature-flags for admin returns features=ALL_KEYS
+            (53), for a non-admin returns the user's plan list.
+        (e) No regression on existing endpoints (smart-paste, sheets
+            probe, settings, shipments).
+    -agent: "testing"
+    -message: |
+        Plan Features Registry — 14 NEW features + auto-migration:
+        ALL 127/127 ASSERTIONS PASSED. Zero failures, zero regressions.
+
+        Verified live against
+        https://logistics-hub-740.preview.emergentagent.com/api:
+          • registry.features count = 53 (39 existing + 14 new),
+            all 14 NEW keys present with correct category + label.
+          • registry.categories includes 3 new categories
+            (Master Order ID / Scanner / Offline Mode).
+          • Migration A: NEW keys auto-injected per
+            DEFAULT_PLAN_FEATURES into existing admin doc.
+          • Migration B: plans.platinum is exact superset of
+            ALL_KEYS (53/53).
+          • Per-plan defaults exactly match the review contract:
+              - free_trial: smart_paste_duplicate_check ✅,
+                scanner_manual_entry ✅, master_order_id_autofill_new ✅,
+                no offline_mode, no master_order_id_counter_custom,
+                no sheet_two_way_status_sync.
+              - silver: sheet_restore_my_orders ✅,
+                scanner_sound_feedback ✅, no offline_mode.
+              - gold: scanner_sound_feedback ✅, offline_mode ✅,
+                label_customer_id ✅, master_order_id_counter_custom ✅,
+                scanner_double_confirm ✅, offline_sync_queue_view ✅,
+                label_content_budget ✅, sheet_two_way_status_sync ✅.
+          • PUT round-trip works for both new keys
+            (scanner_sound_feedback) and existing keys
+            (smart_paste_ai). Unknown-key dropping behaviour intact.
+          • /me/feature-flags admin → 53 features (ALL_KEYS),
+            is_admin=true.
+          • Fresh signup (feature_test_<ts>@example.com) → plan=free_trial,
+            features set EXACTLY equals plans.free_trial list (23 keys),
+            no offline_mode, has smart_paste_duplicate_check.
+          • Regressions clean: /sheets/probe ok=true,
+            /orders/peek-master-id 200 with valid keys, /settings 200,
+            all 29 sampled legacy keys still in registry.
+
+        No issues found. Main agent can summarise and finish.
 
 ## Iteration: Phase-D — User Sheet Read-Only Mode (2026-04-30)
 

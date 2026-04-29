@@ -152,6 +152,12 @@ export default function SettingsScreen() {
   const flagWaTemplate        = useFeatureFlag("whatsapp_template_editor");
   const flagWaCopy            = useFeatureFlag("whatsapp_copy_template");
   const flagWaEta             = useFeatureFlag("whatsapp_eta_customization");
+  // ── 2026-04-30: feature flags for the 14 newly-registered features ──
+  const flagRestoreMyOrders        = useFeatureFlag("sheet_restore_my_orders");
+  const flagOrderIdCounterCustom   = useFeatureFlag("master_order_id_counter_custom");
+  const flagOrderIdAutofillNew     = useFeatureFlag("master_order_id_autofill_new");
+  const flagOfflineSyncQueueView   = useFeatureFlag("offline_sync_queue_view");
+  const flagLabelContentBudget     = useFeatureFlag("label_content_budget");
   const params = useLocalSearchParams<{ section?: string }>();
   // Section routing: empty = Hub view, otherwise show only the matching
   // group of cards. Keeps the screen short, focused, and click-driven.
@@ -1034,6 +1040,7 @@ export default function SettingsScreen() {
 
             {/* Phase-7e: Auto-fill in New Shipment toggle (only relevant
                 when Auto-Generate is ON). */}
+            {flagOrderIdAutofillNew && (
             <View
               style={[
                 styles.toggleRow,
@@ -1053,9 +1060,11 @@ export default function SettingsScreen() {
                 disabled={!orderIdAutoGen}
               />
             </View>
+            )}
 
             {/* Phase-7f: Master Order ID counter customisation
                 (one-time migration helper for users with legacy ID series). */}
+            {flagOrderIdCounterCustom && (
             <View
               style={[
                 styles.toggleRow,
@@ -1162,6 +1171,7 @@ export default function SettingsScreen() {
                 </TouchableOpacity>
               </View>
             </View>
+            )}
 
             <Text style={styles.fieldLabel}>Your custom instructions (optional)</Text>
             <Text style={styles.fieldHelp}>
@@ -1592,6 +1602,7 @@ export default function SettingsScreen() {
                 </View>
 
                 {/* Phase-C: Sync rows from Master Sheet (filtered by user_id). */}
+                {flagRestoreMyOrders && (
                 <TouchableOpacity
                   testID="sheet-sync-from-master-btn"
                   style={[
@@ -1654,6 +1665,7 @@ export default function SettingsScreen() {
                     Restore My Orders
                   </Text>
                 </TouchableOpacity>
+                )}
               </View>
             ) : (
               <>
@@ -2012,8 +2024,9 @@ export default function SettingsScreen() {
             {/* -------- Content Budget indicator --------
                 Shows how much label space is currently "used" by:
                 tagline + shipment-notes toggle + enabled custom fields.
-                Hard cap = CONTENT_BUDGET_CAP (prevents print overlap). */}
-            {(() => {
+                Hard cap = CONTENT_BUDGET_CAP (prevents print overlap).
+                Plan-gated via `label_content_budget` flag. */}
+            {flagLabelContentBudget && (() => {
               const used = computeBudgetUsed({
                 tagline: shipmentTagline,
                 shipmentNotesOn: !!labelFields.shipment_notes,
@@ -2602,6 +2615,7 @@ export default function SettingsScreen() {
           <Section title="Notifications" icon="notifications-outline">
             <NotificationsPanel />
           </Section>
+          {flagOfflineSyncQueueView && (
           <Section title="Offline Sync Queue" icon="cloud-upload-outline">
             <Text style={styles.hint}>
               Items waiting to be synced to the server. They sync
@@ -2609,6 +2623,7 @@ export default function SettingsScreen() {
             </Text>
             <PendingSyncPanel />
           </Section>
+          )}
           </>)}
 
           {/* === SECTION: About & Help === */}
