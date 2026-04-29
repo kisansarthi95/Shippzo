@@ -1,190 +1,197 @@
-"""
-Phase-B Master Sheet extension backend tests.
-Run: python /app/backend_test.py
-"""
+"""Backend tests for Phase-C sync-from-master endpoint."""
 import os
-import re
-import sys
 import json
-import time
 import requests
 
-BASE = "https://logistics-hub-740.preview.emergentagent.com/api"
-
+BASE_URL = "https://logistics-hub-740.preview.emergentagent.com/api"
 ADMIN_EMAIL = "admin@test.com"
-ADMIN_PASS = "Admin@12345"
+ADMIN_PASSWORD = "Admin@12345"
 
-results = []
-
-def check(label, cond, info=""):
-    status = "PASS" if cond else "FAIL"
-    results.append((status, label, info))
-    print(f"[{status}] {label}" + (f"  --  {info}" if info else ""))
+PASS = []
+FAIL = []
 
 
-def login():
-    r = requests.post(f"{BASE}/auth/login", json={"email": ADMIN_EMAIL, "password": ADMIN_PASS}, timeout=30)
+def assert_eq(label, got, expected):
+    ok = got == expected
+    rec = (label, got, expected, ok)
+    (PASS if ok else FAIL).append(rec)
+    icon = "OK" if ok else "FAIL"
+    print(f"  [{icon}] {label}: got={got!r}, expected={expected!r}")
+    return ok
+
+
+def assert_true(label, cond, detail=""):
+    rec = (label, detail, "truthy", bool(cond))
+    (PASS if cond else FAIL).append(rec)
+    icon = "OK" if cond else "FAIL"
+    print(f"  [{icon}] {label}{(' → ' + detail) if detail else ''}")
+    return cond
+
+
+def login(email, password):
+    r = requests.post(f"{BASE_URL}/auth/login", json={"email": email, "password": password}, timeout=15)
     r.raise_for_status()
     return r.json()["token"]
 
 
+def auth(tok):
+    return {"Authorization": f"Bearer {tok}"}
+
+
 def main():
-    token = login()
-    H = {"Authorization": f"Bearer {token}"}
+    print("=" * 70)
+    print("Phase-C Sync-From-Master Endpoint Tests")
+    print("=" * 70)
 
-    # ----- Test 1: Smart Paste with extended schema -----
-    print("\n=== Test 1: Smart Paste extended Master Sheet ===")
-    s = requests.put(f"{BASE}/settings", headers=H, json={"order_id_auto_generate": True}, timeout=30)
-    check("PUT /settings (auto_generate=true) returns 200", s.status_code == 200, f"status={s.status_code} body={s.text[:200]}")
+    # Login as admin
+    print("\n[Setup] Login admin@test.com")
+    token = login(ADMIN_EMAIL, ADMIN_PASSWORD)
+    h = auth(token)
+    print(f"  token (first 16): {token[:16]}…")
 
-    paste_text = (
-        "NAME: Phase-B Test\n"
-        "PHONE: 9123412345\n"
-        "ALT_PHONE: 9999912345\n"
-        "ADDRESS_1: Test addr line\n"
-        "CITY: Ahmedabad\n"
-        "STATE: Gujarat\n"
-        "PINCODE: 380001\n"
-        "AMOUNT: 500\n"
-        "TOKEN: 50\n"
-        "PAYMENT: COD\n"
-        "WEIGHT: 750\n"
-        "ORDER_ID: PHB-001"
-    )
-    sp = requests.post(f"{BASE}/smart-paste", headers=H, json={"text": paste_text, "skip_llm": True}, timeout=60)
-    check("POST /smart-paste returns 200", sp.status_code == 200, f"status={sp.status_code} body={sp.text[:600]}")
-    sp_json = sp.json() if sp.status_code == 200 else {}
-    print("smart-paste response keys:", list(sp_json.keys()))
-    if sp.status_code == 200:
-        moid = sp_json.get("master_order_id", "")
-        oid = sp_json.get("order_id", "")
-        alt = sp_json.get("customer_alt_phone", "")
-        tok = sp_json.get("token_amount")
-        wt = sp_json.get("weight", "")
-        sheet_row = sp_json.get("sheet_row_num")
-        check("master_order_id matches ^\\d{6}\\d{5,}$", bool(re.match(r"^\d{6}\d{5,}$", moid or "")), f"moid={moid!r}")
-        check("order_id == 'PHB-001'", oid == "PHB-001", f"order_id={oid!r}")
-        check("customer_alt_phone == '9999912345'", alt == "9999912345", f"alt_phone={alt!r}")
-        check("token_amount == 50", float(tok or 0) == 50.0, f"token_amount={tok!r}")
-        check("weight == '750'", str(wt) == "750", f"weight={wt!r}")
-        check("sheet_row_num is positive int (sheet append worked, no 502)", isinstance(sheet_row, int) and sheet_row > 1, f"sheet_row_num={sheet_row!r}")
-        # Save for cleanup
-        sp_json["_id"] = sp_json.get("id")
-    else:
-        sp_json = {}
+    # ---- Test 4 first: backend health ----
+    print("\n[Test 4] Backend health — GET /api/auth/me")
+    r = requests.get(f"{BASE_URL}/auth/me", headers=h, timeout=15)
+    assert_eq("auth/me status", r.status_code, 200)
+    me = r.json()
+    assert_true("auth/me has email", me.get("email") == ADMIN_EMAIL,
+                detail=f"email={me.get('email')}")
+    assert_true("admin is_admin == True", bool(me.get("is_admin")))
 
-    # ----- Verify backend logs show 'Sheet append OK' -----
-    print("\n=== Test 1b: Verify backend logs ===")
+    # Read original sheet config so we can restore at the end.
+    r0 = requests.get(f"{BASE_URL}/settings", headers=h, timeout=15)
+    r0.raise_for_status()
+    original_sheet_cfg = (r0.json() or {}).get("sheet") or {}
+    print(f"  original sheet cfg: {json.dumps(original_sheet_cfg)}")
+
+    # Read master_sheet_id from admin/global-config
+    print("\n[Setup] GET /api/admin/global-config — read master_sheet_id")
+    r = requests.get(f"{BASE_URL}/admin/global-config", headers=h, timeout=15)
+    print(f"  status={r.status_code}, body keys: {list(r.json().keys()) if r.status_code == 200 else r.text[:200]}")
+    assert_eq("global-config status", r.status_code, 200)
+    gc = r.json()
+    master_sheet_id = (gc.get("master_sheet_id") or "").strip()
+    master_sheet_tab = (gc.get("master_sheet_tab") or "Sheet1").strip()
+    print(f"  master_sheet_id={master_sheet_id!r}, master_sheet_tab={master_sheet_tab!r}")
+    assert_true("master_sheet_id is non-empty", bool(master_sheet_id),
+                detail=f"value={master_sheet_id!r}")
+
     try:
-        with open("/var/log/supervisor/backend.err.log", "r") as f:
-            log_tail = f.read()[-12000:]
-    except Exception as e:
-        log_tail = ""
-        print(f"Could not read backend.err.log: {e}")
-    check("backend logs contain 'Sheet append OK'", "Sheet append OK" in log_tail, "")
-    if "User-sheet" in log_tail:
-        # Just informational
-        for line in log_tail.splitlines()[-50:]:
-            if "User-sheet" in line:
-                print("  log:", line[-200:])
+        # ============================================================
+        # TEST 1 — sync without user sheet linked
+        # ============================================================
+        print("\n[Test 1] Sync without user sheet linked")
+        # Step 1.1: PUT /api/settings to clear any linked sheet
+        clear_payload = {"sheet": {"sheet_id": "", "gid": "0"}}
+        r = requests.put(f"{BASE_URL}/settings", headers=h, json=clear_payload, timeout=15)
+        assert_eq("PUT /settings clear sheet status", r.status_code, 200)
+        cleared = (r.json() or {}).get("sheet") or {}
+        assert_eq("sheet.sheet_id cleared", (cleared.get("sheet_id") or ""), "")
 
-    # ----- Test 2: POST /shipments extended payload -----
-    print("\n=== Test 2: POST /shipments with extended payload ===")
-    cr = requests.get(f"{BASE}/couriers", headers=H, timeout=30)
-    check("GET /couriers returns 200", cr.status_code == 200, f"status={cr.status_code}")
-    couriers = cr.json() if cr.status_code == 200 else []
-    if not couriers:
-        nc = requests.post(f"{BASE}/couriers", headers=H, json={"name": "PhaseB Courier", "code": "PB"}, timeout=30)
-        check("POST /couriers fallback create 200", nc.status_code == 200, nc.text[:200])
-        courier = nc.json()
-    else:
-        courier = couriers[0]
-    courier_id = courier.get("id")
-    courier_name = courier.get("name")
-    print(f"Using courier id={courier_id} name={courier_name}")
-
-    ship_payload = {
-        "tracking_id": f"PB-2604-{int(time.time())%100000}",
-        "courier_id": courier_id,
-        "courier_name": courier_name,
-        "order_id": f"PB-MAN-{int(time.time())%100000}",
-        "customer_name": "Phase-B Manual",
-        "customer_phone": "9000010001",
-        "customer_alt_phone": "9000020001",
-        "address_line1": "Manual addr",
-        "address_line2": "",
-        "city": "Ahmedabad",
-        "state": "Gujarat",
-        "pincode": "380001",
-        "items": [],
-        "amount": 1500,
-        "token_amount": 200,
-        "weight": "1200",
-        "payment_mode": "COD",
-    }
-    ps = requests.post(f"{BASE}/shipments", headers=H, json=ship_payload, timeout=60)
-    check("POST /shipments returns 200/201", ps.status_code in (200, 201), f"status={ps.status_code} body={ps.text[:400]}")
-    ps_json = ps.json() if ps.status_code in (200, 201) else {}
-    print("shipment response keys:", list(ps_json.keys())[:30])
-    if ps_json:
-        moid2 = ps_json.get("master_order_id", "")
-        alt2 = ps_json.get("customer_alt_phone", "")
-        tok2 = ps_json.get("token_amount")
-        wt2 = ps_json.get("weight", "")
-        check("Shipment master_order_id matches ^\\d{6}\\d{5,}$", bool(re.match(r"^\d{6}\d{5,}$", moid2 or "")), f"moid={moid2!r}")
-        check("Shipment customer_alt_phone == '9000020001'", alt2 == "9000020001", f"alt={alt2!r}")
-        check("Shipment token_amount == 200", float(tok2 or 0) == 200.0, f"token_amount={tok2!r}")
-        check("Shipment weight == '1200'", str(wt2) == "1200", f"weight={wt2!r}")
-
-    # ----- Test 3: sheets/probe -----
-    print("\n=== Test 3: GET /sheets/probe ===")
-    sp_probe = requests.get(f"{BASE}/sheets/probe", headers=H, timeout=30)
-    if sp_probe.status_code == 200:
-        check("GET /sheets/probe returns 200", True, "")
-        body = sp_probe.json()
-        if body.get("ok"):
-            check("sheets/probe ok=true", True, f"tab={body.get('tab')!r}")
-        else:
-            check("sheets/probe ok=true", False, f"body={body}")
-    else:
-        # If MASTER_SHEET_ID is set but probe fails, that's a fail. Else SKIP.
-        master_id_set = bool(os.environ.get("MASTER_SHEET_ID"))
-        if master_id_set:
-            check("GET /sheets/probe returns 200 (MASTER_SHEET_ID configured)", False, f"status={sp_probe.status_code} body={sp_probe.text[:200]}")
-        else:
-            print(f"[SKIP] sheets/probe not configured (status={sp_probe.status_code})")
-
-    # ----- Test 4: Master Sheet header backward compatibility -----
-    print("\n=== Test 4: Master Sheet header backward compatibility ===")
-    # If Test 1 returned 200 (not 502), this passes.
-    test1_returned_200 = sp.status_code == 200 if sp_json else False
-    check("Smart Paste returned 200 (no 502 from sheet_writer with extended schema)", test1_returned_200, f"sp.status_code={sp.status_code}")
-
-    # ----- Cleanup: delete the test shipment + pending order -----
-    print("\n=== Cleanup ===")
-    if sp_json and sp_json.get("id"):
-        # pending order delete
+        # Step 1.2: POST /api/sheets/sync-from-master expect 422
+        r = requests.post(
+            f"{BASE_URL}/sheets/sync-from-master",
+            headers=h, json={"overwrite": True}, timeout=20,
+        )
+        assert_eq("Test1 sync status (no sheet linked)", r.status_code, 422)
         try:
-            d = requests.delete(f"{BASE}/orders/pending/{sp_json['id']}", headers=H, timeout=30)
-            print(f"DELETE pending order -> {d.status_code} {d.text[:200]}")
-        except Exception as e:
-            print(f"pending delete failed: {e}")
-    if ps_json and ps_json.get("id"):
-        try:
-            d2 = requests.delete(f"{BASE}/shipments/{ps_json['id']}", headers=H, timeout=30)
-            print(f"DELETE shipment -> {d2.status_code} {d2.text[:200]}")
-        except Exception as e:
-            print(f"shipment delete failed: {e}")
+            body = r.json()
+        except Exception:
+            body = {"raw": r.text[:200]}
+        detail = body.get("detail", "")
+        print(f"  body: {json.dumps(body)[:300]}")
+        assert_true(
+            "Test1 detail mentions 'Link your Google Sheet'",
+            "Link your Google Sheet" in str(detail),
+            detail=f"detail={detail!r}",
+        )
 
-    # ----- Summary -----
-    print("\n=== SUMMARY ===")
-    passed = sum(1 for r in results if r[0] == "PASS")
-    failed = sum(1 for r in results if r[0] == "FAIL")
-    for s, l, i in results:
-        print(f" [{s}] {l}")
-    print(f"\n{passed} pass, {failed} fail (total {len(results)})")
-    return 0 if failed == 0 else 1
+        # ============================================================
+        # TEST 2 — Sync with sheet linked (overwrite mode)
+        # ============================================================
+        print("\n[Test 2] Sync with sheet linked (overwrite mode)")
+        link_payload = {"sheet": {"sheet_id": master_sheet_id, "gid": "0"}}
+        r = requests.put(f"{BASE_URL}/settings", headers=h, json=link_payload, timeout=15)
+        assert_eq("PUT /settings link master sheet status", r.status_code, 200)
+        linked = (r.json() or {}).get("sheet") or {}
+        assert_eq("sheet.sheet_id == master_sheet_id", linked.get("sheet_id"), master_sheet_id)
+
+        r = requests.post(
+            f"{BASE_URL}/sheets/sync-from-master",
+            headers=h, json={"overwrite": True}, timeout=120,
+        )
+        print(f"  Test2 sync status={r.status_code}, body[:400]={r.text[:400]}")
+        assert_eq("Test2 sync status", r.status_code, 200)
+        if r.status_code == 200:
+            body = r.json()
+            assert_eq("Test2 ok", body.get("ok"), True)
+            rows_synced_t2 = body.get("rows_synced")
+            assert_true(
+                "Test2 rows_synced is int >= 0",
+                isinstance(rows_synced_t2, int) and rows_synced_t2 >= 0,
+                detail=f"rows_synced={rows_synced_t2!r}",
+            )
+            assert_true(
+                "Test2 tab is non-empty string",
+                isinstance(body.get("tab"), str) and len(body.get("tab")) > 0,
+                detail=f"tab={body.get('tab')!r}",
+            )
+            assert_eq("Test2 mode == 'overwrite'", body.get("mode"), "overwrite")
+
+            # Idempotent re-call — should produce same row count.
+            print("\n  [Test 2.b] Idempotency — re-call sync (overwrite)")
+            r2 = requests.post(
+                f"{BASE_URL}/sheets/sync-from-master",
+                headers=h, json={"overwrite": True}, timeout=120,
+            )
+            print(f"    re-call status={r2.status_code}, body[:300]={r2.text[:300]}")
+            if r2.status_code == 200:
+                rows2 = r2.json().get("rows_synced")
+                assert_eq("Test2 idempotent rows_synced match", rows2, rows_synced_t2)
+            else:
+                FAIL.append(("Test2 idempotent re-call status==200", r2.status_code, 200, False))
+
+            # ============================================================
+            # TEST 3 — Sync in append mode (dedup)
+            # ============================================================
+            print("\n[Test 3] Sync in append mode (dedup by master_order_id)")
+            r3 = requests.post(
+                f"{BASE_URL}/sheets/sync-from-master",
+                headers=h, json={"overwrite": False}, timeout=120,
+            )
+            print(f"  Test3 status={r3.status_code}, body[:400]={r3.text[:400]}")
+            assert_eq("Test3 sync status", r3.status_code, 200)
+            if r3.status_code == 200:
+                b3 = r3.json()
+                assert_eq("Test3 ok", b3.get("ok"), True)
+                assert_eq("Test3 mode == 'append'", b3.get("mode"), "append")
+                assert_eq("Test3 rows_synced == 0 (dedup)", b3.get("rows_synced"), 0)
+
+    finally:
+        # Restore original sheet config
+        print("\n[Cleanup] Restore original sheet config")
+        try:
+            restore_payload = {
+                "sheet": {
+                    "sheet_id": original_sheet_cfg.get("sheet_id", ""),
+                    "gid": original_sheet_cfg.get("gid", "0"),
+                }
+            }
+            r = requests.put(f"{BASE_URL}/settings", headers=h, json=restore_payload, timeout=15)
+            print(f"  restore status={r.status_code}")
+        except Exception as e:
+            print(f"  restore failed: {e}")
+
+    # ---- Summary ----
+    print("\n" + "=" * 70)
+    print(f"PASS: {len(PASS)}    FAIL: {len(FAIL)}")
+    print("=" * 70)
+    if FAIL:
+        print("\nFailed assertions:")
+        for label, got, exp, _ in FAIL:
+            print(f"  - {label}: got={got!r}, expected={exp!r}")
+    return 0 if not FAIL else 1
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    raise SystemExit(main())

@@ -217,6 +217,183 @@ def read_user_sheet(
     }
 
 
+def _open_user_sheet(sheet_id: str, tab_or_gid: str):
+    """Open a user's per-user sheet by ID + tab name OR numeric gid."""
+    key_path = os.getenv("GOOGLE_SA_JSON_PATH")
+    if not key_path or not os.path.isfile(key_path):
+        raise RuntimeError(f"Service account JSON not found at {key_path!r}")
+    creds = Credentials.from_service_account_file(key_path, scopes=_SCOPES)
+    client = gspread.authorize(creds)
+    spreadsheet = client.open_by_key(sheet_id)
+    # Try by gid (if numeric), else by title.
+    t = (tab_or_gid or "").strip()
+    if t.isdigit():
+        gid = int(t)
+        for w in spreadsheet.worksheets():
+            if int(getattr(w, "id", -1)) == gid:
+                return w
+        # fallback to first sheet
+        return spreadsheet.sheet1
+    if t:
+        try:
+            return spreadsheet.worksheet(t)
+        except gspread.WorksheetNotFound:
+            return spreadsheet.sheet1
+    return spreadsheet.sheet1
+
+
+def sync_master_to_user_sheet(
+    user_id: str,
+    user_sheet_id: str,
+    user_tab_or_gid: str = "0",
+    *,
+    overwrite: bool = True,
+) -> Dict[str, Any]:
+    """Phase-C: Pull every row from the Master Sheet that belongs to
+    `user_id` and mirror them into the user's own sheet. Filters by the
+    Master Sheet's `User ID` column.
+
+    Behaviour:
+      - Reads ALL rows from Master Sheet.
+      - Filters to those where User ID column matches `user_id`.
+      - When `overwrite=True` (default): clears the user's tab data
+        rows (keeps header) and writes the filtered set fresh. This is
+        the safest mode — eliminates duplicates and reflects deletions /
+        edits the admin made on Master Sheet.
+      - When `overwrite=False`: appends only NEW rows (dedup by
+        `master_order_id` column). Keeps any local-only rows.
+
+    Returns: {ok, rows_synced, tab, sheet_id, master_total_rows}.
+    Best-effort by design — caller should swallow exceptions in
+    background sync flows.
+    """
+    if not user_id:
+        raise ValueError("user_id required")
+    if not user_sheet_id:
+        raise ValueError("user_sheet_id required")
+
+    # 1) Read the entire Master Sheet.
+    master_ws = _get_worksheet()
+    master_values = master_ws.get_all_values()
+    if not master_values:
+        return {"ok": True, "rows_synced": 0, "master_total_rows": 0,
+                "tab": "", "sheet_id": user_sheet_id, "note": "Master sheet empty"}
+    master_header = [(h or "").strip() for h in master_values[0]]
+
+    # Find the User ID column index (case-insensitive).
+    uid_col_idx = None
+    for i, h in enumerate(master_header):
+        if h.strip().lower().replace(" ", "_") in ("user_id", "userid"):
+            uid_col_idx = i
+            break
+    if uid_col_idx is None:
+        # Fall back to the canonical position (column B = index 1) since
+        # we own the schema. Logged for visibility.
+        log.warning("User ID column header missing on Master Sheet — using column B (index 1).")
+        uid_col_idx = 1
+
+    # 2) Filter rows where User ID matches caller.
+    matched_rows = []
+    for r in master_values[1:]:
+        if not any((c or "").strip() for c in r):
+            continue  # skip empty rows
+        cell = r[uid_col_idx] if uid_col_idx < len(r) else ""
+        if (cell or "").strip() == user_id:
+            # Pad / trim to header length so the row width is consistent.
+            row_padded = list(r) + [""] * max(0, len(master_header) - len(r))
+            matched_rows.append(row_padded[:len(master_header)])
+
+    # 3) Open user's sheet.
+    user_ws = _open_user_sheet(user_sheet_id, user_tab_or_gid)
+
+    # Ensure header row exists & matches Master headers (auto-create).
+    try:
+        cur_first = user_ws.row_values(1)
+    except Exception:
+        cur_first = []
+    if not cur_first:
+        try:
+            last_col = _col_letter(len(master_header))
+            user_ws.update(
+                f"A1:{last_col}1",
+                [master_header],
+                value_input_option="USER_ENTERED",
+            )
+        except Exception as e:
+            log.warning(f"Could not write header row to user sheet: {e}")
+
+    if overwrite:
+        # 4a) Clear data rows (keep header), then bulk-write matched rows.
+        try:
+            user_ws.batch_clear([f"A2:{_col_letter(len(master_header))}{user_ws.row_count}"])
+        except Exception as e:
+            log.warning(f"User-sheet clear failed (continuing): {e}")
+        if matched_rows:
+            # Auto-grow if needed.
+            need = len(matched_rows) + 1
+            if hasattr(user_ws, "row_count") and need > int(user_ws.row_count):
+                try:
+                    user_ws.add_rows(max(100, need - int(user_ws.row_count)))
+                except Exception:
+                    pass
+            target_range = f"A2:{_col_letter(len(master_header))}{1 + len(matched_rows)}"
+            user_ws.update(
+                target_range, matched_rows, value_input_option="USER_ENTERED",
+            )
+    else:
+        # 4b) Append-only — dedup by master_order_id column if present.
+        # Find master_order_id column index.
+        moid_idx = None
+        for i, h in enumerate(master_header):
+            if h.strip().lower().replace(" ", "_") in (
+                "master_order_id", "masterorderid",
+            ):
+                moid_idx = i
+                break
+        # Read existing user rows to find already-present master IDs.
+        existing_user_values = user_ws.get_all_values()
+        existing_ids: set = set()
+        if existing_user_values and moid_idx is not None:
+            for r in existing_user_values[1:]:
+                if moid_idx < len(r):
+                    val = (r[moid_idx] or "").strip()
+                    if val:
+                        existing_ids.add(val)
+        new_rows = []
+        for row in matched_rows:
+            mid = (row[moid_idx] or "").strip() if moid_idx is not None else ""
+            if mid and mid in existing_ids:
+                continue
+            new_rows.append(row)
+            if mid:
+                existing_ids.add(mid)
+        if new_rows:
+            next_row = _find_next_empty_row(user_ws)
+            need = next_row + len(new_rows)
+            if hasattr(user_ws, "row_count") and need > int(user_ws.row_count):
+                try:
+                    user_ws.add_rows(max(100, need - int(user_ws.row_count)))
+                except Exception:
+                    pass
+            target_range = (
+                f"A{next_row}:"
+                f"{_col_letter(len(master_header))}{next_row + len(new_rows) - 1}"
+            )
+            user_ws.update(
+                target_range, new_rows, value_input_option="USER_ENTERED",
+            )
+        matched_rows = new_rows  # for accurate count below
+
+    return {
+        "ok": True,
+        "rows_synced": len(matched_rows),
+        "master_total_rows": len(master_values) - 1,
+        "tab": user_ws.title,
+        "sheet_id": user_sheet_id,
+        "mode": "overwrite" if overwrite else "append",
+    }
+
+
 def _find_next_empty_row(ws) -> int:
     """Return the 1-based row number just after the last non-empty row.
 

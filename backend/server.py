@@ -67,6 +67,7 @@ from dateutil.relativedelta import relativedelta
 try:
     from sheet_writer import append_order_row as sheet_append_order_row
     from sheet_writer import append_order_row_to_user_sheet as sheet_append_user
+    from sheet_writer import sync_master_to_user_sheet as sheet_sync_master_to_user
     from sheet_writer import probe_connection as sheet_probe_connection
     from sheet_writer import mark_row_deleted as sheet_mark_row_deleted
     from sheet_writer import parse_row_from_updated_range as sheet_parse_row_from_updated_range
@@ -76,6 +77,7 @@ try:
 except Exception as _sheet_import_err:  # pragma: no cover
     sheet_append_order_row = None  # type: ignore
     sheet_append_user = None  # type: ignore
+    sheet_sync_master_to_user = None  # type: ignore
     sheet_probe_connection = None  # type: ignore
     sheet_mark_row_deleted = None  # type: ignore
     sheet_parse_row_from_updated_range = None  # type: ignore
@@ -2395,6 +2397,60 @@ async def find_duplicate_matches(
     # Sort newest first, cap at `limit` overall.
     results.sort(key=lambda r: r.get("created_at") or "", reverse=True)
     return results[:limit]
+
+
+class _SyncFromMasterPayload(BaseModel):
+    overwrite: Optional[bool] = True
+
+
+@api_router.post("/sheets/sync-from-master")
+async def sync_from_master_endpoint(
+    payload: _SyncFromMasterPayload,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    """Phase-C: Pull every Master-Sheet row tagged with the caller's
+    user_id into the caller's own personal sheet.
+
+    By default (`overwrite=true`), the user's tab data rows are CLEARED
+    and replaced with a fresh copy of all matching master rows — this
+    reflects any admin edits / deletions made on the Master Sheet.
+
+    Pass `{"overwrite": false}` to APPEND only new rows (dedup by
+    `master_order_id`). This preserves any local-only rows the user
+    added directly in their sheet (rare but supported).
+
+    Requires the user to have linked their personal sheet via
+    Settings → Business → "Google Sheet". Returns 422 if not configured.
+    """
+    if sheet_sync_master_to_user is None:
+        raise HTTPException(503, detail="Google Sheets integration not loaded.")
+    s = await db.settings.find_one(
+        {"user_id": current_user["id"]}, {"_id": 0, "sheet": 1},
+    ) or {}
+    sheet_cfg = s.get("sheet") or {}
+    if not isinstance(sheet_cfg, dict):
+        sheet_cfg = {}
+    user_sheet_id = str(sheet_cfg.get("sheet_id") or "").strip()
+    user_tab = str(sheet_cfg.get("gid") or sheet_cfg.get("tab") or "0").strip()
+    if not user_sheet_id:
+        raise HTTPException(
+            422,
+            detail="Link your Google Sheet first in Settings → Business → Google Sheet.",
+        )
+    try:
+        result = sheet_sync_master_to_user(
+            user_id=current_user["id"],
+            user_sheet_id=user_sheet_id,
+            user_tab_or_gid=user_tab,
+            overwrite=bool(payload.overwrite),
+        )
+        return result
+    except Exception as e:
+        logger.exception("sync_from_master failed")
+        raise HTTPException(
+            502,
+            detail=f"Sync failed: {e}",
+        )
 
 
 @api_router.get("/orders/master-id-counter")
