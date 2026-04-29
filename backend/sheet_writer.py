@@ -11,9 +11,11 @@ from __future__ import annotations
 
 import os
 import re
+import time
+import random
 import logging
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 import gspread
 from google.oauth2.service_account import Credentials
@@ -24,6 +26,65 @@ _SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive",
 ]
+
+
+# ---------------------------------------------------------------------------
+# Transient-error retry helper
+# ---------------------------------------------------------------------------
+# Google Sheets API enforces a 60 read-requests-per-minute-per-user quota.
+# When a busy app burst-writes (e.g. 14 user-sheet rows getting auto-backed
+# up to Master, plus the per-shipment master writes) we routinely see
+# `gspread.exceptions.APIError: [429] RESOURCE_EXHAUSTED`. These errors
+# are transient — backing off and retrying clears them. We also retry on
+# 500/503/504 in case Google has a brief upstream blip.
+_RETRY_STATUSES = (429, 500, 502, 503, 504)
+
+
+def _is_transient(err: Exception) -> bool:
+    """Return True if the error is the kind we should retry."""
+    msg = str(err)
+    if "[429]" in msg or "[500]" in msg or "[503]" in msg or "[504]" in msg:
+        return True
+    # gspread.exceptions.APIError exposes `.response.status_code`
+    resp = getattr(err, "response", None)
+    code = getattr(resp, "status_code", None)
+    if code in _RETRY_STATUSES:
+        return True
+    lowered = msg.lower()
+    return (
+        "quota exceeded" in lowered
+        or "rate limit" in lowered
+        or "resource_exhausted" in lowered
+        or "user rate limit exceeded" in lowered
+    )
+
+
+def _with_retry(fn: Callable, *args, attempts: int = 4, base: float = 1.0, **kwargs):
+    """Run `fn` and retry up to `attempts` times on transient errors.
+
+    Uses exponential backoff with jitter: 1s, 2s, 4s, 8s (+/- 25%).
+    Re-raises the LAST exception if all attempts fail so the caller
+    can surface or queue it.
+    """
+    last: Optional[Exception] = None
+    for i in range(attempts):
+        try:
+            return fn(*args, **kwargs)
+        except Exception as e:
+            last = e
+            if not _is_transient(e) or i == attempts - 1:
+                raise
+            sleep_for = (base * (2 ** i)) * (1.0 + random.uniform(-0.25, 0.25))
+            log.warning(
+                "Sheets API transient error (attempt %d/%d): %s — retrying in %.1fs",
+                i + 1, attempts, str(e)[:200], sleep_for,
+            )
+            time.sleep(sleep_for)
+    # Should never reach here — re-raise last just in case.
+    if last is not None:
+        raise last
+    raise RuntimeError("retry helper exited without result")
+
 
 # Column order MUST match the Master Sheet headers exactly (left → right).
 # Phase-B (2026-04) — extended schema with user_name, master_order_id,
@@ -455,21 +516,38 @@ def _find_next_empty_row(ws) -> int:
     which can occasionally "fall back" into the middle of the data block
     when it detects a perceived table boundary. Writing to an explicit row
     sidesteps that entirely.
+
+    Wrapped in `_with_retry` so a transient 429 during the underlying
+    `get_all_values` call doesn't propagate to the caller unnecessarily.
     """
-    # get_all_values returns a 2-D list; len() is the number of rows with data.
-    # If the sheet has only a header, len == 1 → next row = 2.
-    try:
-        rows = ws.get_all_values()
-    except Exception:
-        # Fallback: ws.row_count is the allocated size, not the used count,
-        # so we use it only if values fetch fails.
-        return int(getattr(ws, "row_count", 1)) + 1
-    # Strip trailing fully-empty rows; keep rows that have any non-blank cell.
-    used = 0
-    for i, row in enumerate(rows, start=1):
-        if any((c or "").strip() for c in row):
-            used = i
-    return used + 1
+    def _inner():
+        try:
+            rows = ws.get_all_values()
+        except Exception:
+            # Fallback: ws.row_count is the allocated size, not the used count,
+            # so we use it only if values fetch fails.
+            return int(getattr(ws, "row_count", 1)) + 1
+        used = 0
+        for i, row in enumerate(rows, start=1):
+            if any((c or "").strip() for c in row):
+                used = i
+        return used + 1
+    return _with_retry(_inner)
+
+
+# In-process cache: avoids one full sheet read per append once we've
+# learned the next free row. Refreshed on every write success and on
+# every sheet failure (so concurrent writers re-sync). Per-process so
+# safe across concurrent FastAPI workers — each worker just discovers
+# its own starting point.
+_MASTER_NEXT_ROW_CACHE: Dict[str, int] = {}
+
+
+def _master_cache_key(ws) -> str:
+    """Build a stable cache key per (sheet_id, tab_title)."""
+    sid = os.getenv("MASTER_SHEET_ID", "") or "default"
+    title = getattr(ws, "title", "") or ""
+    return f"{sid}::{title}"
 
 
 def append_order_row(
@@ -522,7 +600,18 @@ def append_order_row(
         str(token_amount) if token_amount not in (None, "") else "",
         weight,
     ]
-    next_row = _find_next_empty_row(ws)
+
+    # Use a cached "next free row" counter to skip the expensive
+    # `get_all_values()` read on every append. The cache is refreshed
+    # whenever the underlying write fails (so concurrent writers
+    # re-converge) and is bumped on success.
+    cache_key = _master_cache_key(ws)
+    cached = _MASTER_NEXT_ROW_CACHE.get(cache_key)
+    if cached is None:
+        next_row = _find_next_empty_row(ws)
+    else:
+        next_row = int(cached)
+
     # Auto-grow the sheet if we're about to write past its allocated rows.
     if hasattr(ws, "row_count") and next_row > int(ws.row_count):
         try:
@@ -530,11 +619,26 @@ def append_order_row(
         except Exception:
             pass  # non-fatal; update() below will still work or raise cleanly.
 
-    # Columns A..S (19 cols) — build A1 range for the exact row.
     last_col_letter = _col_letter(len(COLUMNS))  # "S" for 19 columns
     target_range = f"A{next_row}:{last_col_letter}{next_row}"
 
-    ws.update(target_range, [row_values], value_input_option="USER_ENTERED")
+    try:
+        _with_retry(
+            ws.update,
+            target_range,
+            [row_values],
+            value_input_option="USER_ENTERED",
+        )
+    except Exception:
+        # On any failure (including transient retries exhausted), drop the
+        # cached counter so the next call re-discovers the true next row
+        # via a full read. This avoids accidentally overwriting a row a
+        # parallel process inserted.
+        _MASTER_NEXT_ROW_CACHE.pop(cache_key, None)
+        raise
+
+    # Bump cache for next write.
+    _MASTER_NEXT_ROW_CACHE[cache_key] = next_row + 1
 
     # Normalise the updated_range to the same shape gspread.append_row emits
     # so the caller (parse_row_from_updated_range) keeps working unchanged.

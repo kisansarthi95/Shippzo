@@ -1690,7 +1690,13 @@ async def _sync_user_sheet_to_master_bg(
     # Allocate skipped rows up to a sane batch size so a 5000-row sheet
     # doesn't block the worker forever. The next /sheets/orders call
     # will pick up the rest.
-    BATCH_LIMIT = 50
+    # ALSO: each append performs ~3 Sheets API reads under the hood, and
+    # Google enforces a 60 reads-per-minute-per-SA quota. We cap at 20
+    # rows/call AND sleep ~1.2s between writes so a single bg sync
+    # consumes well below quota even if the user has the app open in
+    # multiple tabs.
+    BATCH_LIMIT = 20
+    SLEEP_BETWEEN_ROWS = 1.2  # seconds
     appended = 0
     for idx, row in enumerate(rows):
         if appended >= BATCH_LIMIT:
@@ -1733,6 +1739,14 @@ async def _sync_user_sheet_to_master_bg(
             })
             existing.add(key)
             appended += 1
+            # Spacing between writes keeps us comfortably under Google's
+            # 60 reads/min/user quota. Use asyncio.sleep so we don't
+            # block the event loop for other requests.
+            try:
+                import asyncio as _asyncio
+                await _asyncio.sleep(SLEEP_BETWEEN_ROWS)
+            except Exception:
+                pass
         except Exception as e:
             # DuplicateKeyError → already inserted via a parallel call.
             # Anything else (sheet write failure, quota, auth) → log
@@ -2023,19 +2037,45 @@ async def get_shipment(
 # raise HTTP 502 the same way the smart-paste flow already does. The
 # upstream caller is expected to invoke this BEFORE inserting into Mongo
 # so a failed sheet write doesn't leave a "ghost" Mongo row.
+# A sentinel returned by `_backup_shipment_to_master_sheet` when the
+# Master Sheet write was deferred due to transient API problems
+# (Google Sheets quota / 5xx). The caller should save the shipment to
+# Mongo with `master_backup_status="pending"` and a periodic worker
+# (or the next call from this user) will retry the write.
+_BACKUP_DEFERRED_SENTINEL: Dict[str, Any] = {"deferred": True}
+
+
+def _is_transient_sheet_error(err: Exception) -> bool:
+    """Mirror sheet_writer._is_transient — keep server.py side standalone
+    so we don't have to import private helpers."""
+    msg = str(err)
+    if any(s in msg for s in ("[429]", "[500]", "[502]", "[503]", "[504]")):
+        return True
+    lowered = msg.lower()
+    return (
+        "quota exceeded" in lowered
+        or "rate limit" in lowered
+        or "resource_exhausted" in lowered
+        or "user rate limit exceeded" in lowered
+    )
+
+
 async def _backup_shipment_to_master_sheet(
     *, current_user: Dict[str, Any], data: Dict[str, Any], notice: str,
 ) -> Dict[str, Any]:
     """Append a single shipment record to the Master Sheet.
 
-    `data` may be either a Mongo-shape shipment doc OR a smart-paste
-    `fields` dict — we coerce both to the COLUMNS schema. Returns the
-    sheet_meta dict from `sheet_append_order_row` (with `updated_range`)
-    on success and raises HTTPException(502) on any failure.
+    Returns:
+        - sheet_meta dict with `updated_range` on success (write succeeded
+          immediately or after retries inside sheet_writer).
+        - `_BACKUP_DEFERRED_SENTINEL` (a dict with `deferred=True`) if the
+          write failed with a transient quota / 5xx error — caller should
+          mark the shipment `master_backup_status="pending"` and continue.
+        - Raises HTTPException(502/503) on permanent failures (auth, sheet
+          missing, malformed config, etc.) — caller surfaces these to the
+          user since they can't be auto-recovered.
     """
     if sheet_append_order_row is None:
-        # Library couldn't import — keep the existing 503 behaviour the
-        # smart-paste flow uses so admins notice the misconfig fast.
         raise HTTPException(
             status_code=503,
             detail="Google Sheets integration not configured on server.",
@@ -2077,7 +2117,40 @@ async def _backup_shipment_to_master_sheet(
             notice=notice,
         )
     except Exception as e:
-        logger.exception("Master Sheet backup failed")
+        if _is_transient_sheet_error(e):
+            # Quota / temporary outage — defer rather than blocking the
+            # user. The shipment will still be saved to Mongo with
+            # `master_backup_status="pending"` and the next call (or the
+            # periodic retry worker) will push it.
+            logger.warning(
+                "Master Sheet backup deferred (transient): %s", str(e)[:200]
+            )
+            # Stash the original payload for the retry worker.
+            return {
+                **_BACKUP_DEFERRED_SENTINEL,
+                "_pending_payload": {
+                    "user_id": current_user["id"],
+                    "user_name": user_name_val,
+                    "master_order_id": str(data.get("master_order_id") or "") or "",
+                    "order_id": str(data.get("order_id") or "") or "",
+                    "name": str(data.get("customer_name") or data.get("name") or "") or "",
+                    "phone": str(data.get("customer_phone") or data.get("phone") or "") or "",
+                    "alt_phone": str(data.get("customer_alt_phone") or data.get("alt_phone") or "") or "",
+                    "address": addr_text,
+                    "city": str(data.get("city") or "") or "",
+                    "state": str(data.get("state") or "") or "",
+                    "pincode": str(data.get("pincode") or "") or "",
+                    "item_type": item_type_text,
+                    "amount": data.get("amount") or "",
+                    "token_amount": data.get("token_amount") or "",
+                    "weight": str(data.get("weight") or "") or "",
+                    "payment_mode": str(data.get("payment_mode") or "") or "",
+                    "status": str(data.get("status") or "Pending") or "Pending",
+                    "notice": notice,
+                },
+            }
+        # Permanent failure — auth, missing sheet, etc. Surface to caller.
+        logger.exception("Master Sheet backup failed (permanent)")
         raise HTTPException(
             status_code=502,
             detail=f"Master Sheet backup failed — order not saved. Reason: {e}",
@@ -2220,25 +2293,30 @@ async def create_shipment(
 
     # ---- Mandatory Master Sheet backup (all plans) ----
     # Per user policy 2026-04-29: every shipment created via the manual
-    # "Add Shipment" form must be backed up to the central Master Sheet
-    # before we persist it to Mongo. If the sheet write fails the helper
-    # raises 502 — we surface that as-is so the client never sees a
-    # ghost record (data only in Mongo, missing from the source-of-
-    # truth backup).
+    # "Add Shipment" form must be backed up to the central Master Sheet.
+    # We try with retries inside sheet_writer; on transient quota / 5xx
+    # errors the helper returns a `deferred` sentinel — we save the
+    # shipment to Mongo with `master_backup_status="pending"` plus the
+    # original payload, and a periodic worker picks it up later. On
+    # permanent failures the helper raises 502 and we do NOT save (no
+    # ghost row).
     sheet_meta = await _backup_shipment_to_master_sheet(
         current_user=current_user,
         data=doc,
         notice="via Add Shipment",
     )
-    if sheet_meta and sheet_meta.get("updated_range") and sheet_parse_row_from_updated_range:
+    if sheet_meta.get("deferred"):
+        doc["master_backup_status"] = "pending"
+        doc["master_backup_payload"] = sheet_meta.get("_pending_payload") or {}
+        doc["master_backup_last_error_at"] = utcnow_iso()
+    elif sheet_meta and sheet_meta.get("updated_range") and sheet_parse_row_from_updated_range:
         try:
             row = sheet_parse_row_from_updated_range(sheet_meta["updated_range"])
             if row:
                 doc["sheet_row_num"] = int(row)
-                # Also surface on the response object so the client sees
-                # the same value (not just the Mongo record).
                 if hasattr(shipment, "sheet_row_num"):
                     shipment.sheet_row_num = int(row)
+                doc["master_backup_status"] = "ok"
         except Exception:
             pass
 
@@ -3835,11 +3913,16 @@ async def ship_pending_order(
             data=ship_doc,
             notice=f"via Ship · Tracking: {tracking_id}",
         )
-        if sheet_meta and sheet_meta.get("updated_range") and sheet_parse_row_from_updated_range:
+        if sheet_meta.get("deferred"):
+            ship_doc["master_backup_status"] = "pending"
+            ship_doc["master_backup_payload"] = sheet_meta.get("_pending_payload") or {}
+            ship_doc["master_backup_last_error_at"] = utcnow_iso()
+        elif sheet_meta and sheet_meta.get("updated_range") and sheet_parse_row_from_updated_range:
             try:
                 row = sheet_parse_row_from_updated_range(sheet_meta["updated_range"])
                 if row:
                     ship_doc["sheet_row_num"] = int(row)
+                    ship_doc["master_backup_status"] = "ok"
             except Exception:
                 pass
 
@@ -5447,7 +5530,106 @@ async def on_startup():
             logger.info(f"Backfilled display_id for {filled} legacy user(s).")
     except Exception:
         logger.exception("display_id backfill failed (non-fatal)")
+    # Kick off the deferred Master Sheet backup retry worker. It loops
+    # every 60s, draining up to 5 shipments per cycle whose
+    # `master_backup_status == "pending"`. Quota errors keep them
+    # pending; success flips them to "ok".
+    try:
+        import asyncio as _asyncio
+        _asyncio.create_task(_master_backup_retry_worker())
+    except Exception:
+        logger.exception("Failed to start master backup retry worker (non-fatal)")
     logger.info("Courier Label Manager API started; defaults seeded.")
+
+
+async def _master_backup_retry_worker() -> None:
+    """Background loop: periodically retry shipments whose Master Sheet
+    backup was deferred due to transient quota / 5xx errors.
+
+    Runs every 60s, processes up to 5 shipments per cycle (one every
+    ~2s to stay well under Google's 60-reads/min quota). On success
+    flips `master_backup_status` from "pending" to "ok" and stamps
+    `sheet_row_num`. On still-transient errors leaves the doc in
+    pending state for the next cycle.
+    """
+    import asyncio as _asyncio
+    INTERVAL = 60.0
+    BATCH = 5
+    PER_ROW_DELAY = 2.0
+    while True:
+        try:
+            await _asyncio.sleep(INTERVAL)
+            if sheet_append_order_row is None:
+                continue
+            cursor = db.shipments.find(
+                {"master_backup_status": "pending"},
+                {"_id": 0},
+            ).limit(BATCH)
+            pending = await cursor.to_list(length=BATCH)
+            if not pending:
+                continue
+            for ship in pending:
+                payload = ship.get("master_backup_payload") or {}
+                if not payload:
+                    # No payload to replay — mark as failed so we don't
+                    # spin forever on a malformed doc.
+                    await db.shipments.update_one(
+                        {"id": ship["id"]},
+                        {"$set": {"master_backup_status": "failed_no_payload"}},
+                    )
+                    continue
+                try:
+                    sheet_meta = sheet_append_order_row(**payload)
+                    update_fields: Dict[str, Any] = {
+                        "master_backup_status": "ok",
+                        "master_backup_completed_at": utcnow_iso(),
+                    }
+                    if sheet_parse_row_from_updated_range and sheet_meta:
+                        try:
+                            row_n = sheet_parse_row_from_updated_range(
+                                sheet_meta.get("updated_range")
+                            )
+                            if row_n:
+                                update_fields["sheet_row_num"] = int(row_n)
+                        except Exception:
+                            pass
+                    await db.shipments.update_one(
+                        {"id": ship["id"]},
+                        {"$set": update_fields,
+                         "$unset": {"master_backup_payload": ""}},
+                    )
+                    logger.info(
+                        "Master backup retry OK for shipment %s", ship.get("id"),
+                    )
+                except Exception as e:
+                    if _is_transient_sheet_error(e):
+                        # Still over quota — leave for next cycle.
+                        await db.shipments.update_one(
+                            {"id": ship["id"]},
+                            {"$set": {
+                                "master_backup_last_error_at": utcnow_iso(),
+                                "master_backup_last_error": str(e)[:300],
+                            }},
+                        )
+                    else:
+                        # Permanent — flag and stop retrying.
+                        logger.exception(
+                            "Master backup retry permanent failure for %s",
+                            ship.get("id"),
+                        )
+                        await db.shipments.update_one(
+                            {"id": ship["id"]},
+                            {"$set": {
+                                "master_backup_status": "failed",
+                                "master_backup_last_error": str(e)[:300],
+                            }},
+                        )
+                # Pace the retries to avoid re-tripping the quota.
+                await _asyncio.sleep(PER_ROW_DELAY)
+        except _asyncio.CancelledError:
+            return
+        except Exception:
+            logger.exception("Master backup retry worker iteration failed")
 
 
 @app.on_event("shutdown")
