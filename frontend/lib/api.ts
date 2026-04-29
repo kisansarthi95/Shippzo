@@ -379,7 +379,7 @@ export const Api = {
         current_count: number;
         can_add: boolean;
         is_unlimited: boolean;
-        suggested_upgrade: string;
+        suggested_upgrade: string | null;
       }>("/couriers/limits")
       .then((r) => r.data),
   updateCourier: (id: string, data: Partial<Courier>) =>

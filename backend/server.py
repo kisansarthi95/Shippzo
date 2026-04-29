@@ -1003,15 +1003,16 @@ async def root():
 # -------- Couriers --------
 
 # Courier-partner limit per subscription plan.
-# Platinum (and admins) are unlimited. free_trial + silver get 1 partner so
+# Admins bypass these limits entirely. free_trial + silver get 1 partner so
 # the default seeded "Nandan Courier" works out of the box but no new
 # partner can be added without upgrading. Gold users may run two carriers
 # in parallel (the common "India Post + private courier" pattern).
+# Platinum users get up to 5 — enough for any realistic multi-carrier setup.
 COURIER_LIMITS: Dict[str, Optional[int]] = {
     "free_trial": 1,
     "silver": 1,
     "gold": 2,
-    "platinum": None,  # Unlimited
+    "platinum": 5,
 }
 
 # Human-readable label shown in upgrade prompts.
@@ -1032,14 +1033,20 @@ def _courier_limit_for_plan(plan_key: str) -> Optional[int]:
     return COURIER_LIMITS[plan_key]
 
 
-def _next_tier_suggestion(plan_key: str) -> str:
-    """Suggest the next reasonable tier so upgrade CTAs are concrete."""
+def _next_tier_suggestion(plan_key: str) -> Optional[str]:
+    """Suggest the next reasonable tier so upgrade CTAs are concrete.
+    Returns None when the caller is already on the top-most paid tier
+    (Platinum) — the frontend shows a neutral "limit reached" message
+    instead of an upgrade nudge.
+    """
     order = ["free_trial", "silver", "gold", "platinum"]
     try:
         i = order.index((plan_key or "free_trial").lower())
     except ValueError:
         return "Gold"
-    nxt = order[min(i + 1, len(order) - 1)]
+    if i >= len(order) - 1:
+        return None  # already on Platinum — nothing higher to upgrade to
+    nxt = order[i + 1]
     return _PLAN_LABELS.get(nxt, "Gold")
 
 
@@ -1093,15 +1100,18 @@ async def create_courier(
             if current_count >= int(limit):
                 plan_label = _PLAN_LABELS.get(plan_key, plan_key.title())
                 suggest = _next_tier_suggestion(plan_key)
-                raise HTTPException(
-                    status_code=403,
-                    detail=(
-                        f"Your {plan_label} plan allows only {limit} "
-                        f"courier partner"
-                        + ("" if int(limit) == 1 else "s")
-                        + f". Upgrade to {suggest} to add more."
-                    ),
+                msg = (
+                    f"Your {plan_label} plan allows only {limit} "
+                    f"courier partner"
+                    + ("" if int(limit) == 1 else "s") + "."
                 )
+                if suggest:
+                    msg += f" Upgrade to {suggest} to add more."
+                else:
+                    # Already on top tier (Platinum). Give a supportive
+                    # message instead of an upgrade nudge.
+                    msg += " Please contact support if you need more."
+                raise HTTPException(status_code=403, detail=msg)
     courier = Courier(**payload.model_dump())
     doc = courier.model_dump()
     doc["user_id"] = current_user["id"]

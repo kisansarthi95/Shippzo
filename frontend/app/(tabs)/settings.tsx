@@ -232,7 +232,7 @@ export default function SettingsScreen() {
     current_count: number;
     can_add: boolean;
     is_unlimited: boolean;
-    suggested_upgrade: string;
+    suggested_upgrade: string | null;
   } | null>(null);
   const [brandName, setBrandName] = useState("");
   const [brandLogo, setBrandLogo] = useState("");
@@ -2650,16 +2650,27 @@ export default function SettingsScreen() {
               </TouchableOpacity>
             ))}
             {courierLimits && !courierLimits.can_add ? (
-              <TouchableOpacity
-                testID="upgrade-to-add-courier-btn"
-                style={[styles.saveBtn, { marginTop: 10, backgroundColor: "#F59E0B" }]}
-                onPress={() => router.push("/plans")}
-              >
-                <Ionicons name="rocket" size={18} color="#fff" />
-                <Text style={styles.saveBtnText}>
-                  Upgrade to {courierLimits.suggested_upgrade} to add more
-                </Text>
-              </TouchableOpacity>
+              courierLimits.suggested_upgrade ? (
+                <TouchableOpacity
+                  testID="upgrade-to-add-courier-btn"
+                  style={[styles.saveBtn, { marginTop: 10, backgroundColor: "#F59E0B" }]}
+                  onPress={() => router.push("/plans")}
+                >
+                  <Ionicons name="rocket" size={18} color="#fff" />
+                  <Text style={styles.saveBtnText}>
+                    Upgrade to {courierLimits.suggested_upgrade} to add more
+                  </Text>
+                </TouchableOpacity>
+              ) : (
+                // Platinum user at cap — no upgrade path, just an informative row.
+                <View style={[styles.limitBanner, styles.limitBannerFull, { marginTop: 10 }]}>
+                  <Ionicons name="lock-closed" size={16} color="#B45309" />
+                  <Text style={[styles.limitBannerText, { color: "#92400E" }]}>
+                    You've reached the {courierLimits.limit}-partner limit on your
+                    {" "}{courierLimits.plan_label} plan. Contact support to raise it.
+                  </Text>
+                </View>
+              )
             ) : (
               <TouchableOpacity
                 testID="add-courier-btn"
