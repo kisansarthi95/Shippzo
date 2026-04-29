@@ -840,7 +840,7 @@ export default function SettingsScreen() {
                     </TouchableOpacity>
                     <TouchableOpacity
                       testID="settings-hub-admin-pricing"
-                      style={[styles.hubRow, styles.hubRowLast]}
+                      style={styles.hubRow}
                       onPress={() => router.push("/admin/pricing")}
                       activeOpacity={0.6}
                     >
@@ -848,6 +848,21 @@ export default function SettingsScreen() {
                         <Ionicons name="pricetags-outline" size={22} color="#BE185D" />
                       </View>
                       <Text style={styles.hubTitle}>Plan Pricing</Text>
+                      <View style={styles.adminPill}>
+                        <Text style={styles.adminPillTxt}>ADMIN</Text>
+                      </View>
+                      <Ionicons name="chevron-forward" size={22} color="#9CA3AF" />
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      testID="settings-hub-admin-master-sheet"
+                      style={[styles.hubRow, styles.hubRowLast]}
+                      onPress={() => router.push("/admin/master-sheet" as any)}
+                      activeOpacity={0.6}
+                    >
+                      <View style={[styles.hubIconWrap, { backgroundColor: "#DCFCE7" }]}>
+                        <Ionicons name="grid-outline" size={22} color="#15803D" />
+                      </View>
+                      <Text style={styles.hubTitle}>Master Sheet</Text>
                       <View style={styles.adminPill}>
                         <Text style={styles.adminPillTxt}>ADMIN</Text>
                       </View>

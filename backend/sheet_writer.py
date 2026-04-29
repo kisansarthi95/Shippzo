@@ -40,15 +40,46 @@ COLUMNS = [
 
 
 def _get_worksheet():
-    """Authenticate and return the target worksheet. Raises on failure."""
+    """Authenticate and return the target worksheet. Raises on failure.
+
+    Phase-B: First tries to read `master_sheet_id` / `master_sheet_tab`
+    from MongoDB's `admin_config` collection (so the admin can change
+    the sheet via the Admin Panel without touching env vars). Falls
+    back to MASTER_SHEET_ID / MASTER_SHEET_TAB env vars if Mongo is
+    unavailable or the values are blank.
+    """
     key_path = os.getenv("GOOGLE_SA_JSON_PATH")
-    sheet_id = os.getenv("MASTER_SHEET_ID")
-    tab_name = os.getenv("MASTER_SHEET_TAB", "Sheet1")
+
+    # Best-effort: pull admin-managed master sheet config from Mongo.
+    sheet_id: str = ""
+    tab_name: str = ""
+    try:
+        from pymongo import MongoClient
+        mongo_url = os.getenv("MONGO_URL")
+        db_name = os.getenv("DB_NAME") or "test_database"
+        if mongo_url:
+            _mc = MongoClient(mongo_url, serverSelectionTimeoutMS=2000)
+            _mdb = _mc[db_name]
+            _doc = _mdb["admin_config"].find_one({"_id": "default"}) or {}
+            sheet_id = str(_doc.get("master_sheet_id") or "").strip()
+            tab_name = str(_doc.get("master_sheet_tab") or "").strip()
+            _mc.close()
+    except Exception as _e:
+        log.debug(f"admin_config lookup skipped: {_e}")
+
+    # Env-var fallback.
+    if not sheet_id:
+        sheet_id = os.getenv("MASTER_SHEET_ID", "") or ""
+    if not tab_name:
+        tab_name = os.getenv("MASTER_SHEET_TAB", "Sheet1") or "Sheet1"
 
     if not key_path or not os.path.isfile(key_path):
         raise RuntimeError(f"Service account JSON not found at {key_path!r}")
     if not sheet_id:
-        raise RuntimeError("MASTER_SHEET_ID env var is not set")
+        raise RuntimeError(
+            "Master Sheet not configured. Set it from Admin Panel → Master Sheet, "
+            "or configure MASTER_SHEET_ID env var."
+        )
 
     creds = Credentials.from_service_account_file(key_path, scopes=_SCOPES)
     client = gspread.authorize(creds)

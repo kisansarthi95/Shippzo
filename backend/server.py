@@ -4403,6 +4403,9 @@ async def _get_admin_config() -> Dict[str, Any]:
             "credit_packages": list(DEFAULT_CREDIT_PACKAGES),
             "plan_pricing":    {k: dict(v) for k, v in DEFAULT_PLAN_PRICING.items()},
             "countdown":       dict(DEFAULT_COUNTDOWN),
+            # Phase-B: admin-managed Master Sheet defaults (override env vars).
+            "master_sheet_id":  os.getenv("MASTER_SHEET_ID", "") or "",
+            "master_sheet_tab": os.getenv("MASTER_SHEET_TAB", "") or "Sheet1",
         }
         await db.admin_config.insert_one({"_id": "default", **seeded})
         return seeded
@@ -4412,15 +4415,19 @@ async def _get_admin_config() -> Dict[str, Any]:
         "credit_packages": doc.get("credit_packages") or list(DEFAULT_CREDIT_PACKAGES),
         "plan_pricing":    doc.get("plan_pricing")    or {k: dict(v) for k, v in DEFAULT_PLAN_PRICING.items()},
         "countdown":       doc.get("countdown")       or dict(DEFAULT_COUNTDOWN),
+        "master_sheet_id":  doc.get("master_sheet_id",  os.getenv("MASTER_SHEET_ID", "")) or "",
+        "master_sheet_tab": doc.get("master_sheet_tab", os.getenv("MASTER_SHEET_TAB", "")) or "Sheet1",
     }
     return out
 
 
 class GlobalConfigPayload(BaseModel):
-    global_ai_rates:  Optional[Dict[str, float]]    = None
-    credit_packages:  Optional[List[Dict[str, Any]]] = None
-    plan_pricing:     Optional[Dict[str, Dict[str, Any]]] = None
-    countdown:        Optional[Dict[str, Any]]      = None
+    global_ai_rates:    Optional[Dict[str, float]]    = None
+    credit_packages:    Optional[List[Dict[str, Any]]] = None
+    plan_pricing:       Optional[Dict[str, Dict[str, Any]]] = None
+    countdown:          Optional[Dict[str, Any]]      = None
+    master_sheet_id:    Optional[str]                 = None
+    master_sheet_tab:   Optional[str]                 = None
 
 
 @api_router.put("/admin/global-config")
@@ -4511,6 +4518,11 @@ async def admin_put_global_config(
             "global_expires_at": c.get("global_expires_at") or None,
             "headline": str(c.get("headline", DEFAULT_COUNTDOWN["headline"]) or "")[:120],
         }
+    # Phase-B: admin can set Master Sheet ID + tab via the panel.
+    if payload.master_sheet_id is not None:
+        update["master_sheet_id"] = str(payload.master_sheet_id).strip()
+    if payload.master_sheet_tab is not None:
+        update["master_sheet_tab"] = str(payload.master_sheet_tab).strip() or "Sheet1"
     if update:
         await db.admin_config.update_one(
             {"_id": "default"}, {"$set": update}, upsert=True,
