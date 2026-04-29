@@ -1081,11 +1081,163 @@ metadata:
   run_ui: false
 
 test_plan:
-  current_focus:
-    - "Phase 1 Multi-Tenant Auth + user_id data isolation"
+  current_focus: []
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
+
+## Iteration: Phase-D — User Sheet Read-Only Mode (2026-04-30)
+
+### Problem / User Mandate
+Final architectural lock-in: orders should NEVER auto-write to a user's
+personal Google Sheet on creation. The user's sheet is now populated
+EXCLUSIVELY via the manual "Restore My Orders" button (Phase-C). The
+Master Sheet (admin) remains the source of truth and continues to
+receive every order in real time. The auto-mirror feature has been
+gated as a future Premium plan.
+
+### Backend Changes (`/app/backend/server.py`)
+- `smart_paste_create` (line 3166-3222): the user-sheet append block
+  is now wrapped in an `if auto_write_user_sheet` flag, read from
+  `db.admin_config.default.auto_write_user_sheet`. Default = False
+  → block is skipped entirely. `user_sheet_meta` is initialised with
+  `{ok: false, skipped: true, reason: "auto-write disabled (Premium feature)"}`.
+- Master Sheet append (line 3116-3158) is UNCHANGED — every order
+  still writes to the central Master Sheet.
+- MongoDB `.insert_one` is UNCHANGED.
+- `create_shipment` (manual POST /shipments) was already DB-only —
+  no sheet writes at all (legacy behaviour, retained).
+
+### Frontend Changes (`/app/frontend/app/(tabs)/settings.tsx`)
+- Added an amber/yellow "Coming Soon · Premium" callout right under
+  the connected-sheet panel (line 1553-1592), explaining in Gujarati
+  that auto-sync to your own sheet will be a Premium feature, and
+  pointing the user to the existing "Restore My Orders" button below.
+- The existing "Restore My Orders" button (Phase-C) is unchanged —
+  still pulls filtered rows from Master into the user's own sheet.
+
+### Test Plan (deep_testing_backend_v2)
+1. Smart Paste create → response 200, body has `master_order_id`,
+   `order_id`, `customer_name`, `customer_phone`. MongoDB record
+   present (subsequent GET /orders/pending/{id} returns 200).
+2. Sheet probe → ok=true; row_count incremented by 1; new row's
+   user_id column matches the calling user.
+3. CRITICAL: backend logs should NOT contain "User-sheet append OK"
+   for the call. The line "User-sheet write skipped" is also NOT
+   expected (the whole block is gated off, no exception path runs).
+4. Soft-delete the test pending order → row tombstoned in Master
+   Sheet (status=DELETED). No-op on user sheet.
+5. Regression: Master Order ID counter still advances atomically.
+   `GET /api/orders/peek-master-id` returns the next predicted ID.
+6. Regression: Phase-C `POST /api/sheets/sync-from-master`
+   {overwrite: false} still returns ok=true when user has linked
+   their sheet (admin@test.com is the default test account).
+7. Regression: GET /api/sheets/probe still works.
+8. Regression: GET /api/settings still returns `sheet`,
+   `order_id_auto_generate`, `order_id_autofill_in_new_shipment`
+   keys correctly.
+
+### Credentials
+- admin@test.com / Admin@12345 (has personal sheet linked + is_admin=true)
+- user2@test.com / User@12345 (regular tenant, may or may not have sheet linked)
+
+backend:
+  - task: "Phase-D: User Sheet Read-Only (auto-write to personal sheet disabled)"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: |
+            User-sheet append in smart_paste_create is now gated by
+            admin_config.default.auto_write_user_sheet (default False).
+            Master Sheet writes + MongoDB persistence unchanged.
+            Manual POST /shipments path was already sheet-free.
+            UI: Settings shows "Auto-Sync to Your Sheet · Coming Soon"
+            Premium badge under the connected-sheet panel.
+        -working: true
+        -agent: "testing"
+        -comment: |
+            Phase-D verification — ALL 36/36 assertions PASS via
+            /app/backend_test.py against
+            https://logistics-hub-740.preview.emergentagent.com/api.
+
+            STEP 1 — Login admin@test.com / Admin@12345 → JWT issued
+            (token len 221).
+
+            STEP 2 — POST /api/smart-paste with the canonical Phase-D
+            payload (Name/Mobile/Address/City/State/Pincode + COD ₹199):
+              • status 200
+              • body keys include master_order_id, order_id, sheet_row_num,
+                customer_name, customer_phone, pincode, payment_mode,
+                amount, items, token_amount, etc.
+              • master_order_id = "26042900328" (11 digits, IST-prefixed,
+                positive int).
+              • customer_name="Phase D Test", customer_phone="9112233445",
+                pincode="395001", payment_mode="COD", amount=199.0.
+              • sheet_row_num=328 (positive int > 1).
+
+            STEP 3 — GET /api/orders/pending/{id} round-trips fine:
+              • 200 OK, customer_name and master_order_id preserved.
+
+            STEP 4 — GET /api/sheets/probe → ok=true. Master Sheet
+            integration alive (admin's Service Account).
+
+            STEP 5 — CRITICAL: User-sheet write gate verified by tailing
+            /var/log/supervisor/backend.err.log. Anchor on master append
+            line "Sheet append OK: 'All Master Data'!A328:S328" emitted
+            at 13:09:15 — the LAST "User-sheet append OK" in the entire
+            log was emitted at 12:18:43 (row 327, prior test). After our
+            master append:
+              ✅ "Sheet append OK" present (master, expected)
+              ✅ "User-sheet append OK" NOT present (gate works)
+              ✅ "User-sheet write skipped" NOT present (entire block
+                  is short-circuited by the if-flag, not by exception)
+            This is exactly the contract: when admin_config.auto_write_user_sheet
+            is False (default), the user-sheet block is skipped silently.
+
+            STEP 6 — Phase-C regression: POST /api/sheets/sync-from-master
+            {overwrite: false} → 200 with body
+              {"ok": true, "rows_synced": 0, "master_total_rows": 328,
+               "tab": "All Master Data", "sheet_id": "1troW3K7P_…",
+               "mode": "append"}
+            (rows_synced=0 is correct — admin's user_id rows in master
+            were already in user's sheet from prior runs; dedup works.)
+
+            STEP 7 — GET /api/orders/peek-master-id → 200 with keys
+            {master_order_id, auto_generate, autofill_in_new_shipment}.
+
+            STEP 8 — GET /api/settings → 200 with all required keys
+            (sheet, order_id_auto_generate, order_id_autofill_in_new_shipment,
+             custom_fields).
+
+            STEP 9 — Cleanup: DELETE /api/orders/pending/{id} → 200 with
+              {"ok": true, "sheet": {"attempted": true, "ok": true,
+               "row": 328, "tab": "All Master Data",
+               "status_cell": "M328", "notice_cell": "N328"}}
+            Test row 328 was tombstoned in the Master Sheet (Status=DELETED).
+
+            No regressions. Smart Paste flow + Master Sheet write +
+            soft-delete tombstone all work end-to-end with the user-sheet
+            auto-mirror DISABLED. Architecture lock-in is live.
+
+agent_communication:
+    -agent: "main"
+    -message: |
+        Phase-D code is in place; please run the backend test plan
+        listed under "Phase-D — User Sheet Read-Only Mode" above.
+        Focus on:
+        (a) Smart Paste create still works end-to-end (DB + Master Sheet),
+        (b) NO user-sheet write happens (verify by absence of
+            "User-sheet append OK" log markers AND by checking that
+            the response of the master-sheet write succeeded but no
+            secondary user-sheet meta exists in any side-effect).
+        (c) "Restore My Orders" (Phase-C) endpoint still works.
+        (d) No regression on Master Order ID generation or settings.
 
 agent_communication:
     -agent: "testing"
