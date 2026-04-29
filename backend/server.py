@@ -1833,6 +1833,81 @@ async def get_shipment(
     return Shipment(**doc)
 
 
+# ---------------------------------------------------------------------------
+# Master Sheet backup helper — MANDATORY for every shipment-creation path
+# ---------------------------------------------------------------------------
+# User policy (2026-04-29): Regardless of the user's plan tier, every
+# shipment created in the system MUST be appended to the central Master
+# Sheet so we have a per-user backup keyed off `user_id`. The user's own
+# personal Google Sheet is OPTIONAL — restore from master is the gated
+# Premium feature, but the backup itself is universal.
+#
+# This helper hides the column-mapping detail from each call-site and
+# centralises the error contract: if the Master Sheet write fails we
+# raise HTTP 502 the same way the smart-paste flow already does. The
+# upstream caller is expected to invoke this BEFORE inserting into Mongo
+# so a failed sheet write doesn't leave a "ghost" Mongo row.
+async def _backup_shipment_to_master_sheet(
+    *, current_user: Dict[str, Any], data: Dict[str, Any], notice: str,
+) -> Dict[str, Any]:
+    """Append a single shipment record to the Master Sheet.
+
+    `data` may be either a Mongo-shape shipment doc OR a smart-paste
+    `fields` dict — we coerce both to the COLUMNS schema. Returns the
+    sheet_meta dict from `sheet_append_order_row` (with `updated_range`)
+    on success and raises HTTPException(502) on any failure.
+    """
+    if sheet_append_order_row is None:
+        # Library couldn't import — keep the existing 503 behaviour the
+        # smart-paste flow uses so admins notice the misconfig fast.
+        raise HTTPException(
+            status_code=503,
+            detail="Google Sheets integration not configured on server.",
+        )
+    addr_text = " ".join(filter(None, [
+        str(data.get("address_line1") or data.get("address") or ""),
+        str(data.get("address_line2") or ""),
+    ])).strip()
+    items_val = data.get("items") or data.get("item_description") or ""
+    if isinstance(items_val, list):
+        item_type_text = ", ".join(str(x) for x in items_val if x)
+    else:
+        item_type_text = str(items_val or "")
+    user_name_val = (
+        current_user.get("full_name")
+        or current_user.get("name")
+        or (current_user.get("email", "").split("@")[0])
+        or current_user.get("id", "")[:8]
+    )
+    try:
+        return sheet_append_order_row(
+            user_id=current_user["id"],
+            user_name=user_name_val,
+            master_order_id=str(data.get("master_order_id") or "") or "",
+            order_id=str(data.get("order_id") or "") or "",
+            name=str(data.get("customer_name") or data.get("name") or "") or "",
+            phone=str(data.get("customer_phone") or data.get("phone") or "") or "",
+            alt_phone=str(data.get("customer_alt_phone") or data.get("alt_phone") or "") or "",
+            address=addr_text,
+            city=str(data.get("city") or "") or "",
+            state=str(data.get("state") or "") or "",
+            pincode=str(data.get("pincode") or "") or "",
+            item_type=item_type_text,
+            amount=data.get("amount") or "",
+            token_amount=data.get("token_amount") or "",
+            weight=str(data.get("weight") or "") or "",
+            payment_mode=str(data.get("payment_mode") or "") or "",
+            status=str(data.get("status") or "Pending") or "Pending",
+            notice=notice,
+        )
+    except Exception as e:
+        logger.exception("Master Sheet backup failed")
+        raise HTTPException(
+            status_code=502,
+            detail=f"Master Sheet backup failed — order not saved. Reason: {e}",
+        )
+
+
 @api_router.post("/shipments", response_model=Shipment)
 async def create_shipment(
     payload: ShipmentCreate,
@@ -1966,6 +2041,27 @@ async def create_shipment(
     shipment = Shipment(**data)
     doc = shipment.model_dump()
     doc["user_id"] = current_user["id"]
+
+    # ---- Mandatory Master Sheet backup (all plans) ----
+    # Per user policy 2026-04-29: every shipment created via the manual
+    # "Add Shipment" form must be backed up to the central Master Sheet
+    # before we persist it to Mongo. If the sheet write fails the helper
+    # raises 502 — we surface that as-is so the client never sees a
+    # ghost record (data only in Mongo, missing from the source-of-
+    # truth backup).
+    sheet_meta = await _backup_shipment_to_master_sheet(
+        current_user=current_user,
+        data=doc,
+        notice="via Add Shipment",
+    )
+    if sheet_meta and sheet_meta.get("updated_range") and sheet_parse_row_from_updated_range:
+        try:
+            row = sheet_parse_row_from_updated_range(sheet_meta["updated_range"])
+            if row:
+                doc["sheet_row_num"] = int(row)
+        except Exception:
+            pass
+
     await db.shipments.insert_one(doc)
     # Only bump plan counter when the plan actually covered this label.
     if plan_has_room:
@@ -3535,6 +3631,7 @@ async def ship_pending_order(
         "weight": get("weight"),
         "payment_mode": get("payment_mode", "COD"),
         "order_id": get("order_id_hint"),
+        "master_order_id": str(order.get("master_order_id") or ""),
         "notes": get("notes"),
         "status": "Pending",
         "created_at": utcnow_iso(),
@@ -3544,6 +3641,28 @@ async def ship_pending_order(
         "sheet_row_num": order.get("sheet_row_num"),
         "user_id": current_user["id"],
     }
+
+    # ---- Mandatory Master Sheet backup (all plans) ----
+    # PendingOrders that came in via Smart Paste already wrote a row at
+    # creation time (see smart_paste_create) — `sheet_row_num` is set on
+    # the order, so we skip re-writing. PendingOrders sourced from CSV
+    # imports / sheet sync DON'T carry that row, so we MUST append now
+    # so the user's full history is backed up to master regardless of
+    # entry path.
+    if not ship_doc.get("sheet_row_num"):
+        sheet_meta = await _backup_shipment_to_master_sheet(
+            current_user=current_user,
+            data=ship_doc,
+            notice=f"via Ship · Tracking: {tracking_id}",
+        )
+        if sheet_meta and sheet_meta.get("updated_range") and sheet_parse_row_from_updated_range:
+            try:
+                row = sheet_parse_row_from_updated_range(sheet_meta["updated_range"])
+                if row:
+                    ship_doc["sheet_row_num"] = int(row)
+            except Exception:
+                pass
+
     await db.shipments.insert_one(ship_doc)
 
     # Mark order as shipped + link

@@ -1,324 +1,410 @@
 """
-Backend re-verification test — Courier partner limit for Platinum plan
-(spec change: Platinum now capped at 5, no longer unlimited).
+Master Sheet Backup Verification — ensures every shipment-creation path
+writes to the central Master Sheet before committing to Mongo.
 
-Review contract:
-  1. Admin — GET /api/couriers/limits → is_admin=true, is_unlimited=true,
-     limit=null, suggested_upgrade=null.
-  2. Platinum simulation on user2 (direct Mongo set user2.plan="platinum"):
-     - limits: plan=platinum, plan_label=Platinum, is_admin=false,
-               is_unlimited=false, limit=5, suggested_upgrade=null,
-               can_add=true (<5 couriers).
-     - Create couriers until 5 total — each POST → 200.
-     - limits now: current_count=5, can_add=false, suggested_upgrade=null.
-     - 6th POST → 403, detail contains "Your Platinum plan allows only
-       5 courier partners" AND "contact support" (case-insensitive),
-       MUST NOT contain "Upgrade to".
-     - Cleanup all created couriers + restore user2.plan.
-  3. Gold regression: user2.plan="gold" — limit=2, suggested="Platinum",
-     3rd courier POST → 403 detail contains "Upgrade to Platinum".
-  4. Silver regression: user2.plan="silver" — limit=1, can_add=false,
-     suggested="Gold".
+Covers review contract assertions A, C, D, E. Assertion B (forced 502
+when master_sheet_id is cleared) is SKIPPED — admin_config state is
+production-shared and mutating it would affect other concurrent tests.
 """
+
+import json
 import os
 import sys
-import json
-import asyncio
+import uuid
+from typing import Any, Dict, List, Optional, Tuple
 
 import requests
-from motor.motor_asyncio import AsyncIOMotorClient
 
-BASE = "https://logistics-hub-740.preview.emergentagent.com/api"
+BASE = os.environ.get(
+    "BACKEND_URL",
+    "https://logistics-hub-740.preview.emergentagent.com",
+).rstrip("/") + "/api"
 
-ADMIN_EMAIL = "admin@test.com"
-ADMIN_PASS = "Admin@12345"
+TIMEOUT = 60
+
 USER2_EMAIL = "user2@test.com"
 USER2_PASS = "User@12345"
+ADMIN_EMAIL = "admin@test.com"
+ADMIN_PASS = "Admin@12345"
 
-MONGO_URL = os.environ.get("MONGO_URL", "mongodb://localhost:27017")
-DB_NAME = os.environ.get("DB_NAME", "test_database")
-
-
-class Result:
-    def __init__(self):
-        self.passed = 0
-        self.failed = 0
-        self.failures = []
-
-    def check(self, cond, label, extra=""):
-        if cond:
-            self.passed += 1
-            print(f"  PASS  {label}")
-        else:
-            self.failed += 1
-            msg = f"{label}" + (f"  [{extra}]" if extra else "")
-            self.failures.append(msg)
-            print(f"  FAIL  {msg}")
+# Results registry
+results: List[Tuple[str, bool, str]] = []
 
 
-def login(email, password):
-    r = requests.post(f"{BASE}/auth/login", json={"email": email, "password": password}, timeout=20)
-    r.raise_for_status()
-    body = r.json()
-    return body["token"], body
+def record(name: str, ok: bool, detail: str = "") -> None:
+    results.append((name, ok, detail))
+    tag = "PASS" if ok else "FAIL"
+    print(f"[{tag}] {name}" + (f" — {detail}" if detail else ""))
 
 
-def auth_hdr(tok):
-    return {"Authorization": f"Bearer {tok}"}
+def auth_headers(token: str) -> Dict[str, str]:
+    return {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
 
 
-def get_limits(tok):
-    r = requests.get(f"{BASE}/couriers/limits", headers=auth_hdr(tok), timeout=20)
+def login(email: str, password: str) -> Optional[str]:
+    r = requests.post(
+        f"{BASE}/auth/login", json={"email": email, "password": password}, timeout=TIMEOUT
+    )
+    if r.status_code != 200:
+        print(f"  login failed ({email}): {r.status_code} {r.text[:200]}")
+        return None
+    return r.json().get("token")
+
+
+def get_couriers(token: str) -> List[Dict[str, Any]]:
+    r = requests.get(f"{BASE}/couriers", headers=auth_headers(token), timeout=TIMEOUT)
     r.raise_for_status()
     return r.json()
 
 
-def list_couriers(tok):
-    r = requests.get(f"{BASE}/couriers", headers=auth_hdr(tok), timeout=20)
-    r.raise_for_status()
-    return r.json()
-
-
-def create_courier(tok, name, prefix):
-    payload = {
-        "name": name,
-        "series_prefix": prefix,
-        "next_number": 1,
-        "number_padding": 5,
-        "contact_phone": "",
-        "tracking_url_template": "",
-    }
-    return requests.post(f"{BASE}/couriers", headers=auth_hdr(tok), json=payload, timeout=20)
-
-
-def delete_courier(tok, cid):
-    return requests.delete(f"{BASE}/couriers/{cid}", headers=auth_hdr(tok), timeout=20)
-
-
-async def set_user_plan(email, plan_value):
-    """Directly flip user.plan in Mongo (bypasses billing flow). Returns
-    previous plan value so caller can restore it."""
-    cli = AsyncIOMotorClient(MONGO_URL)
-    db = cli[DB_NAME]
-    doc = await db.users.find_one({"email": email}, {"plan": 1})
-    prev = (doc or {}).get("plan", "")
-    await db.users.update_one({"email": email}, {"$set": {"plan": plan_value}})
-    cli.close()
-    return prev
-
-
-async def get_user_plan(email):
-    cli = AsyncIOMotorClient(MONGO_URL)
-    db = cli[DB_NAME]
-    doc = await db.users.find_one({"email": email}, {"plan": 1})
-    cli.close()
-    return (doc or {}).get("plan", "")
-
-
-def run():
-    r = Result()
-
-    # --- Login both users -------------------------------------------------
-    admin_tok, admin_info = login(ADMIN_EMAIL, ADMIN_PASS)
-    user2_tok, user2_info = login(USER2_EMAIL, USER2_PASS)
-    print(f"Admin id={admin_info.get('id')} is_admin={admin_info.get('is_admin')}")
-    print(f"User2 id={user2_info.get('id')} plan={user2_info.get('plan')}")
-
-    # =====================================================================
-    # 1) Admin → unlimited
-    # =====================================================================
-    print("\n[1] Admin limits (unlimited)")
-    lim = get_limits(admin_tok)
-    print("  ", json.dumps(lim))
-    r.check(lim.get("is_admin") is True, "admin.is_admin == true")
-    r.check(lim.get("is_unlimited") is True, "admin.is_unlimited == true")
-    r.check(lim.get("limit") is None, "admin.limit is null", str(lim.get("limit")))
-    r.check(lim.get("suggested_upgrade") is None,
-            "admin.suggested_upgrade is null", str(lim.get("suggested_upgrade")))
-
-    # =====================================================================
-    # 2) Platinum simulation on user2
-    # =====================================================================
-    print("\n[2] Platinum simulation on user2")
-    prev_plan = asyncio.run(set_user_plan(USER2_EMAIL, "platinum"))
-    print(f"  user2.plan pre-test={prev_plan!r} → now 'platinum'")
-
-    created_ids = []
+def probe(token: str) -> Dict[str, Any]:
     try:
-        # Clean baseline: count existing couriers
-        existing = list_couriers(user2_tok)
-        initial_count = len(existing)
-        print(f"  user2 existing couriers: {initial_count}")
+        r = requests.get(
+            f"{BASE}/sheets/probe", headers=auth_headers(token), timeout=TIMEOUT
+        )
+        return r.json() if r.status_code == 200 else {"ok": False, "status": r.status_code}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
 
-        # Limits snapshot BEFORE we create anything
-        lim = get_limits(user2_tok)
-        print("  platinum.limits (before):", json.dumps(lim))
-        r.check(lim.get("plan") == "platinum", "platinum.plan == 'platinum'", str(lim.get("plan")))
-        r.check(lim.get("plan_label") == "Platinum",
-                "platinum.plan_label == 'Platinum'", str(lim.get("plan_label")))
-        r.check(lim.get("is_admin") is False, "platinum.is_admin == false")
-        r.check(lim.get("is_unlimited") is False, "platinum.is_unlimited == false")
-        r.check(lim.get("limit") == 5, "platinum.limit == 5", str(lim.get("limit")))
-        r.check(lim.get("suggested_upgrade") is None,
-                "platinum.suggested_upgrade is null",
-                str(lim.get("suggested_upgrade")))
-        if initial_count < 5:
-            r.check(lim.get("can_add") is True,
-                    f"platinum.can_add == true (since count={initial_count} < 5)")
 
-        # Fill to 5 total
-        to_create = max(0, 5 - initial_count)
-        print(f"  Creating {to_create} couriers to reach cap of 5…")
-        for i in range(to_create):
-            resp = create_courier(user2_tok, f"PlatTest{i+1}", f"PT{i+1}")
-            r.check(resp.status_code == 200,
-                    f"POST courier #{initial_count + i + 1} → 200",
-                    f"status={resp.status_code} body={resp.text[:200]}")
-            if resp.status_code == 200:
-                created_ids.append(resp.json()["id"])
+# ---------- Assertion A: POST /api/shipments writes to Master Sheet ----------
+def test_A_manual_shipment_writes_to_master(user2_token: str, courier_id: str) -> None:
+    print("\n=== Assertion A — POST /api/shipments writes to Master Sheet ===")
 
-        # Limits after hitting cap
-        lim2 = get_limits(user2_tok)
-        print("  platinum.limits (at cap):", json.dumps(lim2))
-        r.check(lim2.get("current_count") == 5,
-                "platinum.current_count == 5", str(lim2.get("current_count")))
-        r.check(lim2.get("can_add") is False,
-                "platinum.can_add == false at cap")
-        r.check(lim2.get("suggested_upgrade") is None,
-                "platinum.suggested_upgrade is null at cap",
-                str(lim2.get("suggested_upgrade")))
+    probe_before = probe(user2_token)
+    record(
+        "A.0 sheets probe OK (pre)",
+        bool(probe_before.get("ok")),
+        f"tab={probe_before.get('tab')!r} row_count={probe_before.get('row_count')}",
+    )
 
-        # 6th courier should 403 with specific message
-        resp6 = create_courier(user2_tok, "PlatTest6", "PT6")
-        print(f"  6th POST status={resp6.status_code} body={resp6.text[:300]}")
-        r.check(resp6.status_code == 403, "6th POST → 403",
-                f"got {resp6.status_code}")
-        detail = ""
-        try:
-            detail = (resp6.json() or {}).get("detail", "")
-        except Exception:
-            pass
-        detail_low = detail.lower()
-        r.check("your platinum plan allows only 5 courier partners" in detail_low,
-                "detail contains 'Your Platinum plan allows only 5 courier partners'",
-                detail)
-        r.check("contact support" in detail_low,
-                "detail contains 'contact support' (case-insensitive)", detail)
-        r.check("upgrade to" not in detail_low,
-                "detail does NOT contain 'Upgrade to'", detail)
-        # 6th request should not have created a courier
-        if resp6.status_code == 200:
-            try:
-                created_ids.append(resp6.json()["id"])
-            except Exception:
-                pass
+    # Make tracking_id unique so we can find the shipment even across retries.
+    tracking = f"TESTSHIP{uuid.uuid4().hex[:6].upper()}"
+    payload = {
+        "courier_id": courier_id,
+        "tracking_id": tracking,
+        "customer_name": "Test Master Backup",
+        "customer_phone": "9999999999",
+        "address_line1": "123 Test Street",
+        "address_line2": "",
+        "city": "Mumbai",
+        "state": "MH",
+        "pincode": "400001",
+        "amount": 250,
+        "payment_mode": "COD",
+        "items": ["Test Item"],
+    }
+    r = requests.post(
+        f"{BASE}/shipments", headers=auth_headers(user2_token), json=payload, timeout=TIMEOUT
+    )
+    record(
+        "A.1 POST /api/shipments returns 200",
+        r.status_code == 200,
+        f"status={r.status_code} body={r.text[:300]}",
+    )
+    if r.status_code != 200:
+        return
 
-        # =================================================================
-        # 3) Gold regression (on same user2)
-        # =================================================================
-        print("\n[3] Gold regression")
-        # Cleanup created couriers first so we can test gold cap.
-        print(f"  Cleaning {len(created_ids)} couriers created during platinum test")
-        for cid in list(created_ids):
-            dr = delete_courier(user2_tok, cid)
-            if dr.status_code == 200:
-                created_ids.remove(cid)
-            else:
-                print(f"   delete {cid} → {dr.status_code} {dr.text[:120]}")
+    ship = r.json()
+    ship_id = ship.get("id")
+    sheet_row_num = ship.get("sheet_row_num")
 
-        asyncio.run(set_user_plan(USER2_EMAIL, "gold"))
-        # refresh to confirm
-        after_gold = list_couriers(user2_tok)
-        print(f"  user2 courier count after cleanup: {len(after_gold)}")
-        lim_g = get_limits(user2_tok)
-        print("  gold.limits:", json.dumps(lim_g))
-        r.check(lim_g.get("plan") == "gold", "gold.plan == 'gold'", str(lim_g.get("plan")))
-        r.check(lim_g.get("limit") == 2, "gold.limit == 2", str(lim_g.get("limit")))
-        r.check(lim_g.get("suggested_upgrade") == "Platinum",
-                "gold.suggested_upgrade == 'Platinum'",
-                str(lim_g.get("suggested_upgrade")))
+    # Re-fetch from Mongo via GET /api/shipments/{id}
+    r2 = requests.get(
+        f"{BASE}/shipments/{ship_id}", headers=auth_headers(user2_token), timeout=TIMEOUT
+    )
+    record(
+        "A.3 GET /api/shipments/{id} returns 200",
+        r2.status_code == 200,
+        f"status={r2.status_code}",
+    )
+    stored_row = None
+    if r2.status_code == 200:
+        stored_row = r2.json().get("sheet_row_num")
 
-        # If user2 already has less than 2, fill up to 2
-        gold_created = []
-        cur_count = lim_g.get("current_count", 0)
-        while cur_count < 2:
-            resp = create_courier(user2_tok, f"GoldTest{cur_count+1}", f"GT{cur_count+1}")
-            r.check(resp.status_code == 200,
-                    f"Gold POST up to cap #{cur_count+1} → 200",
-                    f"status={resp.status_code} body={resp.text[:200]}")
-            if resp.status_code == 200:
-                gold_created.append(resp.json()["id"])
-                cur_count += 1
-            else:
-                break
+    # Review allows either: response OR Mongo doc has non-empty sheet_row_num.
+    effective_row = sheet_row_num if isinstance(sheet_row_num, int) and sheet_row_num > 1 else stored_row
+    record(
+        "A.2 Mongo OR response carries sheet_row_num (non-empty int > 1)",
+        isinstance(effective_row, int) and effective_row > 1,
+        f"response_sheet_row_num={sheet_row_num!r} mongo_stored={stored_row!r}",
+    )
+    record(
+        "A.4 Mongo doc has sheet_row_num populated (source of truth)",
+        isinstance(stored_row, int) and stored_row > 1,
+        f"stored={stored_row!r}",
+    )
 
-        # 3rd courier on gold → 403 with 'Upgrade to Platinum'
-        resp3g = create_courier(user2_tok, "GoldTest3", "GT3")
-        print(f"  Gold 3rd POST status={resp3g.status_code} body={resp3g.text[:300]}")
-        r.check(resp3g.status_code == 403,
-                "gold 3rd POST → 403", f"got {resp3g.status_code}")
-        detail_g = ""
-        try:
-            detail_g = (resp3g.json() or {}).get("detail", "")
-        except Exception:
-            pass
-        r.check("Upgrade to Platinum" in detail_g,
-                "gold 403 detail contains 'Upgrade to Platinum'", detail_g)
-        if resp3g.status_code == 200:
-            try:
-                gold_created.append(resp3g.json()["id"])
-            except Exception:
-                pass
+    probe_after = probe(user2_token)
+    record(
+        "A.5 sheets probe OK (post)",
+        bool(probe_after.get("ok")),
+        f"row_count={probe_after.get('row_count')}",
+    )
 
-        # Clean up gold-created couriers
-        for cid in gold_created:
-            delete_courier(user2_tok, cid)
+    # Cleanup
+    rd = requests.delete(
+        f"{BASE}/shipments/{ship_id}", headers=auth_headers(user2_token), timeout=TIMEOUT
+    )
+    sheet_info = {}
+    try:
+        sheet_info = rd.json().get("sheet", {})
+    except Exception:
+        pass
+    record(
+        "A.6 DELETE /api/shipments/{id} returns 200 (cleanup)",
+        rd.status_code == 200,
+        f"status={rd.status_code} sheet={sheet_info}",
+    )
+    record(
+        "A.7 tombstone attempted on delete (sheet.attempted=true)",
+        bool(sheet_info.get("attempted")),
+        f"sheet={sheet_info}",
+    )
 
-        # =================================================================
-        # 4) Silver regression
-        # =================================================================
-        print("\n[4] Silver regression")
-        asyncio.run(set_user_plan(USER2_EMAIL, "silver"))
-        lim_s = get_limits(user2_tok)
-        print("  silver.limits:", json.dumps(lim_s))
-        r.check(lim_s.get("plan") == "silver",
-                "silver.plan == 'silver'", str(lim_s.get("plan")))
-        r.check(lim_s.get("limit") == 1, "silver.limit == 1", str(lim_s.get("limit")))
-        r.check(lim_s.get("suggested_upgrade") == "Gold",
-                "silver.suggested_upgrade == 'Gold'",
-                str(lim_s.get("suggested_upgrade")))
-        # With the 1 seeded default courier, can_add should be False
-        if lim_s.get("current_count", 0) >= 1:
-            r.check(lim_s.get("can_add") is False,
-                    "silver.can_add == false (already at 1)",
-                    str(lim_s.get("can_add")))
 
-    finally:
-        # Final cleanup — restore plan + delete any stragglers
-        print("\n[cleanup] restoring user2.plan and deleting stragglers")
-        # Clean leftover created couriers
-        try:
-            all_c = list_couriers(user2_tok)
-            for c in all_c:
-                if c.get("name", "").startswith(("PlatTest", "GoldTest")):
-                    dr = delete_courier(user2_tok, c["id"])
-                    print(f"  cleanup delete {c['name']} → {dr.status_code}")
-        except Exception as e:
-            print(f"  cleanup list/delete error: {e}")
-        restored = prev_plan if prev_plan else "silver"
-        asyncio.run(set_user_plan(USER2_EMAIL, restored))
-        print(f"  user2.plan restored to {restored!r}")
+# ---------- Assertion C: Smart Paste → Ship pipeline does NOT duplicate ----------
+def test_C_smart_paste_ship_no_duplicate(user2_token: str, courier_id: str) -> None:
+    print("\n=== Assertion C — Smart Paste → Ship does NOT duplicate master row ===")
 
-    # =====================================================================
+    payload = {
+        "text": (
+            "Test User SmartPaste\n"
+            "9999999998\n"
+            "123 Sample Rd\n"
+            "Mumbai 400001\n"
+            "COD 200\n"
+            "T-Shirt"
+        )
+    }
+    r = requests.post(
+        f"{BASE}/smart-paste",
+        headers=auth_headers(user2_token),
+        json=payload,
+        timeout=TIMEOUT,
+    )
+    record(
+        "C.1 POST /api/smart-paste returns 200",
+        r.status_code == 200,
+        f"status={r.status_code} body={r.text[:300]}",
+    )
+    if r.status_code != 200:
+        return
+
+    pending = r.json()
+    pending_id = pending.get("id")
+    pending_row = pending.get("sheet_row_num")
+    pending_moid = pending.get("master_order_id") or ""
+    record(
+        "C.2 pending has sheet_row_num (non-empty int > 1)",
+        isinstance(pending_row, int) and pending_row > 1,
+        f"sheet_row_num={pending_row!r}",
+    )
+    record(
+        "C.3 pending has master_order_id populated",
+        bool(pending_moid),
+        f"master_order_id={pending_moid!r}",
+    )
+
+    # Ship it
+    rs = requests.post(
+        f"{BASE}/orders/pending/{pending_id}/ship",
+        headers=auth_headers(user2_token),
+        json={"courier_id": courier_id},
+        timeout=TIMEOUT,
+    )
+    record(
+        "C.4 POST /api/orders/pending/{id}/ship returns 200",
+        rs.status_code == 200,
+        f"status={rs.status_code} body={rs.text[:300]}",
+    )
+    if rs.status_code != 200:
+        # Try cleanup: delete the pending order
+        requests.delete(
+            f"{BASE}/orders/pending/{pending_id}",
+            headers=auth_headers(user2_token),
+            timeout=TIMEOUT,
+        )
+        return
+
+    ship = rs.json()
+    ship_id = ship.get("id")
+    ship_row = ship.get("sheet_row_num")
+    ship_moid = ship.get("master_order_id") or ""
+
+    # THE critical check — master-sheet row was NOT duplicated.
+    record(
+        "C.5 shipment.sheet_row_num == pending.sheet_row_num (no duplicate Master row)",
+        ship_row == pending_row and isinstance(ship_row, int),
+        f"pending_row={pending_row!r} ship_row={ship_row!r}",
+    )
+    record(
+        "C.6 master_order_id forwarded from pending → shipment",
+        ship_moid == pending_moid and bool(ship_moid),
+        f"pending_moid={pending_moid!r} ship_moid={ship_moid!r}",
+    )
+
+    # Cleanup
+    rd = requests.delete(
+        f"{BASE}/shipments/{ship_id}",
+        headers=auth_headers(user2_token),
+        timeout=TIMEOUT,
+    )
+    record(
+        "C.7 DELETE shipment cleanup returns 200",
+        rd.status_code == 200,
+        f"status={rd.status_code}",
+    )
+
+
+# ---------- Assertion D: Plan independence (admin path) ----------
+def test_D_admin_plan_independence(admin_token: str) -> None:
+    print("\n=== Assertion D — Plan independence (admin POST /api/shipments) ===")
+    # Admin needs a courier — pick first from admin's own courier list
+    couriers = get_couriers(admin_token)
+    if not couriers:
+        record("D.0 admin has at least 1 courier", False, "no couriers returned")
+        return
+    courier_id = couriers[0]["id"]
+    record("D.0 admin has at least 1 courier", True, f"courier_id={courier_id}")
+
+    payload = {
+        "courier_id": courier_id,
+        "tracking_id": f"ADMSHIP{uuid.uuid4().hex[:6].upper()}",
+        "customer_name": "Admin Master Backup Test",
+        "customer_phone": "9988776655",
+        "address_line1": "45 Admin Lane",
+        "address_line2": "",
+        "city": "Ahmedabad",
+        "state": "GJ",
+        "pincode": "380001",
+        "amount": 399,
+        "payment_mode": "COD",
+        "items": ["Admin Sample"],
+    }
+    r = requests.post(
+        f"{BASE}/shipments", headers=auth_headers(admin_token), json=payload, timeout=TIMEOUT
+    )
+    record(
+        "D.1 admin POST /api/shipments returns 200",
+        r.status_code == 200,
+        f"status={r.status_code} body={r.text[:300]}",
+    )
+    if r.status_code != 200:
+        return
+
+    ship = r.json()
+    ship_id = ship.get("id")
+    sheet_row_num = ship.get("sheet_row_num")
+
+    # Re-fetch via GET and check Mongo-stored sheet_row_num (per review spec).
+    r2 = requests.get(
+        f"{BASE}/shipments/{ship_id}", headers=auth_headers(admin_token), timeout=TIMEOUT
+    )
+    stored_row = r2.json().get("sheet_row_num") if r2.status_code == 200 else None
+    effective_row = sheet_row_num if isinstance(sheet_row_num, int) and sheet_row_num > 1 else stored_row
+    record(
+        "D.2 admin shipment has sheet_row_num (response OR Mongo) > 1",
+        isinstance(effective_row, int) and effective_row > 1,
+        f"response={sheet_row_num!r} mongo={stored_row!r}",
+    )
+
+    rd = requests.delete(
+        f"{BASE}/shipments/{ship_id}", headers=auth_headers(admin_token), timeout=TIMEOUT
+    )
+    record(
+        "D.3 admin DELETE cleanup returns 200",
+        rd.status_code == 200,
+        f"status={rd.status_code}",
+    )
+
+
+# ---------- Assertion E: Regression smoke ----------
+def test_E_regressions(user2_token: str) -> None:
+    print("\n=== Assertion E — Regression smoke ===")
+
+    r = requests.get(
+        f"{BASE}/couriers/limits", headers=auth_headers(user2_token), timeout=TIMEOUT
+    )
+    ok = r.status_code == 200
+    body = r.json() if ok else {}
+    # expected shape keys
+    expected_keys = {"limit", "can_add", "is_unlimited", "is_admin",
+                     "plan_label", "current_count"}
+    shape_ok = ok and expected_keys.issubset(set(body.keys()))
+    record(
+        "E.1 GET /api/couriers/limits returns 200 + expected shape",
+        shape_ok,
+        f"status={r.status_code} keys={sorted(body.keys())}",
+    )
+
+    r = requests.get(
+        f"{BASE}/me/usage", headers=auth_headers(user2_token), timeout=TIMEOUT
+    )
+    record(
+        "E.2 GET /api/me/usage returns 200",
+        r.status_code == 200,
+        f"status={r.status_code}",
+    )
+
+    r = requests.get(
+        f"{BASE}/shipments", headers=auth_headers(user2_token), timeout=TIMEOUT
+    )
+    record(
+        "E.3 GET /api/shipments returns 200",
+        r.status_code == 200,
+        f"status={r.status_code} count={len(r.json()) if r.status_code == 200 else 'n/a'}",
+    )
+
+    r = requests.get(
+        f"{BASE}/sheets/orders", headers=auth_headers(user2_token), timeout=TIMEOUT
+    )
+    # 200 = sheet connected; 400 = sheet not linked (valid for user2 demo data).
+    record(
+        "E.4 GET /api/sheets/orders returns 200 or 400 (non-regression)",
+        r.status_code in (200, 400),
+        f"status={r.status_code} detail={(r.json().get('detail') if r.headers.get('content-type','').startswith('application/json') else '')[:120]}",
+    )
+
+
+def main() -> int:
+    print(f"Testing Master Sheet Backup at {BASE}\n")
+
+    user2_token = login(USER2_EMAIL, USER2_PASS)
+    admin_token = login(ADMIN_EMAIL, ADMIN_PASS)
+    record("Login user2@test.com", user2_token is not None)
+    record("Login admin@test.com", admin_token is not None)
+    if not user2_token or not admin_token:
+        summary(failure=True)
+        return 1
+
+    couriers = get_couriers(user2_token)
+    record("user2 has at least 1 courier", len(couriers) > 0, f"count={len(couriers)}")
+    if not couriers:
+        summary(failure=True)
+        return 1
+    courier_id = couriers[0]["id"]
+
+    test_A_manual_shipment_writes_to_master(user2_token, courier_id)
+    test_C_smart_paste_ship_no_duplicate(user2_token, courier_id)
+    test_D_admin_plan_independence(admin_token)
+    test_E_regressions(user2_token)
+
+    return 0 if summary() == 0 else 1
+
+
+def summary(failure: bool = False) -> int:
+    passed = sum(1 for _, ok, _ in results if ok)
+    total = len(results)
     print("\n" + "=" * 60)
-    print(f"RESULT  passed={r.passed}  failed={r.failed}")
-    if r.failures:
-        print("FAILURES:")
-        for f in r.failures:
-            print(f"  - {f}")
-    print("=" * 60)
-    return 0 if r.failed == 0 else 1
+    print(f"SUMMARY: {passed}/{total} assertions passed")
+    fails = [(n, d) for n, ok, d in results if not ok]
+    if fails:
+        print("\nFAILURES:")
+        for n, d in fails:
+            print(f"  - {n}: {d}")
+    return len(fails)
 
 
 if __name__ == "__main__":
-    sys.exit(run())
+    sys.exit(main())

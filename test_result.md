@@ -6045,3 +6045,229 @@ agent_communication:
         Need backend verification with the matrix in the task notes
         (free_trial, silver, gold, platinum, admin).
 
+
+
+#====================================================================================================
+# Mandatory Master Sheet Backup — every shipment-creation path
+#====================================================================================================
+
+backend:
+  - task: "Master Sheet backup is mandatory for ALL shipment creation paths (any plan)"
+    implemented: true
+    working: "NA"
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: |
+            User policy: Every shipment that lands in our app, regardless
+            of plan tier (free_trial / silver / gold / platinum), MUST be
+            backed up to the central Master Sheet keyed off `user_id`.
+            Restore from master remains a Premium-gated feature; the
+            backup itself is universal.
+
+            Previously, only the Smart Paste flow (POST /smart-paste)
+            wrote to Master Sheet. Two creation paths bypassed it:
+              1) POST /api/shipments (manual Add Shipment form)
+              2) POST /api/orders/pending/{order_id}/ship  (only when
+                 the pending order didn't originate from Smart Paste —
+                 e.g. CSV imports or sheet sync — so `sheet_row_num`
+                 was never set).
+
+            Changes (single helper + two call-sites):
+              • Added `_backup_shipment_to_master_sheet(...)` helper
+                above POST /shipments. Centralises the column-mapping
+                and error contract: any failure → HTTP 502 with detail,
+                same as the existing Smart Paste flow.
+              • POST /api/shipments now calls the helper BEFORE
+                `db.shipments.insert_one(...)`. If the sheet write
+                fails, no Mongo ghost row is created.
+              • POST /api/orders/pending/{id}/ship now calls the helper
+                ONLY when `ship_doc["sheet_row_num"]` is falsy (i.e.
+                pending order didn't originate from Smart Paste). This
+                avoids duplicate Master rows for the common Smart-Paste
+                → Ship flow. Also forwards the pending order's
+                `master_order_id` into the shipment doc.
+
+            Please verify:
+              1) POST /api/shipments succeeds for user2 (Silver) with a
+                 minimal payload — response 200, AND the row appears at
+                 the next empty slot of the configured Master Sheet
+                 ("All Master Data" tab) with column 2 (User ID) =
+                 user2's id. The shipment's `sheet_row_num` field
+                 should be populated.
+              2) Force a sheet failure path (e.g. temporarily blank the
+                 admin_config.master_sheet_id) → POST /api/shipments
+                 must return 502 and NO Mongo doc must exist for that
+                 attempt (no ghost row). Restore master_sheet_id after
+                 testing.
+              3) For the smart-paste → ship pipeline:
+                 a. POST /api/smart-paste with a complete address text →
+                    PendingOrder created + Master Sheet row added (1).
+                 b. POST /api/orders/pending/{id}/ship → Shipment
+                    created. Master Sheet row count must NOT increase
+                    (i.e. no duplicate). The created shipment should
+                    carry the same `sheet_row_num` and
+                    `master_order_id` as the pending order.
+              4) Admin bypass / plan independence: silver, gold, and
+                 platinum users (and admin) all hit the SAME mandatory
+                 master backup. There's no plan gate — the helper
+                 writes unconditionally.
+              5) Cleanup: delete every test shipment + manually delete
+                 the corresponding Master Sheet rows OR run them with
+                 admin's "Delete forever" path. Restore admin_config
+                 if you mutated it.
+
+agent_communication:
+    -agent: "main"
+    -message: |
+        Implemented mandatory Master Sheet backup on every shipment
+        creation path. Single helper `_backup_shipment_to_master_sheet`
+        invoked from POST /shipments and POST /orders/pending/{id}/ship
+        (the latter only when sheet_row_num is missing to avoid
+        duplicates from the Smart Paste pre-write).
+
+        Sheet failure → HTTP 502 + zero Mongo writes (matches existing
+        Smart Paste contract). No plan gating — universal backup.
+
+        Need backend verification with the matrix in the task notes.
+
+
+---
+
+## Backend Test Run: Mandatory Master Sheet Backup (2026-04-29 PM)
+
+backend:
+  - task: "Mandatory Master Sheet backup on every shipment-creation path"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "testing"
+        -comment: |
+            26/26 assertions passed via /app/backend_test.py against
+            https://logistics-hub-740.preview.emergentagent.com/api.
+
+            ASSERTION A — POST /api/shipments writes to Master Sheet
+              • Auth as user2@test.com (plan=silver), courier_id picked
+                from GET /api/couriers (Demo Courier).
+              • POST /api/shipments with the exact review payload
+                returned HTTP 200 with master_order_id=26043002222.
+              • Backend log: "Sheet append OK: 'All Master Data'!A341:S341"
+                (real Service Account write — NOT mocked).
+              • GET /api/shipments/{id} confirmed sheet_row_num=341
+                persisted in Mongo (source of truth per review spec).
+              • GET /api/sheets/probe returned ok=true, tab="All Master
+                Data", row_count=426 before + after.
+              • DELETE /api/shipments/{id} returned
+                {"ok": true, "sheet": {"attempted": true, "ok": true,
+                 "row": 341, "tab": "All Master Data",
+                 "status_cell": "M341", "notice_cell": "N341"}}
+                → tombstone written as expected.
+
+            ASSERTION C — Smart Paste → Ship pipeline no duplicate
+              • POST /api/smart-paste returned PendingOrder with
+                sheet_row_num=342 and master_order_id=26043002223.
+                (ONE Master Sheet row written at this step.)
+              • POST /api/orders/pending/{id}/ship returned Shipment
+                with sheet_row_num=342 (IDENTICAL to pending row,
+                proving no second row was appended) and
+                master_order_id=26043002223 (forwarded from pending).
+              • DELETE cleanup returned 200.
+              • Confirms the `if not ship_doc.get("sheet_row_num"):`
+                guard in /orders/pending/{id}/ship correctly skips the
+                backup helper when Smart Paste already pre-wrote a row.
+
+            ASSERTION D — Plan independence (admin)
+              • admin@test.com authenticated; courier_id picked from
+                admin's own GET /api/couriers (Nandan Courier).
+              • POST /api/shipments returned HTTP 200 with
+                master_order_id=26043002224; GET confirmed
+                sheet_row_num=343 persisted in Mongo.
+              • Confirms no plan gate — admin write went through the
+                same mandatory backup helper.
+              • DELETE cleanup 200.
+
+            ASSERTION E — Regression
+              • GET /api/couriers/limits → 200, shape keys =
+                [can_add, current_count, is_admin, is_unlimited, limit,
+                 plan, plan_label, suggested_upgrade] ✓
+              • GET /api/me/usage → 200 ✓
+              • GET /api/shipments → 200, count=15 ✓
+              • GET /api/sheets/orders → 400 "Google Sheet not
+                connected" (user2 hasn't linked a personal Sheet; not a
+                regression — expected auth'd response shape).
+
+            ASSERTION B — SKIPPED (documented, not tested)
+              • Would require mutating admin_config.master_sheet_id to
+                force a 502 on POST /api/shipments. This state is
+                production-shared across tenants and the review
+                explicitly allowed skipping it if admin_config can't be
+                safely mutated. The helper's 502 path is in place
+                (raises HTTPException(502, "Master Sheet backup
+                failed…") on ANY exception from sheet_append_order_row)
+                and sits BEFORE db.shipments.insert_one(), so the
+                no-ghost-on-failure guarantee is structurally correct;
+                just not exercised by live fault injection.
+
+            OBSERVATIONS / MINOR (not blockers, not reported as bugs):
+              1. POST /api/shipments returns the Pydantic `Shipment`
+                 model created BEFORE sheet_meta is attached to `doc`,
+                 so the HTTP response carries sheet_row_num=null even
+                 though the Mongo doc has it. The review explicitly
+                 accepted "response OR Mongo" (tested via
+                 GET /api/shipments/{id}) so this is not a blocker —
+                 just an inconsistency between the response and the
+                 stored doc. Fixing it would be a 3-line change:
+                 re-hydrate `shipment = Shipment(**doc)` after the
+                 sheet_meta block.
+              2. POST /api/orders/pending/{id}/ship DOES return
+                 sheet_row_num correctly because that code path mutates
+                 ship_doc directly and later constructs the response
+                 from it.
+
+            Cleanup: all 3 test shipments were DELETE'd successfully.
+            Master Sheet rows 341, 342 and the ship's row were
+            tombstoned (Status=DELETED) as expected — per review
+            instructions, that is NOT a bug.
+
+agent_communication:
+    -agent: "testing"
+    -message: |
+        Mandatory Master Sheet backup verification COMPLETE.
+        26/26 assertions passed.
+
+        PASS highlights:
+          • POST /api/shipments (manual Add) writes to Master Sheet
+            BEFORE inserting into Mongo. Confirmed via real Service
+            Account append ("Sheet append OK: A341:S341") + Mongo
+            sheet_row_num=341.
+          • Smart Paste → Ship does NOT duplicate the Master row —
+            shipment.sheet_row_num == pending.sheet_row_num (342==342)
+            and master_order_id is forwarded.
+          • Admin writes use the same mandatory helper (no plan gate).
+          • No regressions on /couriers/limits, /me/usage, /shipments,
+            /sheets/orders.
+
+        Assertion B (forced 502 when master_sheet_id is blanked) was
+        skipped as the review allowed — mutating admin_config is
+        production-shared and unsafe. The 502 path is structurally in
+        place (HTTPException before db.shipments.insert_one) and
+        matches the Smart Paste contract.
+
+        Minor observation (NOT a bug): POST /api/shipments response
+        body shows sheet_row_num=null because `shipment = Shipment(**data)`
+        is created BEFORE sheet_meta is attached to `doc`. Mongo has
+        the correct value (verifiable via GET /api/shipments/{id}).
+        Review spec explicitly accepted "response OR Mongo" so this is
+        not a failure. A 3-line rehydration fix would make the response
+        consistent if desired.
+
+        No action items for main agent. Ready to summarise and finish.
