@@ -1,7 +1,7 @@
 import React, { useState } from "react";
 import {
   View, Text, TextInput, TouchableOpacity, StyleSheet,
-  KeyboardAvoidingView, Platform, ScrollView, ActivityIndicator, Alert,
+  KeyboardAvoidingView, Platform, ScrollView, ActivityIndicator, Alert, Linking,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
@@ -20,6 +20,11 @@ export default function SignupScreen() {
   const [phone, setPhone] = useState("");
   const [busy, setBusy] = useState(false);
   const [showPwd, setShowPwd] = useState(false);
+  // 2026-04-30 — Privacy / Terms acceptance. New users MUST check this
+  // before the "Create account" button is enabled. Stored only locally
+  // for this flow; backend doesn't need to persist it because signing
+  // up is itself the record of consent.
+  const [policyAccepted, setPolicyAccepted] = useState(false);
 
   const submit = async () => {
     const e = email.trim().toLowerCase();
@@ -37,6 +42,13 @@ export default function SignupScreen() {
     }
     if (password.length < 6) {
       Alert.alert("Password too short", "Use at least 6 characters");
+      return;
+    }
+    if (!policyAccepted) {
+      Alert.alert(
+        "Please accept Terms & Privacy",
+        "You need to tick the checkbox confirming you've read and agree to our Terms of Service and Privacy Policy before creating an account.",
+      );
       return;
     }
     setBusy(true);
@@ -71,7 +83,7 @@ export default function SignupScreen() {
           <View style={styles.brand}>
             <Ionicons name="cube-outline" size={36} color={colors.primary} />
             <Text style={styles.brandTitle}>Create account</Text>
-            <Text style={styles.brandSub}>Start shipping in minutes \u2014 15 demo orders included</Text>
+            <Text style={styles.brandSub}>Start shipping in minutes — 15 demo orders included</Text>
           </View>
 
           <View style={styles.card}>
@@ -143,13 +155,48 @@ export default function SignupScreen() {
 
             <TouchableOpacity
               testID="signup-submit"
-              disabled={busy}
+              disabled={busy || !policyAccepted}
               onPress={submit}
-              style={[styles.primaryBtn, busy && { opacity: 0.6 }]}
+              style={[styles.primaryBtn, (busy || !policyAccepted) && { opacity: 0.5 }]}
             >
               {busy
                 ? <ActivityIndicator color="#fff" />
                 : <Text style={styles.primaryBtnText}>Create account</Text>}
+            </TouchableOpacity>
+
+            {/* 2026-04-30 — Terms & Privacy acceptance. Required before
+                signing up. Links open the hosted policy pages in the
+                external browser so the user can review them before
+                ticking the box. Using router.push would deep-link back
+                inside the auth stack which is noisy on a signup flow. */}
+            <TouchableOpacity
+              testID="signup-policy-checkbox"
+              onPress={() => setPolicyAccepted((v) => !v)}
+              style={styles.policyRow}
+              activeOpacity={0.8}
+            >
+              <View style={[styles.checkbox, policyAccepted && styles.checkboxOn]}>
+                {policyAccepted ? (
+                  <Ionicons name="checkmark" size={14} color="#fff" />
+                ) : null}
+              </View>
+              <Text style={styles.policyText}>
+                I've read and agree to the{" "}
+                <Text
+                  style={styles.policyLink}
+                  onPress={() => Linking.openURL("https://logistics-hub-740.preview.emergentagent.com/terms")}
+                >
+                  Terms of Service
+                </Text>
+                {"  &  "}
+                <Text
+                  style={styles.policyLink}
+                  onPress={() => Linking.openURL("https://logistics-hub-740.preview.emergentagent.com/privacy")}
+                >
+                  Privacy Policy
+                </Text>
+                .
+              </Text>
             </TouchableOpacity>
 
             <View style={styles.divider}>
@@ -221,4 +268,18 @@ const styles = StyleSheet.create({
   },
   footerText: { color: colors.textMuted, fontSize: 13 },
   footerLink: { color: colors.primary, fontWeight: "800", fontSize: 13 },
+  // Policy acceptance row
+  policyRow: {
+    flexDirection: "row", alignItems: "flex-start", gap: 10,
+    marginTop: 14, paddingHorizontal: 2,
+  },
+  checkbox: {
+    width: 22, height: 22, borderRadius: 6,
+    borderWidth: 2, borderColor: "#94A3B8",
+    alignItems: "center", justifyContent: "center",
+    backgroundColor: "#fff",
+  },
+  checkboxOn: { backgroundColor: colors.primary, borderColor: colors.primary },
+  policyText: { flex: 1, fontSize: 12, color: "#475569", lineHeight: 17 },
+  policyLink: { color: colors.primary, fontWeight: "800", textDecorationLine: "underline" },
 });

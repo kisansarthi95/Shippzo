@@ -70,7 +70,7 @@ export default function LoginScreen() {
                 testID="login-password"
                 value={password}
                 onChangeText={setPassword}
-                placeholder="\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022"
+                placeholder="••••••••"
                 secureTextEntry={!showPwd}
                 style={[styles.input, { flex: 1 }]}
                 placeholderTextColor="#94A3B8"
@@ -169,5 +169,11 @@ const styles = StyleSheet.create({
     marginTop: 4,
   },
   forgotTxt: { color: colors.primary, fontSize: 13, fontWeight: "700" },
+  divider: {
+    flexDirection: "row", alignItems: "center",
+    gap: 10, marginTop: 18, marginBottom: 14,
+  },
+  dividerLine: { flex: 1, height: 1, backgroundColor: "#E5E7EB" },
+  dividerText: { fontSize: 11, fontWeight: "800", color: "#94A3B8", letterSpacing: 2 },
   hint: { marginTop: 16, textAlign: "center", fontSize: 11.5, color: colors.textMuted, paddingHorizontal: 12 },
 });
