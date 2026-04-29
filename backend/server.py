@@ -2059,6 +2059,10 @@ async def create_shipment(
             row = sheet_parse_row_from_updated_range(sheet_meta["updated_range"])
             if row:
                 doc["sheet_row_num"] = int(row)
+                # Also surface on the response object so the client sees
+                # the same value (not just the Mongo record).
+                if hasattr(shipment, "sheet_row_num"):
+                    shipment.sheet_row_num = int(row)
         except Exception:
             pass
 
