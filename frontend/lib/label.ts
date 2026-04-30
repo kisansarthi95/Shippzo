@@ -1,5 +1,6 @@
 import type { Shipment, SenderAddress, Courier, LabelFields, CustomLabelField } from "./api";
 import { barcodeSvg } from "./barcode";
+import { SHIPPZO_LOGO_DATA_URI } from "./brand_logo";
 
 export type Brand = { name?: string; logo_base64?: string };
 
@@ -341,6 +342,16 @@ function singleLabel(s: Shipment, sender: SenderAddress, opts: LabelOptions) {
         </div>
       </div>
       ${cfFooterBottom}
+      <!-- MANDATORY "Powered by Shippzo" footer — appears on every label
+           regardless of user's brand/logo customisation (this is OUR
+           branding, not the user's). Uses a pre-embedded, transparent
+           PNG so the PDF is fully self-contained and renders identically
+           offline. -->
+      <div class="powered-by">
+        <span class="pb-label">Powered by</span>
+        <img class="pb-logo" src="${SHIPPZO_LOGO_DATA_URI}" alt="Shippzo" />
+        <span class="pb-tagline">Run your shipping on <span class="pb-accent">autopilot.</span></span>
+      </div>
     </div>
   </div>
   `;
@@ -630,6 +641,50 @@ export function buildLabelHtml(
   .barcode-wrap { display: flex; justify-content: center; align-items: center;
     height: 16mm; }
   .barcode-wrap svg { width: 92%; height: 16mm; max-height: 16mm; }
+
+  /* ---- MANDATORY "Powered by Shippzo" footer — appears on every label.
+         Centered row: label · logo · tagline. Kept visually subtle
+         (small size, muted tagline) so it doesn't compete with the
+         user's brand header, but the logo itself is brand-orange.
+         Thin dashed separator line above to clearly delineate. */
+  .powered-by {
+    margin-top: 1.5mm;
+    padding-top: 1.5mm;
+    border-top: 0.4mm dashed #9CA3AF;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 1.8mm;
+    flex-wrap: nowrap;
+  }
+  .powered-by .pb-label {
+    font-size: 8pt;
+    font-weight: 800;
+    color: #111827;
+    letter-spacing: 0.15px;
+    white-space: nowrap;
+  }
+  .powered-by .pb-logo {
+    height: 4.2mm;
+    width: auto;
+    max-height: 5mm;
+    object-fit: contain;
+    image-rendering: -webkit-optimize-contrast;
+    image-rendering: crisp-edges;
+    image-rendering: high-quality;
+    flex-shrink: 0;
+  }
+  .powered-by .pb-tagline {
+    font-size: 7.5pt;
+    font-weight: 600;
+    color: #374151;
+    letter-spacing: 0.1px;
+    white-space: nowrap;
+  }
+  .powered-by .pb-accent {
+    color: #FF5A00;
+    font-weight: 800;
+  }
 </style>
 </head>
 <body>
