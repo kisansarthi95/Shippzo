@@ -25,6 +25,7 @@ import { Api, Shipment } from "../../lib/api";
 import { colors } from "../../lib/theme";
 import UsageMeter from "../../components/UsageMeter";
 import HomeAlerts from "../../components/HomeAlerts";
+import BrandHeaderAnimator from "../../components/BrandHeaderAnimator";
 import { useFeatureFlag } from "../../lib/feature_flags";
 
 type Stats = {
@@ -657,11 +658,7 @@ export default function Dashboard() {
   return (
     <SafeAreaView style={styles.safe} edges={["top"]}>
       <View style={styles.header}>
-        <View>
-          <Text style={styles.headerKicker}>COURIER LABEL MANAGER</Text>
-          <Text style={styles.headerTitle}>Hello 👋</Text>
-          <Text style={styles.headerSub}>Ship smart. Print fast.</Text>
-        </View>
+        <BrandHeaderAnimator />
         <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
           <TouchableOpacity
             testID="smart-paste-btn"
