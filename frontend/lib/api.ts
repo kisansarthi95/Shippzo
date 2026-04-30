@@ -687,8 +687,18 @@ export const Api = {
         match_on: string[];
       }>;
     }>("/smart-paste/check-duplicate", { text }).then((r) => r.data),
-  smartPasteCreate: (text: string, skipLlm: boolean = false) =>
-    api.post<PendingOrder>("/smart-paste", { text, skip_llm: skipLlm }).then((r) => r.data),
+  smartPasteCreate: (
+    text: string,
+    skipLlm: boolean = false,
+    customValues?: Record<string, string>,
+  ) =>
+    api
+      .post<PendingOrder>("/smart-paste", {
+        text,
+        skip_llm: skipLlm,
+        custom_values: customValues || undefined,
+      })
+      .then((r) => r.data),
 
   // Phase-C: Pull every Master-Sheet row tagged with the caller's
   // user_id into the caller's own personal sheet. `overwrite=true`

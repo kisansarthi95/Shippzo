@@ -1,4 +1,4 @@
-import React, { useCallback, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   View,
   Text,
@@ -145,6 +145,51 @@ export default function Dashboard() {
   const [chatSending, setChatSending] = useState(false);
   const [suggestedCustomer, setSuggestedCustomer] = useState<any | null>(null);
   const [dupFound, setDupFound] = useState<any[]>([]);
+
+  // Per-user Custom Fields (plan-gated). Loaded once on mount.
+  // Surfaced inline in the Smart Paste Summary modal so high-volume
+  // users can fill their bespoke columns without jumping to the
+  // manual New Shipment form. Map: { [custom_field_id]: stringValue }.
+  const [userCustomFields, setUserCustomFields] = useState<
+    Array<{
+      id: string;
+      name: string;
+      column_letter: string;
+      field_type: "text" | "number" | "date";
+      show_in_smart_paste?: boolean;
+    }>
+  >([]);
+  const [userCustomValues, setUserCustomValues] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    // Best-effort: silently no-op on auth/quota errors. Custom fields
+    // are only rendered if the user has at least one defined AND it has
+    // `show_in_smart_paste` (defaults true on creation).
+    Api.listMyCustomFields()
+      .then((res) => {
+        if (Array.isArray(res?.fields)) {
+          setUserCustomFields(
+            res.fields
+              .filter(
+                (f: any) =>
+                  f &&
+                  (f.active ?? true) &&
+                  (f.show_in_smart_paste ?? true),
+              )
+              .map((f: any) => ({
+                id: f.id,
+                name: f.name,
+                column_letter: f.column_letter,
+                field_type: f.field_type || "text",
+                show_in_smart_paste: f.show_in_smart_paste ?? true,
+              })),
+          );
+        } else {
+          setUserCustomFields([]);
+        }
+      })
+      .catch(() => setUserCustomFields([]));
+  }, []);
 
   // Plan-gated: hide duplicate-banner UI when admin disables this feature.
   const flagDupCheck = useFeatureFlag("smart_paste_duplicate_check");
@@ -502,6 +547,7 @@ export default function Dashboard() {
     setChatFields({});
     setDupFound([]);
     setSuggestedCustomer(null);
+    setUserCustomValues({});
   };
 
   /**
@@ -509,7 +555,10 @@ export default function Dashboard() {
    * and post it to /api/smart-paste. Backend's regex parser accepts
    * this verbatim — no wasted LLM call.
    */
-  const saveFromFields = async (legacyFields: Record<string, any>) => {
+  const saveFromFields = async (
+    legacyFields: Record<string, any>,
+    customValues?: Record<string, string>,
+  ) => {
     try {
       setPasting(true);
       setChatSending(true);
@@ -545,7 +594,17 @@ export default function Dashboard() {
         return v ? `${k}: ${v}` : null;
       }).filter(Boolean) as string[];
       const text = lines.join("\n");
-      const created: any = await Api.smartPasteCreate(text, true);  // skip_llm = true (canonical fields → save 2-4s)
+      // Trim and forward custom_values keyed by user_custom_fields.id.
+      const cv: Record<string, string> = {};
+      for (const [k, v] of Object.entries(customValues || {})) {
+        const sv = (v ?? "").toString().trim();
+        if (sv) cv[k] = sv;
+      }
+      const created: any = await Api.smartPasteCreate(
+        text,
+        true, // skip_llm = canonical fields → save 2-4s
+        Object.keys(cv).length ? cv : undefined,
+      );
       setPasting(false);
       setChatSending(false);
       setPasteStage("");
@@ -1012,6 +1071,82 @@ export default function Dashboard() {
                     <Text style={[styles.spSectionLabel, { marginTop: 14 }]}>Optional</Text>
                     {optRows}
 
+                    {/* My Custom Fields — plan-gated, defined under
+                        Settings → Manage Custom Fields. Only rendered
+                        when the user has at least one active field
+                        flagged for Smart Paste. Values flow into
+                        custom_values payload and are written to the
+                        column letters of their personal Google Sheet. */}
+                    {userCustomFields.length > 0 && (
+                      <>
+                        <Text style={[styles.spSectionLabel, { marginTop: 14 }]}>
+                          My Custom Fields
+                        </Text>
+                        {userCustomFields.map((cf) => {
+                          const cval = userCustomValues[cf.id] || "";
+                          return (
+                            <View
+                              key={`ucf-${cf.id}`}
+                              style={styles.spRow}
+                              testID={`smart-paste-row-ucf-${cf.id}`}
+                            >
+                              <View style={styles.spRowLeft}>
+                                {cval ? (
+                                  <Ionicons
+                                    name="checkmark-circle"
+                                    size={16}
+                                    color="#16A34A"
+                                  />
+                                ) : (
+                                  <Ionicons
+                                    name="ellipse-outline"
+                                    size={16}
+                                    color="#94A3B8"
+                                  />
+                                )}
+                              </View>
+                              <View style={{ flex: 1 }}>
+                                <Text style={styles.spRowLabel}>
+                                  {cf.name}
+                                  <Text style={{ color: "#9CA3AF", fontWeight: "400" }}>
+                                    {`  · col ${cf.column_letter}`}
+                                  </Text>
+                                </Text>
+                                <TextInput
+                                  testID={`smart-paste-ucf-input-${cf.id}`}
+                                  style={styles.spRowInput}
+                                  value={cval}
+                                  onChangeText={(t) => {
+                                    let next = t;
+                                    if (cf.field_type === "number") {
+                                      next = next.replace(/[^\d.]/g, "");
+                                    }
+                                    setUserCustomValues((prev) => ({
+                                      ...prev,
+                                      [cf.id]: next,
+                                    }));
+                                  }}
+                                  placeholder={
+                                    cf.field_type === "number"
+                                      ? "0"
+                                      : cf.field_type === "date"
+                                        ? "YYYY-MM-DD"
+                                        : `Enter ${cf.name.toLowerCase()}`
+                                  }
+                                  placeholderTextColor="#9CA3AF"
+                                  keyboardType={
+                                    cf.field_type === "number"
+                                      ? "decimal-pad"
+                                      : "default"
+                                  }
+                                />
+                              </View>
+                            </View>
+                          );
+                        })}
+                      </>
+                    )}
+
                     {reqMiss.length > 0 && (
                       <View style={styles.spReqHint}>
                         <Ionicons name="information-circle" size={14} color="#92400E" />
@@ -1108,7 +1243,7 @@ export default function Dashboard() {
                     payment_mode: payNorm,
                     token_amount: payNorm === "COD" ? (chatFields as any).token_amount : "",
                   };
-                  saveFromFields(finalFields);
+                  saveFromFields(finalFields, userCustomValues);
                 }}
                 disabled={chatSending}
                 style={[
@@ -1251,7 +1386,7 @@ export default function Dashboard() {
               <View style={styles.empty} testID="empty-recent">
                 <Ionicons name="cube-outline" size={48} color="#9CA3AF" />
                 <Text style={styles.emptyText}>
-                  હજી કોઈ shipment નથી. પહેલી shipment બનાવો.
+                  No shipments yet. Create your first shipment.
                 </Text>
                 <TouchableOpacity
                   testID="empty-create-btn"

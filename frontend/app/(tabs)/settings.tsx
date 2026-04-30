@@ -1045,7 +1045,7 @@ export default function SettingsScreen() {
               <View style={{ flex: 1 }}>
                 <Text style={styles.toggleLbl}>Auto-Generate Order ID</Text>
                 <Text style={styles.toggleSub}>
-                  ON: તમારા દરેક નવા order માટે unique Order ID આપોઆપ generate થશે. OFF: તમે પોતાનો Order ID manual લખો.
+                  ON: A unique Order ID will be generated automatically for every new order. OFF: Enter your own Order ID manually.
                 </Text>
               </View>
               <Switch

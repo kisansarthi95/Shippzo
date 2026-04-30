@@ -2503,6 +2503,11 @@ class PendingOrder(BaseModel):
     confidence: Dict[str, str] = Field(default_factory=dict)
     warnings: List[str] = Field(default_factory=list)
 
+    # Per-user Custom Fields values (Smart Paste flow). Maps
+    # user_custom_fields.id → string value. Routed to the user's
+    # personal sheet column at create time and re-routed at ship time.
+    custom_values: Dict[str, Any] = Field(default_factory=dict)
+
     created_at: str = Field(default_factory=utcnow_iso)
     processed_at: Optional[str] = None
 
@@ -2511,6 +2516,11 @@ class SmartPasteRequest(BaseModel):
     text: str
     use_ai: Optional[bool] = True   # Phase-4b+: LLM-driven parse by default
     skip_llm: Optional[bool] = False  # fast path when text is already canonical
+    # Optional: per-user custom-field values keyed by user_custom_fields.id
+    # Backend writes them to the user's personal sheet at the configured
+    # column letter (best-effort) and persists on the PendingOrder so
+    # they flow into the eventual shipment.
+    custom_values: Optional[Dict[str, str]] = None
 
 
 class SmartPasteChatRequest(BaseModel):
@@ -3723,14 +3733,28 @@ async def smart_paste_create(
         confidence=parsed["confidence"],
         warnings=parsed["warnings"],
         sheet_row_num=sheet_row_num,
+        custom_values={
+            k: ("" if v is None else str(v))
+            for k, v in (payload.custom_values or {}).items()
+            if v not in (None, "")
+        },
         **{k: v for k, v in fields.items() if k in PendingOrder.model_fields
-           and k not in ("sheet_row_num",)},
+           and k not in ("sheet_row_num", "custom_values")},
     )
     # Stash sheet-write metadata on the model's raw_text for debugging if needed
     doc = po.model_dump()
     doc["_sheet_meta"] = sheet_meta
     doc["user_id"] = current_user["id"]
     await db.pending_orders.insert_one(doc)
+    # Best-effort: write per-user custom field values to the user's
+    # personal Google Sheet (column letters from user_custom_fields).
+    # Failures are swallowed inside the helper — never blocks the order.
+    try:
+        await _write_custom_values_to_user_sheet_bg(
+            current_user, po.custom_values or {},
+        )
+    except Exception:
+        logger.exception("custom_values write to user sheet failed (smart-paste)")
     return po
 
 

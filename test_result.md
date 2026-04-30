@@ -7347,3 +7347,210 @@ agent_communication:
         connected → no-op, try/except + logger.warning around the
         actual write).
 
+
+
+agent_communication:
+    -agent: "main"
+    -message: |
+        New change (2026-04-30): Smart Paste Summary modal now surfaces
+        per-user Custom Fields inline so high-volume Smart Paste users
+        can populate plan-gated bespoke columns without jumping to the
+        manual /add form.
+
+        BACKEND changes (server.py):
+        1. PendingOrder model: added
+             custom_values: Dict[str, Any] = Field(default_factory=dict)
+        2. SmartPasteRequest model: added
+             custom_values: Optional[Dict[str, str]] = None
+        3. POST /api/smart-paste handler now persists payload.custom_values
+           on the PendingOrder doc and calls
+             await _write_custom_values_to_user_sheet_bg(current_user, po.custom_values or {})
+           after the Mongo insert (best-effort write to user's personal
+           sheet column letters; failures swallowed inside helper).
+
+        FRONTEND changes:
+        - lib/api.ts: smartPasteCreate(text, skipLlm, customValues?)
+          accepts an optional Record<string,string> mapped by
+          user_custom_fields.id and forwards as `custom_values`.
+        - app/(tabs)/index.tsx:
+          • Loads userCustomFields via Api.listMyCustomFields() on mount;
+            filters active && show_in_smart_paste.
+          • New userCustomValues state, cleared on closeChat().
+          • New "My Custom Fields" section rendered in the Summary modal
+            (testID="smart-paste-row-ucf-<id>" / input
+             "smart-paste-ucf-input-<id>"); shows column letter,
+             type-aware keyboard, green-tick when filled.
+          • saveFromFields(legacyFields, customValues) trims and forwards
+            the values into Api.smartPasteCreate.
+
+        Also completed: final 2 Gujarati UI strings translated to
+        English in app/(tabs)/settings.tsx (line 1048) and
+        app/(tabs)/index.tsx (line 1254). grep confirms 0 remaining
+        Gujarati codepoints under /app/frontend.
+
+        TESTING REQUEST (backend only):
+          1. POST /api/smart-paste with `custom_values` payload — expect
+             200, response body includes the same custom_values map
+             stored on the new PendingOrder, and the master sheet
+             append still happens.
+          2. Confirm legacy clients that omit `custom_values` still
+             work (200, default empty dict).
+          3. Confirm the post-save best-effort call to
+             _write_custom_values_to_user_sheet_bg never raises (200
+             returned even when the user has no sheet connected; logs
+             are clean).
+          4. Confirm /api/me/custom-fields endpoints continue to
+             function and return same shape used by Smart Paste
+             listing (id, name, column_letter, field_type, active,
+             show_in_smart_paste, sort_order).
+
+        Frontend testing is NOT requested; the user will verify Smart
+        Paste UI on their device.
+
+---
+
+## Backend Test Run: Smart Paste + Custom Fields Wiring (2026-04-30)
+
+backend:
+  - task: "Smart Paste Custom Fields wiring (PendingOrder.custom_values + SmartPasteRequest.custom_values + _write_custom_values_to_user_sheet_bg)"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "testing"
+        -comment: |
+            All 30/30 assertions passed via /app/backend_test.py against
+            https://logistics-hub-740.preview.emergentagent.com/api.
+
+            Coverage (focused regression — Smart Paste + Custom Fields only):
+
+            1. BACKWARD COMPAT (admin + user2):
+               POST /api/smart-paste WITHOUT a `custom_values` key →
+               HTTP 200, response body includes
+               `"custom_values": {}` (default empty dict).
+               Verified for both admin@test.com and user2@test.com.
+               Other parsed fields (customer_phone, address, amount,
+               payment_mode, master_order_id) populated as expected.
+
+            2. NEW HAPPY PATH:
+               a) GET /api/me/custom-fields (admin) baseline:
+                  shape ok — keys=[fields, limit, used, feature_enabled,
+                  plan, is_admin]. limit=999 for admin (unlimited).
+               b) POST /api/me/custom-fields with
+                  {name, column_letter:"Z", field_type:"text",
+                  show_in_form:true, show_in_smart_paste:true,
+                  sort_order:99} → 200, returned new custom field
+                  with auto-generated id, all submitted attributes
+                  preserved, active=true.
+               c) POST /api/smart-paste with
+                  {custom_values: {<new_field_id>: "Hello"}} → 200,
+                  response.custom_values == {<new_field_id>: "Hello"}
+                  (exact map echoed). master_order_id allocated,
+                  master sheet append fired (log:
+                  "Sheet append OK: 'All Master Data'!A413:S413").
+               d) Re-fetch via GET /api/orders/pending → list contains
+                  the just-created doc; doc has top-level
+                  `custom_values` field with matching value.
+
+            3. HELPER SAFETY (the most important verification):
+               a) admin POST /api/smart-paste with
+                  {custom_values: {<unknown_fake_id>: "Hello-fake"}}
+                  → 200. PendingOrder echoed the custom_values map
+                  unchanged. Helper found no matching field id, did
+                  silent no-op — request never raised.
+               b) admin POST /api/smart-paste with the REAL field id
+                  but column_letter "Z" (which exceeds the master
+                  sheet's 19-column grid because admin's "user sheet"
+                  IS the Master Sheet) → backend log emits the
+                  expected best-effort warning:
+                  "Custom values to user-sheet write failed
+                   (best-effort): APIError: [400]: Invalid data[0]:
+                   Range ('All Master Data'!Z415) exceeds grid limits.
+                   Max rows: 426, max columns: 19"
+                  …yet the request STILL returns HTTP 200 with the
+                  PendingOrder doc fully populated. Confirms the
+                  try/except + logger.warning safety net in
+                  /api/smart-paste handler around the call to
+                  _write_custom_values_to_user_sheet_bg.
+               c) user2 POST /api/smart-paste with random unknown id
+                  ({"some-random-id": "X"}) → 200. user2 has no
+                  custom_fields and no sheet connected, helper hit
+                  the early-return branch (no sheet_id) — silent
+                  no-op as designed.
+
+            4. EMPTY-VALUE TRIM:
+               POST /api/smart-paste with
+               {custom_values: {<real_id>: ""}} → 200. Server logic
+               `if v not in (None, "")` correctly DROPS empty values,
+               response.custom_values == {} (empty dict). PendingOrder
+               doc persists `custom_values: {}` in Mongo.
+
+            5. /api/me/custom-fields shape regression:
+               Returned fields include id, name, column_letter,
+               field_type, active, show_in_smart_paste, show_in_form,
+               sort_order, created_at — matching the Smart Paste UI
+               contract.
+
+            CLEANUP: 6 test PendingOrders + 1 test custom field
+            deleted via DELETE endpoints (all returned 200). No
+            test artefacts left behind.
+
+            BACKEND LOG MARKERS confirmed during run (2026-04-30
+            09:05:37 to 09:05:41):
+              - "Sheet append OK: 'All Master Data'!A413:S413" (etc, x6)
+              - "Custom values to user-sheet write failed (best-effort)"
+                (helper safety net engaged exactly when expected,
+                request still returned 200)
+
+            NO REGRESSIONS observed in:
+              - Master Sheet append path
+              - master_order_id allocation
+              - Smart Paste regex parser (NAME / PHONE / ADDRESS /
+                AMOUNT / PAYMENT etc all parsed correctly)
+              - GET /api/orders/pending list
+              - DELETE /api/orders/pending soft-delete (still returns
+                {ok, sheet} contract)
+
+agent_communication:
+    -agent: "testing"
+    -message: |
+        Smart Paste + Custom Fields wiring — FULLY WORKING.
+        30/30 assertions passed.
+
+        Verified explicitly:
+        ✅ BACKWARD COMPAT — POST /api/smart-paste without
+           custom_values returns 200 + `custom_values: {}` default.
+        ✅ NEW HAPPY PATH — POST /api/smart-paste with
+           {<real_field_id>: "Hello"} returns 200, response echoes
+           the map, PendingOrder Mongo doc has top-level
+           custom_values, and "Sheet append OK" appears in logs.
+        ✅ HELPER SAFETY — _write_custom_values_to_user_sheet_bg
+           NEVER raised, even when:
+             • the column letter (Z) exceeded the connected sheet's
+               grid limits (Google API returned 400 — caught by
+               try/except, logged as warning, request still 200);
+             • the custom_values map referenced unknown ids (silent
+               no-op);
+             • user2 has no sheet connected (silent no-op).
+        ✅ EMPTY-VALUE TRIM — empty-string custom_values are dropped
+           server-side; final `custom_values: {}` persisted.
+        ✅ /api/me/custom-fields GET returns expected shape; POST
+           creates field whose id is immediately usable as a
+           custom_values key in /api/smart-paste.
+        ✅ Mongo PendingOrder doc has `custom_values` as top-level
+           Dict[str, str] field (verified via GET /orders/pending).
+
+        No critical issues. No mocked integration — Master Sheet
+        writes are real (Service Account, log lines reference
+        real updated ranges A413:S413..A418:S418). The best-effort
+        helper warning we observed was triggered intentionally by
+        my test (column "Z" beyond grid) — proof that the safety
+        net behaves as required.
+
+        Test artefacts cleaned up (6 pending orders + 1 custom
+        field deleted). Main agent can proceed to summarise & finish.
+
