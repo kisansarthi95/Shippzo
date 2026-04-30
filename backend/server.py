@@ -81,6 +81,8 @@ try:
     from sheet_writer import get_service_account_email as sheet_get_sa_email
     from sheet_writer import read_user_sheet as sheet_read_user_sheet
     from sheet_writer import sync_user_sheet_headers as sheet_sync_user_sheet_headers
+    from sheet_writer import write_row_cells_to_user_sheet as sheet_write_row_cells_to_user_sheet
+    from sheet_writer import append_row_cells_to_user_sheet as sheet_append_row_cells_to_user_sheet
 except Exception as _sheet_import_err:  # pragma: no cover
     sheet_append_order_row = None  # type: ignore
     sheet_append_user = None  # type: ignore
@@ -92,6 +94,8 @@ except Exception as _sheet_import_err:  # pragma: no cover
     sheet_get_sa_email = None  # type: ignore
     sheet_read_user_sheet = None  # type: ignore
     sheet_sync_user_sheet_headers = None  # type: ignore
+    sheet_write_row_cells_to_user_sheet = None  # type: ignore
+    sheet_append_row_cells_to_user_sheet = None  # type: ignore
 
 
 ROOT_DIR = Path(__file__).parent
@@ -2323,6 +2327,15 @@ async def create_shipment(
             pass
 
     await db.shipments.insert_one(doc)
+
+    # ---- Best-effort: write custom-field values to user's personal sheet ----
+    # Custom fields (Salesperson, Reference No, etc.) live in user-defined
+    # columns of the user's OWN Google Sheet. Master Sheet only stores the
+    # canonical 19 columns. This is fire-and-forget — never blocks the
+    # response, never fails the shipment.
+    await _write_custom_values_to_user_sheet_bg(
+        current_user, doc.get("custom_values") or {},
+    )
     # Only bump plan counter when the plan actually covered this label.
     if plan_has_room:
         await bump_label_usage(db, current_user)
@@ -4065,6 +4078,65 @@ async def delete_my_custom_field(
     return {"ok": True}
 
 
+# --- Best-effort: write a shipment's custom-field values to the user's
+#     personal Google Sheet at the column letters they configured.
+async def _write_custom_values_to_user_sheet_bg(
+    current_user: Dict[str, Any],
+    custom_values: Dict[str, str],
+) -> None:
+    """Fire-and-forget: writes `custom_values` into the user's personal
+    sheet at column letters defined in `user_custom_fields`. Maps
+    custom-field-id → value → column-letter.
+
+    Behaviour:
+      • Empty `custom_values` → silent no-op.
+      • Sheet not connected → silent no-op (will sync next time the
+        user opens /sheets/orders).
+      • Quota / 5xx → swallowed + logged; the master-sheet retry
+        worker doesn't cover the user-sheet path because the master
+        sheet IS the canonical record; user-sheet is a convenience
+        mirror.
+    """
+    if not custom_values or sheet_append_row_cells_to_user_sheet is None:
+        return
+    try:
+        s_doc = await db.settings.find_one(
+            {"user_id": current_user["id"]}, {"_id": 0, "sheet": 1},
+        )
+        sheet_cfg = (s_doc or {}).get("sheet") or {}
+        sheet_id = sheet_cfg.get("sheet_id")
+        if not sheet_id:
+            return  # user hasn't connected a sheet — nothing to do
+        gid = sheet_cfg.get("gid") or "0"
+        # Build {column_letter: value} from {custom_field_id: value} via
+        # the user's custom-field definitions.
+        cf_docs = await db.user_custom_fields.find(
+            {"user_id": current_user["id"], "active": {"$ne": False}},
+            {"_id": 0, "id": 1, "column_letter": 1, "name": 1},
+        ).to_list(50)
+        id_to_letter = {cf["id"]: cf["column_letter"] for cf in cf_docs}
+        cells: Dict[str, str] = {}
+        for fid, val in custom_values.items():
+            letter = id_to_letter.get(fid)
+            if not letter:
+                continue
+            sval = "" if val is None else str(val)
+            if not sval:
+                continue
+            cells[letter] = sval
+        if not cells:
+            return
+        sheet_append_row_cells_to_user_sheet(sheet_id, gid, cells)
+    except Exception as e:
+        # Non-fatal — master-sheet backup is the source of truth. Log
+        # and move on; the next user-sheet → master sync will pick up
+        # any rows that ended up in master but missing from user-sheet.
+        logger.warning(
+            "Custom values to user-sheet write failed (best-effort): %s",
+            str(e)[:200],
+        )
+
+
 # --- Admin knobs for custom-field caps ---
 class CustomFieldLimitsPayload(BaseModel):
     # Plan → integer cap. Unknown plans are ignored.
@@ -4313,6 +4385,10 @@ async def ship_pending_order(
                 pass
 
     await db.shipments.insert_one(ship_doc)
+
+    # ---- Best-effort: write custom-field values to user's personal sheet ----
+    custom_vals = order.get("custom_values") or {}
+    await _write_custom_values_to_user_sheet_bg(current_user, custom_vals)
 
     # Mark order as shipped + link
     await db.pending_orders.update_one(

@@ -7075,3 +7075,183 @@ agent_communication:
 
         No further main-agent action required for these tasks. The
         previous syntax-error regression is fully fixed.
+
+## Backend Regression Test: Custom Field values → user sheet wiring (2026-04-30)
+
+backend:
+  - task: "Custom Field values wiring into shipment-creation pipelines (_write_custom_values_to_user_sheet_bg)"
+    implemented: true
+    working: false
+    file: "/app/backend/server.py, /app/backend/sheet_writer.py"
+    stuck_count: 1
+    priority: "high"
+    needs_retesting: true
+    status_history:
+        -working: false
+        -agent: "testing"
+        -comment: |
+            CRITICAL — sheet_writer.py has a SyntaxError introduced by
+            the recent edit that added `write_row_cells_to_user_sheet` and
+            `append_row_cells_to_user_sheet`. The new helpers were inserted
+            in place of the old `def sync_master_to_user_sheet(` line,
+            and the original function definition header was deleted but
+            its body (parameters + docstring + code) was left behind. The
+            result at /app/backend/sheet_writer.py lines 472-479 is:
+
+              def _find_next_empty_row_user_sheet(ws) -> int:
+                  ...
+                  return used + 1
+
+
+                 ← `def sync_master_to_user_sheet(` header is MISSING
+                  user_id: str,
+                  user_sheet_id: str,
+                  user_tab_or_gid: str = "0",
+                  *,
+                  overwrite: bool = True,
+              ) -> Dict[str, Any]:
+
+            `python -m py_compile /app/backend/sheet_writer.py` fails:
+              File "/app/backend/sheet_writer.py", line 479
+                  ) -> Dict[str, Any]:
+                  ^
+              SyntaxError: unmatched ')'
+
+            Cascade impact: server.py wraps sheet_writer imports in a
+            try/except block (lines 73-98). The SyntaxError is caught;
+            ALL sheet helper references fall back to None, including
+            `sheet_append_order_row`, `sheet_mark_row_deleted`,
+            `sheet_probe_connection`, `sheet_update_row_status`,
+            `sheet_sync_master_to_user`, etc.
+
+            The currently running backend process started at 2026-04-30
+            08:28:49 AFTER the broken edit, so the running process ALSO
+            has all sheet helpers = None. Any supervisor restart will
+            keep failing the same way.
+
+            Per-assertion result (12 total; 7 PASS / 5 FAIL):
+
+              A1 FAIL — `python -c "import server; import sheet_writer"`
+                        → rc=1, SyntaxError: unmatched ')' on line 479.
+              A2 PASS — /api/auth/me (user2) → 200.
+              A3 FAIL — POST /api/shipments (no custom_values) → 503
+                        "Google Sheets integration not configured on
+                         server." (Because sheet_append_order_row is None
+                         → server.py line 2084-2088 early-raises 503.)
+              A4 FAIL — POST /api/shipments (spurious custom_values UUID
+                        not in user_custom_fields) → 503 SAME cause.
+                        We never get far enough to test the new
+                        _write_custom_values_to_user_sheet_bg no-op.
+              A5a FAIL — POST /api/smart-paste → 503 SAME cause
+                        (the smart-paste path also appends to master
+                         sheet first).
+              A6 PASS — GET /api/me/custom-fields → 200 (shape valid).
+              A7 FAIL — POST /api/sheets/sync-headers → 503
+                        "Sheets integration not configured" (endpoint at
+                        line 3785 early-raises when helper is None).
+                        Expected 200/400/422 — got 503.
+              A8 PASS — GET /api/admin/custom-field-limits (admin) → 200.
+              A9a PASS — 2 `db.shipments.insert_one(...)` calls found.
+              A9b PASS — Both calls ARE followed (within 1500 chars) by
+                         `await _write_custom_values_to_user_sheet_bg(...)`.
+                         Wiring contract is correct in source.
+              A9c PASS — Helper signature matches
+                         `async def _write_custom_values_to_user_sheet_bg(
+                             current_user, custom_values)`.
+              A9d PASS — Helper body wraps the write in try/except +
+                         logger.warning (verified via regex extraction).
+
+            Wiring contract itself (A9a-d) is implemented correctly — the
+            new helper + both insert_one hooks look good in the source.
+            But we cannot actually exercise ANY shipment-creation path
+            until the sheet_writer.py SyntaxError is fixed.
+
+            ROOT CAUSE (confirmed via `git diff HEAD`):
+              Line "-def sync_master_to_user_sheet(" was replaced with
+              "+def write_row_cells_to_user_sheet(" — but the diff
+              appended two new functions (write_row_cells... and
+              append_row_cells...) in place of the single replaced line,
+              leaving the rest of the old sync_master_to_user_sheet body
+              orphaned (parameters, docstring, implementation). The new
+              helpers happen to have different parameter shapes, so the
+              orphan parameters at lines 474-479 are now invalid syntax.
+
+            FIX (one-line restore): re-insert
+                def sync_master_to_user_sheet(
+            as the function header on line 473 (blank line before line
+            474's "user_id: str,"). After that, the compile succeeds,
+            the try/except import block in server.py loads the real
+            helpers, /sheets/probe goes green, and all shipment flows
+            become exercisable again.
+
+            No shipments were successfully created during this run.
+            Cleanup: none required (all POSTs returned 503 before any
+            Mongo insert).
+
+metadata:
+  created_by: "main_agent"
+  version: "2.2"
+  test_sequence: 4
+  run_ui: false
+
+test_plan:
+  current_focus:
+    - "Custom Field values wiring into shipment-creation pipelines (_write_custom_values_to_user_sheet_bg)"
+  stuck_tasks:
+    - "Custom Field values wiring into shipment-creation pipelines (_write_custom_values_to_user_sheet_bg)"
+  test_all: false
+  test_priority: "stuck_first"
+
+agent_communication:
+    -agent: "testing"
+    -message: |
+        CRITICAL: /app/backend/sheet_writer.py has a SyntaxError
+        (unmatched ')' at line 479) introduced by the recent edit that
+        added write_row_cells_to_user_sheet / append_row_cells_to_user_sheet.
+        The edit replaced the `def sync_master_to_user_sheet(` header
+        line but left the old function body (lines 474-515+) orphaned,
+        creating stray parameters at module scope.
+
+        Because server.py wraps `from sheet_writer import ...` in a
+        try/except that swallows ImportError/SyntaxError, the failure
+        is silent — every sheet helper (append_order_row, mark_row_deleted,
+        sync_master_to_user, probe, etc.) is set to None, and every
+        shipment-creation path (/api/shipments, /api/smart-paste,
+        /api/orders/pending/{id}/ship) now returns 503 "Google Sheets
+        integration not configured on server." The currently running
+        backend process reloaded AFTER the broken edit — it is serving
+        503 right now.
+
+        Regression test results: 7/12 assertions PASS.
+          PASS: backend up, GET /me/custom-fields, GET /admin/custom-field-limits,
+                and all 4 wiring-contract checks (A9a-d) confirming
+                `await _write_custom_values_to_user_sheet_bg(...)` is
+                correctly placed after both db.shipments.insert_one(...)
+                calls, helper signature is correct, and the helper body
+                wraps in try/except with logger.warning.
+          FAIL: A1 module import, A3/A4 POST /shipments, A5 smart-paste
+                + ship pending, A7 /sheets/sync-headers — all a direct
+                cascade from the sheet_writer SyntaxError.
+
+        ACTION ITEMS FOR MAIN AGENT (one-line fix):
+          Restore the missing function header in /app/backend/sheet_writer.py
+          at line 473 (blank line before the orphan `user_id: str,`):
+
+              def sync_master_to_user_sheet(
+
+          That single line reinstates the original sync_master_to_user_sheet
+          function definition, making the whole module importable again.
+          After that fix:
+            1. Restart backend: `sudo supervisorctl restart backend`
+            2. Rerun /app/backend_test.py — expect all 12 assertions PASS.
+          I did NOT apply this fix myself (it's a functional change, not
+          a test-only adjustment).
+
+        The new helper logic in server.py (_write_custom_values_to_user_sheet_bg
+        + the two `await` hooks after db.shipments.insert_one) is
+        correctly wired per the review's wiring contract and will work
+        once the module-import issue is resolved. The helper is
+        correctly defensive (empty custom_values → no-op, no sheet
+        connected → no-op, try/except + logger.warning around the
+        actual write).
+

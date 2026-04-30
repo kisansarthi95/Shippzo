@@ -1,302 +1,232 @@
-"""
-Targeted re-verification tests for:
-  A. Header Auto-Sync contract — POST /api/sheets/sync-headers
-  F. POST /api/shipments regression after sheet_writer.py syntax fix
-  G. sheet_writer module import + backend health
-"""
-import os
+"""Regression check — Custom Field values wiring into shipment pipelines."""
+import re
+import subprocess
 import sys
-import json
+
 import requests
 
 BASE = "https://logistics-hub-740.preview.emergentagent.com/api"
-USER2_EMAIL = "user2@test.com"
-USER2_PASSWORD = "User@12345"
+USER2 = {"email": "user2@test.com", "password": "User@12345"}
+ADMIN = {"email": "admin@test.com", "password": "Admin@12345"}
+
+results = []
 
 
-def _login(email, pwd):
-    r = requests.post(f"{BASE}/auth/login", json={"email": email, "password": pwd}, timeout=30)
+def record(ok: bool, label: str, detail: str = ""):
+    results.append((ok, label, detail))
+    marker = "PASS" if ok else "FAIL"
+    print(f"[{marker}] {label}" + (f"  ({detail})" if detail else ""))
+
+
+def login(creds):
+    r = requests.post(f"{BASE}/auth/login", json=creds, timeout=20)
     r.raise_for_status()
-    return r.json()["token"]
+    return r.json()["token"], r.json()["id"]
 
 
-def _headers(tok):
-    return {"Authorization": f"Bearer {tok}", "Content-Type": "application/json"}
+def h(token):
+    return {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
 
 
-# ---------------------------------------------------------------------------
-def test_g_module_import():
-    print("\n=== G7. sheet_writer import ===")
-    rc = os.system("cd /app/backend && python -c 'import sheet_writer' >/tmp/_sw.log 2>&1")
-    assert rc == 0, f"sheet_writer import failed: see /tmp/_sw.log"
-    print("PASS: import OK")
-
-
-def test_g_health():
-    print("\n=== G8. /api/ health ===")
-    r = requests.get(f"{BASE}/", timeout=15)
-    print(f"  GET /api/ -> {r.status_code} {r.text[:120]}")
-    # /api/ root is auth-gated -> 401 means backend alive; 200 also acceptable
-    assert r.status_code in (200, 401), f"expected 200/401, got {r.status_code}"
-    print("PASS: backend reachable (status %d)" % r.status_code)
-
-
-def test_a_sync_headers_dry_run(tok):
-    print("\n=== A1. POST /api/sheets/sync-headers dry_run=true ===")
-    r = requests.post(
-        f"{BASE}/sheets/sync-headers",
-        headers=_headers(tok),
-        json={"dry_run": True},
+def test_module_health():
+    r = subprocess.run(
+        [sys.executable, "-c", "import server; import sheet_writer"],
+        cwd="/app/backend",
+        capture_output=True,
+        text=True,
         timeout=30,
     )
-    body = r.text
+    ok = r.returncode == 0
+    detail = (r.stderr or r.stdout).strip().splitlines()
+    record(ok, "A1: import server + sheet_writer (exit 0)",
+           f"rc={r.returncode} err={detail[-3:] if detail else []}")
+
+
+def test_backend_up():
     try:
-        data = r.json()
-    except Exception:
-        data = None
-    print(f"  status={r.status_code}")
-    print(f"  body={body[:600]}")
-    assert r.status_code != 503, "REGRESSION: 503 'Sheets integration not configured' returned!"
-    if r.status_code == 200:
-        assert isinstance(data, dict), "body must be JSON dict"
-        assert data.get("ok") is True, f"ok must be True, got {data.get('ok')}"
-        assert data.get("dry_run") is True, "dry_run must be true"
-        assert "would_write" in data, "would_write key required"
-        ww = data["would_write"]
-        assert isinstance(ww, list), "would_write must be a list"
-        for i, item in enumerate(ww):
-            assert isinstance(item, dict), f"item[{i}] must be dict"
-            assert "column" in item, f"item[{i}] missing column"
-            assert "name" in item, f"item[{i}] missing name"
-        print(f"PASS: 200 OK, dry_run=true, {len(ww)} would_write items, all have column+name")
-        return True, data
-    elif r.status_code == 400:
-        # No sheet connected — also valid contract
-        detail = (data or {}).get("detail", "")
-        assert "Google Sheet not connected" in detail or "not connected" in detail.lower(), \
-            f"expected 'Google Sheet not connected', got: {detail}"
-        print(f"PASS: 400 'Google Sheet not connected' (user2 has no sheet)")
-        return False, data
-    else:
-        raise AssertionError(f"Unexpected status {r.status_code}: {body[:400]}")
+        t, _ = login(USER2)
+        r = requests.get(f"{BASE}/auth/me", headers={"Authorization": f"Bearer {t}"}, timeout=20)
+        record(r.status_code == 200, "A2: backend up /api/auth/me 200", f"code={r.status_code}")
+    except Exception as e:
+        record(False, "A2: backend up", str(e))
 
 
-def test_a_sync_headers_real_write(tok):
-    print("\n=== A2. POST /api/sheets/sync-headers dry_run=false ===")
-    r = requests.post(
-        f"{BASE}/sheets/sync-headers",
-        headers=_headers(tok),
-        json={"dry_run": False},
-        timeout=60,
-    )
-    print(f"  status={r.status_code}")
-    print(f"  body={r.text[:400]}")
-    assert r.status_code == 200, f"expected 200, got {r.status_code}: {r.text[:300]}"
-    data = r.json()
-    assert data.get("ok") is True
-    assert "written_count" in data
-    assert "skipped_count" in data
-    assert "written" in data and isinstance(data["written"], list)
-    assert "skipped" in data and isinstance(data["skipped"], list)
-    written_count_1 = data["written_count"]
-    print(f"  first run: written_count={written_count_1}, skipped_count={data['skipped_count']}")
-
-    # Re-run
-    r2 = requests.post(
-        f"{BASE}/sheets/sync-headers",
-        headers=_headers(tok),
-        json={"dry_run": False},
-        timeout=60,
-    )
-    assert r2.status_code == 200, f"second run failed: {r2.status_code} {r2.text[:300]}"
-    data2 = r2.json()
-    print(f"  second run: written_count={data2['written_count']}, skipped_count={data2['skipped_count']}")
-    assert data2["written_count"] == 0, f"second run should have written_count==0, got {data2['written_count']}"
-    assert data2["skipped_count"] >= written_count_1, \
-        f"skipped_count ({data2['skipped_count']}) must be >= previous written_count ({written_count_1})"
-    print("PASS: idempotent — second run wrote 0, skipped >= previous written")
-
-
-def test_a_sync_headers_explicit_override(tok):
-    print("\n=== A3. POST /api/sheets/sync-headers explicit headers override ===")
+def test_shipments_no_custom(token):
     payload = {
-        "dry_run": True,
-        "headers": [{"column": "ZZ", "name": "Test ZZ"}],
+        "tracking_id": "REG-TEST-A3-001",
+        "customer_name": "Neha Gupta",
+        "customer_phone": "9123456701",
+        "address_line1": "27, Shanti Niwas, Navrangpura",
+        "city": "Ahmedabad",
+        "state": "Gujarat",
+        "pincode": "380009",
+        "weight": "0.5",
+        "courier_id": "",
+        "courier_name": "",
+        "payment_mode": "COD",
+        "amount": 499.0,
     }
-    r = requests.post(f"{BASE}/sheets/sync-headers",
-                      headers=_headers(tok), json=payload, timeout=30)
-    print(f"  status={r.status_code}")
-    print(f"  body={r.text[:400]}")
-    assert r.status_code == 200, f"expected 200, got {r.status_code}: {r.text[:300]}"
-    data = r.json()
-    assert data.get("ok") is True
-    assert data.get("dry_run") is True
-    ww = data.get("would_write") or []
-    found = any(it.get("column") == "ZZ" and it.get("name") == "Test ZZ" for it in ww)
-    assert found, f"explicit override not present in would_write: {ww}"
-    print(f"PASS: would_write contains exact pair {{column:'ZZ', name:'Test ZZ'}}")
+    r = requests.post(f"{BASE}/shipments", headers=h(token), json=payload, timeout=30)
+    ok = r.status_code == 200
+    sid = r.json().get("id") if ok else None
+    record(ok, "A3: POST /shipments (no custom_values) 200",
+           f"code={r.status_code} body={r.text[:200] if not ok else ''}")
+    if sid:
+        rd = requests.delete(f"{BASE}/shipments/{sid}", headers=h(token), timeout=30)
+        record(rd.status_code == 200, "A3: cleanup DELETE /shipments/{id}", f"code={rd.status_code}")
 
 
-# ---------------------------------------------------------------------------
-def test_f_post_shipment(tok):
-    print("\n=== F5. POST /api/shipments regression check ===")
-    # Get a courier
-    r = requests.get(f"{BASE}/couriers", headers=_headers(tok), timeout=20)
-    assert r.status_code == 200, f"GET /couriers failed: {r.status_code}"
-    couriers = r.json()
-    assert len(couriers) > 0, "user2 should have at least 1 courier (Demo Courier seeded)"
-    c = couriers[0]
-    print(f"  using courier: {c['name']} (id={c['id']})")
-
+def test_shipments_spurious_custom(token):
     payload = {
-        "tracking_id": "TST00099",
-        "courier_id": c["id"],
-        "courier_name": c["name"],
-        "customer_name": "Header Sync Regression Test",
-        "customer_phone": "9112233445",
-        "address_line1": "12 Test Avenue",
+        "tracking_id": "REG-TEST-A4-001",
+        "customer_name": "Ravi Patel",
+        "customer_phone": "9887776655",
+        "address_line1": "12, Silver Oak Apt, Vastrapur",
         "city": "Ahmedabad",
         "state": "Gujarat",
         "pincode": "380015",
-        "payment_mode": "COD",
-        "amount": 199.0,
-        "items": ["Test Item"],
-        "weight": "0.5",
+        "weight": "0.7",
+        "courier_id": "",
+        "courier_name": "",
+        "payment_mode": "Prepaid",
+        "amount": 899.0,
+        "custom_values": {"11111111-2222-3333-4444-555555555555": "X"},
     }
-    r = requests.post(f"{BASE}/shipments", headers=_headers(tok), json=payload, timeout=60)
-    print(f"  status={r.status_code}")
-    body_preview = r.text[:600]
-    print(f"  body={body_preview}")
-    assert r.status_code != 503, f"REGRESSION: 503 returned! {body_preview}"
-    assert r.status_code == 200, f"expected 200, got {r.status_code}: {body_preview}"
-    ship = r.json()
-    sid = ship["id"]
-    assert ship.get("customer_name") == payload["customer_name"]
-    print(f"PASS: 200 OK — shipment created id={sid}, master_order_id={ship.get('master_order_id')}, sheet_row_num={ship.get('sheet_row_num')}")
-
-    # Cleanup
-    rd = requests.delete(f"{BASE}/shipments/{sid}", headers=_headers(tok), timeout=30)
-    print(f"  DELETE -> {rd.status_code} {rd.text[:200]}")
-    assert rd.status_code == 200
-    print("  cleanup OK")
-    return ship
+    r = requests.post(f"{BASE}/shipments", headers=h(token), json=payload, timeout=30)
+    ok = r.status_code == 200
+    sid = r.json().get("id") if ok else None
+    record(ok, "A4: POST /shipments (spurious custom_values) 200 (no 500)",
+           f"code={r.status_code} body={r.text[:250] if not ok else ''}")
+    if sid:
+        rd = requests.delete(f"{BASE}/shipments/{sid}", headers=h(token), timeout=30)
+        record(rd.status_code == 200, "A4: cleanup DELETE /shipments/{id}", f"code={rd.status_code}")
 
 
-def test_f_smart_paste_then_ship(tok):
-    print("\n=== F6. Smart-Paste -> Ship pipeline (no duplicate row) ===")
-    paste_text = """Name: Pipeline Regression
-Phone: 9123455678
-Address: 99, Test Lane, Ahmedabad
-City: Ahmedabad
-State: Gujarat
-Pincode: 380015
-Payment: COD
-Amount: 250
-Items: Sample"""
-
-    r = requests.post(f"{BASE}/smart-paste", headers=_headers(tok),
-                      json={"text": paste_text}, timeout=60)
-    print(f"  smart-paste status={r.status_code}")
-    print(f"  body={r.text[:300]}")
+def test_smart_paste_and_ship(token):
+    paste_text = (
+        "CUSTOMER_NAME: Priya Sharma\n"
+        "PHONE: 9090909091\n"
+        "ADDRESS_1: 9, Palm Residency, Satellite Road\n"
+        "CITY: Ahmedabad\n"
+        "STATE: Gujarat\n"
+        "PINCODE: 380015\n"
+        "AMOUNT: 450\n"
+        "PAYMENT_MODE: COD\n"
+        "WEIGHT: 0.4\n"
+    )
+    r = requests.post(f"{BASE}/smart-paste", headers=h(token),
+                      json={"text": paste_text, "skip_llm": True}, timeout=40)
     if r.status_code != 200:
-        print("SKIP: smart-paste pipeline not available")
+        record(False, "A5a: POST /smart-paste 200",
+               f"code={r.status_code} body={r.text[:200]}")
         return
+    record(True, "A5a: POST /smart-paste 200", "")
     pending = r.json()
-    pid = pending["id"]
-    sheet_row_num_1 = pending.get("sheet_row_num")
-    print(f"  pending id={pid} sheet_row_num={sheet_row_num_1}")
-
-    # Get courier
-    rc = requests.get(f"{BASE}/couriers", headers=_headers(tok), timeout=20)
-    couriers = rc.json()
+    pid = pending.get("id")
+    cr = requests.get(f"{BASE}/couriers", headers=h(token), timeout=20)
+    couriers = cr.json() if cr.status_code == 200 else []
     if not couriers:
-        # cleanup pending
-        requests.delete(f"{BASE}/orders/pending/{pid}", headers=_headers(tok), timeout=20)
-        print("SKIP: no courier")
+        record(False, "A5b: courier lookup for ship", "no courier available")
+        requests.delete(f"{BASE}/orders/pending/{pid}", headers=h(token), timeout=20)
         return
-    cid = couriers[0]["id"]
-
-    # Ship
-    rs = requests.post(f"{BASE}/orders/pending/{pid}/ship",
-                       headers=_headers(tok),
-                       json={"courier_id": cid, "overrides": {}},
-                       timeout=60)
-    print(f"  ship status={rs.status_code} body={rs.text[:300]}")
-    assert rs.status_code == 200, f"ship failed: {rs.status_code} {rs.text[:200]}"
-    ship = rs.json()
-    sheet_row_num_2 = ship.get("sheet_row_num")
-    sid = ship["id"]
-    print(f"  shipment id={sid} sheet_row_num={sheet_row_num_2}")
-    # sheet_row_num must be carried forward (no duplicate row written)
-    assert sheet_row_num_2 == sheet_row_num_1, \
-        f"sheet_row_num diverged: pending={sheet_row_num_1}, shipment={sheet_row_num_2}. Possible duplicate row write!"
-
-    # Cleanup
-    rd = requests.delete(f"{BASE}/shipments/{sid}", headers=_headers(tok), timeout=30)
-    print(f"  cleanup status={rd.status_code}")
-    assert rd.status_code == 200
-    print("PASS: smart-paste -> ship preserved sheet_row_num (no duplicate master row)")
+    courier_id = couriers[0]["id"]
+    rs = requests.post(f"{BASE}/orders/pending/{pid}/ship", headers=h(token),
+                       json={"courier_id": courier_id, "overrides": {}}, timeout=40)
+    ok = rs.status_code == 200
+    sid = rs.json().get("id") if ok else None
+    record(ok, "A5b: POST /orders/pending/{id}/ship 200 (no 500, no ghost)",
+           f"code={rs.status_code} body={rs.text[:250] if not ok else ''}")
+    if sid:
+        rd = requests.delete(f"{BASE}/shipments/{sid}", headers=h(token), timeout=30)
+        record(rd.status_code == 200, "A5c: cleanup DELETE /shipments/{id}",
+               f"code={rd.status_code}")
 
 
-# ---------------------------------------------------------------------------
-def main():
-    failures = []
-    try:
-        test_g_module_import()
-    except Exception as e:
-        failures.append(("G7 module import", e))
-
-    try:
-        test_g_health()
-    except Exception as e:
-        failures.append(("G8 health", e))
-
-    print(f"\n=== Login as {USER2_EMAIL} ===")
-    try:
-        tok = _login(USER2_EMAIL, USER2_PASSWORD)
-        print(f"  token: {tok[:24]}…")
-    except Exception as e:
-        print(f"FATAL: cannot login: {e}")
-        sys.exit(1)
-
-    has_sheet = False
-    try:
-        has_sheet, _data = test_a_sync_headers_dry_run(tok)
-    except Exception as e:
-        failures.append(("A1 sync-headers dry_run", e))
-
-    if has_sheet:
+def test_me_custom_fields(token):
+    r = requests.get(f"{BASE}/me/custom-fields", headers=h(token), timeout=20)
+    ok = r.status_code == 200
+    body_ok = False
+    if ok:
         try:
-            test_a_sync_headers_real_write(tok)
-        except Exception as e:
-            failures.append(("A2 sync-headers real write", e))
-        try:
-            test_a_sync_headers_explicit_override(tok)
-        except Exception as e:
-            failures.append(("A3 sync-headers explicit override", e))
+            b = r.json()
+            body_ok = isinstance(b, (list, dict))
+        except Exception:
+            body_ok = False
+    record(ok and body_ok, "A6: GET /me/custom-fields 200 + valid shape",
+           f"code={r.status_code} body={r.text[:200] if not ok else ''}")
+
+
+def test_sync_headers(token):
+    r = requests.post(f"{BASE}/sheets/sync-headers", headers=h(token),
+                      json={"dry_run": True}, timeout=20)
+    ok = r.status_code in (200, 400, 422)
+    record(ok, "A7: POST /sheets/sync-headers non-500 (200/400/422)",
+           f"code={r.status_code} body={r.text[:200]}")
+
+
+def test_admin_limits(admin_token):
+    r = requests.get(f"{BASE}/admin/custom-field-limits", headers=h(admin_token), timeout=20)
+    ok = r.status_code == 200
+    record(ok, "A8: GET /admin/custom-field-limits (admin) 200",
+           f"code={r.status_code} body={r.text[:200] if not ok else ''}")
+
+
+def test_wiring_contract():
+    with open("/app/backend/server.py") as f:
+        src = f.read()
+    insert_positions = [m.start() for m in re.finditer(r"db\.shipments\.insert_one\(", src)]
+    record(len(insert_positions) >= 2,
+           "A9a: Found >=2 db.shipments.insert_one(...) calls",
+           f"count={len(insert_positions)}")
+    awaited_after = 0
+    for pos in insert_positions:
+        window = src[pos:pos + 1500]
+        if "await _write_custom_values_to_user_sheet_bg" in window:
+            awaited_after += 1
+    record(awaited_after == len(insert_positions),
+           "A9b: Every insert_one is followed by await _write_custom_values_to_user_sheet_bg",
+           f"awaited/total = {awaited_after}/{len(insert_positions)}")
+    helper_def = re.search(
+        r"async def _write_custom_values_to_user_sheet_bg\(\s*current_user[^)]*custom_values[^)]*\)",
+        src, re.DOTALL)
+    record(bool(helper_def),
+           "A9c: Helper signature (current_user, custom_values)")
+    helper_body_match = re.search(
+        r"async def _write_custom_values_to_user_sheet_bg\b.*?(?=\nasync def |\n@api_router|\n@app\.|\Z)",
+        src, re.DOTALL)
+    if helper_body_match:
+        body = helper_body_match.group(0)
+        has_try = "try:" in body
+        has_except = re.search(r"except\s+Exception", body) is not None
+        has_logger = "logger.warning" in body or "logger.exception" in body
+        record(has_try and has_except and has_logger,
+               "A9d: Helper try/except + logger.warning",
+               f"try={has_try} except_Exception={has_except} logger={has_logger}")
     else:
-        print("\n[A2/A3 skipped — user2 has no sheet linked, contract for 400 already validated]")
-        # We can still test A3 if explicit headers are given without dry_run since
-        # the 400 fails before reaching items, but the contract says "if sheet connected"
-        # for A3, so we skip it here.
+        record(False, "A9d: helper body not extractable", "")
 
-    try:
-        test_f_post_shipment(tok)
-    except Exception as e:
-        failures.append(("F5 POST /shipments", e))
 
-    try:
-        test_f_smart_paste_then_ship(tok)
-    except Exception as e:
-        failures.append(("F6 smart-paste -> ship", e))
-
-    print("\n" + "=" * 60)
-    if failures:
-        print(f"FAILURES: {len(failures)}")
-        for name, exc in failures:
-            print(f"  - {name}: {exc}")
-        sys.exit(2)
-    print("ALL TESTS PASSED")
+def main():
+    test_module_health()
+    test_backend_up()
+    u2_token, _ = login(USER2)
+    adm_token, _ = login(ADMIN)
+    test_shipments_no_custom(u2_token)
+    test_shipments_spurious_custom(u2_token)
+    test_smart_paste_and_ship(u2_token)
+    test_me_custom_fields(u2_token)
+    test_sync_headers(u2_token)
+    test_admin_limits(adm_token)
+    test_wiring_contract()
+    passed = sum(1 for ok, *_ in results if ok)
+    total = len(results)
+    print(f"\n==== {passed}/{total} assertions passed ====")
+    failed = [(label, det) for ok, label, det in results if not ok]
+    if failed:
+        print("\nFailures:")
+        for label, det in failed:
+            print(f"  - {label}: {det}")
+    sys.exit(0 if passed == total else 1)
 
 
 if __name__ == "__main__":

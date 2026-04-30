@@ -378,7 +378,99 @@ def sync_user_sheet_headers(
     return {"ok": True, "written": written, "skipped": skipped}
 
 
-def sync_master_to_user_sheet(
+def write_row_cells_to_user_sheet(
+    sheet_id: str,
+    tab_or_gid: str,
+    row_num: int,
+    cells: Dict[str, str],
+) -> Dict[str, Any]:
+    """Write the given column-letter → value pairs into the specified
+    row of the user's sheet. Used to push per-shipment custom field
+    values into the user's personal Google Sheet (e.g. Salesperson="Ravi"
+    into column F of row 47).
+
+    `cells` is `{ "F": "Ravi", "G": "ORD-1029", ... }`. Empty values
+    are skipped. Existing cell content IS overwritten (this is intended
+    for per-row data, not headers).
+
+    Returns: { ok: bool, updated: [(col, val)] }
+    Best-effort wrapped in `_with_retry` for transient quota errors.
+    """
+    if not cells or not row_num or row_num < 2:
+        return {"ok": True, "updated": []}
+    try:
+        ws = _with_retry(_open_user_sheet, sheet_id, tab_or_gid)
+    except Exception:
+        log.exception("write_row_cells: open_user_sheet failed")
+        raise
+
+    updates: List[Dict[str, Any]] = []
+    written: List[tuple] = []
+    for letter, val in cells.items():
+        letter = (letter or "").strip().upper()
+        if not letter:
+            continue
+        # Skip empty so we don't clear pre-existing data on a partial form.
+        sval = "" if val is None else str(val)
+        if not sval:
+            continue
+        updates.append({
+            "range": f"{letter}{int(row_num)}",
+            "values": [[sval]],
+        })
+        written.append((letter, sval))
+
+    if updates:
+        try:
+            _with_retry(
+                ws.batch_update,
+                updates,
+                value_input_option="USER_ENTERED",
+            )
+        except Exception:
+            log.exception("write_row_cells_to_user_sheet batch_update failed")
+            raise
+    return {"ok": True, "updated": written}
+
+
+def append_row_cells_to_user_sheet(
+    sheet_id: str,
+    tab_or_gid: str,
+    cells: Dict[str, str],
+) -> Dict[str, Any]:
+    """When we don't yet have a known row number in the user's sheet
+    (e.g., shipment was added via "Add Shipment" form, not from a
+    /sheets/orders read), we APPEND a new row carrying just the
+    custom-field columns. Returns { ok, row, updated[] }.
+    """
+    if not cells:
+        return {"ok": True, "row": None, "updated": []}
+    try:
+        ws = _with_retry(_open_user_sheet, sheet_id, tab_or_gid)
+    except Exception:
+        raise
+    next_row = _with_retry(_find_next_empty_row_user_sheet, ws)
+    return {
+        **write_row_cells_to_user_sheet(sheet_id, tab_or_gid, next_row, cells),
+        "row": next_row,
+    }
+
+
+def _find_next_empty_row_user_sheet(ws) -> int:
+    """Mirror of `_find_next_empty_row` but for the user's sheet
+    (not Master). Returns 1-based row number of next empty."""
+    try:
+        rows = ws.get_all_values()
+    except Exception:
+        return int(getattr(ws, "row_count", 1)) + 1
+    used = 0
+    for i, row in enumerate(rows, start=1):
+        if any((c or "").strip() for c in row):
+            used = i
+    return used + 1
+
+
+
     user_id: str,
     user_sheet_id: str,
     user_tab_or_gid: str = "0",

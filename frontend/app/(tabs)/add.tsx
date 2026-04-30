@@ -135,6 +135,24 @@ export default function AddShipment() {
 
   // Phase B Part 2 — per-shipment custom fields (definitions come from Settings)
   const [customFields, setCustomFields] = useState<Array<any>>([]);
+  // NEW (2026-04-30) — Per-user custom fields (the plan-gated kind from
+  // Settings → Manage Custom Fields). Stored separately from the legacy
+  // CustomLabelField list because the schemas differ (column_letter,
+  // show_in_form, etc).
+  const [userCustomFields, setUserCustomFields] = useState<
+    Array<{
+      id: string;
+      name: string;
+      column_letter: string;
+      field_type: "text" | "number" | "date";
+      show_in_form: boolean;
+      show_in_smart_paste: boolean;
+      active: boolean;
+    }>
+  >([]);
+  const [userCustomValues, setUserCustomValues] = useState<
+    Record<string, string>
+  >({});
   const [customValues, setCustomValues] = useState<Record<string, string>>({});
 
   const [sheetConnected, setSheetConnected] = useState(false);
@@ -157,6 +175,21 @@ export default function AddShipment() {
       // Intentionally DO NOT auto-select a default courier. User must pick.
       setSheetConnected(Boolean(settings.sheet?.sheet_id));
       setCustomFields(((settings as any).custom_fields || []) as any[]);
+      // Per-user custom fields (plan-gated, defined in Manage Custom Fields).
+      // Loaded best-effort — never blocks the form.
+      Api.listMyCustomFields()
+        .then((r) => {
+          if (r?.feature_enabled) {
+            setUserCustomFields(
+              (r.fields || []).filter(
+                (f: any) => f.active !== false && f.show_in_form,
+              ) as any,
+            );
+          } else {
+            setUserCustomFields([]);
+          }
+        })
+        .catch(() => setUserCustomFields([]));
       // Sync label-field visibility so the form mirrors the user's label
       // settings — fields hidden on the label are also hidden here.
       const lf = (settings as any).label_fields || {};
@@ -772,6 +805,15 @@ export default function AddShipment() {
               if (!cf?.enabled || cf?.source !== "shipment") continue;
               const v = (customValues[cf.id] || "").trim();
               if (v) out[cf.id] = v;
+            }
+            // Merge in the new per-user custom field values. Their IDs
+            // are unique uuids so no key collisions with the legacy
+            // label-field IDs above. Backend's _write_custom_values_to
+            // _user_sheet_bg routes them by `user_custom_fields.id` →
+            // `column_letter`.
+            for (const ucf of userCustomFields) {
+              const v = (userCustomValues[ucf.id] || "").trim();
+              if (v) out[ucf.id] = v;
             }
             return out;
           })(),
@@ -1477,6 +1519,38 @@ export default function AddShipment() {
               </Section>
             );
           })()}
+
+          {/* ---------- User Custom Fields (plan-gated, defined in Manage Custom Fields) ---------- */}
+          {userCustomFields.length > 0 && (
+            <Section title="My Custom Fields" icon="layers">
+              <Text style={styles.hint}>
+                Per-shipment values for your custom Google Sheet columns.
+              </Text>
+              {userCustomFields.map((cf) => (
+                <Field key={`ucf-${cf.id}`} label={`${cf.name} (col ${cf.column_letter})`}>
+                  <TextInput
+                    testID={`user-cf-${cf.id}`}
+                    value={userCustomValues[cf.id] || ""}
+                    onChangeText={(t) =>
+                      setUserCustomValues({ ...userCustomValues, [cf.id]: t })
+                    }
+                    placeholder={
+                      cf.field_type === "number"
+                        ? "0"
+                        : cf.field_type === "date"
+                        ? "YYYY-MM-DD"
+                        : `Enter ${cf.name.toLowerCase()}`
+                    }
+                    placeholderTextColor="#9CA3AF"
+                    keyboardType={
+                      cf.field_type === "number" ? "decimal-pad" : "default"
+                    }
+                    style={styles.input}
+                  />
+                </Field>
+              ))}
+            </Section>
+          )}
 
           <View style={styles.ctaRow}>
             <TouchableOpacity
