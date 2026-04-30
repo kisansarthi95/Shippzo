@@ -543,7 +543,15 @@ export default function SettingsScreen() {
     );
     if (s.sheet?.sheet_id) {
       setSheetStatus("connected");
-      setSheetUrl(s.sheet.url);
+      // Fallback: reconstruct the URL when the stored settings only
+      // hold the sheet_id (older docs / admin-seeded accounts where
+      // `url` was never persisted). Without this, the Refresh /
+      // Re-map button falls through to the "Please paste your
+      // Google Sheet URL" alert even though the sheet IS connected.
+      const reconstructed = s.sheet.sheet_id
+        ? `https://docs.google.com/spreadsheets/d/${s.sheet.sheet_id}/edit`
+        : "";
+      setSheetUrl(s.sheet.url || reconstructed);
       setConnectedSheetId(s.sheet.sheet_id);
       setConnectedHeaders(s.sheet.headers || []);
       setMapping(s.sheet.column_mapping || {});
@@ -695,13 +703,22 @@ export default function SettingsScreen() {
   };
 
   const fetchPreview = async () => {
-    if (!sheetUrl.trim()) {
+    // Self-heal: when we are already "connected" (admin accounts sometimes
+    // store only sheet_id without url), reconstruct a canonical Google
+    // Sheets URL from the stored sheet_id so Refresh / Re-map doesn't
+    // bounce the user back to the "Paste link" alert.
+    let url = sheetUrl.trim();
+    if (!url && connectedSheetId) {
+      url = `https://docs.google.com/spreadsheets/d/${connectedSheetId}/edit`;
+      setSheetUrl(url);
+    }
+    if (!url) {
       Alert.alert("Paste link", "Please paste your Google Sheet URL");
       return;
     }
     setSheetStatus("loading");
     try {
-      const p = await Api.sheetsPreview(sheetUrl.trim());
+      const p = await Api.sheetsPreview(url);
       setPreview(p);
       setMapping(p.auto_mapping || {});
       setAccessMethod((p.access_method as any) || "");
