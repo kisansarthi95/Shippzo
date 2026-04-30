@@ -57,7 +57,30 @@ const BLOCK_HEIGHT = 72;
 // pixel width here.
 const BLOCK_MIN_WIDTH = 170;
 
-export default function BrandHeaderAnimator() {
+// Login-screen variant dimensions — centered, taller block, no right-
+// hand action buttons eating width. Used only when variant="login".
+const LOGIN_BLOCK_HEIGHT = 140;
+
+type BrandHeaderAnimatorProps = {
+  /**
+   * Layout & content preset.
+   *   "home"  → default dashboard header (COURIER LABEL MANAGER kicker,
+   *             Hello 👋 with waving hand, "Ship smart. Print fast."
+   *             tagline in Phase A; POWERED BY kicker + logo + "Run
+   *             your shipping on autopilot." in Phase B).
+   *   "login" → auth/login screen greeting (no kickers, centered
+   *             layout, "Welcome back" as the tagline for BOTH phases,
+   *             no "Powered by" line on Phase B — just the bare logo).
+   *             Same 3s→3s animation cadence and reused component so
+   *             the two screens feel branded-alike.
+   */
+  variant?: "home" | "login";
+};
+
+export default function BrandHeaderAnimator({
+  variant = "home",
+}: BrandHeaderAnimatorProps = {}) {
+  const isLogin = variant === "login";
   // 0 = Phase A (Hello), 1 = Phase B (Shippzo). The opacity of the
   // two absolute children is driven straight off this value so the
   // crossfade feels continuous.
@@ -150,30 +173,70 @@ export default function BrandHeaderAnimator() {
   }));
 
   return (
-    <View style={styles.block}>
+    <View style={[styles.block, isLogin && styles.blockLogin]}>
       {/* ── Phase A ─────────────────────────────────────── */}
-      <Animated.View style={[styles.phaseLayer, phaseAStyle]}>
-        <Text style={styles.kicker}>COURIER LABEL MANAGER</Text>
-        <View style={styles.titleRow}>
-          <Text style={styles.title}>Hello </Text>
-          <Animated.Text style={[styles.wave, handStyle]}>👋</Animated.Text>
+      <Animated.View
+        style={[
+          styles.phaseLayer,
+          isLogin && styles.phaseLayerLogin,
+          phaseAStyle,
+        ]}
+      >
+        {isLogin ? null : (
+          <Text style={styles.kicker}>COURIER LABEL MANAGER</Text>
+        )}
+        <View style={[styles.titleRow, isLogin && styles.titleRowLogin]}>
+          <Text style={[styles.title, isLogin && styles.titleLogin]}>
+            Hello{" "}
+          </Text>
+          <Animated.Text
+            style={[styles.wave, isLogin && styles.waveLogin, handStyle]}
+          >
+            👋
+          </Animated.Text>
         </View>
-        <Animated.Text style={[styles.sub, taglineStyle]}>
-          Ship smart. Print fast.
+        <Animated.Text
+          style={[
+            styles.sub,
+            isLogin && styles.subLogin,
+            taglineStyle,
+          ]}
+        >
+          {isLogin ? "Welcome back" : "Ship smart. Print fast."}
         </Animated.Text>
       </Animated.View>
 
       {/* ── Phase B ─────────────────────────────────────── */}
-      <Animated.View style={[styles.phaseLayer, phaseBStyle]}>
-        <Text style={styles.kickerBrand}>POWERED BY</Text>
+      <Animated.View
+        style={[
+          styles.phaseLayer,
+          isLogin && styles.phaseLayerLogin,
+          phaseBStyle,
+        ]}
+      >
+        {isLogin ? null : (
+          <Text style={styles.kickerBrand}>POWERED BY</Text>
+        )}
         <Animated.Image
           source={require("../assets/brand/shippzo_logo.png")}
-          style={[styles.logo, logoStyle]}
+          style={[styles.logo, isLogin && styles.logoLogin, logoStyle]}
           resizeMode="contain"
         />
-        <Animated.Text style={[styles.subBrand, taglineStyle]}>
-          Run your shipping on{" "}
-          <Text style={styles.subBrandAccent}>autopilot.</Text>
+        <Animated.Text
+          style={[
+            styles.subBrand,
+            isLogin && styles.subLogin,
+            taglineStyle,
+          ]}
+        >
+          {isLogin ? (
+            "Welcome back"
+          ) : (
+            <>
+              Run your shipping on{" "}
+              <Text style={styles.subBrandAccent}>autopilot.</Text>
+            </>
+          )}
         </Animated.Text>
       </Animated.View>
     </View>
@@ -187,6 +250,15 @@ const styles = StyleSheet.create({
     justifyContent: "flex-start",
     position: "relative",
   },
+  // Login variant — wider + taller + centered so the auth screen
+  // greeting feels prominent and balanced above the form card.
+  blockLogin: {
+    minWidth: "100%",
+    width: "100%",
+    height: LOGIN_BLOCK_HEIGHT,
+    alignItems: "center",
+    justifyContent: "center",
+  },
   phaseLayer: {
     position: "absolute",
     top: 0,
@@ -194,6 +266,11 @@ const styles = StyleSheet.create({
     right: 0,
     bottom: 0,
     justifyContent: "flex-start",
+  },
+  // Login layer centres its content vertically and horizontally.
+  phaseLayerLogin: {
+    alignItems: "center",
+    justifyContent: "center",
   },
   kicker: {
     fontSize: 10,
@@ -212,23 +289,41 @@ const styles = StyleSheet.create({
     alignItems: "center",
     marginTop: 2,
   },
+  titleRowLogin: {
+    marginTop: 0,
+    justifyContent: "center",
+  },
   title: {
     fontSize: 28,
     fontWeight: "800",
     color: colors.text,
   },
+  // Login: bigger + centered Hello title.
+  titleLogin: {
+    fontSize: 38,
+    letterSpacing: -0.5,
+  },
   wave: {
     fontSize: 26,
     // Apparent baseline correction for the emoji glyph on Android.
     marginTop: Platform.OS === "android" ? -2 : 0,
-    // Animations rotate around the middle-left bottom of the hand —
-    // React Native defaults the origin to the view's center which is
-    // already correct for our use-case.
+  },
+  waveLogin: {
+    fontSize: 36,
   },
   sub: {
     color: colors.textMuted,
     marginTop: 2,
     fontSize: 13,
+  },
+  // Login sub = "Welcome back" — bigger, centered, subtle.
+  subLogin: {
+    marginTop: 8,
+    fontSize: 16,
+    color: colors.textMuted,
+    textAlign: "center",
+    fontWeight: "500",
+    fontStyle: "normal",
   },
   logo: {
     marginTop: 4,
@@ -238,6 +333,13 @@ const styles = StyleSheet.create({
     ...(Platform.OS === "web"
       ? { imageRendering: "high-quality" as any }
       : {}),
+  },
+  // Login logo is prominent and centered.
+  logoLogin: {
+    marginTop: 0,
+    width: 230,
+    height: 42,
+    alignSelf: "center",
   },
   subBrand: {
     marginTop: 6,

@@ -9,6 +9,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { useAuth } from "../../lib/auth";
 import { colors } from "../../lib/theme";
 import GoogleSignInButton from "../../components/GoogleSignInButton";
+import BrandHeaderAnimator from "../../components/BrandHeaderAnimator";
 
 export default function LoginScreen() {
   const { signIn } = useAuth();
@@ -45,9 +46,7 @@ export default function LoginScreen() {
       >
         <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
           <View style={styles.brand}>
-            <Ionicons name="cube-outline" size={36} color={colors.primary} />
-            <Text style={styles.brandTitle}>Courier Manager</Text>
-            <Text style={styles.brandSub}>Welcome back</Text>
+            <BrandHeaderAnimator variant="login" />
           </View>
 
           <View style={styles.card}>
