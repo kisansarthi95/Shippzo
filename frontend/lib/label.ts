@@ -416,29 +416,40 @@ export function buildLabelHtml(
   // A6 printable area with 3mm page margins = 99mm × 142mm.
   // A4 printable area with 5mm page margins = 200mm × 287mm.
   // Thermal 100×150mm with 2mm margins = 96mm × 146mm.
+  // iOS PAGE-BREAK FIX (2026-04-30): replaced the legacy
+  // `page-break-after: always` on every .sheet with a `.sheet + .sheet
+  // { page-break-before: always }` rule. The old directive caused
+  // iOS 14+ WebKit (expo-print on iPhone) to emit a trailing blank
+  // page after every label — total pages doubled (3 labels → 6 PDF
+  // pages, alternating content/blank). Chrome on Android correctly
+  // ignored the final break, so Android output was never affected.
+  // The "before-next-sheet" variant is semantically identical for
+  // Android but removes the trailing break for iOS. The layout,
+  // dimensions, borders, paddings, and visible content are 100%
+  // unchanged on both platforms.
   const gridCss =
     perPage === 4
       ? `.sheet { display: block; width: 99mm; height: 142mm;
-                   page-break-after: always; break-after: page;
                    page-break-inside: avoid; break-inside: avoid;
                    overflow: hidden; }
+         .sheet + .sheet { page-break-before: always; break-before: page; }
          .label { width: 99mm; height: 142mm; }`
       : perPage === 2
       ? `.sheet { display: grid; grid-template-columns: 1fr;
                    grid-template-rows: 1fr 1fr;
-                   page-break-after: always; break-after: page;
                    gap: 2mm; width: 200mm; height: 287mm; overflow: hidden; }
+         .sheet + .sheet { page-break-before: always; break-before: page; }
          .label { height: 142mm; width: 100%; }`
       : perPage === 1
       ? `.sheet { display: block; width: 200mm; height: 287mm;
-                   page-break-after: always; break-after: page;
                    page-break-inside: avoid; break-inside: avoid;
                    overflow: hidden; }
+         .sheet + .sheet { page-break-before: always; break-before: page; }
          .label { height: 287mm; width: 100%; }`
       : `.sheet { display: block; width: 96mm; height: 146mm;
-                   page-break-after: always; break-after: page;
                    page-break-inside: avoid; break-inside: avoid;
                    overflow: hidden; }
+         .sheet + .sheet { page-break-before: always; break-before: page; }
          .label { height: 146mm; width: 96mm; }`;
 
   const pageCss =
