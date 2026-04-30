@@ -6496,11 +6496,11 @@ agent_communication:
 backend:
   - task: "Sheet Header Auto-Sync + Per-user Custom Fields CRUD + plan-gating"
     implemented: true
-    working: "NA"
+    working: true
     file: "/app/backend/server.py, /app/backend/sheet_writer.py, /app/backend/feature_registry.py"
     stuck_count: 0
     priority: "high"
-    needs_retesting: true
+    needs_retesting: false
     status_history:
         -working: "NA"
         -agent: "main"
