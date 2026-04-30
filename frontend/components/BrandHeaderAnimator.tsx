@@ -222,21 +222,18 @@ export default function BrandHeaderAnimator({
           style={[styles.logo, isLogin && styles.logoLogin, logoStyle]}
           resizeMode="contain"
         />
+        {/* Phase B tagline is ALWAYS the Shippzo slogan — same
+            wording and orange accent on "autopilot." for both Home
+            and Login variants. Only the wrapper style differs. */}
         <Animated.Text
           style={[
             styles.subBrand,
-            isLogin && styles.subLogin,
+            isLogin && styles.subBrandLogin,
             taglineStyle,
           ]}
         >
-          {isLogin ? (
-            "Welcome back"
-          ) : (
-            <>
-              Run your shipping on{" "}
-              <Text style={styles.subBrandAccent}>autopilot.</Text>
-            </>
-          )}
+          Run your shipping on{" "}
+          <Text style={styles.subBrandAccent}>autopilot.</Text>
         </Animated.Text>
       </Animated.View>
     </View>
@@ -347,6 +344,13 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: "600",
     fontStyle: "italic",
+  },
+  // Login Phase B tagline — same italic + orange-accent style as
+  // Home but bigger + centered so it balances the larger logo above.
+  subBrandLogin: {
+    marginTop: 10,
+    fontSize: 14,
+    textAlign: "center",
   },
   subBrandAccent: {
     color: "#FF5A00",
