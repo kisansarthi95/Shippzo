@@ -54,9 +54,9 @@ function computeBudgetUsed(params: {
 // Professional templates with blank lines for breathing room
 const PRESETS = {
   wa_gujarati: (
-    "નમસ્તે {customer_name} 🙏\n" +
+    "Hello {customer_name} 🙏\n" +
     "\n" +
-    "તમારો ઓર્ડર #{order_id} સફળતાપૂર્વક મોકલવામાં આવ્યો છે.\n" +
+    "Your order #{order_id} has been shipped successfully.\n" +
     "\n" +
     "📦 Courier: {courier}\n" +
     "🔖 Tracking ID: {tracking_id}\n" +
@@ -64,9 +64,9 @@ const PRESETS = {
     "🔗 Track your order:\n" +
     "{tracking_url}\n" +
     "\n" +
-    "⏱ અપેક્ષિત ડિલિવરી: {eta_days} દિવસ\n" +
+    "⏱ Estimated delivery: {eta_days} days\n" +
     "\n" +
-    "આભાર!"
+    "Thank you!"
   ),
   wa_english: (
     "Hi {customer_name} 👋\n" +
@@ -962,7 +962,7 @@ export default function SettingsScreen() {
               onPress={() => {
                 Alert.alert(
                   "Clear demo data?",
-                  "આ તમારા 15 demo shipments હટાવી દેશે. તમારી real shipments ને અસર નહીં થાય.",
+                  "This will remove your 15 demo shipments. Your real shipments will not be affected.",
                   [
                     { text: "Cancel", style: "cancel" },
                     {
@@ -992,7 +992,7 @@ export default function SettingsScreen() {
               testID="sign-out-btn"
               style={[styles.dangerBtn, { marginTop: 8 }]}
               onPress={() => {
-                Alert.alert("Sign out?", "તમારે ફરી login કરવું પડશે.", [
+                Alert.alert("Sign out?", "You'll need to log in again.", [
                   { text: "Cancel", style: "cancel" },
                   {
                     text: "Sign out",
@@ -1020,7 +1020,7 @@ export default function SettingsScreen() {
                 <Text style={styles.spaiBadgeTxt}>AI powered</Text>
               </View>
               <Text style={styles.spaiHint}>
-                WhatsApp નો customer message અહીંયા paste કરો — form આપોઆપ ભરાઈ જશે. તમારા વ્યવસાય પ્રમાણે પોતાની instructions પણ રાખી શકો.
+                Paste customer's WhatsApp message here — the form will auto-fill. You can keep your own custom instructions for your business.
               </Text>
             </View>
 
@@ -1028,7 +1028,7 @@ export default function SettingsScreen() {
               <View style={{ flex: 1 }}>
                 <Text style={styles.toggleLbl}>Enable AI parser</Text>
                 <Text style={styles.toggleSub}>
-                  OFF કરશો તો regex fallback વાપરશે (free, no credits).
+                  If OFF, regex fallback is used (free, no credits).
                 </Text>
               </View>
               <Switch
@@ -1067,7 +1067,7 @@ export default function SettingsScreen() {
               <View style={{ flex: 1 }}>
                 <Text style={styles.toggleLbl}>Auto-fill in New Shipment</Text>
                 <Text style={styles.toggleSub}>
-                  ON: New Shipment form ખુલતા જ auto-generate થયેલ Order ID form માં આવી જશે. OFF: form input ખાલી રહેશે — જો જરૂર હોય તો તમે પોતાનો custom ID ટાઇપ કરો.
+                  ON: When the New Shipment form opens, the auto-generated Order ID is filled in automatically. OFF: The form input stays blank — type your own custom ID if needed.
                 </Text>
               </View>
               <Switch
@@ -1102,7 +1102,7 @@ export default function SettingsScreen() {
                   ) : null}
                 </Text>
                 <Text style={[styles.toggleSub, { marginTop: 4 }]}>
-                  જૂના 2200 parcels પછી શરૂ કરવા જેવા cases માટે — input માં 2200 લખીને Set દબાવો, પછી next allocation `{(oidCounterNextPreview || "").slice(0, 6)}02201` થશે. YYMMDD prefix આપોઆપ આજની તારીખ રહેશે.
+                  Useful for cases like starting after 2200 existing parcels — type 2200 in the input and tap Set; the next allocation will be `{(oidCounterNextPreview || "").slice(0, 6)}02201`. The YYMMDD prefix automatically reflects today's date.
                 </Text>
               </View>
               <View style={{ flexDirection: "row", gap: 8, alignItems: "center" }}>
@@ -1192,7 +1192,7 @@ export default function SettingsScreen() {
 
             <Text style={styles.fieldLabel}>Your custom instructions (optional)</Text>
             <Text style={styles.fieldHelp}>
-              આ text તમારા default ShipBot rules પહેલા inject થશે. દા.ત. "Always use ODC3 as default item", "Ignore 'Rush order' keyword", વગેરે.
+              This text is injected before your default ShipBot rules. e.g. "Always use ODC3 as default item", "Ignore 'Rush order' keyword", etc.
             </Text>
             <TextInput
               testID="spai-instructions-input"
@@ -1368,7 +1368,7 @@ export default function SettingsScreen() {
           {(user as any)?.is_admin ? (
           <Section title="AI Processing Charges" icon="pricetags-outline">
             <Text style={styles.spaiHint}>
-              દરેક shipment પર AI એડ્રેસ check માટે જે credits કાપવા છે તે અહીં સેટ કરો. Max cap 2.0 credits/order (spec).
+              Set the credits to deduct per shipment for AI address checks. Max cap is 2.0 credits/order (spec).
             </Text>
             <View style={styles.rateGrid}>
               <View style={[styles.rateCell, { borderColor: "#04785755" }]}>
@@ -1430,7 +1430,7 @@ export default function SettingsScreen() {
               </View>
             </View>
             <Text style={styles.rateNote}>
-              ⚠️ Max per-order cap 2.0 — values above 2.0 server-side clamp થશે.
+              ⚠️ Max per-order cap 2.0 — values above 2.0 are clamped server-side.
             </Text>
             <View style={styles.spaiActions}>
               <TouchableOpacity
@@ -1466,7 +1466,7 @@ export default function SettingsScreen() {
           {flagSheetImport ? (
           <Section title="Google Sheet (Orders source)" icon="logo-google">
             <Text style={[styles.hint, { marginTop: -2, marginBottom: 8, color: "#1E3A8A", fontWeight: "700" }]}>
-              App delete થાય તો પણ orders safe રહેશે
+              Your orders stay safe even if the app is uninstalled
             </Text>
             {/* Phase-5: Service Account share panel — keeps user's
                 Sheet PRIVATE. Shown only on the connect view (not when
@@ -1601,7 +1601,7 @@ export default function SettingsScreen() {
                       Auto-Sync to Your Sheet  ·  Coming Soon
                     </Text>
                     <Text style={{ fontSize: 11, color: "#78350F", marginTop: 2 }}>
-                      દરેક નવો order આપોઆપ તમારી પોતાની sheet માં લખાય — Premium plan માં available થશે. હાલ "Restore My Orders" થી manual pull કરો.
+                      Every new order is automatically written to your own sheet — coming with the Premium plan. For now, use "Restore My Orders" to pull manually.
                     </Text>
                   </View>
                   <View
@@ -1633,9 +1633,9 @@ export default function SettingsScreen() {
                   onPress={async () => {
                     Alert.alert(
                       "Restore My Orders",
-                      "કેવી રીતે restore કરવા છે?\n\n" +
-                      "• Full Restore: બધા orders નવેસરથી load થશે — existing data replace થશે.\n\n" +
-                      "• Add Missing Orders: ફક્ત missing orders add થશે — existing data safe રહેશે.",
+                      "How would you like to restore?\n\n" +
+                      "• Full Restore: All orders are reloaded from scratch — existing data will be replaced.\n\n" +
+                      "• Add Missing Orders: Only missing orders are added — existing data stays safe.",
                       [
                         { text: "Cancel", style: "cancel" },
                         {
@@ -2565,7 +2565,7 @@ export default function SettingsScreen() {
                   testID="preset-wa-gu"
                 >
                   <Ionicons name="sparkles-outline" size={13} color={colors.primary} />
-                  <Text style={styles.presetText}>ગુજરાતી Professional</Text>
+                  <Text style={styles.presetText}>Gujarati Professional</Text>
                 </TouchableOpacity>
                 <TouchableOpacity
                   style={styles.presetBtn}
@@ -2861,7 +2861,7 @@ export default function SettingsScreen() {
             </View>
             <Text style={styles.unsavedTitle}>Unsaved changes</Text>
             <Text style={styles.unsavedBody}>
-              તમે કેટલાક ફેરફાર કર્યા છે પણ હજી save નથી કર્યા. શું કરવા માંગો છો?
+              You've made some changes but haven't saved yet. What would you like to do?
             </Text>
 
             <TouchableOpacity
@@ -4164,6 +4164,10 @@ const styles = StyleSheet.create({
   unsavedBtnGhostTxt: {
     color: colors.textMuted,
     fontWeight: "700",
+    fontSize: 14,
+  },
+});
+ight: "700",
     fontSize: 14,
   },
 });

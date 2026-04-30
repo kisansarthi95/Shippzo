@@ -742,7 +742,7 @@ export default function Shipments() {
         ListEmptyComponent={
           <View style={styles.empty} testID="empty-shipments">
             <Ionicons name="cube-outline" size={48} color="#9CA3AF" />
-            <Text style={styles.emptyText}>કોઈ shipment નથી મળી.</Text>
+            <Text style={styles.emptyText}>No shipments found.</Text>
             <TouchableOpacity
               testID="empty-new-shipment" style={styles.primaryBtn}
               onPress={() => router.push("/(tabs)/add")}

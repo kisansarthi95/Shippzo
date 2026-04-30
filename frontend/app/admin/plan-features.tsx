@@ -157,7 +157,7 @@ export default function AdminPlanFeaturesScreen() {
     }
     Alert.alert(
       "Unsaved changes",
-      "તમે કેટલાક ફેરફાર કર્યા છે. શું કરવા માંગો છો?",
+      "You've made some changes. What would you like to do?",
       [
         { text: "Keep editing", style: "cancel" },
         {

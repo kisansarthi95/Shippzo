@@ -586,7 +586,7 @@ export default function Dashboard() {
       <View style={styles.header}>
         <View>
           <Text style={styles.headerKicker}>COURIER LABEL MANAGER</Text>
-          <Text style={styles.headerTitle}>નમસ્તે 👋</Text>
+          <Text style={styles.headerTitle}>Hello 👋</Text>
           <Text style={styles.headerSub}>Ship smart. Print fast.</Text>
         </View>
         <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>

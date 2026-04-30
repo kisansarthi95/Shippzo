@@ -457,8 +457,8 @@ export default function AddShipment() {
         // City / State / Pincode arrive as separate fields from upstream
         // (Smart Paste AI / Pending Orders / Sheet) and are NEVER parsed
         // out of the address string. This kills the recurring truncation
-        // bug where "ગામ, રામવાવ તા. રાપર જી.કચ્છ" was getting cut to
-        // just "ગામ" because a comma was being interpreted as a city
+        // bug where "Village, Ramvav Ta. Rapar Ji.Kachchh" was getting cut to
+        // just "Village" because a comma was being interpreted as a city
         // boundary.
         setAddr1(fullAddressFrom(o));
         setAddr2("");
