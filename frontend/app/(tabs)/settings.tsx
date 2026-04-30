@@ -583,8 +583,18 @@ export default function SettingsScreen() {
     let cancelled = false;
     (async () => {
       try {
-        const w = await Api.getWallet();
-        if (!cancelled) setWalletBal(typeof w?.balance === "number" ? w.balance : 0);
+        const w: any = await Api.getWallet();
+        // Wallet API returns `remaining_credits` (not `balance`). The
+        // old code read w?.balance which was always undefined → the
+        // billing tile silently rendered ₹0 while the /wallet screen
+        // correctly showed the real credit balance. Fixed to match.
+        const bal =
+          typeof w?.remaining_credits === "number"
+            ? w.remaining_credits
+            : typeof w?.balance === "number"
+              ? w.balance
+              : 0;
+        if (!cancelled) setWalletBal(bal);
       } catch {
         if (!cancelled) setWalletBal(0);
       }
@@ -1356,7 +1366,12 @@ export default function SettingsScreen() {
             <View style={{ flex: 1 }}>
               <Text style={styles.walletLabel}>Credit Wallet</Text>
               <Text style={styles.walletBalance}>
-                {walletBal != null ? `₹${walletBal.toLocaleString("en-IN")}` : "Tap to view"}
+                {walletBal != null
+                  ? `${walletBal.toLocaleString("en-IN", {
+                      minimumFractionDigits: walletBal % 1 === 0 ? 0 : 2,
+                      maximumFractionDigits: 2,
+                    })} credits`
+                  : "Tap to view"}
               </Text>
             </View>
             <Ionicons name="chevron-forward" size={22} color="#94A3B8" />
