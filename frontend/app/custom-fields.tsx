@@ -52,6 +52,7 @@ export default function CustomFieldsScreen() {
   const [type, setType] = useState<"text" | "number" | "date">("text");
   const [showForm, setShowForm] = useState(true);
   const [showSmart, setShowSmart] = useState(true);
+  const [required, setRequired] = useState(false);
   const [saving, setSaving] = useState(false);
 
   const load = useCallback(async () => {
@@ -77,6 +78,7 @@ export default function CustomFieldsScreen() {
     setType("text");
     setShowForm(true);
     setShowSmart(true);
+    setRequired(false);
     setModalOpen(true);
   };
 
@@ -87,6 +89,7 @@ export default function CustomFieldsScreen() {
     setType(f.field_type);
     setShowForm(f.show_in_form);
     setShowSmart(f.show_in_smart_paste);
+    setRequired(!!f.required);
     setModalOpen(true);
   };
 
@@ -108,6 +111,7 @@ export default function CustomFieldsScreen() {
         field_type: type,
         show_in_form: showForm,
         show_in_smart_paste: showSmart,
+        required: required,
       };
       if (editing) {
         await Api.updateMyCustomField(editing.id, payload);
@@ -221,6 +225,7 @@ export default function CustomFieldsScreen() {
                   Col {f.column_letter} · {f.field_type} ·{" "}
                   {f.show_in_form ? "Form✓" : "Form✗"} ·{" "}
                   {f.show_in_smart_paste ? "Paste✓" : "Paste✗"}
+                  {f.required ? "  ·  Required" : ""}
                 </Text>
               </View>
               <TouchableOpacity
@@ -329,6 +334,15 @@ export default function CustomFieldsScreen() {
             <View style={styles.row}>
               <Text style={styles.fieldLbl}>Show in Smart Paste summary</Text>
               <Switch value={showSmart} onValueChange={setShowSmart} />
+            </View>
+            <View style={styles.row}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.fieldLbl}>Required (mandatory)</Text>
+                <Text style={[styles.hint, { marginTop: 2 }]}>
+                  When ON, save is blocked until this field has a value.
+                </Text>
+              </View>
+              <Switch value={required} onValueChange={setRequired} />
             </View>
 
             <View style={{ flexDirection: "row", gap: 8, marginTop: 16 }}>

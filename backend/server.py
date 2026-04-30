@@ -760,6 +760,30 @@ class CustomLabelField(BaseModel):
     placeholder: str = ""
 
 
+# Phase-8: Per-field "Required" toggles. Same dict shape used in
+# Settings.field_requirements + sent verbatim to the frontend so
+# Smart Paste & New Shipment forms can dynamically validate.
+# Built-in fields use the snake_case shipment schema keys; user
+# Custom Fields use their `user_custom_fields.id` and live in their
+# own `required` column on the doc (NOT in this dict).
+DEFAULT_FIELD_REQUIREMENTS: Dict[str, bool] = {
+    "customer_name":      True,
+    "customer_phone":     True,
+    "customer_alt_phone": False,
+    "address_line1":      True,
+    "city":               True,
+    "state":              True,
+    "pincode":            True,
+    "items":              False,
+    "amount":             True,
+    "payment_mode":       True,
+    "token_amount":       False,  # conditional — required only when COD
+    "courier_name":       False,
+    "order_id":           False,
+    "weight":             True,
+    "notes":              False,
+}
+
 
 class Settings(BaseModel):
     id: str = "default"
@@ -802,6 +826,17 @@ class Settings(BaseModel):
     # OFF independently.
     order_id_autofill_in_new_shipment: bool = True
 
+    # Phase-8: Per-field "Required" toggles. Maps the canonical field
+    # key (e.g. "customer_name", "customer_phone", "weight") to a
+    # boolean — true means the Smart Paste summary modal AND the New
+    # Shipment manual form will both block save when blank, false
+    # means optional. Built-in defaults match the previous hardcoded
+    # REQUIRED list, so existing users see no change until they
+    # tweak Settings → Field Requirements.
+    field_requirements: Dict[str, bool] = Field(
+        default_factory=lambda: dict(DEFAULT_FIELD_REQUIREMENTS),
+    )
+
 
 class SettingsUpdate(BaseModel):
     sender: Optional[SenderAddress] = None
@@ -822,6 +857,7 @@ class SettingsUpdate(BaseModel):
     ai_cost_complex: Optional[float] = None
     order_id_auto_generate: Optional[bool] = None
     order_id_autofill_in_new_shipment: Optional[bool] = None
+    field_requirements: Optional[Dict[str, bool]] = None
 
 
 class Shipment(BaseModel):
@@ -1251,6 +1287,20 @@ async def update_settings(
         update["order_id_autofill_in_new_shipment"] = bool(
             payload.order_id_autofill_in_new_shipment
         )
+    # Phase-8: Per-field "Required" toggles. Caller may send a partial
+    # dict — we MERGE it onto the existing one so toggling one field
+    # never resets the rest. Unknown keys (not in DEFAULT_FIELD_
+    # REQUIREMENTS) are silently dropped to keep the dict clean.
+    if payload.field_requirements is not None:
+        existing_doc = await db.settings.find_one(
+            {"user_id": current_user["id"]},
+            {"_id": 0, "field_requirements": 1},
+        ) or {}
+        merged = dict(existing_doc.get("field_requirements") or DEFAULT_FIELD_REQUIREMENTS)
+        for k, v in (payload.field_requirements or {}).items():
+            if k in DEFAULT_FIELD_REQUIREMENTS:
+                merged[k] = bool(v)
+        update["field_requirements"] = merged
     # Phase-4b+: AI credit rate card — clamp 0 ≤ x ≤ 2 (spec cap).
     for _f in ("ai_cost_simple", "ai_cost_medium", "ai_cost_complex"):
         _v = getattr(payload, _f)
@@ -3941,6 +3991,7 @@ class CustomFieldCreate(BaseModel):
     field_type: str = "text"   # text | number | date
     show_in_form: bool = True
     show_in_smart_paste: bool = True
+    required: bool = False     # Phase-8: enforces non-empty at save
     sort_order: int = 0
 
 
@@ -3950,6 +4001,7 @@ class CustomFieldUpdate(BaseModel):
     field_type: Optional[str] = None
     show_in_form: Optional[bool] = None
     show_in_smart_paste: Optional[bool] = None
+    required: Optional[bool] = None
     sort_order: Optional[int] = None
     active: Optional[bool] = None
 
@@ -4025,6 +4077,7 @@ async def create_my_custom_field(
         "field_type": (payload.field_type or "text").lower(),
         "show_in_form": bool(payload.show_in_form),
         "show_in_smart_paste": bool(payload.show_in_smart_paste),
+        "required": bool(payload.required),
         "sort_order": int(payload.sort_order or 0),
         "active": True,
         "created_at": utcnow_iso(),
@@ -4073,6 +4126,8 @@ async def update_my_custom_field(
         updates["show_in_form"] = bool(payload.show_in_form)
     if payload.show_in_smart_paste is not None:
         updates["show_in_smart_paste"] = bool(payload.show_in_smart_paste)
+    if payload.required is not None:
+        updates["required"] = bool(payload.required)
     if payload.sort_order is not None:
         updates["sort_order"] = int(payload.sort_order)
     if payload.active is not None:

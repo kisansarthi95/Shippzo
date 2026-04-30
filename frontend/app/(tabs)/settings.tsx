@@ -1826,6 +1826,21 @@ export default function SettingsScreen() {
                   <Ionicons name="layers-outline" size={18} color="#fff" />
                   <Text style={styles.saveBtnText}>Manage Custom Fields</Text>
                 </TouchableOpacity>
+                <TouchableOpacity
+                  testID="sheet-field-requirements-btn"
+                  onPress={() => router.push("/field-requirements")}
+                  style={[
+                    styles.saveBtn,
+                    { marginTop: 8, backgroundColor: "#0EA5E9" },
+                  ]}
+                >
+                  <Ionicons name="checkmark-done-outline" size={18} color="#fff" />
+                  <Text style={styles.saveBtnText}>Field Requirements</Text>
+                </TouchableOpacity>
+                <Text style={styles.toggleSub}>
+                  Choose which fields are required (mandatory) when saving a
+                  shipment via Smart Paste or the New Shipment form.
+                </Text>
               </View>
             )}
           </Section>

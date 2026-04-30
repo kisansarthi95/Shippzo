@@ -156,6 +156,16 @@ export type Settings = {
   shipment_tagline?: string;
   label_fields?: LabelFields;
   custom_fields?: CustomLabelField[];
+  // Phase-8: Per-field "Required" toggles. Keys are snake_case
+  // shipment schema field names (customer_name, customer_phone,
+  // weight, etc). Missing keys fall back to defaults on the server.
+  field_requirements?: Record<string, boolean>;
+  // (Other Settings fields exist server-side but aren't typed here
+  //  as they're consumed via raw field access where needed.)
+  smart_paste_instructions?: string;
+  smart_paste_ai_enabled?: boolean;
+  order_id_auto_generate?: boolean;
+  order_id_autofill_in_new_shipment?: boolean;
 };
 
 export type Shipment = {
@@ -856,6 +866,7 @@ export type CustomField = {
   field_type: "text" | "number" | "date";
   show_in_form: boolean;
   show_in_smart_paste: boolean;
+  required: boolean;
   sort_order: number;
   active: boolean;
   created_at: string;

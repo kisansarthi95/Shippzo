@@ -156,6 +156,8 @@ export default function AddShipment() {
   const [customValues, setCustomValues] = useState<Record<string, string>>({});
 
   const [sheetConnected, setSheetConnected] = useState(false);
+  // Phase-8: per-field "Required" toggles loaded from settings.
+  const [fieldReqs, setFieldReqs] = useState<Record<string, boolean>>({});
   const [showImport, setShowImport] = useState(false);
   const [importLoading, setImportLoading] = useState(false);
   const [importOrders, setImportOrders] = useState<SheetOrder[]>([]);
@@ -175,6 +177,7 @@ export default function AddShipment() {
       // Intentionally DO NOT auto-select a default courier. User must pick.
       setSheetConnected(Boolean(settings.sheet?.sheet_id));
       setCustomFields(((settings as any).custom_fields || []) as any[]);
+      setFieldReqs(((settings as any).field_requirements || {}) as Record<string, boolean>);
       // Per-user custom fields (plan-gated, defined in Manage Custom Fields).
       // Loaded best-effort — never blocks the form.
       Api.listMyCustomFields()
@@ -732,9 +735,51 @@ export default function AddShipment() {
         Alert.alert("Validation", "Customer name is required");
         return;
       }
-      // Weight is mandatory — couriers refuse parcels without weight, and
-      // rate calculation depends on it.
-      if (!weight.trim()) {
+      // Phase-8: Dynamic per-field requirements honour Settings →
+      // Field Requirements. A small "isReq" helper checks the user
+      // setting first, falling back to legacy hardcoded defaults.
+      const HARDCODED_REQS: Record<string, boolean> = {
+        customer_name: true, customer_phone: true,
+        address_line1: true, city: true, state: true,
+        pincode: true, amount: true, payment_mode: true,
+        weight: true, customer_alt_phone: false, items: false,
+        courier_name: false, order_id: false, notes: false,
+        token_amount: false,
+      };
+      const isReq = (k: string) =>
+        k in fieldReqs ? !!fieldReqs[k] : !!HARDCODED_REQS[k];
+
+      const missing: string[] = [];
+      if (isReq("customer_phone") && !customerPhone.trim()) missing.push("Mobile");
+      if (isReq("address_line1") && !addr1.trim()) missing.push("Address");
+      if (isReq("city") && !city.trim()) missing.push("City");
+      if (isReq("state") && !state.trim()) missing.push("State");
+      if (isReq("pincode") && !pincode.trim()) missing.push("Pincode");
+      if (isReq("amount") && !(Number(amount) > 0)) missing.push("Amount");
+      if (isReq("items")) {
+        const _items = itemsText
+          .split(/\n|,|;/)
+          .map((s) => s.trim())
+          .filter(Boolean);
+        if (_items.length === 0) missing.push("Item(s)");
+      }
+      if (isReq("courier_name") && !selectedCourier) missing.push("Courier");
+      if (isReq("order_id") && !orderId.trim()) missing.push("Order ID");
+      if (isReq("notes") && !shipmentNotes.trim()) missing.push("Notes");
+      // Custom Fields with required:true
+      for (const ucf of userCustomFields as any[]) {
+        if (ucf?.required && !String(userCustomValues[ucf.id] ?? "").trim()) {
+          missing.push(ucf.name);
+        }
+      }
+      if (missing.length > 0) {
+        Alert.alert("Please fill required fields", missing.join(", "));
+        return;
+      }
+      // Weight (when required by settings — defaults true) must be
+      // non-blank. Couriers refuse parcels without weight, and rate
+      // calc depends on it.
+      if (isReq("weight") && !weight.trim()) {
         Alert.alert(
           "Weight required",
           "Please enter the parcel weight before saving. Couriers cannot accept a shipment without weight.",

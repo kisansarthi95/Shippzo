@@ -7580,3 +7580,191 @@ agent_communication:
         Test artefacts cleaned up (6 pending orders + 1 custom
         field deleted). Main agent can proceed to summarise & finish.
 
+
+agent_communication:
+    -agent: "main"
+    -message: |
+        Phase-8: Per-field "Required" (mandatory) toggles — backend
+        wiring complete. Awaiting verification that the backend
+        endpoints accept and persist the new fields correctly.
+
+        BACKEND CHANGES (server.py only):
+        1. New module-level constant DEFAULT_FIELD_REQUIREMENTS
+           (snake_case shipment keys → bool). Built-in defaults match
+           the legacy hardcoded REQ list.
+        2. Settings model: added
+             field_requirements: Dict[str, bool] = Field(default_factory=...)
+        3. SettingsUpdate model: added
+             field_requirements: Optional[Dict[str, bool]] = None
+        4. PUT /api/settings handler now MERGES (not replaces) the
+           incoming partial dict onto the existing one, dropping
+           any keys not in DEFAULT_FIELD_REQUIREMENTS.
+        5. CustomFieldCreate / CustomFieldUpdate: added
+             required: bool = False (Create) / Optional[bool] (Update)
+        6. POST /api/me/custom-fields persists `required` flag onto
+           the new doc; PUT /api/me/custom-fields/{id} accepts and
+           updates the same flag.
+
+        FRONTEND CHANGES (already implemented but NOT under test):
+        - lib/api.ts: CustomField type now includes `required: boolean`;
+          Settings type now exposes `field_requirements?: Record<string,boolean>`.
+        - app/field-requirements.tsx (NEW): centralized list with
+          built-in fields + active custom fields, optimistic Switch
+          toggles that PUT /settings or PUT /me/custom-fields/{id}.
+        - app/custom-fields.tsx: "Required (mandatory)" Switch added
+          to add/edit modal, list card now shows "Required" tag.
+        - app/(tabs)/settings.tsx: new "Field Requirements" CTA in
+          the Sheet section.
+        - app/(tabs)/index.tsx (Smart Paste): REQ/OPT lists now
+          built dynamically from settings.field_requirements; save
+          button validation also honours custom-field `required:true`
+          and reports missing fields by friendly label.
+        - app/(tabs)/add.tsx (New Shipment): same dynamic REQ logic,
+          plus all built-in field validations (Mobile, Address, City,
+          State, Pincode, Amount, Item(s), Courier, Order ID, Notes,
+          Weight) gated by `isReq()`. Custom-field required:true
+          fields added to the missing-fields alert.
+
+        TESTING REQUEST (backend only — DO NOT TEST FRONTEND):
+        1. Confirm GET /api/settings returns the new
+           `field_requirements` dict with the default values matching
+           DEFAULT_FIELD_REQUIREMENTS for a freshly-seeded user
+           (admin@test.com / Admin@12345 OR user2@test.com /
+           User@12345).
+        2. PUT /api/settings with body `{"field_requirements":
+           {"customer_alt_phone": true}}` should:
+             - return 200
+             - response.field_requirements should contain
+               customer_alt_phone=true AND keep all the other defaults
+               unchanged (this is the merge guarantee).
+        3. PUT /api/settings with body containing an unknown key
+           (e.g. `{"field_requirements": {"foo_bar": true}}`) should
+           silently drop the unknown key (200 OK, response.field_
+           requirements has no `foo_bar`).
+        4. POST /api/me/custom-fields with `required: true` should
+           persist the flag; GET /api/me/custom-fields should return
+           it. PUT /api/me/custom-fields/{id} with `required: false`
+           should toggle it back.
+        5. Backwards compat: existing POST /api/me/custom-fields
+           calls that DO NOT send `required` should default to false.
+
+        Frontend testing is NOT requested; user will verify in
+        Expo Go on their device.
+
+
+## Backend Test Run: Phase-8 Field Requirements Regression (2026-04-30)
+
+backend:
+  - task: "Phase-8 Per-field Required Toggles (Settings.field_requirements + CustomField.required)"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "testing"
+        -comment: |
+            All 82/82 assertions passed against
+            https://logistics-hub-740.preview.emergentagent.com/api
+            via /app/backend_test.py (focused regression — full suite
+            NOT executed per review instructions).
+
+            Coverage:
+
+            [1] GET /api/settings (user2@test.com)
+                ✅ Response contains `field_requirements` key (dict).
+                ✅ All 15 default keys present and equal to
+                   DEFAULT_FIELD_REQUIREMENTS (server.py:769):
+                   customer_name=True, customer_phone=True,
+                   customer_alt_phone=False, address_line1=True,
+                   city=True, state=True, pincode=True, items=False,
+                   amount=True, payment_mode=True, token_amount=False,
+                   courier_name=False, order_id=False, weight=True,
+                   notes=False.
+                ✅ No unknown keys leaked into the dict.
+
+            [2] PUT /api/settings {field_requirements:{customer_alt_phone:true}}
+                ✅ HTTP 200.
+                ✅ Response.field_requirements.customer_alt_phone=True.
+                ✅ All other 14 default keys preserved verbatim
+                   (merge-not-replace behaviour confirmed at
+                   server.py:1294-1303).
+                ✅ Re-toggle to {customer_alt_phone:false} flips just
+                   that one key; rest still untouched.
+
+            [3] PUT /api/settings {field_requirements:{foo_bar:true,
+                                                       weight:false}}
+                ✅ HTTP 200 (unknown key tolerated).
+                ✅ Response.field_requirements does NOT contain
+                   `foo_bar` — silently dropped by the
+                   `if k in DEFAULT_FIELD_REQUIREMENTS` filter.
+                ✅ Known key `weight` accepted and persisted as False
+                   (proves the dict was actually written, not just
+                   discarded wholesale).
+
+            [4] POST/GET/PUT /api/me/custom-fields `required` flag
+                NOTE: user2 plan=silver is gated out of custom_fields
+                ("Custom fields are not available on your plan."), so
+                this scenario was run with the admin token (admin
+                bypass — same code path, same models).
+                ✅ (4a) POST {name, column_letter:T, required:true} →
+                       200, body.required === true.
+                ✅ (4b) GET /me/custom-fields → list contains the new
+                       field with required === true.
+                ✅ (4c) PUT /me/custom-fields/{id} {required:false} →
+                       200, body.required === false.
+                ✅ (4d) POST {name, column_letter:U} (required omitted)
+                       → 200, body.required === false (default).
+                       Confirmed via subsequent GET as well.
+
+            [5] Backwards compat: PUT /api/settings without
+                field_requirements key
+                ✅ Pre-state seeded with
+                   {customer_alt_phone:true, notes:true}.
+                ✅ Unrelated PUT {shipment_tagline:"…"} → 200.
+                ✅ Response.field_requirements is BYTE-IDENTICAL to
+                   pre-state — none of the toggled flags were erased
+                   or reset to defaults. Confirms the `if payload.
+                   field_requirements is not None` guard at
+                   server.py:1294 protects the persisted dict.
+
+            Cleanup performed:
+            - Both test custom fields (col_a=T "GST Number (Phase8 test)"
+              and col_b=U "Optional Note (Phase8 test)") were deleted
+              via DELETE /me/custom-fields/{id}.
+            - user2's field_requirements reset to DEFAULTS at end of
+              run.
+
+            No mocks. All endpoints hit the live backend. No regressions
+            observed. Backend logs are clean (no errors during the run).
+
+agent_communication:
+    -agent: "testing"
+    -message: |
+        Phase-8 Field Requirements regression — ALL PASS (82/82).
+
+        Highlights:
+        • GET /settings exposes the full DEFAULT_FIELD_REQUIREMENTS
+          dict on first read for fresh users.
+        • PUT /settings field_requirements MERGES (not replaces) — a
+          single-key flip preserves the other 14.
+        • Unknown keys in field_requirements are silently dropped
+          (security/sanity guard works).
+        • Backwards compat: PUTs that omit field_requirements DO NOT
+          erase the persisted dict.
+        • Custom fields' `required` flag is correctly plumbed through
+          POST / GET / PUT /api/me/custom-fields and defaults to
+          false when omitted.
+
+        Note about plan gating: user2 (silver plan) cannot create
+        custom fields ("Custom fields are not available on your
+        plan."). This is unrelated to Phase-8 — it's the existing
+        feature-gate. Custom-field tests therefore ran under the
+        admin token (admin bypass), which exercises the same code
+        paths.
+
+        No regressions, no flaky behaviour, no manual cleanup needed
+        beyond what the script does itself.
+

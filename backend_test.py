@@ -1,343 +1,341 @@
 """
-Focused regression test for Smart Paste + Custom Fields wiring.
-
-Tests:
-1. BACKWARD COMPAT: POST /api/smart-paste WITHOUT custom_values returns 200
-   with custom_values: {} default.
-2. NEW HAPPY PATH: POST /api/smart-paste with custom_values: {<real_id>:"..."}
-   returns 200 and echoes the map back.
-3. HELPER SAFETY: POST /api/smart-paste with custom_values referencing
-   fake/unknown ids never raises; request still 200.
-4. /api/me/custom-fields GET shape; POST creates a new field whose id is
-   then usable as a custom_values key.
-5. PendingOrder doc includes top-level custom_values field — re-fetched
-   via GET /api/orders/pending.
+Phase-8 Per-Field "Required" Toggles — Backend Regression
+Targeted scope (per review request):
+  1. GET /api/settings → field_requirements default presence+values
+  2. PUT /api/settings field_requirements partial merge (single-key flip)
+  3. PUT /api/settings unknown key in field_requirements is silently dropped
+  4. POST/GET/PUT /api/me/custom-fields `required` field plumbing
+  5. Backwards compat: PUT /settings without field_requirements does NOT erase it
 """
-
-from __future__ import annotations
-
-import json
 import os
 import sys
-import time
-import uuid
-from typing import Any, Dict, List, Optional
-
+import json
 import requests
 
-BASE = os.environ.get(
-    "BACKEND_URL",
-    "https://logistics-hub-740.preview.emergentagent.com",
-).rstrip("/")
-API = f"{BASE}/api"
+BASE = "https://logistics-hub-740.preview.emergentagent.com/api"
+TIMEOUT = 30
 
 ADMIN_EMAIL = "admin@test.com"
-ADMIN_PASS = "Admin@12345"
-USER_EMAIL = "user2@test.com"
-USER_PASS = "User@12345"
+ADMIN_PWD = "Admin@12345"
+USER2_EMAIL = "user2@test.com"
+USER2_PWD = "User@12345"
 
-assertions: List[tuple] = []   # (label, ok, detail)
+DEFAULTS = {
+    "customer_name": True,
+    "customer_phone": True,
+    "customer_alt_phone": False,
+    "address_line1": True,
+    "city": True,
+    "state": True,
+    "pincode": True,
+    "items": False,
+    "amount": True,
+    "payment_mode": True,
+    "token_amount": False,
+    "courier_name": False,
+    "order_id": False,
+    "weight": True,
+    "notes": False,
+}
 
 
-def check(label: str, ok: bool, detail: str = "") -> bool:
-    assertions.append((label, ok, detail))
-    mark = "PASS" if ok else "FAIL"
-    print(f"  [{mark}] {label}" + (f"  -- {detail}" if detail else ""))
-    return ok
+pass_count = 0
+fail_count = 0
+fail_lines = []
 
 
-def login(email: str, password: str) -> str:
-    r = requests.post(
-        f"{API}/auth/login",
-        json={"email": email, "password": password},
-        timeout=30,
+def check(label, cond, detail=""):
+    global pass_count, fail_count
+    if cond:
+        pass_count += 1
+        print(f"  PASS  {label}")
+    else:
+        fail_count += 1
+        line = f"  FAIL  {label}{(' — ' + detail) if detail else ''}"
+        print(line)
+        fail_lines.append(line)
+
+
+def login(email, pwd):
+    r = requests.post(f"{BASE}/auth/login", json={"email": email, "password": pwd}, timeout=TIMEOUT)
+    r.raise_for_status()
+    j = r.json()
+    return j["token"], j
+
+
+def auth_headers(token):
+    return {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+
+
+def get_settings(token):
+    r = requests.get(f"{BASE}/settings", headers=auth_headers(token), timeout=TIMEOUT)
+    r.raise_for_status()
+    return r.json()
+
+
+def put_settings(token, body):
+    r = requests.put(
+        f"{BASE}/settings",
+        headers=auth_headers(token),
+        data=json.dumps(body),
+        timeout=TIMEOUT,
     )
-    if r.status_code != 200:
-        raise RuntimeError(f"login {email} failed: {r.status_code} {r.text}")
-    body = r.json()
-    return body["token"]
+    return r
 
 
-def auth_h(tok: str) -> Dict[str, str]:
-    return {"Authorization": f"Bearer {tok}"}
+def main():
+    print("=" * 72)
+    print("Phase-8 Field Requirements Regression")
+    print("=" * 72)
 
+    print("\n--- Logging in as user2 (fresh user) ---")
+    u2_tok, u2_user = login(USER2_EMAIL, USER2_PWD)
+    print(f"  user2 id={u2_user.get('id')} plan={u2_user.get('plan')} admin={u2_user.get('is_admin')}")
 
-def smart_paste_payload(name: str, phone: str) -> Dict[str, Any]:
-    text = (
-        f"NAME: {name}\n"
-        f"PHONE: {phone}\n"
-        "ADDRESS: 12 Test Lane, Lal Darwaja\n"
-        "CITY: Ahmedabad\n"
-        "STATE: Gujarat\n"
-        "PINCODE: 380001\n"
-        "AMOUNT: 499\n"
-        "PAYMENT: COD\n"
-        "WEIGHT: 500\n"
-    )
-    return {"text": text, "skip_llm": True, "use_ai": False}
+    print("\n--- Logging in as admin (for additional coverage) ---")
+    ad_tok, ad_user = login(ADMIN_EMAIL, ADMIN_PWD)
+    print(f"  admin id={ad_user.get('id')} plan={ad_user.get('plan')} admin={ad_user.get('is_admin')}")
 
+    # Pre-test cleanup: ensure user2's field_requirements is at defaults so
+    # scenario [1] reflects the documented baseline. The merge-not-replace
+    # logic means prior test runs may have toggled a flag — reset them all.
+    put_settings(u2_tok, {"field_requirements": dict(DEFAULTS)})
 
-def main() -> int:
-    print(f"BASE = {BASE}")
+    # ──────────────────────────────────────────────────────────────
+    # SCENARIO 1: Default field_requirements present on GET /settings
+    # ──────────────────────────────────────────────────────────────
+    print("\n[1] GET /api/settings → default field_requirements")
+    s = get_settings(u2_tok)
+    fr = s.get("field_requirements")
+    check("response contains 'field_requirements' key", isinstance(fr, dict),
+          detail=f"got type={type(fr).__name__} value={fr!r}")
 
-    # ------------------------------------------------------------------
-    # Login admin (admin gets effectively unlimited custom-field cap)
-    # ------------------------------------------------------------------
-    print("\n[STEP] Login admin + user2")
-    admin_tok = login(ADMIN_EMAIL, ADMIN_PASS)
-    user_tok = login(USER_EMAIL, USER_PASS)
-    check("admin login OK", bool(admin_tok))
-    check("user2 login OK", bool(user_tok))
+    if isinstance(fr, dict):
+        for k, v in DEFAULTS.items():
+            check(f"key {k!r} present", k in fr)
+            if k in fr:
+                check(f"key {k!r} default value == {v}", fr.get(k) == v,
+                      detail=f"got {fr.get(k)!r}")
+        extras = [k for k in fr.keys() if k not in DEFAULTS]
+        check(f"no unknown keys present (extras={extras})", len(extras) == 0)
 
-    # ------------------------------------------------------------------
-    # 1. /api/me/custom-fields GET baseline shape
-    # ------------------------------------------------------------------
-    print("\n[STEP] GET /api/me/custom-fields (admin)")
-    r = requests.get(f"{API}/me/custom-fields", headers=auth_h(admin_tok), timeout=30)
-    check("GET /me/custom-fields admin 200", r.status_code == 200,
-          f"status={r.status_code} body={r.text[:300]}")
-    body = r.json() if r.ok else {}
-    fields_list = body.get("fields", [])
-    check("response has fields list", isinstance(fields_list, list))
-    check("response has limit/used/feature_enabled keys",
-          all(k in body for k in ("limit", "used", "feature_enabled", "plan", "is_admin")),
-          f"keys={list(body.keys())}")
+    # ──────────────────────────────────────────────────────────────
+    # SCENARIO 2: Partial PUT merges, doesn't replace
+    # ──────────────────────────────────────────────────────────────
+    print("\n[2] PUT /api/settings {field_requirements:{customer_alt_phone:true}} merges")
+    r = put_settings(u2_tok, {"field_requirements": {"customer_alt_phone": True}})
+    check("PUT 200", r.status_code == 200, detail=f"status={r.status_code} body={r.text[:200]}")
+    if r.status_code == 200:
+        fr2 = r.json().get("field_requirements") or {}
+        check("customer_alt_phone == True after toggle ON",
+              fr2.get("customer_alt_phone") is True,
+              detail=f"got {fr2.get('customer_alt_phone')!r}")
+        for k, v in DEFAULTS.items():
+            if k == "customer_alt_phone":
+                continue
+            check(f"  preserved {k!r} == {v}", fr2.get(k) == v,
+                  detail=f"got {fr2.get(k)!r}")
+        extras = [k for k in fr2.keys() if k not in DEFAULTS]
+        check(f"  no extra keys (extras={extras})", len(extras) == 0)
 
-    # If the admin already has fields, validate shape on first one.
-    if fields_list:
-        f0 = fields_list[0]
-        required_keys = {"id", "name", "column_letter", "field_type",
-                         "active", "show_in_smart_paste", "sort_order"}
-        missing = required_keys - set(f0.keys())
-        check("custom field shape contains expected keys",
-              not missing, f"missing={missing} sample={f0}")
+    print("\n[2b] PUT /api/settings {field_requirements:{customer_alt_phone:false}} flips back")
+    r = put_settings(u2_tok, {"field_requirements": {"customer_alt_phone": False}})
+    check("PUT 200", r.status_code == 200, detail=f"status={r.status_code}")
+    if r.status_code == 200:
+        fr3 = r.json().get("field_requirements") or {}
+        check("customer_alt_phone == False after toggle OFF",
+              fr3.get("customer_alt_phone") is False,
+              detail=f"got {fr3.get('customer_alt_phone')!r}")
+        for k, v in DEFAULTS.items():
+            if k == "customer_alt_phone":
+                continue
+            check(f"  preserved {k!r} == {v}", fr3.get(k) == v,
+                  detail=f"got {fr3.get(k)!r}")
 
-    # ------------------------------------------------------------------
-    # 2. BACKWARD COMPAT — Smart Paste WITHOUT custom_values key
-    # ------------------------------------------------------------------
-    print("\n[STEP] BACKWARD COMPAT: POST /smart-paste WITHOUT custom_values key")
-    bc_phone = f"99000{uuid.uuid4().int % 100000:05d}"[:10]
-    bc_payload = smart_paste_payload("Backward Compat User", bc_phone)
-    # Explicitly NOT including custom_values key.
-    r = requests.post(f"{API}/smart-paste", json=bc_payload,
-                      headers=auth_h(admin_tok), timeout=60)
-    check("smart-paste no-cv 200", r.status_code == 200,
-          f"status={r.status_code} body={r.text[:400]}")
-    bc_doc: Dict[str, Any] = r.json() if r.ok else {}
-    bc_pending_id = bc_doc.get("id")
-    check("smart-paste no-cv response contains 'custom_values' key",
-          "custom_values" in bc_doc,
-          f"keys={list(bc_doc.keys())}")
-    check("smart-paste no-cv custom_values == {}",
-          bc_doc.get("custom_values") == {},
-          f"got={bc_doc.get('custom_values')!r}")
-    check("smart-paste no-cv id present",
-          bool(bc_pending_id), f"doc={bc_doc.get('id')!r}")
-    check("smart-paste no-cv customer_phone parsed",
-          bc_doc.get("customer_phone") == bc_phone,
-          f"phone={bc_doc.get('customer_phone')!r} expected={bc_phone}")
+    # ──────────────────────────────────────────────────────────────
+    # SCENARIO 3: Unknown keys silently dropped
+    # ──────────────────────────────────────────────────────────────
+    print("\n[3] PUT /api/settings with unknown key {foo_bar:true} is silently dropped")
+    r = put_settings(u2_tok, {"field_requirements": {"foo_bar": True, "weight": False}})
+    check("PUT 200 (unknown key tolerated)", r.status_code == 200,
+          detail=f"status={r.status_code} body={r.text[:200]}")
+    if r.status_code == 200:
+        fr4 = r.json().get("field_requirements") or {}
+        check("'foo_bar' NOT in response.field_requirements",
+              "foo_bar" not in fr4,
+              detail=f"got keys={sorted(fr4.keys())}")
+        check("known key 'weight' was applied (False)",
+              fr4.get("weight") is False,
+              detail=f"got {fr4.get('weight')!r}")
+        rr = put_settings(u2_tok, {"field_requirements": {"weight": True}})
+        check("restore weight=True OK", rr.status_code == 200)
 
-    # ------------------------------------------------------------------
-    # Cleanup helper - keep ids and remove at end.
-    # ------------------------------------------------------------------
-    pending_to_cleanup: List[tuple] = []  # (token, pending_id)
-    if bc_pending_id:
-        pending_to_cleanup.append((admin_tok, bc_pending_id))
+    # ──────────────────────────────────────────────────────────────
+    # SCENARIO 5: Backwards compat — PUT without field_requirements
+    #            preserves the persisted dict.
+    # ──────────────────────────────────────────────────────────────
+    print("\n[5] Backwards compat: PUT without field_requirements preserves dict")
+    rseed = put_settings(u2_tok, {"field_requirements": {"customer_alt_phone": True, "notes": True}})
+    check("seed PUT 200", rseed.status_code == 200)
+    fr_pre = rseed.json().get("field_requirements") or {}
+    r = put_settings(u2_tok, {"shipment_tagline": "regression-tag-phase8"})
+    check("unrelated PUT 200", r.status_code == 200, detail=f"status={r.status_code} body={r.text[:200]}")
+    if r.status_code == 200:
+        fr_post = r.json().get("field_requirements") or {}
+        check("field_requirements unchanged after unrelated PUT",
+              fr_post == fr_pre,
+              detail=f"pre={fr_pre} post={fr_post}")
 
-    # ------------------------------------------------------------------
-    # 3. POST /api/me/custom-fields creates a new field on admin
-    #    (admin gets unlimited via _get_custom_field_limit)
-    # ------------------------------------------------------------------
-    print("\n[STEP] POST /api/me/custom-fields (admin) — create new field")
-    # Pick a column letter that's unlikely to clash. Use Z+random bias.
-    used_cols = {f.get("column_letter") for f in fields_list}
-    candidate_cols = ["Z", "Y", "X", "W", "V", "AA", "AB", "AC", "AD", "AE"]
-    col_letter = next((c for c in candidate_cols if c not in used_cols), "AF")
-    new_field_payload = {
-        "name": f"QA_TestField_{uuid.uuid4().hex[:6]}",
-        "column_letter": col_letter,
+    print("\n  cleanup: reset toggled flags to defaults")
+    put_settings(u2_tok, {"field_requirements": dict(DEFAULTS)})
+
+    # ──────────────────────────────────────────────────────────────
+    # SCENARIO 4: Custom field `required` plumbing
+    # ──────────────────────────────────────────────────────────────
+    print("\n[4] POST /api/me/custom-fields with required:true persists & toggles")
+
+    created_field_ids = []
+    worker_tok = u2_tok
+
+    listr = requests.get(f"{BASE}/me/custom-fields", headers=auth_headers(u2_tok), timeout=TIMEOUT)
+    used_cols = set()
+    if listr.status_code == 200:
+        for f in (listr.json() or {}).get("fields", []):
+            if f.get("active", True):
+                used_cols.add((f.get("column_letter") or "").upper())
+        print(f"  user2 existing custom-field columns: {sorted(used_cols)}")
+
+    # We'll prefer columns that are unlikely to collide with shipment columns A..S (1..19)
+    candidate_cols = [c for c in ["T", "U", "V", "W", "X", "Y", "Z"] if c not in used_cols]
+    if len(candidate_cols) < 2:
+        # Fallback: try double-letters
+        candidate_cols.extend([c for c in ["AA", "AB", "AC", "AD", "AE"] if c not in used_cols])
+    col_a = candidate_cols[0]
+    col_b = candidate_cols[1]
+    print(f"  using columns col_a={col_a} col_b={col_b}")
+
+    payload_a = {
+        "name": "GST Number (Phase8 test)",
+        "column_letter": col_a,
         "field_type": "text",
         "show_in_form": True,
         "show_in_smart_paste": True,
+        "required": True,
         "sort_order": 99,
     }
-    r = requests.post(f"{API}/me/custom-fields", json=new_field_payload,
-                      headers=auth_h(admin_tok), timeout=30)
-    new_field_id: Optional[str] = None
-    if r.status_code == 200:
-        cf = r.json()
-        new_field_id = cf.get("id")
-        check("POST /me/custom-fields 200", True)
-        check("new custom field has id", bool(new_field_id), f"cf={cf}")
-        check("new custom field name preserved",
-              cf.get("name") == new_field_payload["name"])
-        check("new custom field column_letter preserved",
-              cf.get("column_letter") == col_letter)
-        check("new custom field active=True", cf.get("active") is True)
-    else:
-        check("POST /me/custom-fields 200", False,
-              f"status={r.status_code} body={r.text[:300]}")
+    rc = requests.post(
+        f"{BASE}/me/custom-fields",
+        headers=auth_headers(u2_tok),
+        data=json.dumps(payload_a),
+        timeout=TIMEOUT,
+    )
+    if rc.status_code == 403 and "plan" in rc.text.lower():
+        print(f"  user2 plan rejected custom-fields: {rc.text[:200]}")
+        print("  Retrying with admin token (admin bypass).")
+        rc = requests.post(
+            f"{BASE}/me/custom-fields",
+            headers=auth_headers(ad_tok),
+            data=json.dumps(payload_a),
+            timeout=TIMEOUT,
+        )
+        worker_tok = ad_tok
 
-    # ------------------------------------------------------------------
-    # 4. NEW HAPPY PATH — Smart Paste WITH custom_values referencing real id
-    # ------------------------------------------------------------------
-    print("\n[STEP] HAPPY PATH: POST /smart-paste WITH custom_values "
-          "{real_field_id: 'Hello'}")
-    if new_field_id:
-        hp_phone = f"99001{uuid.uuid4().int % 100000:05d}"[:10]
-        hp_payload = smart_paste_payload("Happy Path User", hp_phone)
-        hp_payload["custom_values"] = {new_field_id: "Hello"}
-        r = requests.post(f"{API}/smart-paste", json=hp_payload,
-                          headers=auth_h(admin_tok), timeout=60)
-        check("smart-paste happy-path 200", r.status_code == 200,
-              f"status={r.status_code} body={r.text[:400]}")
-        hp_doc = r.json() if r.ok else {}
-        hp_pid = hp_doc.get("id")
-        if hp_pid:
-            pending_to_cleanup.append((admin_tok, hp_pid))
-        check("happy-path response.custom_values matches request",
-              hp_doc.get("custom_values") == {new_field_id: "Hello"},
-              f"got={hp_doc.get('custom_values')!r} expected={{{new_field_id!r}: 'Hello'}}")
-        check("happy-path response.id present", bool(hp_pid))
+    check(
+        f"POST /me/custom-fields (required=true) → 200, got {rc.status_code}",
+        rc.status_code == 200,
+        detail=f"body={rc.text[:400]}",
+    )
+    if rc.status_code == 200:
+        body = rc.json()
+        fid_a = body.get("id")
+        if fid_a:
+            created_field_ids.append(fid_a)
+        check("(4a) response.required is True", body.get("required") is True,
+              detail=f"got {body.get('required')!r} full={body}")
 
-        # Re-fetch via GET /api/orders/pending (list) to confirm Mongo doc
-        r = requests.get(f"{API}/orders/pending",
-                         headers=auth_h(admin_tok), timeout=30)
-        check("GET /orders/pending 200", r.status_code == 200,
-              f"status={r.status_code}")
-        if r.ok:
-            arr = r.json()
-            match = next((d for d in arr if d.get("id") == hp_pid), None)
-            check("happy-path doc found in GET /orders/pending",
-                  match is not None)
-            if match:
-                check("Mongo PendingOrder doc has top-level 'custom_values' key",
-                      "custom_values" in match,
-                      f"keys={list(match.keys())[:30]}")
-                check("Mongo PendingOrder.custom_values matches submission",
-                      match.get("custom_values") == {new_field_id: "Hello"},
-                      f"got={match.get('custom_values')!r}")
-    else:
-        # Use a fake id since field creation failed
-        check("HAPPY PATH skipped (no new_field_id created)", False,
-              "POST /me/custom-fields didn't return an id")
+        # 4b. GET list reflects required=true
+        rg = requests.get(f"{BASE}/me/custom-fields", headers=auth_headers(worker_tok), timeout=TIMEOUT)
+        check("GET /me/custom-fields 200", rg.status_code == 200)
+        if rg.status_code == 200:
+            entry = next((f for f in rg.json().get("fields", []) if f.get("id") == fid_a), None)
+            check("(4b) created field appears in GET list", entry is not None)
+            if entry:
+                check("(4b) GET list entry.required == True", entry.get("required") is True,
+                      detail=f"got {entry.get('required')!r}")
 
-    # ------------------------------------------------------------------
-    # 5. HELPER SAFETY — fake/unknown id; should still 200
-    # ------------------------------------------------------------------
-    print("\n[STEP] HELPER SAFETY: POST /smart-paste with custom_values "
-          "referencing UNKNOWN id")
-    fake_id = "fake-id-" + uuid.uuid4().hex[:8]
-    safe_phone = f"99002{uuid.uuid4().int % 100000:05d}"[:10]
-    safe_payload = smart_paste_payload("Helper Safety User", safe_phone)
-    safe_payload["custom_values"] = {fake_id: "Hello-fake"}
-    r = requests.post(f"{API}/smart-paste", json=safe_payload,
-                      headers=auth_h(admin_tok), timeout=60)
-    check("smart-paste fake-id 200 (helper never raised)",
-          r.status_code == 200,
-          f"status={r.status_code} body={r.text[:400]}")
-    safe_doc = r.json() if r.ok else {}
-    safe_pid = safe_doc.get("id")
-    if safe_pid:
-        pending_to_cleanup.append((admin_tok, safe_pid))
-    check("fake-id custom_values echoed (string-coerced)",
-          safe_doc.get("custom_values") == {fake_id: "Hello-fake"},
-          f"got={safe_doc.get('custom_values')!r}")
+        # 4c. PUT toggle required → false
+        rp = requests.put(
+            f"{BASE}/me/custom-fields/{fid_a}",
+            headers=auth_headers(worker_tok),
+            data=json.dumps({"required": False}),
+            timeout=TIMEOUT,
+        )
+        check(f"PUT toggle required→false 200, got {rp.status_code}",
+              rp.status_code == 200, detail=f"body={rp.text[:200]}")
+        if rp.status_code == 200:
+            check("(4c) PUT response.required == False",
+                  rp.json().get("required") is False,
+                  detail=f"got {rp.json().get('required')!r}")
 
-    # ------------------------------------------------------------------
-    # 6. HELPER SAFETY (No sheet connected) — user2 has no sheet linked.
-    #    user2 plan=silver so cannot create custom_fields, but smart-paste
-    #    must still accept arbitrary custom_values map (helper no-ops since
-    #    no sheet connected).
-    # ------------------------------------------------------------------
-    print("\n[STEP] HELPER SAFETY: user2 (no custom fields, possibly no sheet) "
-          "+ unknown id custom_values")
-    u2_phone = f"99003{uuid.uuid4().int % 100000:05d}"[:10]
-    u2_payload = smart_paste_payload("User2 Helper Safety", u2_phone)
-    u2_payload["custom_values"] = {"some-random-id": "X"}
-    r = requests.post(f"{API}/smart-paste", json=u2_payload,
-                      headers=auth_h(user_tok), timeout=60)
-    check("user2 smart-paste with random custom_values 200",
-          r.status_code == 200,
-          f"status={r.status_code} body={r.text[:400]}")
-    u2_doc = r.json() if r.ok else {}
-    u2_pid = u2_doc.get("id")
-    if u2_pid:
-        pending_to_cleanup.append((user_tok, u2_pid))
-    check("user2 response.custom_values echoed",
-          u2_doc.get("custom_values") == {"some-random-id": "X"},
-          f"got={u2_doc.get('custom_values')!r}")
+        # 4d. Create without required key — defaults to false
+        payload_b = {
+            "name": "Optional Note (Phase8 test)",
+            "column_letter": col_b,
+            "field_type": "text",
+            "show_in_form": True,
+            "show_in_smart_paste": True,
+        }
+        rc2 = requests.post(
+            f"{BASE}/me/custom-fields",
+            headers=auth_headers(worker_tok),
+            data=json.dumps(payload_b),
+            timeout=TIMEOUT,
+        )
+        check(
+            f"POST /me/custom-fields (required omitted) → 200, got {rc2.status_code}",
+            rc2.status_code == 200,
+            detail=f"body={rc2.text[:300]}",
+        )
+        if rc2.status_code == 200:
+            b2 = rc2.json()
+            fid_b = b2.get("id")
+            if fid_b:
+                created_field_ids.append(fid_b)
+            check("(4d) response.required defaults to False",
+                  b2.get("required") is False,
+                  detail=f"got {b2.get('required')!r}")
+            rg2 = requests.get(f"{BASE}/me/custom-fields", headers=auth_headers(worker_tok), timeout=TIMEOUT)
+            if rg2.status_code == 200:
+                e2 = next((f for f in rg2.json().get("fields", []) if f.get("id") == fid_b), None)
+                if e2:
+                    check("(4d) GET list entry.required == False",
+                          e2.get("required") is False,
+                          detail=f"got {e2.get('required')!r}")
 
-    # Also test user2 no-cv → custom_values:{}
-    print("\n[STEP] BACKWARD COMPAT (user2): POST /smart-paste no custom_values")
-    u2b_phone = f"99004{uuid.uuid4().int % 100000:05d}"[:10]
-    u2b_payload = smart_paste_payload("User2 BC", u2b_phone)
-    r = requests.post(f"{API}/smart-paste", json=u2b_payload,
-                      headers=auth_h(user_tok), timeout=60)
-    check("user2 smart-paste no-cv 200", r.status_code == 200,
-          f"status={r.status_code} body={r.text[:400]}")
-    u2b_doc = r.json() if r.ok else {}
-    u2b_pid = u2b_doc.get("id")
-    if u2b_pid:
-        pending_to_cleanup.append((user_tok, u2b_pid))
-    check("user2 no-cv custom_values == {}",
-          u2b_doc.get("custom_values") == {},
-          f"got={u2b_doc.get('custom_values')!r}")
+        # cleanup
+        for fid in list(created_field_ids):
+            try:
+                rd = requests.delete(
+                    f"{BASE}/me/custom-fields/{fid}",
+                    headers=auth_headers(worker_tok),
+                    timeout=TIMEOUT,
+                )
+                if rd.status_code == 200:
+                    print(f"  cleanup: deleted custom field {fid}")
+                else:
+                    print(f"  cleanup: delete {fid} got {rd.status_code} {rd.text[:120]}")
+            except Exception as e:
+                print(f"  cleanup error: {e}")
 
-    # ------------------------------------------------------------------
-    # 7. Empty-value trim verification: empty strings are dropped per
-    #    server logic `if v not in (None, "")`.
-    # ------------------------------------------------------------------
-    if new_field_id:
-        print("\n[STEP] EMPTY-VALUE TRIM: custom_values with empty string is dropped")
-        et_phone = f"99005{uuid.uuid4().int % 100000:05d}"[:10]
-        et_payload = smart_paste_payload("Empty Trim User", et_phone)
-        et_payload["custom_values"] = {new_field_id: ""}
-        r = requests.post(f"{API}/smart-paste", json=et_payload,
-                          headers=auth_h(admin_tok), timeout=60)
-        check("empty-value trim 200", r.status_code == 200)
-        et_doc = r.json() if r.ok else {}
-        et_pid = et_doc.get("id")
-        if et_pid:
-            pending_to_cleanup.append((admin_tok, et_pid))
-        check("empty-value trim drops blank → custom_values == {}",
-              et_doc.get("custom_values") == {},
-              f"got={et_doc.get('custom_values')!r}")
-
-    # ------------------------------------------------------------------
-    # CLEANUP
-    # ------------------------------------------------------------------
-    print("\n[CLEANUP]")
-    for tok, pid in pending_to_cleanup:
-        try:
-            r = requests.delete(f"{API}/orders/pending/{pid}",
-                                headers=auth_h(tok), timeout=30)
-            print(f"  delete pending {pid[:8]}… → {r.status_code}")
-        except Exception as e:
-            print(f"  delete pending {pid[:8]}… → ERROR {e}")
-
-    if new_field_id:
-        try:
-            r = requests.delete(f"{API}/me/custom-fields/{new_field_id}",
-                                headers=auth_h(admin_tok), timeout=30)
-            print(f"  delete custom field {new_field_id[:8]}… → {r.status_code}")
-        except Exception as e:
-            print(f"  delete custom field → ERROR {e}")
-
-    # ------------------------------------------------------------------
-    # SUMMARY
-    # ------------------------------------------------------------------
-    total = len(assertions)
-    failed = [a for a in assertions if not a[1]]
-    passed = total - len(failed)
-    print(f"\n=== RESULT: {passed}/{total} assertions passed ===")
-    if failed:
-        print("\nFAILED:")
-        for label, _, detail in failed:
-            print(f"  - {label}\n      {detail}")
-        return 1
-    return 0
+    print("\n" + "=" * 72)
+    print(f"RESULT: {pass_count} passed, {fail_count} failed")
+    print("=" * 72)
+    if fail_lines:
+        print("\nFailed assertions:")
+        for ln in fail_lines:
+            print(ln)
+        sys.exit(1)
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    main()

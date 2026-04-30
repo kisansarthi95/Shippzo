@@ -157,9 +157,15 @@ export default function Dashboard() {
       column_letter: string;
       field_type: "text" | "number" | "date";
       show_in_smart_paste?: boolean;
+      required?: boolean;
     }>
   >([]);
   const [userCustomValues, setUserCustomValues] = useState<Record<string, string>>({});
+
+  // Phase-8: per-field "Required" toggles loaded from /settings.
+  // Maps snake_case shipment key → bool. Empty until settings load
+  // — until then we fall back to the legacy hardcoded REQ list.
+  const [fieldReqs, setFieldReqs] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
     // Best-effort: silently no-op on auth/quota errors. Custom fields
@@ -182,6 +188,7 @@ export default function Dashboard() {
                 column_letter: f.column_letter,
                 field_type: f.field_type || "text",
                 show_in_smart_paste: f.show_in_smart_paste ?? true,
+                required: !!f.required,
               })),
           );
         } else {
@@ -189,6 +196,13 @@ export default function Dashboard() {
         }
       })
       .catch(() => setUserCustomFields([]));
+    // Phase-8: load per-field required toggles.
+    Api.getSettings()
+      .then((s: any) => {
+        const fr = (s?.field_requirements || {}) as Record<string, boolean>;
+        setFieldReqs(fr);
+      })
+      .catch(() => setFieldReqs({}));
   }, []);
 
   // Plan-gated: hide duplicate-banner UI when admin disables this feature.
@@ -841,13 +855,6 @@ export default function Dashboard() {
                 //
                 // PAYMENT renders a 2-button toggle (COD / Prepaid).
                 // TOKEN appears only when PAYMENT === "COD" and is required.
-                const REQ = [
-                  "NAME", "PHONE", "ADDRESS_1", "CITY", "STATE",
-                  "PINCODE", "AMOUNT", "PAYMENT", "WEIGHT",
-                ];
-                const OPT = [
-                  "ALT_PHONE", "ITEMS", "COURIER", "ORDER_ID", "NOTES",
-                ];
                 // Map schema-key ↔ legacy field name (used by inline edit binding).
                 const SNAKE: Record<string, string> = {
                   NAME: "customer_name",
@@ -866,6 +873,32 @@ export default function Dashboard() {
                   ORDER_ID: "order_id",
                   NOTES: "notes",
                 };
+                // Phase-8: Build REQ / OPT lists dynamically from
+                // settings.field_requirements, falling back to the
+                // legacy hardcoded defaults until settings load.
+                const HARDCODED_DEFAULTS: Record<string, boolean> = {
+                  customer_name: true, customer_phone: true,
+                  address_line1: true, city: true, state: true,
+                  pincode: true, amount: true, payment_mode: true,
+                  weight: true, customer_alt_phone: false, items: false,
+                  courier_name: false, order_id: false, notes: false,
+                  token_amount: false,
+                };
+                const isReqKey = (snake: string) => {
+                  if (snake in fieldReqs) return !!fieldReqs[snake];
+                  return !!HARDCODED_DEFAULTS[snake];
+                };
+                const ALL_KEYS = [
+                  "NAME", "PHONE", "ALT_PHONE", "ADDRESS_1", "CITY",
+                  "STATE", "PINCODE", "ITEMS", "AMOUNT", "PAYMENT",
+                  "WEIGHT", "COURIER", "ORDER_ID", "NOTES",
+                ];
+                const REQ: string[] = [];
+                const OPT: string[] = [];
+                for (const k of ALL_KEYS) {
+                  if (isReqKey(SNAKE[k])) REQ.push(k);
+                  else OPT.push(k);
+                }
 
                 // Normalise current payment value → "COD" | "PREPAID" | "".
                 const rawPay = String((chatFields as any).payment_mode || "")
@@ -1108,6 +1141,9 @@ export default function Dashboard() {
                               <View style={{ flex: 1 }}>
                                 <Text style={styles.spRowLabel}>
                                   {cf.name}
+                                  {cf.required ? (
+                                    <Text style={{ color: "#DC2626" }}>  *</Text>
+                                  ) : null}
                                   <Text style={{ color: "#9CA3AF", fontWeight: "400" }}>
                                     {`  · col ${cf.column_letter}`}
                                   </Text>
@@ -1174,19 +1210,45 @@ export default function Dashboard() {
               <TouchableOpacity
                 testID="smart-paste-save"
                 onPress={() => {
-                  // Local validation — required fields filled?
+                  // Phase-8: Local validation honours per-field
+                  // settings.field_requirements + custom-field
+                  // .required. Falls back to legacy hardcoded list
+                  // if settings haven't loaded yet.
                   const SNAKE2: Record<string, string> = {
                     NAME: "customer_name",
                     PHONE: "customer_phone",
+                    ALT_PHONE: "customer_alt_phone",
                     ADDRESS_1: "address_line1",
                     CITY: "city",
                     STATE: "state",
                     PINCODE: "pincode",
+                    ITEMS: "items",
                     AMOUNT: "amount",
                     WEIGHT: "weight",
+                    COURIER: "courier_name",
+                    ORDER_ID: "order_id",
+                    NOTES: "notes",
                   };
-                  const reqMiss = ["NAME","PHONE","ADDRESS_1","CITY","STATE","PINCODE","AMOUNT","WEIGHT"]
-                    .filter((k) => !String((chatFields as any)[SNAKE2[k]] ?? "").trim());
+                  const HARDCODED: Record<string, boolean> = {
+                    customer_name: true, customer_phone: true,
+                    address_line1: true, city: true, state: true,
+                    pincode: true, amount: true, weight: true,
+                    customer_alt_phone: false, items: false,
+                    courier_name: false, order_id: false, notes: false,
+                  };
+                  const isReq = (snake: string) => {
+                    if (snake in fieldReqs) return !!fieldReqs[snake];
+                    return !!HARDCODED[snake];
+                  };
+                  const reqMiss: string[] = [];
+                  Object.entries(SNAKE2).forEach(([k, snake]) => {
+                    if (
+                      isReq(snake) &&
+                      !String((chatFields as any)[snake] ?? "").trim()
+                    ) {
+                      reqMiss.push(k);
+                    }
+                  });
                   // Mobile must be 10+ digits.
                   const phoneDigits = String((chatFields as any).customer_phone || "").replace(/\D/g, "");
                   if (phoneDigits && phoneDigits.length < 10) {
@@ -1202,38 +1264,53 @@ export default function Dashboard() {
                     );
                     return;
                   }
-                  // Pincode must be exactly 6 digits.
+                  // Pincode (when entered) must be exactly 6 digits.
                   const pinDigits = String((chatFields as any).pincode || "").replace(/\D/g, "");
                   if (pinDigits && pinDigits.length !== 6) {
                     Alert.alert("Invalid pincode", "Pincode must be exactly 6 digits.");
                     return;
                   }
-                  // Weight is MANDATORY and must be a positive number > 0.
-                  const weightVal = parseFloat(
-                    String((chatFields as any).weight || "").replace(/[^\d.]/g, ""),
-                  );
-                  if (!weightVal || weightVal <= 0) {
-                    if (!reqMiss.includes("WEIGHT")) reqMiss.push("WEIGHT");
+                  // Weight (when required) must be a positive number > 0.
+                  if (isReq("weight")) {
+                    const weightVal = parseFloat(
+                      String((chatFields as any).weight || "").replace(/[^\d.]/g, ""),
+                    );
+                    if (!weightVal || weightVal <= 0) {
+                      if (!reqMiss.includes("WEIGHT")) reqMiss.push("WEIGHT");
+                    }
                   }
-                  // Amount must be a positive number > 0.
-                  const amountVal = parseFloat(
-                    String((chatFields as any).amount || "").replace(/[^\d.]/g, ""),
-                  );
-                  if (!amountVal || amountVal <= 0) {
-                    if (!reqMiss.includes("AMOUNT")) reqMiss.push("AMOUNT");
+                  // Amount (when required) must be a positive number > 0.
+                  if (isReq("amount")) {
+                    const amountVal = parseFloat(
+                      String((chatFields as any).amount || "").replace(/[^\d.]/g, ""),
+                    );
+                    if (!amountVal || amountVal <= 0) {
+                      if (!reqMiss.includes("AMOUNT")) reqMiss.push("AMOUNT");
+                    }
                   }
-                  // Payment is required.
+                  // Payment normalises to COD/PREPAID; if user left it
+                  // blank we only fail when payment_mode is required.
                   const payRaw = String((chatFields as any).payment_mode || "").trim().toUpperCase();
                   const payNorm =
                     payRaw === "COD" ? "COD" : (payRaw === "PREPAID" || payRaw === "PAID") ? "PREPAID" : "";
-                  if (!payNorm) reqMiss.push("PAYMENT");
-                  // Token required when COD.
+                  if (!payNorm && isReq("payment_mode")) reqMiss.push("PAYMENT");
+                  // Token always required when COD is selected.
                   if (payNorm === "COD") {
                     const tk = String((chatFields as any).token_amount ?? "").trim();
                     if (!tk) reqMiss.push("TOKEN");
                   }
-                  if (reqMiss.length > 0) {
-                    const labels = reqMiss.map((k) => FIELD_META[k]?.label || k).join(", ");
+                  // Per-user Custom Fields with `required: true` must
+                  // also have a value. Map cf.id → label for the alert.
+                  const ucfMissLabels: string[] = [];
+                  for (const cf of userCustomFields) {
+                    if (!cf.required) continue;
+                    if (!String(userCustomValues[cf.id] ?? "").trim()) {
+                      ucfMissLabels.push(cf.name);
+                    }
+                  }
+                  if (reqMiss.length > 0 || ucfMissLabels.length > 0) {
+                    const builtIn = reqMiss.map((k) => FIELD_META[k]?.label || k);
+                    const labels = [...builtIn, ...ucfMissLabels].join(", ");
                     Alert.alert("Please fill required fields", labels);
                     return;
                   }
