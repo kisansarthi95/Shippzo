@@ -413,7 +413,10 @@ const styles = StyleSheet.create({
 
   modalOverlay: {
     flex: 1,
-    backgroundColor: "rgba(0,0,0,0.4)",
+    // Stronger dim (0.55 vs 0.4) so the scroll content behind doesn't
+    // visually bleed through — prevents the "Add Custom Field" CTA on
+    // the empty-state from ghosting into the modal card.
+    backgroundColor: "rgba(0,0,0,0.55)",
     justifyContent: "flex-end",
   },
   modalCard: {
@@ -422,6 +425,20 @@ const styles = StyleSheet.create({
     borderTopRightRadius: 16,
     padding: 16,
     maxHeight: "90%",
+    // Ensure the card is opaque + visually separated from the dimmed
+    // overlay on both iOS and Android.
+    ...Platform.select({
+      ios: {
+        shadowColor: "#000",
+        shadowOffset: { width: 0, height: -4 },
+        shadowOpacity: 0.15,
+        shadowRadius: 12,
+      },
+      android: {
+        elevation: 12,
+      },
+      default: {},
+    }),
   },
   modalTitle: {
     fontSize: 18,
