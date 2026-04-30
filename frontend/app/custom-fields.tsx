@@ -153,7 +153,7 @@ export default function CustomFieldsScreen() {
     : false;
 
   return (
-    <SafeAreaView style={{ flex: 1, backgroundColor: colors.bg }}>
+    <SafeAreaView style={{ flex: 1, backgroundColor: colors.background }}>
       <Stack.Screen
         options={{ title: "Custom Fields", headerBackTitle: "Back" }}
       />
@@ -230,7 +230,7 @@ export default function CustomFieldsScreen() {
                 <Ionicons
                   name="trash-outline"
                   size={20}
-                  color={colors.danger || "#EF4444"}
+                  color={colors.dangerText || "#EF4444"}
                 />
               </TouchableOpacity>
             </TouchableOpacity>
@@ -379,7 +379,7 @@ const styles = StyleSheet.create({
     gap: 10,
     padding: 12,
     borderRadius: 10,
-    backgroundColor: colors.card,
+    backgroundColor: colors.surface,
     borderWidth: 1,
     borderColor: "#E5E7EB",
     marginBottom: 8,
@@ -420,7 +420,7 @@ const styles = StyleSheet.create({
     justifyContent: "flex-end",
   },
   modalCard: {
-    backgroundColor: colors.bg,
+    backgroundColor: colors.background,
     borderTopLeftRadius: 16,
     borderTopRightRadius: 16,
     padding: 16,
@@ -460,14 +460,14 @@ const styles = StyleSheet.create({
     padding: 10,
     color: colors.text,
     fontSize: 14,
-    backgroundColor: colors.card,
+    backgroundColor: colors.surface,
   },
   hint: { fontSize: 11, color: colors.textMuted, marginTop: 4, lineHeight: 15 },
   chip: {
     paddingHorizontal: 12,
     paddingVertical: 6,
     borderRadius: 16,
-    backgroundColor: colors.card,
+    backgroundColor: colors.surface,
     borderWidth: 1,
     borderColor: "#E5E7EB",
   },
