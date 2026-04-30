@@ -4167,7 +4167,3 @@ const styles = StyleSheet.create({
     fontSize: 14,
   },
 });
-ight: "700",
-    fontSize: 14,
-  },
-});

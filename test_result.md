@@ -7413,6 +7413,32 @@ agent_communication:
 
 backend:
   - task: "Smart Paste Custom Fields wiring (PendingOrder.custom_values + SmartPasteRequest.custom_values + _write_custom_values_to_user_sheet_bg)"
+
+agent_communication:
+    -agent: "main"
+    -message: |
+        Backend test verdict received: 30/30 PASS for the new
+        Smart Paste + Custom Fields wiring. No regressions.
+
+        Also fixed a pre-existing trailing-bytes corruption at the
+        end of /app/frontend/app/(tabs)/settings.tsx (lines 4170-4173
+        had stray `ight: "700",` followed by a duplicate `});` that
+        was breaking the Metro bundle with "Missing semicolon"). Metro
+        now bundles cleanly (1027 modules, 0 errors).
+
+        Done in this iteration:
+        1. Removed final 2 Gujarati strings from app UI (settings.tsx,
+           index.tsx). grep confirms 0 Gujarati codepoints remain
+           anywhere under /app/frontend.
+        2. Smart Paste Summary modal now renders the user's per-user
+           Custom Fields inline; values flow through Api.smartPasteCreate
+           → POST /api/smart-paste with `custom_values` payload →
+           backend best-effort write to user's personal sheet column
+           letters via _write_custom_values_to_user_sheet_bg.
+        3. Cleaned up settings.tsx EOF corruption.
+
+        Project is healthy. Awaiting user verification.
+
     implemented: true
     working: true
     file: "/app/backend/server.py"
