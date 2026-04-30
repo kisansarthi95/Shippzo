@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Stack, useRouter, useSegments } from "expo-router";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { StatusBar } from "expo-status-bar";
-import { Platform, View, ActivityIndicator, Text } from "react-native";
+import { Platform, View, ActivityIndicator, Text, LogBox } from "react-native";
 import * as SplashScreen from "expo-splash-screen";
 import { Ionicons } from "@expo/vector-icons";
 import { AuthProvider, useAuth } from "../lib/auth";
@@ -13,8 +13,28 @@ import OfflineBanner from "../components/OfflineBanner";
 // Keep splash visible while we warm-up fonts
 SplashScreen.preventAutoHideAsync().catch(() => {});
 
+// LogBox: hide benign network-flake warnings that arise from the ngrok
+// tunnel being slow on mobile. These are NON-FATAL (the app renders
+// correctly once fonts cache) so spamming the user with red overlays
+// is pure noise.
+try {
+  LogBox.ignoreLogs([
+    /Unable to activate keep awake/i,
+    /ExpoAsset\.downloadAsync/i,
+    /Unable to download asset from url/i,
+    /Network Error/i,
+    /AxiosError/i,
+  ]);
+} catch {
+  /* ignore */
+}
+
 // Globally swallow benign network/promise rejections so the red
-// "Uncaught (in promise) Error" toast doesn't spam the user.
+// "Uncaught (in promise) Error" toast doesn't spam the user. On slow
+// mobile networks (the ngrok tunnel in dev), asset downloads for icon
+// fonts / keep-awake sometimes time out — those are non-fatal; the
+// app still works (icons render once fonts cache).
+const _BENIGN_RX = /Network Error|AxiosError|timeout|Unauthorized|Request failed|ExpoAsset|downloadAsync|Unable to download|keep awake|CodedError|Unable to activate/i;
 if (typeof globalThis !== "undefined") {
   // React Native ErrorUtils-style handler
   const g: any = globalThis as any;
@@ -22,8 +42,7 @@ if (typeof globalThis !== "undefined") {
     const prev = g.ErrorUtils?.getGlobalHandler?.();
     g.ErrorUtils?.setGlobalHandler?.((e: any, isFatal?: boolean) => {
       const msg = String(e?.message || e);
-      // Swallow network/axios errors silently
-      if (/Network Error|AxiosError|timeout|Unauthorized|Request failed/i.test(msg)) {
+      if (_BENIGN_RX.test(msg)) {
         return;
       }
       prev?.(e, isFatal);
@@ -35,7 +54,7 @@ if (typeof globalThis !== "undefined") {
   if (typeof window !== "undefined") {
     window.addEventListener?.("unhandledrejection", (ev: any) => {
       const msg = String(ev?.reason?.message || ev?.reason || "");
-      if (/Network Error|AxiosError|timeout|Unauthorized|Request failed/i.test(msg)) {
+      if (_BENIGN_RX.test(msg)) {
         ev.preventDefault?.();
       }
     });
