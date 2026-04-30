@@ -6958,3 +6958,120 @@ agent_communication:
                dry_run, written/skipped shape, idempotent skip on
                re-run, and explicit-headers override path.
 
+
+
+---
+
+## Backend Test Run: Header Auto-Sync RE-VERIFICATION + POST /shipments REGRESSION (2026-04-30)
+
+backend:
+  - task: "Header Auto-Sync (POST /api/sheets/sync-headers)"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py, /app/backend/sheet_writer.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "testing"
+        -comment: |
+            RE-VERIFIED after main agent's syntax-error fix. All
+            targeted assertions passed via /app/backend_test.py against
+            https://logistics-hub-740.preview.emergentagent.com/api.
+
+            G7. `cd /app/backend && python -c "import sheet_writer"` →
+                exit code 0 (clean import; previous SyntaxError gone).
+            G8. GET /api/ → 401 Authentication required (route is
+                auth-gated; backend reachable). No other health route
+                exposed without auth.
+            A1. POST /api/sheets/sync-headers as user2 with body
+                {"dry_run": true} → HTTP 400, body
+                  {"detail": "Google Sheet not connected"}
+                user2 has no sheet linked, so the contract path
+                "If user2 has NO sheet → 400" holds. Critically NOT 503,
+                so the previous regression "Sheets integration not
+                configured" is gone.
+            A4. The 503 regression from the previous run is RESOLVED
+                — the import succeeded, sheet_sync_user_sheet_headers is
+                bound, and the endpoint reaches the auth-protected
+                handler instead of bailing at the import-failure guard.
+            A2/A3. Skipped end-to-end (would require a real connected
+                user sheet); dry_run-with-explicit-headers ALSO requires
+                cfg.sheet_id, so it returns 400 in this state. The test
+                code already covers A2 (idempotent skip on re-run) and
+                A3 (explicit override echo) under the "has_sheet" branch
+                — main agent can attach a test sheet to user2 and
+                re-run later if needed.
+
+  - task: "POST /api/shipments (regression after sheet_writer fix)"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: false
+        -agent: "testing"
+        -comment: |
+            Previous run: POST /api/shipments returned 503 because the
+            sheet_writer module failed to import (SyntaxError), making
+            the mandatory Master-Sheet backup helper unavailable.
+        -working: true
+        -agent: "testing"
+        -comment: |
+            F5. POST /api/shipments as user2 with valid payload (using
+                the seeded "Demo Courier", customer_name="Header Sync
+                Regression Test", phone=9112233445, COD ₹199, Ahmedabad
+                380015) → HTTP 200. Response:
+                  id=123faf43-2c63-4c34-8d65-364ed3cc6a2c
+                  tracking_id="TST00099"
+                  master_order_id="26043002234"
+                  order_id="26043002234"  (mirrors master since user
+                                           didn't provide one)
+                  sheet_row_num=408       (Master Sheet write succeeded
+                                           — service-account, not mock)
+                Cleanup: DELETE /api/shipments/{id} returned 200 with
+                {"ok": true, "sheet": {"attempted": true, "ok": true,
+                 "row": 408, "tab": "All Master Data",
+                 "status_cell": "M408", "notice_cell": "N408"}}.
+                Tombstone written; local doc purged.
+            F6. Smart-Paste → Ship pipeline:
+                POST /api/smart-paste with structured paste text →
+                  pending id=e51527a1…, sheet_row_num=409.
+                POST /api/orders/pending/{id}/ship with Demo Courier →
+                  shipment id=10635993…, sheet_row_num=409
+                  (== pending sheet_row_num — no duplicate master row).
+                Cleanup DELETE /api/shipments/{id} → 200, tombstone OK.
+
+            REGRESSION RESOLVED: 503 is gone, 200 path works end-to-end
+            including Master-Sheet backup row capture and soft-delete
+            tombstone on cleanup.
+
+agent_communication:
+    -agent: "testing"
+    -message: |
+        Re-verification PASSED. All assertions from the review request:
+
+        ✅ G7  sheet_writer imports cleanly (no SyntaxError).
+        ✅ G8  Backend reachable (/api/ → 401 auth-gated; alive).
+        ✅ A1  /sheets/sync-headers dry_run returns 400 "Google Sheet
+                not connected" for user2 (sheet not linked) — valid
+                path. No 503 regression.
+        ✅ A4  503 "Sheets integration not configured" regression
+                fully resolved.
+        ⚠ A2/A3  Skipped — user2 has no Google Sheet linked. The test
+                code under "if has_sheet" branch covers idempotent
+                re-run (written_count==0, skipped_count >= prev) and
+                explicit-headers override echo. Main agent can either
+                connect a test sheet to user2 and re-run, or accept
+                the 400 contract path as the production behavior for
+                users without a sheet.
+        ✅ F5  POST /api/shipments returns 200 (NOT 503). Master-Sheet
+                row 408 captured, tombstoned on cleanup.
+        ✅ F6  Smart-Paste → Ship pipeline preserves sheet_row_num
+                (409 → 409, no duplicate row).
+
+        No further main-agent action required for these tasks. The
+        previous syntax-error regression is fully fixed.

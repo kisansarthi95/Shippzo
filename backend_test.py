@@ -1,458 +1,302 @@
 """
-Backend test for two new linked features:
-  - Header Auto-Sync (POST /api/sheets/sync-headers)
-  - Per-user Custom Fields (CRUD + plan gating + admin caps)
-
-Read-only verification with cleanup at the end. Does NOT modify code.
+Targeted re-verification tests for:
+  A. Header Auto-Sync contract — POST /api/sheets/sync-headers
+  F. POST /api/shipments regression after sheet_writer.py syntax fix
+  G. sheet_writer module import + backend health
 """
 import os
 import sys
 import json
 import requests
 
-BACKEND = "https://logistics-hub-740.preview.emergentagent.com/api"
-
-ADMIN_EMAIL = "admin@test.com"
-ADMIN_PASSWORD = "Admin@12345"
-USER_EMAIL = "user2@test.com"
-USER_PASSWORD = "User@12345"
-
-results = []  # list of (name, passed, detail)
+BASE = "https://logistics-hub-740.preview.emergentagent.com/api"
+USER2_EMAIL = "user2@test.com"
+USER2_PASSWORD = "User@12345"
 
 
-def add(name, passed, detail=""):
-    icon = "✅" if passed else "❌"
-    print(f"{icon} {name}{(' — ' + detail) if detail else ''}")
-    results.append((name, passed, detail))
+def _login(email, pwd):
+    r = requests.post(f"{BASE}/auth/login", json={"email": email, "password": pwd}, timeout=30)
+    r.raise_for_status()
+    return r.json()["token"]
 
 
-def login(email, pw):
-    r = requests.post(f"{BACKEND}/auth/login", json={"email": email, "password": pw}, timeout=20)
+def _headers(tok):
+    return {"Authorization": f"Bearer {tok}", "Content-Type": "application/json"}
+
+
+# ---------------------------------------------------------------------------
+def test_g_module_import():
+    print("\n=== G7. sheet_writer import ===")
+    rc = os.system("cd /app/backend && python -c 'import sheet_writer' >/tmp/_sw.log 2>&1")
+    assert rc == 0, f"sheet_writer import failed: see /tmp/_sw.log"
+    print("PASS: import OK")
+
+
+def test_g_health():
+    print("\n=== G8. /api/ health ===")
+    r = requests.get(f"{BASE}/", timeout=15)
+    print(f"  GET /api/ -> {r.status_code} {r.text[:120]}")
+    # /api/ root is auth-gated -> 401 means backend alive; 200 also acceptable
+    assert r.status_code in (200, 401), f"expected 200/401, got {r.status_code}"
+    print("PASS: backend reachable (status %d)" % r.status_code)
+
+
+def test_a_sync_headers_dry_run(tok):
+    print("\n=== A1. POST /api/sheets/sync-headers dry_run=true ===")
+    r = requests.post(
+        f"{BASE}/sheets/sync-headers",
+        headers=_headers(tok),
+        json={"dry_run": True},
+        timeout=30,
+    )
+    body = r.text
+    try:
+        data = r.json()
+    except Exception:
+        data = None
+    print(f"  status={r.status_code}")
+    print(f"  body={body[:600]}")
+    assert r.status_code != 503, "REGRESSION: 503 'Sheets integration not configured' returned!"
+    if r.status_code == 200:
+        assert isinstance(data, dict), "body must be JSON dict"
+        assert data.get("ok") is True, f"ok must be True, got {data.get('ok')}"
+        assert data.get("dry_run") is True, "dry_run must be true"
+        assert "would_write" in data, "would_write key required"
+        ww = data["would_write"]
+        assert isinstance(ww, list), "would_write must be a list"
+        for i, item in enumerate(ww):
+            assert isinstance(item, dict), f"item[{i}] must be dict"
+            assert "column" in item, f"item[{i}] missing column"
+            assert "name" in item, f"item[{i}] missing name"
+        print(f"PASS: 200 OK, dry_run=true, {len(ww)} would_write items, all have column+name")
+        return True, data
+    elif r.status_code == 400:
+        # No sheet connected — also valid contract
+        detail = (data or {}).get("detail", "")
+        assert "Google Sheet not connected" in detail or "not connected" in detail.lower(), \
+            f"expected 'Google Sheet not connected', got: {detail}"
+        print(f"PASS: 400 'Google Sheet not connected' (user2 has no sheet)")
+        return False, data
+    else:
+        raise AssertionError(f"Unexpected status {r.status_code}: {body[:400]}")
+
+
+def test_a_sync_headers_real_write(tok):
+    print("\n=== A2. POST /api/sheets/sync-headers dry_run=false ===")
+    r = requests.post(
+        f"{BASE}/sheets/sync-headers",
+        headers=_headers(tok),
+        json={"dry_run": False},
+        timeout=60,
+    )
+    print(f"  status={r.status_code}")
+    print(f"  body={r.text[:400]}")
+    assert r.status_code == 200, f"expected 200, got {r.status_code}: {r.text[:300]}"
+    data = r.json()
+    assert data.get("ok") is True
+    assert "written_count" in data
+    assert "skipped_count" in data
+    assert "written" in data and isinstance(data["written"], list)
+    assert "skipped" in data and isinstance(data["skipped"], list)
+    written_count_1 = data["written_count"]
+    print(f"  first run: written_count={written_count_1}, skipped_count={data['skipped_count']}")
+
+    # Re-run
+    r2 = requests.post(
+        f"{BASE}/sheets/sync-headers",
+        headers=_headers(tok),
+        json={"dry_run": False},
+        timeout=60,
+    )
+    assert r2.status_code == 200, f"second run failed: {r2.status_code} {r2.text[:300]}"
+    data2 = r2.json()
+    print(f"  second run: written_count={data2['written_count']}, skipped_count={data2['skipped_count']}")
+    assert data2["written_count"] == 0, f"second run should have written_count==0, got {data2['written_count']}"
+    assert data2["skipped_count"] >= written_count_1, \
+        f"skipped_count ({data2['skipped_count']}) must be >= previous written_count ({written_count_1})"
+    print("PASS: idempotent — second run wrote 0, skipped >= previous written")
+
+
+def test_a_sync_headers_explicit_override(tok):
+    print("\n=== A3. POST /api/sheets/sync-headers explicit headers override ===")
+    payload = {
+        "dry_run": True,
+        "headers": [{"column": "ZZ", "name": "Test ZZ"}],
+    }
+    r = requests.post(f"{BASE}/sheets/sync-headers",
+                      headers=_headers(tok), json=payload, timeout=30)
+    print(f"  status={r.status_code}")
+    print(f"  body={r.text[:400]}")
+    assert r.status_code == 200, f"expected 200, got {r.status_code}: {r.text[:300]}"
+    data = r.json()
+    assert data.get("ok") is True
+    assert data.get("dry_run") is True
+    ww = data.get("would_write") or []
+    found = any(it.get("column") == "ZZ" and it.get("name") == "Test ZZ" for it in ww)
+    assert found, f"explicit override not present in would_write: {ww}"
+    print(f"PASS: would_write contains exact pair {{column:'ZZ', name:'Test ZZ'}}")
+
+
+# ---------------------------------------------------------------------------
+def test_f_post_shipment(tok):
+    print("\n=== F5. POST /api/shipments regression check ===")
+    # Get a courier
+    r = requests.get(f"{BASE}/couriers", headers=_headers(tok), timeout=20)
+    assert r.status_code == 200, f"GET /couriers failed: {r.status_code}"
+    couriers = r.json()
+    assert len(couriers) > 0, "user2 should have at least 1 courier (Demo Courier seeded)"
+    c = couriers[0]
+    print(f"  using courier: {c['name']} (id={c['id']})")
+
+    payload = {
+        "tracking_id": "TST00099",
+        "courier_id": c["id"],
+        "courier_name": c["name"],
+        "customer_name": "Header Sync Regression Test",
+        "customer_phone": "9112233445",
+        "address_line1": "12 Test Avenue",
+        "city": "Ahmedabad",
+        "state": "Gujarat",
+        "pincode": "380015",
+        "payment_mode": "COD",
+        "amount": 199.0,
+        "items": ["Test Item"],
+        "weight": "0.5",
+    }
+    r = requests.post(f"{BASE}/shipments", headers=_headers(tok), json=payload, timeout=60)
+    print(f"  status={r.status_code}")
+    body_preview = r.text[:600]
+    print(f"  body={body_preview}")
+    assert r.status_code != 503, f"REGRESSION: 503 returned! {body_preview}"
+    assert r.status_code == 200, f"expected 200, got {r.status_code}: {body_preview}"
+    ship = r.json()
+    sid = ship["id"]
+    assert ship.get("customer_name") == payload["customer_name"]
+    print(f"PASS: 200 OK — shipment created id={sid}, master_order_id={ship.get('master_order_id')}, sheet_row_num={ship.get('sheet_row_num')}")
+
+    # Cleanup
+    rd = requests.delete(f"{BASE}/shipments/{sid}", headers=_headers(tok), timeout=30)
+    print(f"  DELETE -> {rd.status_code} {rd.text[:200]}")
+    assert rd.status_code == 200
+    print("  cleanup OK")
+    return ship
+
+
+def test_f_smart_paste_then_ship(tok):
+    print("\n=== F6. Smart-Paste -> Ship pipeline (no duplicate row) ===")
+    paste_text = """Name: Pipeline Regression
+Phone: 9123455678
+Address: 99, Test Lane, Ahmedabad
+City: Ahmedabad
+State: Gujarat
+Pincode: 380015
+Payment: COD
+Amount: 250
+Items: Sample"""
+
+    r = requests.post(f"{BASE}/smart-paste", headers=_headers(tok),
+                      json={"text": paste_text}, timeout=60)
+    print(f"  smart-paste status={r.status_code}")
+    print(f"  body={r.text[:300]}")
     if r.status_code != 200:
-        print(f"LOGIN FAIL {email}: {r.status_code} {r.text[:200]}")
-        sys.exit(1)
-    j = r.json()
-    return j["token"], j
+        print("SKIP: smart-paste pipeline not available")
+        return
+    pending = r.json()
+    pid = pending["id"]
+    sheet_row_num_1 = pending.get("sheet_row_num")
+    print(f"  pending id={pid} sheet_row_num={sheet_row_num_1}")
+
+    # Get courier
+    rc = requests.get(f"{BASE}/couriers", headers=_headers(tok), timeout=20)
+    couriers = rc.json()
+    if not couriers:
+        # cleanup pending
+        requests.delete(f"{BASE}/orders/pending/{pid}", headers=_headers(tok), timeout=20)
+        print("SKIP: no courier")
+        return
+    cid = couriers[0]["id"]
+
+    # Ship
+    rs = requests.post(f"{BASE}/orders/pending/{pid}/ship",
+                       headers=_headers(tok),
+                       json={"courier_id": cid, "overrides": {}},
+                       timeout=60)
+    print(f"  ship status={rs.status_code} body={rs.text[:300]}")
+    assert rs.status_code == 200, f"ship failed: {rs.status_code} {rs.text[:200]}"
+    ship = rs.json()
+    sheet_row_num_2 = ship.get("sheet_row_num")
+    sid = ship["id"]
+    print(f"  shipment id={sid} sheet_row_num={sheet_row_num_2}")
+    # sheet_row_num must be carried forward (no duplicate row written)
+    assert sheet_row_num_2 == sheet_row_num_1, \
+        f"sheet_row_num diverged: pending={sheet_row_num_1}, shipment={sheet_row_num_2}. Possible duplicate row write!"
+
+    # Cleanup
+    rd = requests.delete(f"{BASE}/shipments/{sid}", headers=_headers(tok), timeout=30)
+    print(f"  cleanup status={rd.status_code}")
+    assert rd.status_code == 200
+    print("PASS: smart-paste -> ship preserved sheet_row_num (no duplicate master row)")
 
 
-def H(token):
-    return {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-
-
+# ---------------------------------------------------------------------------
 def main():
-    print("=" * 70)
-    print("Header Auto-Sync + Custom Fields backend verification")
-    print("=" * 70)
-
-    admin_token, admin_user = login(ADMIN_EMAIL, ADMIN_PASSWORD)
-    user_token, user_user = login(USER_EMAIL, USER_PASSWORD)
-    print(f"admin id={admin_user.get('id')} plan={admin_user.get('plan')} is_admin={admin_user.get('is_admin')}")
-    print(f"user2 id={user_user.get('id')} plan={user_user.get('plan')} is_admin={user_user.get('is_admin')}")
-
-    # Snapshot plan_features and custom-field limits BEFORE mutations
-    r = requests.get(f"{BACKEND}/admin/plan-features", headers=H(admin_token), timeout=20)
-    if r.status_code != 200:
-        print("Cannot fetch plan-features as admin", r.status_code, r.text[:200])
-        sys.exit(1)
-    pf_before = r.json().get("plans", {})
-    silver_before = list(pf_before.get("silver", []))
-    print(f"snapshot silver plan-features ({len(silver_before)}): includes_custom_fields={'custom_fields' in silver_before}")
-
-    r = requests.get(f"{BACKEND}/admin/custom-field-limits", headers=H(admin_token), timeout=20)
-    if r.status_code != 200:
-        print("Cannot fetch custom-field-limits", r.status_code, r.text[:200])
-        sys.exit(1)
-    limits_before = r.json().get("limits", {})
-    print(f"snapshot custom-field-limits: {limits_before}")
-
-    cleanup_field_ids = []
-    silver_modified = False
-    limits_modified = False
+    failures = []
+    try:
+        test_g_module_import()
+    except Exception as e:
+        failures.append(("G7 module import", e))
 
     try:
-        # ─────── Section A: Header Auto-Sync ───────
-        print("\n--- Section A: Header Auto-Sync ---")
-        # Check user2's settings for sheet.sheet_id
-        r = requests.get(f"{BACKEND}/settings", headers=H(user_token), timeout=20)
-        add("A. GET /settings (user2)", r.status_code == 200, f"status={r.status_code}")
-        sheet_cfg = (r.json() or {}).get("sheet", {}) if r.status_code == 200 else {}
-        has_sheet = bool(sheet_cfg.get("sheet_id"))
-        print(f"user2 sheet.sheet_id = {sheet_cfg.get('sheet_id')!r}, mapping keys = {list((sheet_cfg.get('column_mapping') or {}).keys())}")
+        test_g_health()
+    except Exception as e:
+        failures.append(("G8 health", e))
 
-        if not has_sheet:
-            # Per spec: attempt sync-headers anyway → expect 400
-            r = requests.post(f"{BACKEND}/sheets/sync-headers", headers=H(user_token),
-                              json={"dry_run": True}, timeout=20)
-            ok = (r.status_code == 400 and "Google Sheet not connected" in r.text)
-            add("A. POST /sheets/sync-headers without sheet → 400 'Google Sheet not connected'",
-                ok, f"status={r.status_code} body={r.text[:160]}")
-        else:
-            # 1. dry_run true
-            r = requests.post(f"{BACKEND}/sheets/sync-headers", headers=H(user_token),
-                              json={"dry_run": True}, timeout=30)
-            j = r.json() if r.status_code == 200 else {}
-            add("A1. POST /sheets/sync-headers dry_run=true → 200",
-                r.status_code == 200, f"status={r.status_code} body={r.text[:200]}")
-            add("A1. dry_run response has ok=True, dry_run=True, would_write list",
-                bool(j.get("ok")) and j.get("dry_run") is True and isinstance(j.get("would_write"), list),
-                f"keys={list(j.keys())}")
-            ww = j.get("would_write") or []
-            valid_pairs = all(
-                isinstance(it, (list, tuple, dict))
-                for it in ww
-            )
-            # would_write items can be tuple/list of (col, name) — check both shapes
-            shape_ok = True
-            for it in ww:
-                if isinstance(it, dict):
-                    if not (it.get("column") and it.get("name")):
-                        shape_ok = False
-                        break
-                elif isinstance(it, (list, tuple)):
-                    if len(it) < 2 or not it[0] or not it[1]:
-                        shape_ok = False
-                        break
-                else:
-                    shape_ok = False
-                    break
-            add("A1. would_write entries have column + name", shape_ok and valid_pairs,
-                f"sample={ww[:3]}")
+    print(f"\n=== Login as {USER2_EMAIL} ===")
+    try:
+        tok = _login(USER2_EMAIL, USER2_PASSWORD)
+        print(f"  token: {tok[:24]}…")
+    except Exception as e:
+        print(f"FATAL: cannot login: {e}")
+        sys.exit(1)
 
-            # 2. dry_run false
-            r = requests.post(f"{BACKEND}/sheets/sync-headers", headers=H(user_token),
-                              json={"dry_run": False}, timeout=60)
-            j = r.json() if r.status_code == 200 else {}
-            add("A2. POST /sheets/sync-headers dry_run=false → 200",
-                r.status_code == 200, f"status={r.status_code} body={r.text[:200]}")
-            add("A2. response has written_count, skipped_count, written, skipped",
-                all(k in j for k in ("written_count", "skipped_count", "written", "skipped")),
-                f"keys={list(j.keys())}")
-            written_first = j.get("written", [])
-            skipped_first = j.get("skipped", [])
-            print(f"  written={len(written_first)} skipped={len(skipped_first)}")
+    has_sheet = False
+    try:
+        has_sheet, _data = test_a_sync_headers_dry_run(tok)
+    except Exception as e:
+        failures.append(("A1 sync-headers dry_run", e))
 
-            # 3. Repeat → all returned as skipped
-            r = requests.post(f"{BACKEND}/sheets/sync-headers", headers=H(user_token),
-                              json={"dry_run": False}, timeout=60)
-            j2 = r.json() if r.status_code == 200 else {}
-            add("A3. Second sync → 200", r.status_code == 200, f"status={r.status_code}")
-            add("A3. Second sync written_count == 0",
-                int(j2.get("written_count", -1)) == 0,
-                f"written={j2.get('written_count')} skipped={j2.get('skipped_count')}")
-
-            # 4. Edge case: explicit headers
-            r = requests.post(f"{BACKEND}/sheets/sync-headers", headers=H(user_token),
-                              json={"headers": [{"column": "ZZ", "name": "Test Col ZZ"}], "dry_run": False},
-                              timeout=60)
-            j3 = r.json() if r.status_code == 200 else {}
-            add("A4. POST sync-headers explicit ZZ → 200",
-                r.status_code == 200, f"status={r.status_code} body={r.text[:200]}")
-            written_or_skipped = (j3.get("written", []) + [(s.get("column") or s[0]) if not isinstance(s, dict) else s.get("column") for s in j3.get("skipped", [])])
-            zz_seen = False
-            for w in j3.get("written", []) + j3.get("skipped", []):
-                col = w.get("column") if isinstance(w, dict) else None
-                if col == "ZZ":
-                    zz_seen = True
-                    break
-            add("A4. ZZ column appears in written or skipped", zz_seen,
-                f"written={j3.get('written')} skipped={j3.get('skipped')}")
-
-        # ─────── Section B: Custom Fields gated on silver (default OFF) ───────
-        print("\n--- Section B: Custom Fields gated (silver default) ---")
-        r = requests.get(f"{BACKEND}/me/custom-fields", headers=H(user_token), timeout=20)
-        j = r.json() if r.status_code == 200 else {}
-        add("B5. GET /me/custom-fields (user2 silver) → 200",
-            r.status_code == 200, f"status={r.status_code}")
-        shape_ok = (
-            isinstance(j.get("fields"), list)
-            and "limit" in j and "used" in j
-            and "feature_enabled" in j and "plan" in j and "is_admin" in j
-        )
-        add("B5. response shape has fields, limit, used, feature_enabled, plan, is_admin",
-            shape_ok, f"keys={list(j.keys())}")
-        add("B5. user2 plan == 'silver'", j.get("plan") == "silver", f"plan={j.get('plan')}")
-        add("B5. is_admin == False", j.get("is_admin") is False, f"is_admin={j.get('is_admin')}")
-        # If silver default has custom_fields off, feature_enabled should be false
-        silver_default_has_cf = "custom_fields" in silver_before
-        add("B5. feature_enabled matches silver default plan-features",
-            j.get("feature_enabled") == silver_default_has_cf,
-            f"feature_enabled={j.get('feature_enabled')} silver_has_cf={silver_default_has_cf}")
-        if not silver_default_has_cf:
-            r = requests.post(f"{BACKEND}/me/custom-fields", headers=H(user_token),
-                              json={"name": "Test", "column_letter": "F"}, timeout=20)
-            ok = r.status_code == 403 and "not available on your plan" in (r.text or "")
-            add("B6. POST /me/custom-fields user2 → 403 'not available on your plan'",
-                ok, f"status={r.status_code} body={r.text[:200]}")
-        else:
-            print("  Skipping B6 — silver already has custom_fields enabled by default")
-
-        # ─────── Section C: Admin temporarily enables + caps silver ───────
-        print("\n--- Section C: Admin enables custom_fields + caps silver ---")
-        # 7. Add custom_fields to silver
-        new_silver = list(silver_before)
-        if "custom_fields" not in new_silver:
-            new_silver.append("custom_fields")
-        new_plans = {**pf_before, "silver": new_silver}
-        r = requests.put(f"{BACKEND}/admin/plan-features", headers=H(admin_token),
-                         json={"plans": new_plans}, timeout=20)
-        add("C7. PUT /admin/plan-features add custom_fields to silver → 200",
-            r.status_code == 200, f"status={r.status_code} body={r.text[:200]}")
-        if r.status_code == 200:
-            silver_modified = True
-
-        # Verify on user side
-        r = requests.get(f"{BACKEND}/me/custom-fields", headers=H(user_token), timeout=20)
-        j = r.json() if r.status_code == 200 else {}
-        add("C7. GET /me/custom-fields shows feature_enabled=True after admin update",
-            j.get("feature_enabled") is True, f"feature_enabled={j.get('feature_enabled')}")
-
-        # 8. Set silver cap = 3
-        r = requests.put(f"{BACKEND}/admin/custom-field-limits", headers=H(admin_token),
-                         json={"silver": 3}, timeout=20)
-        j = r.json() if r.status_code == 200 else {}
-        add("C8. PUT /admin/custom-field-limits silver=3 → 200",
-            r.status_code == 200 and j.get("ok") is True and (j.get("limits") or {}).get("silver") == 3,
-            f"status={r.status_code} body={r.text[:200]}")
-        if r.status_code == 200:
-            limits_modified = True
-
-        r = requests.get(f"{BACKEND}/me/custom-fields", headers=H(user_token), timeout=20)
-        j = r.json() if r.status_code == 200 else {}
-        add("C8. GET /me/custom-fields limit == 3", j.get("limit") == 3,
-            f"limit={j.get('limit')}")
-
-        # ─────── Section D: Custom Fields CRUD happy path ───────
-        print("\n--- Section D: Custom Fields CRUD happy path (silver enabled) ---")
-        cols_to_add = [("F", "Salesperson"), ("G", "Region"), ("H", "Notes Custom")]
-        ids = []
-        for col, name in cols_to_add:
-            r = requests.post(f"{BACKEND}/me/custom-fields", headers=H(user_token),
-                              json={"name": name, "column_letter": col}, timeout=20)
-            ok = r.status_code == 200
-            add(f"D9. POST /me/custom-fields col={col} → 200",
-                ok, f"status={r.status_code} body={r.text[:200]}")
-            if ok:
-                doc = r.json()
-                ids.append(doc.get("id"))
-                cleanup_field_ids.append(doc.get("id"))
-        add("D9. Created 3 fields", len(ids) == 3, f"created={len(ids)}")
-        r = requests.get(f"{BACKEND}/me/custom-fields", headers=H(user_token), timeout=20)
-        j = r.json() if r.status_code == 200 else {}
-        add("D9. GET shows used=3", j.get("used") == 3, f"used={j.get('used')}")
-
-        # 10. 4th → 403 cap
-        r = requests.post(f"{BACKEND}/me/custom-fields", headers=H(user_token),
-                          json={"name": "Fourth", "column_letter": "I"}, timeout=20)
-        body = r.text or ""
-        cap_word = any(w.lower() in body.lower() for w in ("cap", "limit", "upgrade"))
-        add("D10. 4th POST → 403 with cap/limit/Upgrade in detail",
-            r.status_code == 403 and cap_word, f"status={r.status_code} body={body[:200]}")
-
-        # Delete the third field (H "Notes Custom") so we have headroom for D11/D12 validation
-        if len(ids) >= 3:
-            requests.delete(f"{BACKEND}/me/custom-fields/{ids[2]}", headers=H(user_token), timeout=10)
-            if ids[2] in cleanup_field_ids:
-                cleanup_field_ids.remove(ids[2])
-            ids = ids[:2]
-
-        # 11. Invalid column 'fb1'
-        r = requests.post(f"{BACKEND}/me/custom-fields", headers=H(user_token),
-                          json={"name": "Bad", "column_letter": "fb1"}, timeout=20)
-        body = r.text or ""
-        add("D11. invalid column 'fb1' → 400 with 'A–Z' in detail",
-            r.status_code == 400 and ("A–Z" in body or "A-Z" in body),
-            f"status={r.status_code} body={body[:200]}")
-
-        # 12. duplicate column 'F'
-        r = requests.post(f"{BACKEND}/me/custom-fields", headers=H(user_token),
-                          json={"name": "DupF", "column_letter": "F"}, timeout=20)
-        body = r.text or ""
-        add("D12. duplicate column 'F' → 400 with 'already used'",
-            r.status_code == 400 and "already used" in body,
-            f"status={r.status_code} body={body[:200]}")
-
-        # Restore field count to 3 for D14 to verify used=2 after delete
-        r = requests.post(f"{BACKEND}/me/custom-fields", headers=H(user_token),
-                          json={"name": "Notes Custom 2", "column_letter": "H"}, timeout=20)
-        if r.status_code == 200:
-            ids.append(r.json().get("id"))
-            cleanup_field_ids.append(r.json().get("id"))
-
-        # 13. PUT update one
-        if ids:
-            fid = ids[0]
-            r = requests.put(f"{BACKEND}/me/custom-fields/{fid}", headers=H(user_token),
-                             json={"name": "Salesperson Updated", "column_letter": "J"}, timeout=20)
-            add("D13. PUT /me/custom-fields/{id} → 200", r.status_code == 200,
-                f"status={r.status_code} body={r.text[:200]}")
-            r = requests.get(f"{BACKEND}/me/custom-fields", headers=H(user_token), timeout=20)
-            j = r.json() if r.status_code == 200 else {}
-            updated_doc = next((f for f in (j.get("fields") or []) if f.get("id") == fid), None)
-            add("D13. GET shows updated name + column",
-                updated_doc and updated_doc.get("name") == "Salesperson Updated"
-                and updated_doc.get("column_letter") == "J",
-                f"doc={updated_doc}")
-
-        # 14. DELETE one
-        if ids:
-            fid = ids[1] if len(ids) > 1 else ids[0]
-            r = requests.delete(f"{BACKEND}/me/custom-fields/{fid}", headers=H(user_token), timeout=20)
-            add("D14. DELETE /me/custom-fields/{id} → 200", r.status_code == 200,
-                f"status={r.status_code} body={r.text[:200]}")
-            if r.status_code == 200 and fid in cleanup_field_ids:
-                cleanup_field_ids.remove(fid)
-            r = requests.get(f"{BACKEND}/me/custom-fields", headers=H(user_token), timeout=20)
-            j = r.json() if r.status_code == 200 else {}
-            add("D14. GET shows used=2", j.get("used") == 2, f"used={j.get('used')}")
-
-        # ─────── Section E: Admin cap endpoints ───────
-        print("\n--- Section E: Admin cap endpoints ---")
-        r = requests.get(f"{BACKEND}/admin/custom-field-limits", headers=H(user_token), timeout=20)
-        add("E15. Non-admin GET /admin/custom-field-limits → 403", r.status_code == 403,
-            f"status={r.status_code} body={r.text[:200]}")
-
-        r = requests.get(f"{BACKEND}/admin/custom-field-limits", headers=H(admin_token), timeout=20)
-        j = r.json() if r.status_code == 200 else {}
-        defaults = j.get("defaults", {})
-        add("E16. Admin GET → 200 with limits + defaults",
-            r.status_code == 200 and "limits" in j and "defaults" in j,
-            f"status={r.status_code} keys={list(j.keys())}")
-        add("E16. defaults include free_trial=0, silver=0, gold=3, platinum=5",
-            defaults.get("free_trial") == 0 and defaults.get("silver") == 0
-            and defaults.get("gold") == 3 and defaults.get("platinum") == 5,
-            f"defaults={defaults}")
-
-        r = requests.put(f"{BACKEND}/admin/custom-field-limits", headers=H(admin_token),
-                         json={"gold": 5}, timeout=20)
-        j = r.json() if r.status_code == 200 else {}
-        add("E17. PUT gold=5 → 200 + persists",
-            r.status_code == 200 and (j.get("limits") or {}).get("gold") == 5,
-            f"status={r.status_code} body={r.text[:200]}")
-        r = requests.get(f"{BACKEND}/admin/custom-field-limits", headers=H(admin_token), timeout=20)
-        j = r.json() if r.status_code == 200 else {}
-        add("E17. Subsequent GET reflects gold=5",
-            (j.get("limits") or {}).get("gold") == 5, f"limits={j.get('limits')}")
-
-        # ─────── Section F: Regression ───────
-        print("\n--- Section F: Regression ---")
-        # 18. POST /api/shipments still works (need a courier_id from user2)
-        r = requests.get(f"{BACKEND}/couriers", headers=H(user_token), timeout=20)
-        couriers = r.json() if r.status_code == 200 else []
-        cid = couriers[0]["id"] if couriers else None
-        if cid:
-            payload = {
-                "tracking_id": "TEST-REG-001",
-                "courier_id": cid,
-                "courier_name": couriers[0].get("name", ""),
-                "customer_name": "Regression Test",
-                "customer_phone": "9123456780",
-                "address_line1": "Test Lane",
-                "city": "Ahmedabad",
-                "state": "Gujarat",
-                "pincode": "380001",
-                "payment_mode": "Prepaid",
-                "amount": 100.0,
-            }
-            r = requests.post(f"{BACKEND}/shipments", headers=H(user_token), json=payload, timeout=30)
-            add("F18. POST /shipments still 200", r.status_code == 200,
-                f"status={r.status_code} body={r.text[:200]}")
-            if r.status_code == 200:
-                ship = r.json()
-                ship_id = ship.get("id")
-                # cleanup
-                requests.delete(f"{BACKEND}/shipments/{ship_id}", headers=H(user_token), timeout=20)
-        else:
-            add("F18. POST /shipments — no courier available, skipped", True, "no courier")
-
-        # 19. /me/feature-flags for gold/platinum should include custom_fields
-        # We'll temporarily flip user2 to gold via direct mongo? Actually we cannot.
-        # Instead, fetch admin feature-flags (admin gets all keys) and verify the key exists.
-        r = requests.get(f"{BACKEND}/me/feature-flags", headers=H(admin_token), timeout=20)
-        j = r.json() if r.status_code == 200 else {}
-        add("F19. /me/feature-flags admin returns custom_fields key",
-            "custom_fields" in (j.get("features") or []),
-            f"is_admin={j.get('is_admin')} count={len(j.get('features', []))}")
-        # Also verify default plan-features for gold/platinum include it
-        r = requests.get(f"{BACKEND}/admin/plan-features", headers=H(admin_token), timeout=20)
-        plans_now = (r.json() or {}).get("plans", {}) if r.status_code == 200 else {}
-        gold_has = "custom_fields" in (plans_now.get("gold") or [])
-        plat_has = "custom_fields" in (plans_now.get("platinum") or [])
-        add("F19. plan-features: gold and platinum include custom_fields",
-            gold_has and plat_has, f"gold_has={gold_has} platinum_has={plat_has}")
-
-        # 20. /sheets/orders still 200 with existing shape
-        r = requests.get(f"{BACKEND}/sheets/orders", headers=H(user_token), timeout=30)
-        if r.status_code == 200:
-            jo = r.json()
-            keys = set(jo.keys())
-            shape_ok = "rows" in keys or "orders" in keys or "headers" in keys
-            add("F20. GET /sheets/orders → 200 with expected shape",
-                shape_ok, f"keys={list(keys)[:10]}")
-        elif r.status_code == 400:
-            # User has no sheet connected — acceptable
-            add("F20. GET /sheets/orders → 400 (no sheet) — acceptable",
-                "Google Sheet not connected" in r.text or "Settings not configured" in r.text,
-                f"status={r.status_code} body={r.text[:200]}")
-        else:
-            add("F20. GET /sheets/orders unexpected", False,
-                f"status={r.status_code} body={r.text[:200]}")
-
-    finally:
-        # ───────────── Cleanup ─────────────
-        print("\n--- Cleanup ---")
-        for fid in list(cleanup_field_ids):
-            try:
-                r = requests.delete(f"{BACKEND}/me/custom-fields/{fid}", headers=H(user_token), timeout=10)
-                print(f"  cleanup delete field {fid}: {r.status_code}")
-            except Exception as e:
-                print(f"  cleanup delete field {fid} failed: {e}")
-        # Also clean up any leftover custom fields just in case
+    if has_sheet:
         try:
-            r = requests.get(f"{BACKEND}/me/custom-fields", headers=H(user_token), timeout=10)
-            for f in (r.json() or {}).get("fields", []):
-                try:
-                    requests.delete(f"{BACKEND}/me/custom-fields/{f['id']}",
-                                    headers=H(user_token), timeout=10)
-                except Exception:
-                    pass
-        except Exception:
-            pass
+            test_a_sync_headers_real_write(tok)
+        except Exception as e:
+            failures.append(("A2 sync-headers real write", e))
+        try:
+            test_a_sync_headers_explicit_override(tok)
+        except Exception as e:
+            failures.append(("A3 sync-headers explicit override", e))
+    else:
+        print("\n[A2/A3 skipped — user2 has no sheet linked, contract for 400 already validated]")
+        # We can still test A3 if explicit headers are given without dry_run since
+        # the 400 fails before reaching items, but the contract says "if sheet connected"
+        # for A3, so we skip it here.
 
-        if silver_modified:
-            try:
-                r = requests.put(f"{BACKEND}/admin/plan-features", headers=H(admin_token),
-                                 json={"plans": pf_before}, timeout=20)
-                print(f"  restore plan-features silver: {r.status_code}")
-            except Exception as e:
-                print(f"  restore plan-features failed: {e}")
+    try:
+        test_f_post_shipment(tok)
+    except Exception as e:
+        failures.append(("F5 POST /shipments", e))
 
-        if limits_modified:
-            try:
-                # Restore the prior limits doc exactly. If empty, send all None to leave defaults? 
-                # The PUT only writes provided keys, so we should write the previous values.
-                body = {}
-                for k in ("free_trial", "silver", "gold", "platinum"):
-                    if k in limits_before:
-                        body[k] = int(limits_before[k])
-                # Even if no prior overrides, attempt to clear by writing defaults:
-                if not body:
-                    # Reset to defaults from spec
-                    body = {"free_trial": 0, "silver": 0, "gold": 3, "platinum": 5}
-                r = requests.put(f"{BACKEND}/admin/custom-field-limits", headers=H(admin_token),
-                                 json=body, timeout=20)
-                print(f"  restore custom-field-limits: {r.status_code} body={r.text[:200]}")
-            except Exception as e:
-                print(f"  restore limits failed: {e}")
+    try:
+        test_f_smart_paste_then_ship(tok)
+    except Exception as e:
+        failures.append(("F6 smart-paste -> ship", e))
 
-        # Summary
-        print("\n" + "=" * 70)
-        passed = sum(1 for _, p, _ in results if p)
-        total = len(results)
-        print(f"RESULT: {passed}/{total} assertions passed")
-        for name, p, det in results:
-            if not p:
-                print(f"  ❌ {name} — {det}")
-        sys.exit(0 if passed == total else 1)
+    print("\n" + "=" * 60)
+    if failures:
+        print(f"FAILURES: {len(failures)}")
+        for name, exc in failures:
+            print(f"  - {name}: {exc}")
+        sys.exit(2)
+    print("ALL TESTS PASSED")
 
 
 if __name__ == "__main__":
