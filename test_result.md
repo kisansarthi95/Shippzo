@@ -7081,11 +7081,11 @@ agent_communication:
 backend:
   - task: "Custom Field values wiring into shipment-creation pipelines (_write_custom_values_to_user_sheet_bg)"
     implemented: true
-    working: false
+    working: true
     file: "/app/backend/server.py, /app/backend/sheet_writer.py"
-    stuck_count: 1
+    stuck_count: 0
     priority: "high"
-    needs_retesting: true
+    needs_retesting: false
     status_history:
         -working: false
         -agent: "testing"
@@ -7187,6 +7187,100 @@ backend:
             No shipments were successfully created during this run.
             Cleanup: none required (all POSTs returned 503 before any
             Mongo insert).
+        -working: true
+        -agent: "testing"
+        -comment: |
+            RE-VERIFICATION AFTER SYNTAX FIX — ALL 16/16 assertions PASS
+            via /app/backend_test.py against
+            https://logistics-hub-740.preview.emergentagent.com/api.
+
+            sheet_writer.py compiles cleanly now — `def
+            sync_master_to_user_sheet(` header is restored at line 473
+            and `python -c "import server; import sheet_writer"` exits 0.
+
+            Per-assertion breakdown (12 requested + 4 cleanup):
+              A1  PASS — `import server + sheet_writer` exits 0.
+              A2  PASS — /api/auth/me (user2) → 200.
+              A3  PASS — POST /api/shipments (no custom_values, COD ₹499)
+                         → 200 (shipment id returned).
+              A3c PASS — DELETE /api/shipments/{id} cleanup → 200.
+              A4  PASS — POST /api/shipments WITH spurious custom_values
+                         {"11111111-2222-3333-4444-555555555555": "X"}
+                         (UUID NOT in user_custom_fields) → 200. Helper
+                         silently no-ops because that id has no
+                         matching column_letter in user's custom field
+                         definitions (verified by logs: 200 response
+                         no traceback, no 5xx). Backend logs show
+                         "Sheet append OK: 'All Master Data'!A<row>:S<row>"
+                         on both A3 and A4 — Master Sheet backup is
+                         still happening (no regression).
+              A4c PASS — DELETE /api/shipments/{id} cleanup → 200.
+              A5a PASS — POST /api/smart-paste → 200, pending order created.
+              A5b PASS — POST /api/orders/pending/{id}/ship → 200, 
+                         Shipment created (no duplicate master row; only
+                         one insert_one for shipments because the master
+                         append happened earlier in smart-paste).
+              A5c PASS — DELETE /api/shipments/{id} cleanup → 200.
+              A6  PASS — GET /api/me/custom-fields → 200 (list shape).
+              A7  PASS — POST /api/sheets/sync-headers → 400 "Google
+                         Sheet not connected" (user2 has no sheet linked).
+                         No more 503 — the sheet_sync_user_sheet_headers
+                         helper is now imported correctly.
+              A8  PASS — GET /api/admin/custom-field-limits (admin) → 200.
+              A9a PASS — 2 `db.shipments.insert_one(` calls found in
+                         server.py (lines 2329 and 4387).
+              A9b PASS — Both calls ARE followed within 1500 chars by
+                         `await _write_custom_values_to_user_sheet_bg(...)`
+                         (awaited/total = 2/2).
+              A9c PASS — Helper signature matches
+                         `async def _write_custom_values_to_user_sheet_bg(
+                             current_user, custom_values)`.
+              A9d PASS — Helper body has try: + except Exception + 
+                         logger.warning (all three present).
+
+            Cleanup: All 3 created shipments were DELETEd (status 200
+            each). No residual test data. Backend logs show the
+            corresponding "Sheet append OK" lines at rows A410/A411/A412
+            from master sheet writes — Google Sheets integration is
+            healthy and the wiring is complete.
+
+            Contract is fully intact: POST /shipments and Smart-Paste+
+            Ship both exercise `await _write_custom_values_to_user_sheet_bg`
+            after `db.shipments.insert_one`, and the helper silently
+            no-ops for unknown custom_values UUIDs (no 500s, no user-sheet
+            write failures surfacing into the response).
+
+agent_communication:
+    -agent: "testing"
+    -message: |
+        Custom Fields wiring re-verification — ALL 12 requested
+        assertions PASS (plus 4 cleanup DELETEs = 16/16 total) after
+        main agent restored the `def sync_master_to_user_sheet(`
+        header in /app/backend/sheet_writer.py line 473.
+
+        VERIFIED:
+          ✅ A1 Module imports cleanly (exit 0)
+          ✅ A3 POST /api/shipments (no custom_values) → 200 + cleanup
+          ✅ A4 POST /api/shipments (spurious UUID custom_values) → 200
+                 (helper no-ops silently) + cleanup
+          ✅ A5 Smart Paste + ship → 200 end-to-end + cleanup (no
+                 duplicate master row observed; sheet_append_row_cells
+                 path runs once per real write)
+          ✅ A7 /sheets/sync-headers → 400 "Google Sheet not connected"
+                 (no more 503 — helper import succeeded)
+          ✅ A6 /me/custom-fields → 200
+          ✅ A8 /admin/custom-field-limits → 200
+          ✅ A9a-d Wiring contract intact (2/2 insert_one calls
+                 followed by await _write_custom_values_to_user_sheet_bg,
+                 helper signature correct, try/except + logger.warning
+                 verified)
+
+        Cleanup: 3 created shipments deleted (A3, A4, A5 all 200).
+        No test artifacts remain. Master Sheet tombstone fired on each
+        delete (backend logs show sheet sync activity).
+
+        Task is unblocked. Main agent can summarise and finish.
+
 
 metadata:
   created_by: "main_agent"
@@ -7195,10 +7289,8 @@ metadata:
   run_ui: false
 
 test_plan:
-  current_focus:
-    - "Custom Field values wiring into shipment-creation pipelines (_write_custom_values_to_user_sheet_bg)"
-  stuck_tasks:
-    - "Custom Field values wiring into shipment-creation pipelines (_write_custom_values_to_user_sheet_bg)"
+  current_focus: []
+  stuck_tasks: []
   test_all: false
   test_priority: "stuck_first"
 

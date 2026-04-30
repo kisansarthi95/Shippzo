@@ -470,7 +470,7 @@ def _find_next_empty_row_user_sheet(ws) -> int:
     return used + 1
 
 
-
+def sync_master_to_user_sheet(
     user_id: str,
     user_sheet_id: str,
     user_tab_or_gid: str = "0",
