@@ -1772,6 +1772,60 @@ export default function SettingsScreen() {
                   <Ionicons name="save" size={18} color="#fff" />
                   <Text style={styles.saveBtnText}>Save Mapping & Connect</Text>
                 </TouchableOpacity>
+                {/* Write headers to user's sheet — based on current mapping
+                    + any custom fields defined. Existing non-blank headers
+                    are preserved. */}
+                <TouchableOpacity
+                  testID="sheet-write-headers-btn"
+                  onPress={async () => {
+                    try {
+                      const r = await Api.syncSheetHeaders(false);
+                      const lines = [
+                        `Wrote ${r.written_count} header${
+                          r.written_count === 1 ? "" : "s"
+                        }.`,
+                      ];
+                      if (r.skipped_count) {
+                        lines.push(
+                          `Skipped ${r.skipped_count} cell${
+                            r.skipped_count === 1 ? "" : "s"
+                          } (already had a value).`,
+                        );
+                      }
+                      Alert.alert("✅ Headers synced", lines.join("\n"));
+                    } catch (e: any) {
+                      Alert.alert(
+                        "Error",
+                        e?.response?.data?.detail || e?.message || "Failed",
+                      );
+                    }
+                  }}
+                  style={[
+                    styles.saveBtn,
+                    { marginTop: 8, backgroundColor: "#10B981" },
+                  ]}
+                >
+                  <Ionicons name="cloud-upload-outline" size={18} color="#fff" />
+                  <Text style={styles.saveBtnText}>
+                    Write Headers to My Sheet
+                  </Text>
+                </TouchableOpacity>
+                <Text style={styles.toggleSub}>
+                  Writes your mapped field names + custom fields into row 1 of
+                  your Google Sheet. Only fills blank cells (your existing
+                  header wording is preserved).
+                </Text>
+                <TouchableOpacity
+                  testID="sheet-custom-fields-btn"
+                  onPress={() => router.push("/custom-fields")}
+                  style={[
+                    styles.saveBtn,
+                    { marginTop: 8, backgroundColor: "#6366F1" },
+                  ]}
+                >
+                  <Ionicons name="layers-outline" size={18} color="#fff" />
+                  <Text style={styles.saveBtnText}>Manage Custom Fields</Text>
+                </TouchableOpacity>
               </View>
             )}
           </Section>

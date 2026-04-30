@@ -6488,6 +6488,122 @@ agent_communication:
 
 
 
+
+#====================================================================================================
+# Feature 1 + Feature 2 — Header Auto-Sync + Per-user Custom Fields (plan-gated)
+#====================================================================================================
+
+backend:
+  - task: "Sheet Header Auto-Sync + Per-user Custom Fields CRUD + plan-gating"
+    implemented: true
+    working: "NA"
+    file: "/app/backend/server.py, /app/backend/sheet_writer.py, /app/backend/feature_registry.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: |
+            Two linked features shipped together.
+
+            FEATURE 1 — Header Auto-Sync to user's sheet
+              • New helper `sheet_writer.sync_user_sheet_headers(sheet_id,
+                gid, headers_to_write=[(col, name), ...])` using batch_update.
+                Only fills cells that are currently blank so existing user
+                wording is preserved. Wrapped in `_with_retry`.
+              • New endpoint `POST /api/sheets/sync-headers`. Body:
+                `{ "dry_run": bool, "headers"?: [{column, name}, ...] }`.
+                If `headers` not supplied, derives the list from the saved
+                column_mapping + any active custom fields.
+                Response: { ok, written_count, skipped_count, written[], skipped[] }.
+
+            FEATURE 2 — Per-user Custom Fields (plan-gated)
+              • New feature key `custom_fields` in feature_registry.py,
+                added to gold's DEFAULT_PLAN_FEATURES (platinum gets it
+                via ALL_KEYS).
+              • Default caps: free_trial=0, silver=0, gold=3, platinum=5.
+                Admins always unlimited (999).
+              • New Mongo collection `user_custom_fields` with docs:
+                { id, user_id, name, column_letter, field_type,
+                  show_in_form, show_in_smart_paste, sort_order, active,
+                  created_at, updated_at }.
+              • New endpoints:
+                - GET  /api/me/custom-fields       → {fields, limit, used,
+                                                      feature_enabled, plan, is_admin}
+                - POST /api/me/custom-fields       → create (enforces plan
+                                                      gate via user_has_feature
+                                                      + cap via count)
+                - PUT  /api/me/custom-fields/{id}  → edit (re-validates uniqueness)
+                - DELETE /api/me/custom-fields/{id}
+              • Admin endpoints (override caps per plan):
+                - GET  /api/admin/custom-field-limits
+                - PUT  /api/admin/custom-field-limits
+              • Column-letter validation: `^[A-Z]{1,3}$`, uniqueness
+                enforced per user.
+
+            FRONTEND:
+              • New API client methods: syncSheetHeaders, listMyCustomFields,
+                createMyCustomField, updateMyCustomField, deleteMyCustomField.
+              • New screen `/app/frontend/app/custom-fields.tsx` — full CRUD
+                UI with plan banner, usage badge, add/edit modal, soft
+                delete, upgrade CTA when feature off / cap hit.
+              • Settings → Sheet Connector now has:
+                  "📤 Write Headers to My Sheet" button (green)
+                  "🟣 Manage Custom Fields" button (links to new screen)
+              • Form-field wiring (New Shipment form + Smart Paste summary)
+                intentionally deferred to a follow-up iteration — user
+                can manage fields now, and the value-write plumbing will
+                be wired when user confirms the UX.
+
+            Please verify:
+              1) POST /api/sheets/sync-headers (user2, with a connected sheet):
+                 response shape { ok:true, written, skipped, written_count,
+                 skipped_count }. Confirm cells pre-populated with non-blank
+                 content are skipped; blank cells get the logical header
+                 name written.
+              2) POST /api/sheets/sync-headers with dry_run=true → returns
+                 would_write list without touching the sheet.
+              3) Custom fields CRUD for user2 (silver → feature OFF by
+                 default):
+                 a. GET /me/custom-fields → feature_enabled=false,
+                    limit=0, used=0.
+                 b. POST /me/custom-fields → 403 "not available on your plan".
+                 c. (Admin) PUT /admin/plan-features for silver to include
+                    "custom_fields"; PUT /admin/custom-field-limits for
+                    silver={3}. Re-test: GET returns feature_enabled=true,
+                    limit=3.
+                 d. POST /me/custom-fields x3 → all succeed.
+                 e. POST /me/custom-fields (4th) → 403 "reached cap".
+                 f. POST with invalid column letter ("fb" or "123") → 400.
+                 g. POST with duplicate column letter → 400.
+                 h. PUT /me/custom-fields/{id} → updates propagate.
+                 i. DELETE → 200, count decrements.
+              4) Admin endpoints /api/admin/custom-field-limits:
+                 - Non-admin GET/PUT → 403.
+                 - Admin GET → returns { limits, defaults }.
+                 - Admin PUT { silver: 2 } → persists.
+              5) Regression:
+                 - POST /api/shipments still works + master-sheet backup intact.
+                 - GET /api/sheets/orders still works.
+                 - GET /api/me/feature-flags includes "custom_fields"
+                   for gold+platinum by default.
+              6) Cleanup: delete any test custom fields; restore silver's
+                 plan_features + cap overrides.
+
+agent_communication:
+    -agent: "main"
+    -message: |
+        Shipped Feature 1 (header auto-sync) and Feature 2 (per-user
+        custom fields CRUD + plan gating). Caps default free/silver=0,
+        gold=3, platinum=5, admin=unlimited, admin-overrideable.
+
+        Need backend verification per the matrix above. Frontend UI
+        (Manage Custom Fields screen + Write Headers button) already
+        wired; form-field wiring into New Shipment / Smart Paste is
+        intentionally deferred to the next iteration.
+
+
 ## Backend Test Run: Master Sheet Resilience Layer (2026-04-29)
 
 backend:
@@ -6635,3 +6751,210 @@ agent_communication:
 
         Resilience layer is good to ship. Main agent: please summarise
         and finish. No outstanding bugs from this review.
+
+---
+
+## Backend Test Run: Header Auto-Sync + Custom Fields (Plan-Gated) (2026-04-30)
+
+backend:
+  - task: "Per-user Custom Fields with plan gating (CRUD + admin caps)"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "testing"
+        -comment: |
+            FULLY VERIFIED — 23/23 assertions for Custom Fields portion
+            passed via /app/backend_test.py against
+            https://logistics-hub-740.preview.emergentagent.com/api.
+
+            Coverage:
+            B5. GET /me/custom-fields as user2 (silver) → 200 with shape
+                {fields, limit, used, feature_enabled, plan, is_admin}.
+                feature_enabled=false (silver default doesn't have
+                custom_fields), plan="silver", is_admin=false, limit=0.
+            B6. POST /me/custom-fields as user2 → 403 with detail
+                "Custom fields are not available on your plan."
+            C7. Admin PUT /admin/plan-features adding "custom_fields"
+                to silver → 200. Subsequent GET /me/custom-fields shows
+                feature_enabled=true.
+            C8. Admin PUT /admin/custom-field-limits {silver:3} → 200
+                with {ok:true, limits:{silver:3}}. user2 GET shows
+                limit=3.
+            D9. POSTs for columns F/G/H all returned 200 with valid
+                docs (id, user_id, name, column_letter, field_type,
+                show_in_form, show_in_smart_paste, sort_order, active,
+                created_at). GET shows used=3.
+            D10. 4th POST → 403 "You've reached your plan's
+                custom-field cap (3). Upgrade or ask admin to raise
+                the cap." (matches "cap"/"limit"/"upgrade" expectation)
+            D11. POST with column_letter="fb1" → 400 "Column letter
+                must be A–Z (up to 3 letters like AA)." (after
+                deleting one field to free cap slot).
+            D12. POST with duplicate column "F" → 400 "Column F is
+                already used by another custom field."
+            D13. PUT updating name + column_letter → 200, GET reflects
+                new "Salesperson Updated" + column "J".
+            D14. DELETE → 200, GET shows used=2.
+            E15. Non-admin (user2) GET /admin/custom-field-limits → 403
+                "Admin only".
+            E16. Admin GET → 200 with both `limits` and `defaults`,
+                defaults exactly {free_trial:0, silver:0, gold:3,
+                platinum:5}.
+            E17. Admin PUT {gold:5} → 200 with {ok:true, limits:{gold:5}}.
+                Subsequent GET reflects the persisted gold:5.
+            F19. /me/feature-flags for admin includes "custom_fields"
+                in features (admin gets ALL_KEYS). GET /admin/plan-features
+                confirms gold and platinum default plans both include
+                "custom_fields".
+
+            CLEANUP: All 3 created custom fields deleted, plan-features
+            silver list restored to baseline (35 features, no custom_fields),
+            custom_field_limits restored to defaults
+            {free_trial:0, silver:0, gold:3, platinum:5}.
+
+            ORDER OF VALIDATION CHECKS (verified by behaviour):
+              1. feature gate (403 "not available on your plan")
+              2. plan cap (403 "cap reached")
+              3. name+column format (400 "A–Z")
+              4. duplicate column (400 "already used")
+            Tests had to delete 1 field before D11/D12 because the cap
+            check fires before column validation — that's the correct
+            behaviour, just required test-flow adjustment.
+
+  - task: "Header Auto-Sync (POST /api/sheets/sync-headers)"
+    implemented: true
+    working: false
+    file: "/app/backend/server.py, /app/backend/sheet_writer.py"
+    stuck_count: 1
+    priority: "high"
+    needs_retesting: true
+    status_history:
+        -working: false
+        -agent: "testing"
+        -comment: |
+            CRITICAL SYNTAX ERROR in /app/backend/sheet_writer.py — the
+            entire sheet_writer module FAILS TO IMPORT.
+
+            Location: /app/backend/sheet_writer.py line 381-387.
+            The function `sync_master_to_user_sheet` lost its `def` line
+            during the edit that added `sync_user_sheet_headers`.
+            Current state:
+
+                378|    return {"ok": True, "written": written, "skipped": skipped}
+                379|
+                380|
+                381|
+                382|    user_id: str,
+                383|    user_sheet_id: str,
+                384|    user_tab_or_gid: str = "0",
+                385|    *,
+                386|    overwrite: bool = True,
+                387|) -> Dict[str, Any]:
+                388|    """Phase-C: Pull every row from the Master Sheet ...
+
+            Reproduced via:
+                cd /app/backend && python -c "from sheet_writer import \
+                    sync_user_sheet_headers, sync_master_to_user_sheet, \
+                    append_order_row; print('imports OK')"
+                → SyntaxError: unmatched ')' at line 387
+
+            FIX: Insert this single line BEFORE line 382:
+
+                def sync_master_to_user_sheet(
+
+            With closing line 387 unchanged. (The original function
+            body lines 388-579 remain intact.)
+
+            IMPACT — this single SyntaxError cascades to break THREE
+            backend areas because server.py wraps the whole import in
+            a try/except that sets ALL helpers to None on any import
+            error (server.py line 73-94):
+
+              1. /api/sheets/sync-headers always returns
+                 503 "Sheets integration not configured" — the new
+                 Header Auto-Sync feature CANNOT be tested at all.
+                 Expected when no sheet linked: 400 "Google Sheet not
+                 connected".
+              2. POST /api/shipments returns
+                 503 "Google Sheets integration not configured on
+                 server." — REGRESSION on a previously-passing endpoint.
+                 sheet_append_order_row is None → server.py line 2080.
+              3. /api/sheets/sync-from-master, soft-delete tombstone,
+                 two-way status sync, /sheets/preview, /sheets/orders
+                 (admin path), /sheets/probe — all silently degrade
+                 because their helpers are None too.
+
+            Backend logs show the module DID load without error
+            ("Application startup complete.") because the try/except
+            around the imports swallowed it. The import error is only
+            surfaced when one of the now-None helpers is actually
+            called.
+
+            ASSERTIONS RESULT:
+              Section A (Header Auto-Sync): 1/1 attempted FAILED.
+                A. POST /sheets/sync-headers without sheet_id →
+                   got 503 "Sheets integration not configured"
+                   (expected 400 "Google Sheet not connected").
+              Section F (Regression):
+                F18 POST /api/shipments → got 503 (expected 200).
+              All other Section F regression items still pass:
+                F19 /me/feature-flags admin includes "custom_fields" ✅
+                F19 plan-features gold/platinum include custom_fields ✅
+                F20 /sheets/orders (admin path) still returned 400 with
+                    "Google Sheet not connected" because the endpoint's
+                    pre-check for cfg.sheet_id fires before it touches
+                    the broken helper — accepted as valid coverage.
+
+            Other live-sheet assertions (A1-A4: dry_run+writes against a
+            real linked test sheet) were SKIPPED because user2@test.com
+            has no sheet.sheet_id configured and the bug above prevents
+            any 400-path validation.
+
+            Total: 31/33 assertions passed. The 2 failures are caused
+            by THIS one missing-`def` line in sheet_writer.py.
+
+            DO NOT close this task as working until:
+              1. The `def sync_master_to_user_sheet(` line is restored.
+              2. Re-run /app/backend_test.py → expects A and F18 to pass.
+              3. Optionally hook a real test sheet to user2@test.com so
+                 the live-write assertions A1-A4 (dry_run + write +
+                 idempotent skip + explicit ZZ override) can also be
+                 verified.
+
+agent_communication:
+    -agent: "testing"
+    -message: |
+        Header Auto-Sync + Custom Fields review verification — partial pass.
+
+        ✅ Custom Fields end-to-end works perfectly: gating on silver
+           (default OFF), admin can flip it on per plan, admin caps
+           override defaults, full CRUD + duplicate/format validation,
+           regression on feature-flags is clean, all 23 assertions
+           green. Cleanup completed (no leftover docs, plan-features
+           and custom_field_limits restored to baseline).
+
+        ❌ Header Auto-Sync UNTESTABLE due to a CRITICAL SYNTAX ERROR
+           in /app/backend/sheet_writer.py line 381 — the function
+           `sync_master_to_user_sheet` is missing its `def` line. This
+           ALSO breaks POST /api/shipments (503), which is a regression.
+
+           One-line fix (insert before line 382):
+               def sync_master_to_user_sheet(
+
+           Repro: `cd /app/backend && python -c "import sheet_writer"`
+           → SyntaxError: unmatched ')' at line 387.
+
+           After the fix, please:
+             - Re-run /app/backend_test.py to verify A + F18 turn green.
+             - Optionally configure user2@test.com with a real test
+               Google Sheet (shared with the Service Account) so
+               live-write assertions A1-A4 can also be verified — the
+               test code under "if has_sheet" branch already covers
+               dry_run, written/skipped shape, idempotent skip on
+               re-run, and explicit-headers override path.
+

@@ -165,6 +165,8 @@ FEATURE_REGISTRY: Dict[str, Dict[str, str]] = {
     "form_box_dimensions":       {"label": "Box dimensions (L×W×H)",       "category": "Form Fields"},
     "form_token_amount":         {"label": "Token / Advance paid field",   "category": "Form Fields"},
     "form_shipment_notes":       {"label": "Special instructions field",   "category": "Form Fields"},
+    # NEW (2026-04-30 PM3) — Plan-gated per-user custom fields (Gold=3, Platinum=5)
+    "custom_fields":             {"label": "Custom fields (per-user defined columns)", "category": "Form Fields"},
 }
 
 ALL_KEYS: List[str] = list(FEATURE_REGISTRY.keys())
@@ -239,6 +241,7 @@ DEFAULT_PLAN_FEATURES: Dict[str, List[str]] = {
         "whatsapp_per_courier_template",  # NEW (2026-04-30 PM2) — Gold+ exclusive
         "ai_rate_customization",
         "form_alt_phone", "form_box_dimensions", "form_token_amount", "form_shipment_notes",
+        "custom_fields",                 # NEW (2026-04-30 PM3) — Gold+ (up to 3 fields)
     ],
     # Platinum gets EVERYTHING — also captures new features auto-added later
     # by referencing ALL_KEYS at runtime in the seeder.

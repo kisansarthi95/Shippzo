@@ -805,6 +805,50 @@ export const Api = {
     api.post<Shipment>(`/orders/pending/${id}/ship`, { courier_id, overrides }).then((r) => r.data),
   pendingOrdersCount: () =>
     api.get<{ count: number }>("/orders/pending-count").then((r) => r.data),
+
+  // --- Feature 1: Write headers to user sheet ---
+  syncSheetHeaders: (dry_run = false) =>
+    api
+      .post<{
+        ok: boolean;
+        written_count: number;
+        skipped_count: number;
+        written: { column: string; name: string }[];
+        skipped: { column: string; name: string; existing: string }[];
+      }>("/sheets/sync-headers", { dry_run })
+      .then((r) => r.data),
+
+  // --- Feature 2: Per-user custom fields ---
+  listMyCustomFields: () =>
+    api
+      .get<{
+        fields: CustomField[];
+        limit: number;
+        used: number;
+        feature_enabled: boolean;
+        plan: string;
+        is_admin: boolean;
+      }>("/me/custom-fields")
+      .then((r) => r.data),
+  createMyCustomField: (data: Partial<CustomField>) =>
+    api.post<CustomField>("/me/custom-fields", data).then((r) => r.data),
+  updateMyCustomField: (id: string, data: Partial<CustomField>) =>
+    api.put<CustomField>(`/me/custom-fields/${id}`, data).then((r) => r.data),
+  deleteMyCustomField: (id: string) =>
+    api.delete(`/me/custom-fields/${id}`).then((r) => r.data),
+};
+
+export type CustomField = {
+  id: string;
+  user_id: string;
+  name: string;
+  column_letter: string;
+  field_type: "text" | "number" | "date";
+  show_in_form: boolean;
+  show_in_smart_paste: boolean;
+  sort_order: number;
+  active: boolean;
+  created_at: string;
 };
 
 export type PendingOrder = {

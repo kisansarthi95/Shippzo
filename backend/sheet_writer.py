@@ -303,7 +303,82 @@ def _open_user_sheet(sheet_id: str, tab_or_gid: str):
     return spreadsheet.sheet1
 
 
-def sync_master_to_user_sheet(
+def sync_user_sheet_headers(
+    sheet_id: str,
+    tab_or_gid: str = "0",
+    *,
+    headers_to_write: List[tuple],
+) -> Dict[str, Any]:
+    """Write the provided header names into row 1 of the user's sheet
+    at specific column letters. Only fills cells that are currently
+    empty so existing user-typed headers are preserved.
+
+    `headers_to_write` is a list of (column_letter, header_name) tuples,
+    e.g. [("A", "Timestamp"), ("F", "Salesperson")]. Column letters are
+    1-based A..ZZ. Only cells that are currently blank get overwritten.
+
+    Returns: {
+        "ok": bool,
+        "written": [[col, name], ...],   # what we actually wrote
+        "skipped": [[col, name, existing], ...],  # non-blank cells kept
+    }
+    """
+    if not headers_to_write:
+        return {"ok": True, "written": [], "skipped": []}
+    try:
+        ws = _with_retry(_open_user_sheet, sheet_id, tab_or_gid)
+    except RuntimeError as e:
+        raise
+    # Read current row-1 to know which cells are blank vs typed.
+    try:
+        current_row1 = _with_retry(ws.row_values, 1) or []
+    except Exception:
+        current_row1 = []
+
+    def _col_to_idx(letter: str) -> int:
+        # A → 0, B → 1, ..., Z → 25, AA → 26
+        n = 0
+        for ch in letter.upper():
+            if not ch.isalpha():
+                break
+            n = n * 26 + (ord(ch) - ord("A") + 1)
+        return n - 1
+
+    written: List[tuple] = []
+    skipped: List[tuple] = []
+    updates: List[Dict[str, Any]] = []
+    for letter, name in headers_to_write:
+        letter = (letter or "").strip().upper()
+        name = (name or "").strip()
+        if not letter or not name:
+            continue
+        idx = _col_to_idx(letter)
+        existing = current_row1[idx] if idx < len(current_row1) else ""
+        if (existing or "").strip():
+            # Already has a header — don't clobber user's wording.
+            skipped.append((letter, name, existing))
+            continue
+        updates.append({
+            "range": f"{letter}1",
+            "values": [[name]],
+        })
+        written.append((letter, name))
+
+    if updates:
+        # batch_update is one API call regardless of how many cells.
+        try:
+            _with_retry(
+                ws.batch_update,
+                updates,
+                value_input_option="USER_ENTERED",
+            )
+        except Exception:
+            log.exception("sync_user_sheet_headers batch_update failed")
+            raise
+    return {"ok": True, "written": written, "skipped": skipped}
+
+
+
     user_id: str,
     user_sheet_id: str,
     user_tab_or_gid: str = "0",

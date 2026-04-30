@@ -80,6 +80,7 @@ try:
     from sheet_writer import update_row_status as sheet_update_row_status
     from sheet_writer import get_service_account_email as sheet_get_sa_email
     from sheet_writer import read_user_sheet as sheet_read_user_sheet
+    from sheet_writer import sync_user_sheet_headers as sheet_sync_user_sheet_headers
 except Exception as _sheet_import_err:  # pragma: no cover
     sheet_append_order_row = None  # type: ignore
     sheet_append_user = None  # type: ignore
@@ -90,6 +91,7 @@ except Exception as _sheet_import_err:  # pragma: no cover
     sheet_update_row_status = None  # type: ignore
     sheet_get_sa_email = None  # type: ignore
     sheet_read_user_sheet = None  # type: ignore
+    sheet_sync_user_sheet_headers = None  # type: ignore
 
 
 ROOT_DIR = Path(__file__).parent
@@ -3725,6 +3727,390 @@ async def sheets_probe():
     if sheet_probe_connection is None:
         return {"ok": False, "error": "gspread not installed"}
     return sheet_probe_connection()
+
+
+# ---------------------------------------------------------------------------
+# Feature 1: Write mapped headers + custom-field headers to the user's sheet
+# ---------------------------------------------------------------------------
+# When a user maps logical fields (name, phone, etc) to columns of their
+# own Google Sheet, only THEY know which header-name belongs in row 1. We
+# make it one tap:
+#   • Collect the (column_letter, header_name) pairs from their current
+#     mapping AND any custom fields they've defined.
+#   • Write them to row 1 of their sheet, skipping cells that already
+#     have a non-blank header (so user-authored wording is preserved).
+class SyncHeadersPayload(BaseModel):
+    # Optional overrides — callers may pass a bespoke header list,
+    # otherwise we derive from the user's saved settings.
+    headers: Optional[List[Dict[str, str]]] = None
+    # When true, skip even blank cells if a custom field's column
+    # letter is already used by a mapped built-in field (avoid
+    # overwriting a mapping). Defaults to False — caller decides.
+    dry_run: bool = False
+
+
+# Human-readable header text per mappable field — shown in the
+# user's sheet row 1 when they tap "Write Headers to Sheet".
+_MAPPED_FIELD_HEADERS: Dict[str, str] = {
+    "timestamp": "Timestamp",
+    "order_id": "Order ID",
+    "customer_name": "Name",
+    "phone": "Phone",
+    "address": "Address",
+    "city": "City",
+    "state": "State",
+    "pincode": "Pincode",
+    "item": "Item",
+    "amount": "Amount",
+    "payment_mode": "Payment Mode",
+    "weight": "Weight",
+    "alt_phone": "Alt Phone",
+    "token_amount": "Token Amount",
+}
+
+
+@api_router.post("/sheets/sync-headers")
+async def sync_sheet_headers(
+    payload: SyncHeadersPayload,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    """Write the user's mapped + custom-field header names into row 1
+    of their connected Google Sheet. Only fills blank cells (existing
+    non-blank headers are preserved).
+
+    Returns the list of (column, name) pairs actually written + the
+    list of cells we skipped (already had a value).
+    """
+    if sheet_sync_user_sheet_headers is None:
+        raise HTTPException(status_code=503, detail="Sheets integration not configured")
+
+    doc = await db.settings.find_one({"user_id": current_user["id"]}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=400, detail="Settings not configured")
+    s = Settings(**doc)
+    cfg = s.sheet
+    if not cfg.sheet_id:
+        raise HTTPException(status_code=400, detail="Google Sheet not connected")
+
+    # Build the list of (column_letter, header_name) to write.
+    items: List[tuple] = []
+    if payload.headers:
+        # Explicit override.
+        for item in payload.headers:
+            col = (item.get("column") or "").strip().upper()
+            name = (item.get("name") or "").strip()
+            if col and name:
+                items.append((col, name))
+    else:
+        # Derive from saved mapping + custom fields.
+        mapping = cfg.column_mapping or {}
+        sheet_headers = cfg.headers or []
+        for field_key, col_name in mapping.items():
+            if not col_name:
+                continue
+            # `col_name` is the USER'S current header wording; we map
+            # back to a column letter by finding the index in saved
+            # `headers`.
+            try:
+                idx = sheet_headers.index(col_name)
+            except ValueError:
+                continue
+            letter = _idx_to_col_letter(idx)
+            items.append((letter, _MAPPED_FIELD_HEADERS.get(field_key, field_key.title())))
+
+        # Custom fields — each has an explicit column letter.
+        custom_fields = (
+            await db.user_custom_fields.find(
+                {"user_id": current_user["id"], "active": {"$ne": False}},
+                {"_id": 0},
+            ).sort("sort_order", 1).to_list(100)
+        )
+        for cf in custom_fields:
+            col = (cf.get("column_letter") or "").strip().upper()
+            name = (cf.get("name") or "").strip()
+            if col and name:
+                items.append((col, name))
+
+    if payload.dry_run:
+        return {"ok": True, "dry_run": True, "would_write": items}
+
+    try:
+        result = sheet_sync_user_sheet_headers(
+            cfg.sheet_id, cfg.gid or "0",
+            headers_to_write=items,
+        )
+    except Exception as e:
+        logger.exception("sync_sheet_headers failed")
+        raise HTTPException(status_code=502, detail=f"Header sync failed: {e}")
+
+    return {
+        "ok": True,
+        "written_count": len(result.get("written", [])),
+        "skipped_count": len(result.get("skipped", [])),
+        "written": [{"column": c, "name": n} for (c, n) in result.get("written", [])],
+        "skipped": [
+            {"column": c, "name": n, "existing": existing}
+            for (c, n, existing) in result.get("skipped", [])
+        ],
+    }
+
+
+def _idx_to_col_letter(idx: int) -> str:
+    """0 → A, 1 → B, ..., 25 → Z, 26 → AA."""
+    idx = int(idx)
+    letters = ""
+    n = idx + 1
+    while n > 0:
+        n, r = divmod(n - 1, 26)
+        letters = chr(ord("A") + r) + letters
+    return letters
+
+
+# ---------------------------------------------------------------------------
+# Feature 2: Custom Fields (plan-gated)
+# ---------------------------------------------------------------------------
+# Plan-based per-user custom fields. Users on Gold can define up to 3,
+# Platinum up to 5. Admins can raise / lower the caps via admin_config.
+# An admin ON/OFF switch per plan lives in feature_registry — the same
+# kill-switch pattern the other features use.
+CUSTOM_FIELD_DEFAULT_LIMITS: Dict[str, int] = {
+    "free_trial": 0,
+    "silver": 0,
+    "gold": 3,
+    "platinum": 5,
+}
+
+
+async def _get_custom_field_limit(user: Dict[str, Any]) -> int:
+    """Admin override > plan default. Admins get unlimited (999)."""
+    if user.get("is_admin"):
+        return 999
+    adm_cfg = await db.admin_config.find_one(
+        {"_id": "default"}, {"_id": 0, "custom_field_limits": 1},
+    ) or {}
+    overrides = adm_cfg.get("custom_field_limits") or {}
+    plan_key = (user.get("plan") or "free_trial").lower()
+    if plan_key in overrides:
+        try:
+            return int(overrides[plan_key])
+        except (TypeError, ValueError):
+            pass
+    return CUSTOM_FIELD_DEFAULT_LIMITS.get(plan_key, 0)
+
+
+class CustomFieldCreate(BaseModel):
+    name: str
+    column_letter: str
+    field_type: str = "text"   # text | number | date
+    show_in_form: bool = True
+    show_in_smart_paste: bool = True
+    sort_order: int = 0
+
+
+class CustomFieldUpdate(BaseModel):
+    name: Optional[str] = None
+    column_letter: Optional[str] = None
+    field_type: Optional[str] = None
+    show_in_form: Optional[bool] = None
+    show_in_smart_paste: Optional[bool] = None
+    sort_order: Optional[int] = None
+    active: Optional[bool] = None
+
+
+@api_router.get("/me/custom-fields")
+async def list_my_custom_fields(
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    """Return the caller's custom fields + the plan-driven cap."""
+    limit = await _get_custom_field_limit(current_user)
+    feature_on = await user_has_feature(current_user, "custom_fields")
+    fields = await db.user_custom_fields.find(
+        {"user_id": current_user["id"]}, {"_id": 0},
+    ).sort("sort_order", 1).to_list(100)
+    return {
+        "fields": fields,
+        "limit": limit,
+        "used": len([f for f in fields if f.get("active", True)]),
+        "feature_enabled": bool(feature_on),
+        "plan": (current_user.get("plan") or "free_trial").lower(),
+        "is_admin": bool(current_user.get("is_admin")),
+    }
+
+
+@api_router.post("/me/custom-fields")
+async def create_my_custom_field(
+    payload: CustomFieldCreate,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    # Per-plan admin kill-switch.
+    if not await user_has_feature(current_user, "custom_fields"):
+        raise HTTPException(
+            status_code=403,
+            detail="Custom fields are not available on your plan.",
+        )
+    limit = await _get_custom_field_limit(current_user)
+    existing = await db.user_custom_fields.count_documents(
+        {"user_id": current_user["id"], "active": {"$ne": False}},
+    )
+    if existing >= int(limit):
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                f"You've reached your plan's custom-field cap ({limit}). "
+                "Upgrade or ask admin to raise the cap."
+            ),
+        )
+    name = (payload.name or "").strip()
+    col = (payload.column_letter or "").strip().upper()
+    if not name:
+        raise HTTPException(status_code=400, detail="Field name is required")
+    if not re.match(r"^[A-Z]{1,3}$", col):
+        raise HTTPException(
+            status_code=400,
+            detail="Column letter must be A–Z (up to 3 letters like AA).",
+        )
+    # Uniqueness: same user can't re-use a column letter.
+    dup = await db.user_custom_fields.find_one({
+        "user_id": current_user["id"],
+        "column_letter": col,
+        "active": {"$ne": False},
+    })
+    if dup:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Column {col} is already used by another custom field.",
+        )
+    doc = {
+        "id": str(uuid.uuid4()),
+        "user_id": current_user["id"],
+        "name": name,
+        "column_letter": col,
+        "field_type": (payload.field_type or "text").lower(),
+        "show_in_form": bool(payload.show_in_form),
+        "show_in_smart_paste": bool(payload.show_in_smart_paste),
+        "sort_order": int(payload.sort_order or 0),
+        "active": True,
+        "created_at": utcnow_iso(),
+    }
+    await db.user_custom_fields.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+
+@api_router.put("/me/custom-fields/{field_id}")
+async def update_my_custom_field(
+    field_id: str,
+    payload: CustomFieldUpdate,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    existing = await db.user_custom_fields.find_one(
+        {"id": field_id, "user_id": current_user["id"]},
+        {"_id": 0},
+    )
+    if not existing:
+        raise HTTPException(status_code=404, detail="Custom field not found")
+    updates: Dict[str, Any] = {}
+    if payload.name is not None:
+        updates["name"] = payload.name.strip()
+    if payload.column_letter is not None:
+        col = payload.column_letter.strip().upper()
+        if not re.match(r"^[A-Z]{1,3}$", col):
+            raise HTTPException(status_code=400, detail="Invalid column letter")
+        # Uniqueness check if it's actually changing.
+        if col != existing.get("column_letter"):
+            dup = await db.user_custom_fields.find_one({
+                "user_id": current_user["id"],
+                "column_letter": col,
+                "active": {"$ne": False},
+                "id": {"$ne": field_id},
+            })
+            if dup:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Column {col} is already used.",
+                )
+        updates["column_letter"] = col
+    if payload.field_type is not None:
+        updates["field_type"] = payload.field_type.lower()
+    if payload.show_in_form is not None:
+        updates["show_in_form"] = bool(payload.show_in_form)
+    if payload.show_in_smart_paste is not None:
+        updates["show_in_smart_paste"] = bool(payload.show_in_smart_paste)
+    if payload.sort_order is not None:
+        updates["sort_order"] = int(payload.sort_order)
+    if payload.active is not None:
+        updates["active"] = bool(payload.active)
+    if not updates:
+        return {"ok": True, "noop": True}
+    updates["updated_at"] = utcnow_iso()
+    await db.user_custom_fields.update_one(
+        {"id": field_id, "user_id": current_user["id"]}, {"$set": updates},
+    )
+    doc = await db.user_custom_fields.find_one(
+        {"id": field_id}, {"_id": 0},
+    )
+    return doc
+
+
+@api_router.delete("/me/custom-fields/{field_id}")
+async def delete_my_custom_field(
+    field_id: str,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    r = await db.user_custom_fields.delete_one(
+        {"id": field_id, "user_id": current_user["id"]},
+    )
+    if r.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Custom field not found")
+    return {"ok": True}
+
+
+# --- Admin knobs for custom-field caps ---
+class CustomFieldLimitsPayload(BaseModel):
+    # Plan → integer cap. Unknown plans are ignored.
+    free_trial: Optional[int] = None
+    silver: Optional[int] = None
+    gold: Optional[int] = None
+    platinum: Optional[int] = None
+
+
+@api_router.get("/admin/custom-field-limits")
+async def admin_get_custom_field_limits(
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    if not current_user.get("is_admin"):
+        raise HTTPException(status_code=403, detail="Admin only")
+    adm = await db.admin_config.find_one(
+        {"_id": "default"}, {"_id": 0, "custom_field_limits": 1},
+    ) or {}
+    return {
+        "limits": adm.get("custom_field_limits") or CUSTOM_FIELD_DEFAULT_LIMITS.copy(),
+        "defaults": CUSTOM_FIELD_DEFAULT_LIMITS,
+    }
+
+
+@api_router.put("/admin/custom-field-limits")
+async def admin_set_custom_field_limits(
+    payload: CustomFieldLimitsPayload,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    if not current_user.get("is_admin"):
+        raise HTTPException(status_code=403, detail="Admin only")
+    limits: Dict[str, int] = {}
+    for k in ("free_trial", "silver", "gold", "platinum"):
+        v = getattr(payload, k, None)
+        if v is not None:
+            try:
+                iv = max(0, int(v))
+            except (TypeError, ValueError):
+                iv = CUSTOM_FIELD_DEFAULT_LIMITS[k]
+            limits[k] = iv
+    await db.admin_config.update_one(
+        {"_id": "default"},
+        {"$set": {"custom_field_limits": limits}},
+        upsert=True,
+    )
+    return {"ok": True, "limits": limits}
 
 
 @api_router.get("/orders/pending", response_model=List[PendingOrder])
