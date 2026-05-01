@@ -175,6 +175,20 @@ export default function Shipments() {
   const [statusPickerShipment, setStatusPickerShipment] = useState<Shipment | null>(null);
   const [statusUpdating, setStatusUpdating] = useState(false);
 
+  // Phase-11: Delivery-confirmation count — auto-flagged shipped
+  // parcels that need a customer ping. Badge is lightweight (just
+  // counts), loaded on focus alongside other lists.
+  const [needConfirmCount, setNeedConfirmCount] = useState(0);
+  const loadNeedConfirm = useCallback(async () => {
+    try {
+      const r = await Api.deliveryConfList(5);
+      setNeedConfirmCount(r.counts?.list || 0);
+    } catch {
+      setNeedConfirmCount(0);
+    }
+  }, []);
+  useEffect(() => { loadNeedConfirm(); }, [loadNeedConfirm]);
+
   const load = useCallback(async () => {
     // We fetch the FULL list (server-side text search still applies) and do
     // status + date filtering on the client so the 8-way filter — including
@@ -196,7 +210,10 @@ export default function Shipments() {
     }
   }, [search]);
 
-  useFocusEffect(useCallback(() => { load().catch(() => {}); }, [load]));
+  useFocusEffect(useCallback(() => {
+    load().catch(() => {});
+    loadNeedConfirm().catch(() => {});
+  }, [load, loadNeedConfirm]));
 
   // Handle deep-link params from Dashboard quick actions.
   React.useEffect(() => {
@@ -632,20 +649,6 @@ export default function Shipments() {
         </ScrollView>
       </View>
 
-  // Phase-11: Delivery-confirmation count — auto-flagged shipped
-  // parcels that need a customer ping. Badge is lightweight (just
-  // counts), loaded on focus alongside other lists.
-  const [needConfirmCount, setNeedConfirmCount] = useState(0);
-  const loadNeedConfirm = useCallback(async () => {
-    try {
-      const r = await Api.deliveryConfList(5);
-      setNeedConfirmCount(r.counts?.list || 0);
-    } catch {
-      setNeedConfirmCount(0);
-    }
-  }, []);
-  useEffect(() => { loadNeedConfirm(); }, [loadNeedConfirm]);
-
       {/* Phase-9/10: Contextual "Scan" action card. Visible only when
           Pending or Dispatch tab is active (All also shows Pending
           variant as a general shortcut). Colours flip based on mode:
@@ -719,29 +722,62 @@ export default function Shipments() {
       })()}
 
       {/* Phase-11: Need Delivery Confirmation card (Shipped → Delivered).
-          Shows whenever there are flagged shipments, regardless of
-          active filter — this is a persistent workflow alert. */}
-      {needConfirmCount > 0 && (status === "All" || status === "Shipped" || status === "Dispatch") && (
+          Always visible on All / Shipped / Dispatch tabs so the
+          workflow surface is discoverable even when zero parcels
+          are pending — empty-state message keeps the card present
+          but visually muted. Tap is disabled when count = 0. */}
+      {(status === "All" || status === "Shipped" || status === "Dispatch") && (
         <TouchableOpacity
-          activeOpacity={0.85}
-          onPress={() => router.push("/delivery-confirmation")}
-          style={styles.confirmCard}
+          activeOpacity={needConfirmCount > 0 ? 0.85 : 1}
+          onPress={() => {
+            if (needConfirmCount > 0) {
+              router.push("/delivery-confirmation");
+            }
+          }}
+          style={[
+            styles.confirmCard,
+            needConfirmCount === 0 && styles.confirmCardEmpty,
+          ]}
           testID="need-delivery-confirm-card"
         >
-          <View style={styles.confirmCardIconBox}>
-            <Ionicons name="chatbubble-ellipses" size={24} color="#B45309" />
+          <View
+            style={[
+              styles.confirmCardIconBox,
+              needConfirmCount === 0 && styles.confirmCardIconBoxEmpty,
+            ]}
+          >
+            <Ionicons
+              name="chatbubble-ellipses"
+              size={24}
+              color={needConfirmCount === 0 ? "#9CA3AF" : "#B45309"}
+            />
           </View>
           <View style={{ flex: 1, marginLeft: 12 }}>
-            <Text style={styles.confirmCardTitle}>
-              Need Delivery Confirmation ({needConfirmCount})
-            </Text>
-            <Text style={styles.confirmCardSub} numberOfLines={2}>
-              Shipped parcels need confirmation
-            </Text>
+            {needConfirmCount > 0 ? (
+              <>
+                <Text style={styles.confirmCardTitle}>
+                  Need Delivery Confirmation ({needConfirmCount})
+                </Text>
+                <Text style={styles.confirmCardSub} numberOfLines={2}>
+                  Shipped parcels need confirmation
+                </Text>
+              </>
+            ) : (
+              <>
+                <Text style={styles.confirmCardTitleEmpty}>
+                  Delivery Confirmation
+                </Text>
+                <Text style={styles.confirmCardSubEmpty} numberOfLines={2}>
+                  No shipments pending confirmation
+                </Text>
+              </>
+            )}
           </View>
-          <View style={styles.confirmCardArrow}>
-            <Ionicons name="chevron-forward" size={22} color="#B45309" />
-          </View>
+          {needConfirmCount > 0 && (
+            <View style={styles.confirmCardArrow}>
+              <Ionicons name="chevron-forward" size={22} color="#B45309" />
+            </View>
+          )}
         </TouchableOpacity>
       )}
 
@@ -1370,6 +1406,27 @@ const styles = StyleSheet.create({
   confirmCardArrow: {
     marginLeft: 8,
     padding: 6,
+  },
+  // Empty-state variant: muted gray palette so the card stays visible
+  // and informative without screaming for attention when there's
+  // nothing to action on.
+  confirmCardEmpty: {
+    backgroundColor: "#F9FAFB",
+    borderColor: "#E5E7EB",
+  },
+  confirmCardIconBoxEmpty: {
+    backgroundColor: "#F3F4F6",
+    borderColor: "#E5E7EB",
+  },
+  confirmCardTitleEmpty: {
+    fontSize: 14,
+    fontWeight: "700",
+    color: "#6B7280",
+  },
+  confirmCardSubEmpty: {
+    marginTop: 2,
+    fontSize: 12,
+    color: "#9CA3AF",
   },
   filterText: { fontWeight: "700", fontSize: 13, color: colors.text },
   filterCount: {
