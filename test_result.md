@@ -7768,3 +7768,68 @@ agent_communication:
         No regressions, no flaky behaviour, no manual cleanup needed
         beyond what the script does itself.
 
+
+---
+
+## Backend Test Run: pending-count combined with sheet cache (2026-05-01)
+
+backend:
+  - task: "/api/orders/pending-count combined count + /api/sheets/orders cache write"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "testing"
+        -comment: |
+            All 24/24 assertions passed via /app/backend_test_pending_count.py
+            against https://logistics-hub-740.preview.emergentagent.com/api.
+
+            Verified scope (focused regression — no full-suite run):
+
+            1. user2 (NO Google Sheet connected) → GET /api/orders/pending-count
+               returned 200 with body {count:0, smart_paste_count:0, sheet_count:0}.
+               No server error. Backward-compatible response shape.
+
+            2. admin (sheet linked, cache absent — settings.sheet.unshipped_count_cached
+               was None pre-fetch) → GET /api/orders/pending-count returned 200 with
+               body {count:25, smart_paste_count:25, sheet_count:0}.
+               Missing cache field gracefully tolerated (treated as 0).
+
+            3. After GET /api/sheets/orders for admin (which reads via service_account
+               and writes the cache):
+                 - /sheets/orders returned 200 with full original shape:
+                   {headers, headers_changed, orders, total, access_method=service_account}.
+                 - 419 orders fetched, all 419 unshipped.
+                 - Subsequent GET /api/orders/pending-count returned
+                   {count:444, smart_paste_count:25, sheet_count:419}.
+                 - sheet_count == sum(1 for o in orders if not o.already_shipped) ✅
+                 - sheet_count > 0 ✅
+                 - count == smart_paste_count + sheet_count (444 == 25 + 419) ✅
+
+            4. /api/sheets/orders response shape unchanged — all five expected
+               keys present (headers, headers_changed, orders, total,
+               access_method). Cache write side-effect did NOT alter the
+               response payload.
+
+            5. Legacy `count` field still works for older clients — equals the
+               new TOTAL (smart_paste + sheet), confirmed via repeat call
+               returning count=444.
+
+            No backend errors, no exceptions in logs during the run.
+
+agent_communication:
+    -agent: "testing"
+    -message: |
+        Focused pending-count regression — ALL PASS (24/24).
+        - No-sheet user: 200 OK with sheet_count=0.
+        - Sheet-linked, cache-missing: 200 OK with sheet_count=0 (graceful default).
+        - After /sheets/orders: cache populated, sheet_count=419 (matches
+          sum of !already_shipped), count=444=25+419.
+        - /sheets/orders response shape unchanged (headers, headers_changed,
+          orders, total, access_method=service_account).
+        - Legacy `count` still equals the new total.
+        Test script: /app/backend_test_pending_count.py.

@@ -1629,6 +1629,22 @@ async def sheets_orders(
         dict(mapping),
     )
 
+    # Cache the unshipped-sheet-order count so the Home dashboard can
+    # combine it with smart-paste-pending count in a single cheap DB
+    # read (no extra gspread call from `/orders/pending-count`). Stored
+    # alongside a timestamp so staleness can be judged later if needed.
+    unshipped_count = sum(1 for o in orders if not o.get("already_shipped"))
+    try:
+        await db.settings.update_one(
+            {"user_id": current_user["id"]},
+            {"$set": {
+                "sheet.unshipped_count_cached": int(unshipped_count),
+                "sheet.unshipped_count_at": utcnow_iso(),
+            }},
+        )
+    except Exception:
+        logger.exception("failed to cache sheet.unshipped_count")
+
     return {
         "headers": data["headers"],
         "headers_changed": headers_changed,
@@ -4533,10 +4549,41 @@ async def ship_pending_order(
 
 @api_router.get("/orders/pending-count")
 async def pending_orders_count(current_user: Dict[str, Any] = Depends(get_current_user)):
-    n = await db.pending_orders.count_documents(
+    """Combined pending-orders badge count for the Home dashboard.
+
+    Adds the Smart-Paste queue (Mongo `pending_orders`) to the cached
+    user-Google-Sheet unshipped-rows count. The sheet count is set
+    by `/sheets/orders` and read cheaply from the settings doc here —
+    never hits gspread directly (respect quota).
+
+    Response shape (backward-compatible):
+      - `count`        — TOTAL (smart_paste + sheet) → what the UI badge shows
+      - `smart_paste_count` — breakdown (ages of `pending_orders`)
+      - `sheet_count`  — breakdown (cached user-sheet unshipped)
+    """
+    sp_n = await db.pending_orders.count_documents(
         {"user_id": current_user["id"], "status": "pending"}
     )
-    return {"count": n}
+    sheet_n = 0
+    try:
+        doc = await db.settings.find_one(
+            {"user_id": current_user["id"]},
+            {"_id": 0, "sheet": 1},
+        ) or {}
+        sheet_cfg = (doc.get("sheet") or {})
+        if sheet_cfg.get("sheet_id"):
+            cached = sheet_cfg.get("unshipped_count_cached")
+            if isinstance(cached, (int, float)):
+                sheet_n = int(cached)
+    except Exception:
+        logger.exception("failed to read cached sheet unshipped count")
+
+    total = sp_n + sheet_n
+    return {
+        "count": total,
+        "smart_paste_count": sp_n,
+        "sheet_count": sheet_n,
+    }
 
 
 # ---------------------- Phase-3a Plans & Usage ----------------------
