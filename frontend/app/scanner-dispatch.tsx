@@ -22,7 +22,7 @@
  *   Failed    #FFE5E5 · #991B1B
  *   Scanner   Black bg + ORANGE corner brackets + RED horizontal scan line.
  */
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   View,
   Text,
@@ -36,7 +36,7 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
-import { useRouter } from "expo-router";
+import { useRouter, useLocalSearchParams } from "expo-router";
 import { CameraView, useCameraPermissions } from "expo-camera";
 import Animated, {
   useSharedValue,
@@ -50,6 +50,7 @@ import { Api } from "../lib/api";
 import { colors } from "../lib/theme";
 
 type Outcome = "moved" | "already" | "failed";
+type Mode = "dispatch" | "ship";
 
 type LogEntry = {
   id: string;                   // unique (tracking_id + ts)
@@ -63,8 +64,93 @@ type LogEntry = {
 const DEBOUNCE_MS = 2000;       // same barcode within 2s → ignore
 const MAX_LOG_ROWS = 50;
 
+// Mode-aware theme & copy. Each mode maps a transition bucket to its
+// own locked colour palette so the same scanner component serves both
+// Pending→Dispatch (cream) and Dispatch→Shipped (purple) flows.
+type ModeTheme = {
+  title: string;
+  accent: string;              // dot + brackets + CTA accents
+  movedBg: string;             // stat card / log badge / toast bg
+  alreadyBg: string;           // "already" stat card / log badge bg
+  failedBg: string;            // failure bg (shared across modes)
+  textOnMoved: string;         // foreground on cream / purple badges
+  textOnAlready: string;
+  corner: string;              // scanner corner bracket color
+  toastBg: string;             // full toast bg (cream vs solid purple)
+  toastText: string;           // toast text color
+  toastAlreadyBg: string;
+  toastAlreadyText: string;
+  statusActiveDot: string;
+  statusActiveBg: string;
+  statusActiveBorder: string;
+  statusActiveText: string;
+  movedLabel: string;
+  alreadyLabel: string;
+  badgeMovedLabel: string;
+  badgeAlreadyLabel: string;
+  scanCall: (tid: string) => Promise<{
+    outcome: Outcome;
+    reason: string;
+    message: string;
+    shipment: any;
+  }>;
+};
+
+const MODE_CONFIG: Record<Mode, ModeTheme> = {
+  dispatch: {
+    title: "Active Scanner",
+    accent: "#FF6B00",
+    movedBg: "#F4E3CF",
+    alreadyBg: "#F8EBDD",
+    failedBg: "#FFE5E5",
+    textOnMoved: "#8B5E34",
+    textOnAlready: "#8B5E34",
+    corner: "#FF6B00",
+    toastBg: "#F4E3CF",
+    toastText: "#5A3E2B",
+    toastAlreadyBg: "#F8EBDD",
+    toastAlreadyText: "#5A3E2B",
+    statusActiveDot: "#FF6B00",
+    statusActiveBg: "#FFF5EC",
+    statusActiveBorder: "#FFD9B8",
+    statusActiveText: "#FF6B00",
+    movedLabel: "Moved to\nDispatch",
+    alreadyLabel: "Already in\nDispatch",
+    badgeMovedLabel: "Dispatch",
+    badgeAlreadyLabel: "Already",
+    scanCall: (tid) => Api.scanDispatch(tid),
+  },
+  ship: {
+    title: "Dispatch Scanner",
+    accent: "#6B5BFF",
+    movedBg: "#EEE9FF",
+    alreadyBg: "#F4F1FF",
+    failedBg: "#FFE5E5",
+    textOnMoved: "#6B5BFF",
+    textOnAlready: "#6B5BFF",
+    corner: "#6B5BFF",
+    // Spec: toast bg is SOLID purple with WHITE text for this mode.
+    toastBg: "#6B5BFF",
+    toastText: "#FFFFFF",
+    toastAlreadyBg: "#F4F1FF",
+    toastAlreadyText: "#4B3FCF",
+    statusActiveDot: "#6B5BFF",
+    statusActiveBg: "#F4F1FF",
+    statusActiveBorder: "#DAD0FF",
+    statusActiveText: "#6B5BFF",
+    movedLabel: "Moved to\nShipped",
+    alreadyLabel: "Already\nShipped",
+    badgeMovedLabel: "Shipped",
+    badgeAlreadyLabel: "Already Shipped",
+    scanCall: (tid) => Api.scanShip(tid),
+  },
+};
+
 export default function ScannerDispatch() {
   const router = useRouter();
+  const params = useLocalSearchParams<{ mode?: string }>();
+  const mode: Mode = params.mode === "ship" ? "ship" : "dispatch";
+  const theme = useMemo(() => MODE_CONFIG[mode], [mode]);
   const [permission, requestPermission] = useCameraPermissions();
 
   const [paused, setPaused] = useState(false);
@@ -142,7 +228,7 @@ export default function ScannerDispatch() {
       setScannedCount((n) => n + 1);
 
       try {
-        const res = await Api.scanDispatch(code);
+        const res = await theme.scanCall(code);
         const ship = res.shipment || {};
         const customer = String((ship as any).customer_name || "").trim();
         const nowLabel = new Date().toLocaleTimeString([], {
@@ -162,11 +248,17 @@ export default function ScannerDispatch() {
 
         if (res.outcome === "moved") {
           setMovedCount((n) => n + 1);
-          showToast(`${code} moved to Dispatch successfully`, "moved");
+          showToast(
+            `${code} moved to ${mode === "ship" ? "Shipped" : "Dispatch"} successfully`,
+            "moved",
+          );
           try { Vibration.vibrate(30); } catch {/* ignore */}
         } else if (res.outcome === "already") {
           setAlreadyCount((n) => n + 1);
-          showToast(`${code} already in Dispatch`, "already");
+          showToast(
+            `${code} already ${mode === "ship" ? "Shipped" : "in Dispatch"}`,
+            "already",
+          );
         } else {
           setFailedCount((n) => n + 1);
           showToast(res.message || `Tracking ${code} not found`, "failed");
@@ -222,20 +314,28 @@ export default function ScannerDispatch() {
         >
           <Ionicons name="arrow-back" size={22} color="#111827" />
         </TouchableOpacity>
-        <Text style={styles.headerTitle}>Active Scanner</Text>
+        <Text style={styles.headerTitle}>{theme.title}</Text>
         <View style={{ width: 38 }} />
       </View>
 
       {/* Status + Pause/Stop */}
       <View style={styles.statusBar}>
-        <View style={styles.statusPill}>
+        <View
+          style={[
+            styles.statusPill,
+            {
+              backgroundColor: theme.statusActiveBg,
+              borderColor: theme.statusActiveBorder,
+            },
+          ]}
+        >
           <View
             style={[
               styles.statusDot,
-              { backgroundColor: paused ? "#9CA3AF" : "#FF6B00" },
+              { backgroundColor: paused ? "#9CA3AF" : theme.statusActiveDot },
             ]}
           />
-          <Text style={styles.statusPillText}>
+          <Text style={[styles.statusPillText, { color: theme.statusActiveText }]}>
             {paused ? "Paused" : "Scanner Active"}
           </Text>
         </View>
@@ -310,11 +410,11 @@ export default function ScannerDispatch() {
                   onBarcodeScanned={(r) => handleScan(r.data || "")}
                 />
               )}
-              {/* Corner brackets (orange) */}
-              <View style={[styles.corner, styles.cornerTL]} />
-              <View style={[styles.corner, styles.cornerTR]} />
-              <View style={[styles.corner, styles.cornerBL]} />
-              <View style={[styles.corner, styles.cornerBR]} />
+              {/* Corner brackets (mode accent) */}
+              <View style={[styles.corner, styles.cornerTL, { borderColor: theme.corner }]} />
+              <View style={[styles.corner, styles.cornerTR, { borderColor: theme.corner }]} />
+              <View style={[styles.corner, styles.cornerBL, { borderColor: theme.corner }]} />
+              <View style={[styles.corner, styles.cornerBR, { borderColor: theme.corner }]} />
               {/* Red scan line */}
               {!paused && (
                 <Animated.View style={[styles.scanLine, lineStyle]} />
@@ -327,8 +427,8 @@ export default function ScannerDispatch() {
         </View>
 
         {/* Manual entry — universally available fallback */}
-        <View style={styles.manualRow}>
-          <Ionicons name="keypad-outline" size={18} color="#8B5E34" />
+        <View style={[styles.manualRow, { borderColor: theme.movedBg }]}>
+          <Ionicons name="keypad-outline" size={18} color={theme.textOnMoved} />
           <TextInput
             testID="scanner-manual-input"
             style={styles.manualInput}
@@ -342,7 +442,7 @@ export default function ScannerDispatch() {
           />
           <TouchableOpacity
             onPress={handleManualSubmit}
-            style={styles.manualGo}
+            style={[styles.manualGo, { backgroundColor: theme.accent }]}
             testID="scanner-manual-submit"
           >
             <Ionicons name="checkmark" size={18} color="#fff" />
@@ -353,25 +453,27 @@ export default function ScannerDispatch() {
         <View style={styles.statsRow}>
           <View style={[styles.statCard, { backgroundColor: "#F9F1E6" }]}>
             <Text style={styles.statLabel}>Scanned</Text>
-            <Text style={styles.statNumber}>{scannedCount}</Text>
-          </View>
-          <View style={[styles.statCard, { backgroundColor: "#F4E3CF" }]}>
-            <Text style={[styles.statLabel, { color: "#8B5E34" }]}>
-              Moved to{"\n"}Dispatch
+            <Text style={[styles.statNumber, { color: theme.accent }]}>
+              {scannedCount}
             </Text>
-            <Text style={[styles.statNumber, { color: "#8B5E34" }]}>
+          </View>
+          <View style={[styles.statCard, { backgroundColor: theme.movedBg }]}>
+            <Text style={[styles.statLabel, { color: theme.textOnMoved }]}>
+              {theme.movedLabel}
+            </Text>
+            <Text style={[styles.statNumber, { color: theme.textOnMoved }]}>
               {movedCount}
             </Text>
           </View>
-          <View style={[styles.statCard, { backgroundColor: "#F8EBDD" }]}>
-            <Text style={[styles.statLabel, { color: "#8B5E34" }]}>
-              Already in{"\n"}Dispatch
+          <View style={[styles.statCard, { backgroundColor: theme.alreadyBg }]}>
+            <Text style={[styles.statLabel, { color: theme.textOnAlready }]}>
+              {theme.alreadyLabel}
             </Text>
-            <Text style={[styles.statNumber, { color: "#8B5E34" }]}>
+            <Text style={[styles.statNumber, { color: theme.textOnAlready }]}>
               {alreadyCount}
             </Text>
           </View>
-          <View style={[styles.statCard, { backgroundColor: "#FFE5E5" }]}>
+          <View style={[styles.statCard, { backgroundColor: theme.failedBg }]}>
             <Text style={[styles.statLabel, { color: "#991B1B" }]}>
               Failed
             </Text>
@@ -415,9 +517,9 @@ export default function ScannerDispatch() {
                   size={20}
                   color={
                     row.outcome === "moved"
-                      ? "#8B5E34"
+                      ? theme.textOnMoved
                       : row.outcome === "already"
-                        ? "#A77A46"
+                        ? theme.textOnAlready
                         : "#991B1B"
                   }
                 />
@@ -431,21 +533,28 @@ export default function ScannerDispatch() {
                 <View
                   style={[
                     styles.logBadge,
-                    row.outcome === "moved" && { backgroundColor: "#F4E3CF" },
-                    row.outcome === "already" && { backgroundColor: "#F8EBDD" },
-                    row.outcome === "failed" && { backgroundColor: "#FFE5E5" },
+                    row.outcome === "moved" && { backgroundColor: theme.movedBg },
+                    row.outcome === "already" && { backgroundColor: theme.alreadyBg },
+                    row.outcome === "failed" && { backgroundColor: theme.failedBg },
                   ]}
                 >
                   <Text
                     style={[
                       styles.logBadgeText,
-                      row.outcome === "failed" && { color: "#991B1B" },
+                      {
+                        color:
+                          row.outcome === "failed"
+                            ? "#991B1B"
+                            : row.outcome === "moved"
+                              ? theme.textOnMoved
+                              : theme.textOnAlready,
+                      },
                     ]}
                   >
                     {row.outcome === "moved"
-                      ? "Dispatch"
+                      ? theme.badgeMovedLabel
                       : row.outcome === "already"
-                        ? "Already"
+                        ? theme.badgeAlreadyLabel
                         : "Failed"}
                   </Text>
                 </View>
@@ -455,14 +564,23 @@ export default function ScannerDispatch() {
         )}
       </ScrollView>
 
-      {/* Toast — bottom, cream/darker-cream/red per outcome */}
+      {/* Toast — mode-themed (cream for Dispatch mode, purple for Ship mode) */}
       {toast && (
         <View
           style={[
             styles.toast,
-            toast.kind === "moved" && { backgroundColor: "#F4E3CF", borderColor: "#E6C9A8" },
-            toast.kind === "already" && { backgroundColor: "#F8EBDD", borderColor: "#E6C9A8" },
-            toast.kind === "failed" && { backgroundColor: "#FFE5E5", borderColor: "#F5B5B5" },
+            toast.kind === "moved" && {
+              backgroundColor: theme.toastBg,
+              borderColor: theme.toastBg === "#6B5BFF" ? "#5A4BEE" : "#E6C9A8",
+            },
+            toast.kind === "already" && {
+              backgroundColor: theme.toastAlreadyBg,
+              borderColor: "#E6C9A8",
+            },
+            toast.kind === "failed" && {
+              backgroundColor: "#FFE5E5",
+              borderColor: "#F5B5B5",
+            },
           ]}
           testID="scanner-toast"
         >
@@ -475,12 +593,25 @@ export default function ScannerDispatch() {
                   : "close-circle"
             }
             size={18}
-            color={toast.kind === "failed" ? "#991B1B" : "#5A3E2B"}
+            color={
+              toast.kind === "failed"
+                ? "#991B1B"
+                : toast.kind === "moved"
+                  ? theme.toastText
+                  : theme.toastAlreadyText
+            }
           />
           <Text
             style={[
               styles.toastText,
-              toast.kind === "failed" && { color: "#991B1B" },
+              {
+                color:
+                  toast.kind === "failed"
+                    ? "#991B1B"
+                    : toast.kind === "moved"
+                      ? theme.toastText
+                      : theme.toastAlreadyText,
+              },
             ]}
             numberOfLines={2}
           >
@@ -490,7 +621,13 @@ export default function ScannerDispatch() {
             <Ionicons
               name="close"
               size={16}
-              color={toast.kind === "failed" ? "#991B1B" : "#5A3E2B"}
+              color={
+                toast.kind === "failed"
+                  ? "#991B1B"
+                  : toast.kind === "moved"
+                    ? theme.toastText
+                    : theme.toastAlreadyText
+              }
             />
           </TouchableOpacity>
         </View>

@@ -2004,6 +2004,87 @@ async def scan_to_dispatch(
     }
 
 
+# ---------------------------------------------------------------------------
+# Phase-10: Scan-to-Shipped — second half of the warehouse workflow.
+# Atomic Dispatch → Shipped transition. Same outcome contract as
+# /scan-dispatch above so the mobile scanner can share its UI code.
+# ---------------------------------------------------------------------------
+@api_router.post("/shipments/scan-ship")
+async def scan_to_shipped(
+    payload: ScanDispatchRequest,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    tid = (payload.tracking_id or "").strip()
+    if not tid:
+        return {
+            "outcome": "failed",
+            "reason": "empty_tracking_id",
+            "message": "Empty barcode",
+            "shipment": None,
+        }
+    doc = await db.shipments.find_one(
+        {"user_id": current_user["id"], "tracking_id": tid},
+        {"_id": 0},
+    )
+    if not doc:
+        return {
+            "outcome": "failed",
+            "reason": "not_found",
+            "message": f"Tracking {tid} not found",
+            "shipment": None,
+        }
+    status = str(doc.get("status") or "").strip()
+    if status == "Shipped":
+        return {
+            "outcome": "already",
+            "reason": "already_shipped",
+            "message": "Already Shipped",
+            "shipment": doc,
+        }
+    # Only the legal transition Dispatch → Shipped is allowed. Everything
+    # else (Pending, Delivered, Cancelled, …) falls through as failed so
+    # the warehouse operator sees a clear red badge.
+    if status not in ("Dispatch", "Dispatched"):
+        return {
+            "outcome": "failed",
+            "reason": f"wrong_status:{status or 'unknown'}",
+            "message": (
+                f"Cannot ship — status is {status or 'unknown'} "
+                "(scan to Dispatch first)"
+            ),
+            "shipment": doc,
+        }
+    res = await db.shipments.update_one(
+        {
+            "user_id": current_user["id"],
+            "tracking_id": tid,
+            "status": {"$in": ["Dispatch", "Dispatched"]},
+        },
+        {"$set": {"status": "Shipped", "shipped_at": utcnow_iso()}},
+    )
+    if res.modified_count != 1:
+        cur = await db.shipments.find_one(
+            {"user_id": current_user["id"], "tracking_id": tid},
+            {"_id": 0},
+        )
+        return {
+            "outcome": "already",
+            "reason": "race_already_shipped",
+            "message": "Already Shipped",
+            "shipment": cur,
+        }
+    new_doc = await db.shipments.find_one(
+        {"user_id": current_user["id"], "tracking_id": tid},
+        {"_id": 0},
+    )
+    return {
+        "outcome": "moved",
+        "reason": "ok",
+        "message": f"{tid} moved to Shipped",
+        "shipment": new_doc,
+    }
+
+
 @api_router.get("/sheets/sample-template", response_class=PlainTextResponse)
 async def sheets_sample_template():
     """Return a CSV with ideal column layout + example rows for users to import into Google Sheets."""

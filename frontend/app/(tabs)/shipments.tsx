@@ -632,30 +632,77 @@ export default function Shipments() {
         </ScrollView>
       </View>
 
-      {/* Phase-9: "Scan to Dispatch" action card. Appears above the list
-          (and always visible — even when a filter is active — so the
-          user can jump straight from any tab into the scanner). The
-          card's whole palette is locked to cream (#F4E3CF / #8B5E34)
-          per spec; only the CTA button uses brand orange. */}
-      <TouchableOpacity
-        activeOpacity={0.85}
-        onPress={() => router.push("/scanner-dispatch")}
-        style={styles.scanCard}
-        testID="scan-to-dispatch-card"
-      >
-        <View style={styles.scanCardIconBox}>
-          <Ionicons name="barcode-outline" size={26} color="#FF6B00" />
-        </View>
-        <View style={{ flex: 1, marginLeft: 12 }}>
-          <Text style={styles.scanCardTitle}>Scan to Dispatch</Text>
-          <Text style={styles.scanCardSub} numberOfLines={2}>
-            Scan pending parcels and move to Dispatch
-          </Text>
-        </View>
-        <View style={styles.scanCardBtn}>
-          <Text style={styles.scanCardBtnText}>Start Scanner</Text>
-        </View>
-      </TouchableOpacity>
+      {/* Phase-9/10: Contextual "Scan" action card. Visible only when
+          Pending or Dispatch tab is active (All also shows Pending
+          variant as a general shortcut). Colours flip based on mode:
+          Pending→Dispatch = cream + orange CTA, Dispatch→Shipped =
+          purple-tinted + purple CTA per spec. */}
+      {(status === "All" || status === "Pending" || status === "Dispatch") && (() => {
+        const isShipMode = status === "Dispatch";
+        return (
+          <TouchableOpacity
+            activeOpacity={0.85}
+            onPress={() =>
+              router.push(
+                isShipMode ? "/scanner-dispatch?mode=ship" : "/scanner-dispatch",
+              )
+            }
+            style={[
+              styles.scanCard,
+              isShipMode && {
+                backgroundColor: "#F4F1FF",
+                borderColor: "#DAD0FF",
+              },
+            ]}
+            testID={isShipMode ? "scan-to-shipped-card" : "scan-to-dispatch-card"}
+          >
+            <View
+              style={[
+                styles.scanCardIconBox,
+                isShipMode && {
+                  backgroundColor: "#EEE9FF",
+                  borderColor: "#DAD0FF",
+                },
+              ]}
+            >
+              <Ionicons
+                name="barcode-outline"
+                size={26}
+                color={isShipMode ? "#6B5BFF" : "#FF6B00"}
+              />
+            </View>
+            <View style={{ flex: 1, marginLeft: 12 }}>
+              <Text
+                style={[
+                  styles.scanCardTitle,
+                  isShipMode && { color: "#4B3FCF" },
+                ]}
+              >
+                {isShipMode ? "Scan to Shipped" : "Scan to Dispatch"}
+              </Text>
+              <Text
+                style={[
+                  styles.scanCardSub,
+                  isShipMode && { color: "#6B5BFF" },
+                ]}
+                numberOfLines={2}
+              >
+                {isShipMode
+                  ? "Scan dispatch parcels and move to Shipped"
+                  : "Scan pending parcels and move to Dispatch"}
+              </Text>
+            </View>
+            <View
+              style={[
+                styles.scanCardBtn,
+                isShipMode && { backgroundColor: "#6B5BFF" },
+              ]}
+            >
+              <Text style={styles.scanCardBtnText}>Start Scanner</Text>
+            </View>
+          </TouchableOpacity>
+        );
+      })()}
 
       {selectMode && (
         <View style={styles.bulkBar} testID="bulk-bar">

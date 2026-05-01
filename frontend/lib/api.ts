@@ -651,6 +651,19 @@ export const Api = {
       }>("/shipments/scan-dispatch", { tracking_id })
       .then((r) => r.data),
   /**
+   * Phase-10: Sibling to scanDispatch — flips Dispatch → Shipped
+   * atomically. Same outcome contract so the scanner UI shares code.
+   */
+  scanShip: (tracking_id: string) =>
+    api
+      .post<{
+        outcome: "moved" | "already" | "failed";
+        reason: string;
+        message: string;
+        shipment: Shipment | null;
+      }>("/shipments/scan-ship", { tracking_id })
+      .then((r) => r.data),
+  /**
    * Lookup an existing shipment by tracking_id. Returns null when no
    * match (HTTP 404) instead of throwing, so callers don't have to
    * try/catch — and React Native's "Uncaught (in promise) AxiosError
