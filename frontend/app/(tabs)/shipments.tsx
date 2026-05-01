@@ -28,6 +28,7 @@ import { useFeatureFlag } from "../../lib/feature_flags";
 
 type StatusFilter =
   | "All"
+  | "Pending"
   | "Dispatch"
   | "Shipped"
   | "Delivered"
@@ -40,23 +41,58 @@ type DateFilter = "all" | "today" | "week" | "month" | "custom";
 // Status meta (label, backend value, color). `value` is the string stored
 // in `shipment.status` in Mongo and sent to the PUT /shipments/{id} endpoint.
 // The Two-Way Sync propagates every change to the Master Sheet automatically.
+// Phase-9 color palette (locked): Pending = BLACK active (warehouse emphasis),
+// Dispatch = soft CREAM (#F4E3CF / #8B5E34), Shipped = lavender, Delivered = green.
+// `activeBg` / `activeFg` override the default black pill when a bucket is selected.
 const STATUS_META: Record<
   Exclude<StatusFilter, "All">,
-  { value: string; bg: string; fg: string; aliases?: string[] }
+  {
+    value: string;
+    bg: string;
+    fg: string;
+    aliases?: string[];
+    activeBg?: string;
+    activeFg?: string;
+  }
 > = {
-  // "Dispatch" is what the user calls a freshly-created shipment (backend
-  // currently stores "Pending" by default — we treat both as synonyms for
-  // this tab so legacy data keeps working).
-  "Dispatch":        { value: "Dispatched",     bg: "#FEF3C7", fg: "#92400E", aliases: ["Pending"] },
-  "Shipped":         { value: "Shipped",        bg: "#E0E7FF", fg: "#3730A3" },
-  "Delivered":       { value: "Delivered",      bg: "#D1FAE5", fg: "#047857" },
+  "Pending": {
+    value: "Pending",
+    bg: "#F8ECC2",      // soft yellow-cream pill badge on the card
+    fg: "#8B6B00",
+    activeBg: "#000000",
+    activeFg: "#FFFFFF",
+  },
+  "Dispatch": {
+    value: "Dispatch",
+    bg: "#F4E3CF",
+    fg: "#8B5E34",
+    activeBg: "#F4E3CF",
+    activeFg: "#8B5E34",
+    // Legacy synonym: older shipments stored "Dispatched" — surface
+    // them under this same Dispatch tab for backwards compat.
+    aliases: ["Dispatched"],
+  },
+  "Shipped": {
+    value: "Shipped",
+    bg: "#EEE9FF",
+    fg: "#6B5BFF",
+    activeBg: "#EEE9FF",
+    activeFg: "#6B5BFF",
+  },
+  "Delivered": {
+    value: "Delivered",
+    bg: "#E6F7EE",
+    fg: "#1F9D55",
+    activeBg: "#E6F7EE",
+    activeFg: "#1F9D55",
+  },
   "Modified":        { value: "Modified",       bg: "#FEF9C3", fg: "#854D0E" },
   "Cancel by buyer": { value: "Cancel by buyer", bg: "#FCE7F3", fg: "#9D174D" },
   "Cancelled":       { value: "Cancelled",      bg: "#FEE2E2", fg: "#991B1B" },
   "Returned":        { value: "Returned",       bg: "#FFEDD5", fg: "#9A3412" },
 };
 const STATUS_FILTER_ORDER: StatusFilter[] = [
-  "All", "Dispatch", "Shipped", "Delivered",
+  "All", "Pending", "Dispatch", "Shipped", "Delivered",
   "Modified", "Cancel by buyer", "Cancelled", "Returned",
 ];
 
@@ -167,8 +203,9 @@ export default function Shipments() {
     const st = String(params.status || "");
     if (STATUS_FILTER_ORDER.includes(st as StatusFilter)) {
       setStatus(st as StatusFilter);
-    } else if (st === "Pending") {
-      // Legacy deep-link (Dashboard "Pending" chip) → new "Dispatch" tab.
+    } else if (st === "Dispatched") {
+      // Legacy alias: older deep-links used "Dispatched" for
+      // the cream-coloured Dispatch tab.
       setStatus("Dispatch");
     }
     if (params.select === "1") {
@@ -469,6 +506,12 @@ export default function Shipments() {
             const active = status === f;
             const count = statusCounts[f] || 0;
             const meta = f === "All" ? null : STATUS_META[f];
+            // Phase-9: each status has its own active-color palette now
+            // (Pending=BLACK, Dispatch=CREAM, Shipped=LAVENDER, Delivered=GREEN).
+            // Fall back to the legacy dark pill only for the generic "All"
+            // tab and any status that didn't override activeBg/activeFg.
+            const activeBg = meta?.activeBg || "#111827";
+            const activeFg = meta?.activeFg || "#FFFFFF";
             return (
               <TouchableOpacity
                 key={f}
@@ -476,6 +519,7 @@ export default function Shipments() {
                 style={[
                   styles.filterPill,
                   active && styles.filterPillActive,
+                  active && { backgroundColor: activeBg, borderColor: activeBg },
                   // Tinted border when the bucket has a dedicated color.
                   meta && !active && { borderColor: meta.fg + "55" },
                 ]}
@@ -486,14 +530,18 @@ export default function Shipments() {
                   allowFontScaling={false}
                   style={[
                     styles.filterText,
-                    { color: active ? "#fff" : (meta ? meta.fg : colors.text) },
+                    { color: active ? activeFg : (meta ? meta.fg : colors.text) },
                   ]}
                 >{f}</Text>
                 <View
                   style={[
                     styles.filterCount,
                     {
-                      backgroundColor: active ? "rgba(255,255,255,0.25)" : "#F3F4F6",
+                      backgroundColor: active
+                        ? (activeBg === "#F4E3CF" || activeBg === "#EEE9FF" || activeBg === "#E6F7EE")
+                          ? activeFg + "22"
+                          : "rgba(255,255,255,0.25)"
+                        : "#F3F4F6",
                     },
                   ]}
                 >
@@ -501,7 +549,7 @@ export default function Shipments() {
                     allowFontScaling={false}
                     style={[
                       styles.filterCountText,
-                      { color: active ? "#fff" : colors.text },
+                      { color: active ? activeFg : colors.text },
                     ]}
                   >
                     {count}
@@ -583,6 +631,31 @@ export default function Shipments() {
           })()}
         </ScrollView>
       </View>
+
+      {/* Phase-9: "Scan to Dispatch" action card. Appears above the list
+          (and always visible — even when a filter is active — so the
+          user can jump straight from any tab into the scanner). The
+          card's whole palette is locked to cream (#F4E3CF / #8B5E34)
+          per spec; only the CTA button uses brand orange. */}
+      <TouchableOpacity
+        activeOpacity={0.85}
+        onPress={() => router.push("/scanner-dispatch")}
+        style={styles.scanCard}
+        testID="scan-to-dispatch-card"
+      >
+        <View style={styles.scanCardIconBox}>
+          <Ionicons name="barcode-outline" size={26} color="#FF6B00" />
+        </View>
+        <View style={{ flex: 1, marginLeft: 12 }}>
+          <Text style={styles.scanCardTitle}>Scan to Dispatch</Text>
+          <Text style={styles.scanCardSub} numberOfLines={2}>
+            Scan pending parcels and move to Dispatch
+          </Text>
+        </View>
+        <View style={styles.scanCardBtn}>
+          <Text style={styles.scanCardBtnText}>Start Scanner</Text>
+        </View>
+      </TouchableOpacity>
 
       {selectMode && (
         <View style={styles.bulkBar} testID="bulk-bar">
@@ -1120,6 +1193,54 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   filterPillActive: { backgroundColor: colors.secondary, borderColor: colors.secondary },
+
+  // Phase-9: "Scan to Dispatch" card — cream palette locked per spec.
+  scanCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#F4E3CF",
+    borderWidth: 1,
+    borderColor: "#E6C9A8",
+    borderRadius: 14,
+    marginHorizontal: 12,
+    marginTop: 2,
+    marginBottom: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+  },
+  scanCardIconBox: {
+    width: 46,
+    height: 46,
+    borderRadius: 12,
+    backgroundColor: "#FFF5EC",
+    borderWidth: 1,
+    borderColor: "#FFD9B8",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  scanCardTitle: {
+    fontSize: 15,
+    fontWeight: "800",
+    color: "#6B4220",
+  },
+  scanCardSub: {
+    marginTop: 2,
+    fontSize: 12,
+    color: "#8B5E34",
+    lineHeight: 16,
+  },
+  scanCardBtn: {
+    backgroundColor: "#FF6B00",
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 10,
+    marginLeft: 10,
+  },
+  scanCardBtnText: {
+    color: "#FFFFFF",
+    fontWeight: "800",
+    fontSize: 13,
+  },
   filterText: { fontWeight: "700", fontSize: 13, color: colors.text },
   filterCount: {
     minWidth: 22,

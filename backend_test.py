@@ -1,340 +1,349 @@
 """
-Phase-8 Per-Field "Required" Toggles — Backend Regression
-Targeted scope (per review request):
-  1. GET /api/settings → field_requirements default presence+values
-  2. PUT /api/settings field_requirements partial merge (single-key flip)
-  3. PUT /api/settings unknown key in field_requirements is silently dropped
-  4. POST/GET/PUT /api/me/custom-fields `required` field plumbing
-  5. Backwards compat: PUT /settings without field_requirements does NOT erase it
+Phase-9 Scan-to-Dispatch backend regression.
+
+Tests:
+  1. GET /api/shipments/stats returns dispatch + shipped counts.
+  2. POST /api/shipments creates Pending shipment.
+  3. POST /api/shipments/scan-dispatch moves Pending -> Dispatch.
+  4. Idempotent — second scan returns already_dispatch.
+  5. Non-existent tracking returns not_found (200).
+  6. Wrong-status shipment returns wrong_status:<status>.
+  7. Empty tracking_id returns empty_tracking_id.
+  8. Race: two concurrent scans on same Pending — exactly one "moved",
+     other "already".
 """
-import os
-import sys
-import json
-import requests
+import asyncio
+import time
+import uuid
+
+import httpx
 
 BASE = "https://logistics-hub-740.preview.emergentagent.com/api"
-TIMEOUT = 30
-
 ADMIN_EMAIL = "admin@test.com"
-ADMIN_PWD = "Admin@12345"
-USER2_EMAIL = "user2@test.com"
-USER2_PWD = "User@12345"
+ADMIN_PASSWORD = "Admin@12345"
 
-DEFAULTS = {
-    "customer_name": True,
-    "customer_phone": True,
-    "customer_alt_phone": False,
-    "address_line1": True,
-    "city": True,
-    "state": True,
-    "pincode": True,
-    "items": False,
-    "amount": True,
-    "payment_mode": True,
-    "token_amount": False,
-    "courier_name": False,
-    "order_id": False,
-    "weight": True,
-    "notes": False,
-}
+created_shipment_ids: list[str] = []
+borrowed_revert: list[tuple[str, str]] = []  # (id, original_status) — flip back at cleanup
+_orig_admin_plan: dict = {}
 
 
-pass_count = 0
-fail_count = 0
-fail_lines = []
+def _bump_admin_to_platinum_temp():
+    """Temporarily upgrade admin plan to platinum so the tests can
+    create new shipments. The original plan is restored at cleanup."""
+    import asyncio as _asyncio
+    import os as _os
+    from motor.motor_asyncio import AsyncIOMotorClient
+    from dotenv import load_dotenv
+    load_dotenv("/app/backend/.env")
+
+    async def _run():
+        c = AsyncIOMotorClient(_os.environ["MONGO_URL"])
+        db = c[_os.environ["DB_NAME"]]
+        u = await db.users.find_one({"email": ADMIN_EMAIL}, {"_id": 0, "plan": 1, "plan_expires_at": 1})
+        if not u:
+            raise SystemExit("admin user not found")
+        _orig_admin_plan["plan"] = u.get("plan", "free_trial")
+        _orig_admin_plan["plan_expires_at"] = u.get("plan_expires_at", "")
+        from datetime import datetime, timezone, timedelta
+        new_exp = (datetime.now(timezone.utc) + timedelta(days=30)).isoformat()
+        await db.users.update_one(
+            {"email": ADMIN_EMAIL},
+            {"$set": {"plan": "platinum", "plan_expires_at": new_exp}},
+        )
+        c.close()
+    _asyncio.run(_run())
+    print(f"[setup] admin plan temporarily set to platinum (was {_orig_admin_plan.get('plan')})")
 
 
-def check(label, cond, detail=""):
-    global pass_count, fail_count
-    if cond:
-        pass_count += 1
-        print(f"  PASS  {label}")
-    else:
-        fail_count += 1
-        line = f"  FAIL  {label}{(' — ' + detail) if detail else ''}"
-        print(line)
-        fail_lines.append(line)
+def _restore_admin_plan():
+    if not _orig_admin_plan:
+        return
+    import asyncio as _asyncio
+    import os as _os
+    from motor.motor_asyncio import AsyncIOMotorClient
+    from dotenv import load_dotenv
+    load_dotenv("/app/backend/.env")
+
+    async def _run():
+        c = AsyncIOMotorClient(_os.environ["MONGO_URL"])
+        db = c[_os.environ["DB_NAME"]]
+        await db.users.update_one(
+            {"email": ADMIN_EMAIL},
+            {"$set": {
+                "plan": _orig_admin_plan.get("plan", "free_trial"),
+                "plan_expires_at": _orig_admin_plan.get("plan_expires_at", ""),
+            }},
+        )
+        c.close()
+    _asyncio.run(_run())
+    print(f"[cleanup] admin plan restored to {_orig_admin_plan.get('plan')}")
 
 
-def login(email, pwd):
-    r = requests.post(f"{BASE}/auth/login", json={"email": email, "password": pwd}, timeout=TIMEOUT)
-    r.raise_for_status()
+def fail(msg: str):
+    print(f"  FAIL: {msg}")
+    raise SystemExit(1)
+
+
+def ok(msg: str):
+    print(f"  OK  : {msg}")
+
+
+def login(client: httpx.Client) -> str:
+    r = client.post(f"{BASE}/auth/login", json={"email": ADMIN_EMAIL, "password": ADMIN_PASSWORD})
+    if r.status_code != 200:
+        fail(f"login failed {r.status_code}: {r.text[:200]}")
+    tok = r.json().get("token")
+    if not tok:
+        fail("login missing token")
+    return tok
+
+
+def get_courier_id(client: httpx.Client, headers: dict) -> str:
+    r = client.get(f"{BASE}/couriers", headers=headers)
+    if r.status_code != 200:
+        fail(f"GET /couriers failed {r.status_code}")
+    couriers = r.json()
+    if not couriers:
+        fail("no couriers available for admin")
+    return couriers[0]["id"]
+
+
+def create_shipment(client, headers, courier_id, tracking_id, name="Rahul Sharma") -> dict:
+    payload = {
+        "tracking_id": tracking_id,
+        "courier_id": courier_id,
+        "customer_name": name,
+        "customer_phone": "9876543210",
+        "address_line1": "12 Marine Drive",
+        "city": "Mumbai",
+        "state": "Maharashtra",
+        "pincode": "400001",
+        "payment_mode": "Prepaid",
+        "amount": 599.0,
+        "weight": "1",
+    }
+    r = client.post(f"{BASE}/shipments", json=payload, headers=headers)
+    if r.status_code != 200:
+        fail(f"POST /shipments failed {r.status_code}: {r.text[:300]}")
+    doc = r.json()
+    created_shipment_ids.append(doc["id"])
+    return doc
+
+
+def test_stats_fields(client, headers):
+    print("\n[1] GET /api/shipments/stats — includes dispatch + shipped")
+    r = client.get(f"{BASE}/shipments/stats", headers=headers)
+    if r.status_code != 200:
+        fail(f"status {r.status_code}: {r.text[:200]}")
     j = r.json()
-    return j["token"], j
+    for k in ("total", "delivered", "pending", "dispatch", "shipped",
+              "cod_total", "cod_count", "prepaid_total", "prepaid_count", "revenue_total"):
+        if k not in j:
+            fail(f"stats missing key: {k}")
+    for k in ("dispatch", "shipped"):
+        if not isinstance(j[k], int):
+            fail(f"stats[{k}] not int: {j[k]!r}")
+    ok(f"stats OK — total={j['total']} pending={j['pending']} dispatch={j['dispatch']} shipped={j['shipped']} delivered={j['delivered']}")
 
 
-def auth_headers(token):
-    return {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+def test_scan_dispatch_happy(client, headers, courier_id):
+    print("\n[2+3] Create Pending -> scan-dispatch -> moved")
+    tid = f"ZTST{int(time.time())}{uuid.uuid4().hex[:4].upper()}"
+    doc = create_shipment(client, headers, courier_id, tid)
+    if doc.get("status") != "Pending":
+        fail(f"new shipment status expected 'Pending' got {doc.get('status')!r}")
+    ok(f"created shipment tid={tid} status=Pending id={doc['id']}")
+
+    r = client.post(f"{BASE}/shipments/scan-dispatch", json={"tracking_id": tid}, headers=headers)
+    if r.status_code != 200:
+        fail(f"scan-dispatch status {r.status_code}: {r.text[:300]}")
+    res = r.json()
+    if res.get("outcome") != "moved":
+        fail(f"expected outcome moved, got {res}")
+    if res.get("reason") != "ok":
+        fail(f"expected reason ok, got {res.get('reason')}")
+    expected_msg = f"{tid} moved to Dispatch"
+    if res.get("message") != expected_msg:
+        fail(f"message mismatch: expected {expected_msg!r} got {res.get('message')!r}")
+    sh = res.get("shipment") or {}
+    if sh.get("status") != "Dispatch":
+        fail(f"response.shipment.status expected Dispatch, got {sh.get('status')}")
+    if not sh.get("dispatched_at"):
+        fail("response.shipment.dispatched_at not set")
+    ok(f"moved: status=Dispatch dispatched_at={sh.get('dispatched_at')}")
+
+    r2 = client.get(f"{BASE}/shipments", headers=headers, params={"limit": 500})
+    if r2.status_code != 200:
+        fail(f"GET /shipments {r2.status_code}")
+    listing = r2.json()
+    found = next((s for s in listing if s["tracking_id"] == tid), None)
+    if not found:
+        fail("shipment not in listing after scan")
+    if found["status"] != "Dispatch":
+        fail(f"persisted status={found['status']}, expected Dispatch")
+    ok("GET /shipments confirms status=Dispatch")
+    return tid
 
 
-def get_settings(token):
-    r = requests.get(f"{BASE}/settings", headers=auth_headers(token), timeout=TIMEOUT)
-    r.raise_for_status()
-    return r.json()
+def test_scan_dispatch_already(client, headers, tid):
+    print("\n[4] Second scan on same tracking -> already")
+    r = client.post(f"{BASE}/shipments/scan-dispatch", json={"tracking_id": tid}, headers=headers)
+    if r.status_code != 200:
+        fail(f"status {r.status_code}: {r.text[:300]}")
+    res = r.json()
+    if res.get("outcome") != "already":
+        fail(f"expected outcome already, got {res}")
+    if res.get("reason") != "already_dispatch":
+        fail(f"expected reason already_dispatch, got {res.get('reason')}")
+    if not res.get("shipment"):
+        fail("shipment should be non-null on already")
+    if (res.get("shipment") or {}).get("status") != "Dispatch":
+        fail("shipment.status should still be Dispatch")
+    ok("idempotent — second scan returns already_dispatch")
 
 
-def put_settings(token, body):
-    r = requests.put(
-        f"{BASE}/settings",
-        headers=auth_headers(token),
-        data=json.dumps(body),
-        timeout=TIMEOUT,
-    )
-    return r
+def test_scan_dispatch_not_found(client, headers):
+    print("\n[5] Random tracking -> failed not_found (HTTP 200)")
+    fake = "ZZZNOPE123"
+    r = client.post(f"{BASE}/shipments/scan-dispatch", json={"tracking_id": fake}, headers=headers)
+    if r.status_code != 200:
+        fail(f"expected HTTP 200 for not-found, got {r.status_code}")
+    res = r.json()
+    if res.get("outcome") != "failed":
+        fail(f"expected failed, got {res}")
+    if res.get("reason") != "not_found":
+        fail(f"expected reason not_found, got {res.get('reason')}")
+    if res.get("shipment") is not None:
+        fail(f"shipment should be null, got {res.get('shipment')!r}")
+    ok("not_found handled with HTTP 200")
+
+
+def borrow_pending(client, headers, exclude_tids=None) -> dict:
+    """Find an existing Pending shipment for tests that can't create
+    new ones (admin is on free_trial with label cap reached)."""
+    exclude = set(exclude_tids or [])
+    r = client.get(f"{BASE}/shipments", headers=headers, params={"status": "Pending", "limit": 500})
+    if r.status_code != 200:
+        fail(f"GET /shipments failed {r.status_code}")
+    for s in r.json():
+        if s["tracking_id"] not in exclude:
+            return s
+    fail("no available Pending shipment to borrow")
+
+
+def test_scan_dispatch_wrong_status(client, headers):
+    print("\n[6] Wrong-status shipment (Shipped) -> failed wrong_status:Shipped")
+    sh = borrow_pending(client, headers)
+    sid = sh["id"]
+    tid = sh["tracking_id"]
+    original_status = sh.get("status", "Pending")
+    borrowed_revert.append((sid, original_status))
+    r = client.put(f"{BASE}/shipments/{sid}", json={"status": "Shipped"}, headers=headers)
+    if r.status_code != 200:
+        fail(f"PUT /shipments failed {r.status_code}: {r.text[:300]}")
+    if r.json().get("status") != "Shipped":
+        fail(f"PUT response status not Shipped: {r.json().get('status')}")
+    ok(f"flipped existing shipment to Shipped: tid={tid}")
+
+    r = client.post(f"{BASE}/shipments/scan-dispatch", json={"tracking_id": tid}, headers=headers)
+    if r.status_code != 200:
+        fail(f"scan-dispatch status {r.status_code}")
+    res = r.json()
+    if res.get("outcome") != "failed":
+        fail(f"expected failed, got {res}")
+    if res.get("reason") != "wrong_status:Shipped":
+        fail(f"expected reason wrong_status:Shipped, got {res.get('reason')!r}")
+    if not res.get("shipment"):
+        fail("shipment should be non-null on wrong_status")
+    ok("wrong_status:Shipped returned correctly")
+
+
+def test_scan_dispatch_empty(client, headers):
+    print("\n[7] Empty tracking_id -> failed empty_tracking_id")
+    r = client.post(f"{BASE}/shipments/scan-dispatch", json={"tracking_id": ""}, headers=headers)
+    if r.status_code != 200:
+        fail(f"status {r.status_code}")
+    res = r.json()
+    if res.get("outcome") != "failed":
+        fail(f"expected failed, got {res}")
+    if res.get("reason") != "empty_tracking_id":
+        fail(f"expected reason empty_tracking_id, got {res.get('reason')!r}")
+    ok("empty_tracking_id handled")
+
+
+async def test_scan_dispatch_race(token, client, headers):
+    print("\n[8] Race — 2 concurrent scans on same Pending")
+    sh = borrow_pending(client, headers)
+    sid = sh["id"]
+    tid = sh["tracking_id"]
+    original_status = sh.get("status", "Pending")
+    borrowed_revert.append((sid, original_status))
+    async with httpx.AsyncClient(timeout=30) as c:
+        ah = {"Authorization": f"Bearer {token}"}
+        body = {"tracking_id": tid}
+        results = await asyncio.gather(
+            c.post(f"{BASE}/shipments/scan-dispatch", json=body, headers=ah),
+            c.post(f"{BASE}/shipments/scan-dispatch", json=body, headers=ah),
+        )
+        outcomes = [r.json() for r in results if r.status_code == 200]
+        if len(outcomes) != 2:
+            fail(f"some requests did not return 200: {[(r.status_code, r.text[:120]) for r in results]}")
+        print(f"  outcomes: {[o.get('outcome') for o in outcomes]}, reasons: {[o.get('reason') for o in outcomes]}")
+        moved_count = sum(1 for o in outcomes if o.get("outcome") == "moved")
+        already_count = sum(1 for o in outcomes if o.get("outcome") == "already")
+        if moved_count != 1 or already_count != 1:
+            fail(f"expected exactly 1 moved and 1 already, got moved={moved_count} already={already_count}")
+        r = await c.get(f"{BASE}/shipments", headers=ah, params={"limit": 500})
+        listing = r.json()
+        found = next((s for s in listing if s["tracking_id"] == tid), None)
+        if not found or found.get("status") != "Dispatch":
+            fail(f"final status not Dispatch: {found.get('status') if found else 'not-found'}")
+    ok("race handled correctly — 1 moved, 1 already, final status Dispatch")
+
+
+def cleanup(client, headers):
+    print("\n[cleanup] Reverting borrowed shipments and deleting created ones...")
+    for sid, orig_status in borrowed_revert:
+        try:
+            r = client.put(f"{BASE}/shipments/{sid}", json={"status": orig_status}, headers=headers)
+            if r.status_code == 200:
+                print(f"  reverted {sid} -> {orig_status}")
+            else:
+                print(f"  revert {sid} returned {r.status_code}: {r.text[:120]}")
+        except Exception as e:
+            print(f"  revert {sid} error: {e}")
+    for sid in created_shipment_ids:
+        try:
+            r = client.delete(f"{BASE}/shipments/{sid}", headers=headers)
+            if r.status_code == 200:
+                print(f"  deleted {sid}")
+            else:
+                print(f"  delete {sid} returned {r.status_code}")
+        except Exception as e:
+            print(f"  delete {sid} error: {e}")
 
 
 def main():
-    print("=" * 72)
-    print("Phase-8 Field Requirements Regression")
-    print("=" * 72)
+    _bump_admin_to_platinum_temp()
+    with httpx.Client(timeout=30) as client:
+        token = login(client)
+        headers = {"Authorization": f"Bearer {token}"}
+        courier_id = get_courier_id(client, headers)
+        print(f"Logged in as {ADMIN_EMAIL}, courier_id={courier_id}")
 
-    print("\n--- Logging in as user2 (fresh user) ---")
-    u2_tok, u2_user = login(USER2_EMAIL, USER2_PWD)
-    print(f"  user2 id={u2_user.get('id')} plan={u2_user.get('plan')} admin={u2_user.get('is_admin')}")
+        try:
+            test_stats_fields(client, headers)
+            moved_tid = test_scan_dispatch_happy(client, headers, courier_id)
+            test_scan_dispatch_already(client, headers, moved_tid)
+            test_scan_dispatch_not_found(client, headers)
+            test_scan_dispatch_wrong_status(client, headers)
+            test_scan_dispatch_empty(client, headers)
+            asyncio.run(test_scan_dispatch_race(token, client, headers))
+        finally:
+            cleanup(client, headers)
+            _restore_admin_plan()
 
-    print("\n--- Logging in as admin (for additional coverage) ---")
-    ad_tok, ad_user = login(ADMIN_EMAIL, ADMIN_PWD)
-    print(f"  admin id={ad_user.get('id')} plan={ad_user.get('plan')} admin={ad_user.get('is_admin')}")
-
-    # Pre-test cleanup: ensure user2's field_requirements is at defaults so
-    # scenario [1] reflects the documented baseline. The merge-not-replace
-    # logic means prior test runs may have toggled a flag — reset them all.
-    put_settings(u2_tok, {"field_requirements": dict(DEFAULTS)})
-
-    # ──────────────────────────────────────────────────────────────
-    # SCENARIO 1: Default field_requirements present on GET /settings
-    # ──────────────────────────────────────────────────────────────
-    print("\n[1] GET /api/settings → default field_requirements")
-    s = get_settings(u2_tok)
-    fr = s.get("field_requirements")
-    check("response contains 'field_requirements' key", isinstance(fr, dict),
-          detail=f"got type={type(fr).__name__} value={fr!r}")
-
-    if isinstance(fr, dict):
-        for k, v in DEFAULTS.items():
-            check(f"key {k!r} present", k in fr)
-            if k in fr:
-                check(f"key {k!r} default value == {v}", fr.get(k) == v,
-                      detail=f"got {fr.get(k)!r}")
-        extras = [k for k in fr.keys() if k not in DEFAULTS]
-        check(f"no unknown keys present (extras={extras})", len(extras) == 0)
-
-    # ──────────────────────────────────────────────────────────────
-    # SCENARIO 2: Partial PUT merges, doesn't replace
-    # ──────────────────────────────────────────────────────────────
-    print("\n[2] PUT /api/settings {field_requirements:{customer_alt_phone:true}} merges")
-    r = put_settings(u2_tok, {"field_requirements": {"customer_alt_phone": True}})
-    check("PUT 200", r.status_code == 200, detail=f"status={r.status_code} body={r.text[:200]}")
-    if r.status_code == 200:
-        fr2 = r.json().get("field_requirements") or {}
-        check("customer_alt_phone == True after toggle ON",
-              fr2.get("customer_alt_phone") is True,
-              detail=f"got {fr2.get('customer_alt_phone')!r}")
-        for k, v in DEFAULTS.items():
-            if k == "customer_alt_phone":
-                continue
-            check(f"  preserved {k!r} == {v}", fr2.get(k) == v,
-                  detail=f"got {fr2.get(k)!r}")
-        extras = [k for k in fr2.keys() if k not in DEFAULTS]
-        check(f"  no extra keys (extras={extras})", len(extras) == 0)
-
-    print("\n[2b] PUT /api/settings {field_requirements:{customer_alt_phone:false}} flips back")
-    r = put_settings(u2_tok, {"field_requirements": {"customer_alt_phone": False}})
-    check("PUT 200", r.status_code == 200, detail=f"status={r.status_code}")
-    if r.status_code == 200:
-        fr3 = r.json().get("field_requirements") or {}
-        check("customer_alt_phone == False after toggle OFF",
-              fr3.get("customer_alt_phone") is False,
-              detail=f"got {fr3.get('customer_alt_phone')!r}")
-        for k, v in DEFAULTS.items():
-            if k == "customer_alt_phone":
-                continue
-            check(f"  preserved {k!r} == {v}", fr3.get(k) == v,
-                  detail=f"got {fr3.get(k)!r}")
-
-    # ──────────────────────────────────────────────────────────────
-    # SCENARIO 3: Unknown keys silently dropped
-    # ──────────────────────────────────────────────────────────────
-    print("\n[3] PUT /api/settings with unknown key {foo_bar:true} is silently dropped")
-    r = put_settings(u2_tok, {"field_requirements": {"foo_bar": True, "weight": False}})
-    check("PUT 200 (unknown key tolerated)", r.status_code == 200,
-          detail=f"status={r.status_code} body={r.text[:200]}")
-    if r.status_code == 200:
-        fr4 = r.json().get("field_requirements") or {}
-        check("'foo_bar' NOT in response.field_requirements",
-              "foo_bar" not in fr4,
-              detail=f"got keys={sorted(fr4.keys())}")
-        check("known key 'weight' was applied (False)",
-              fr4.get("weight") is False,
-              detail=f"got {fr4.get('weight')!r}")
-        rr = put_settings(u2_tok, {"field_requirements": {"weight": True}})
-        check("restore weight=True OK", rr.status_code == 200)
-
-    # ──────────────────────────────────────────────────────────────
-    # SCENARIO 5: Backwards compat — PUT without field_requirements
-    #            preserves the persisted dict.
-    # ──────────────────────────────────────────────────────────────
-    print("\n[5] Backwards compat: PUT without field_requirements preserves dict")
-    rseed = put_settings(u2_tok, {"field_requirements": {"customer_alt_phone": True, "notes": True}})
-    check("seed PUT 200", rseed.status_code == 200)
-    fr_pre = rseed.json().get("field_requirements") or {}
-    r = put_settings(u2_tok, {"shipment_tagline": "regression-tag-phase8"})
-    check("unrelated PUT 200", r.status_code == 200, detail=f"status={r.status_code} body={r.text[:200]}")
-    if r.status_code == 200:
-        fr_post = r.json().get("field_requirements") or {}
-        check("field_requirements unchanged after unrelated PUT",
-              fr_post == fr_pre,
-              detail=f"pre={fr_pre} post={fr_post}")
-
-    print("\n  cleanup: reset toggled flags to defaults")
-    put_settings(u2_tok, {"field_requirements": dict(DEFAULTS)})
-
-    # ──────────────────────────────────────────────────────────────
-    # SCENARIO 4: Custom field `required` plumbing
-    # ──────────────────────────────────────────────────────────────
-    print("\n[4] POST /api/me/custom-fields with required:true persists & toggles")
-
-    created_field_ids = []
-    worker_tok = u2_tok
-
-    listr = requests.get(f"{BASE}/me/custom-fields", headers=auth_headers(u2_tok), timeout=TIMEOUT)
-    used_cols = set()
-    if listr.status_code == 200:
-        for f in (listr.json() or {}).get("fields", []):
-            if f.get("active", True):
-                used_cols.add((f.get("column_letter") or "").upper())
-        print(f"  user2 existing custom-field columns: {sorted(used_cols)}")
-
-    # We'll prefer columns that are unlikely to collide with shipment columns A..S (1..19)
-    candidate_cols = [c for c in ["T", "U", "V", "W", "X", "Y", "Z"] if c not in used_cols]
-    if len(candidate_cols) < 2:
-        # Fallback: try double-letters
-        candidate_cols.extend([c for c in ["AA", "AB", "AC", "AD", "AE"] if c not in used_cols])
-    col_a = candidate_cols[0]
-    col_b = candidate_cols[1]
-    print(f"  using columns col_a={col_a} col_b={col_b}")
-
-    payload_a = {
-        "name": "GST Number (Phase8 test)",
-        "column_letter": col_a,
-        "field_type": "text",
-        "show_in_form": True,
-        "show_in_smart_paste": True,
-        "required": True,
-        "sort_order": 99,
-    }
-    rc = requests.post(
-        f"{BASE}/me/custom-fields",
-        headers=auth_headers(u2_tok),
-        data=json.dumps(payload_a),
-        timeout=TIMEOUT,
-    )
-    if rc.status_code == 403 and "plan" in rc.text.lower():
-        print(f"  user2 plan rejected custom-fields: {rc.text[:200]}")
-        print("  Retrying with admin token (admin bypass).")
-        rc = requests.post(
-            f"{BASE}/me/custom-fields",
-            headers=auth_headers(ad_tok),
-            data=json.dumps(payload_a),
-            timeout=TIMEOUT,
-        )
-        worker_tok = ad_tok
-
-    check(
-        f"POST /me/custom-fields (required=true) → 200, got {rc.status_code}",
-        rc.status_code == 200,
-        detail=f"body={rc.text[:400]}",
-    )
-    if rc.status_code == 200:
-        body = rc.json()
-        fid_a = body.get("id")
-        if fid_a:
-            created_field_ids.append(fid_a)
-        check("(4a) response.required is True", body.get("required") is True,
-              detail=f"got {body.get('required')!r} full={body}")
-
-        # 4b. GET list reflects required=true
-        rg = requests.get(f"{BASE}/me/custom-fields", headers=auth_headers(worker_tok), timeout=TIMEOUT)
-        check("GET /me/custom-fields 200", rg.status_code == 200)
-        if rg.status_code == 200:
-            entry = next((f for f in rg.json().get("fields", []) if f.get("id") == fid_a), None)
-            check("(4b) created field appears in GET list", entry is not None)
-            if entry:
-                check("(4b) GET list entry.required == True", entry.get("required") is True,
-                      detail=f"got {entry.get('required')!r}")
-
-        # 4c. PUT toggle required → false
-        rp = requests.put(
-            f"{BASE}/me/custom-fields/{fid_a}",
-            headers=auth_headers(worker_tok),
-            data=json.dumps({"required": False}),
-            timeout=TIMEOUT,
-        )
-        check(f"PUT toggle required→false 200, got {rp.status_code}",
-              rp.status_code == 200, detail=f"body={rp.text[:200]}")
-        if rp.status_code == 200:
-            check("(4c) PUT response.required == False",
-                  rp.json().get("required") is False,
-                  detail=f"got {rp.json().get('required')!r}")
-
-        # 4d. Create without required key — defaults to false
-        payload_b = {
-            "name": "Optional Note (Phase8 test)",
-            "column_letter": col_b,
-            "field_type": "text",
-            "show_in_form": True,
-            "show_in_smart_paste": True,
-        }
-        rc2 = requests.post(
-            f"{BASE}/me/custom-fields",
-            headers=auth_headers(worker_tok),
-            data=json.dumps(payload_b),
-            timeout=TIMEOUT,
-        )
-        check(
-            f"POST /me/custom-fields (required omitted) → 200, got {rc2.status_code}",
-            rc2.status_code == 200,
-            detail=f"body={rc2.text[:300]}",
-        )
-        if rc2.status_code == 200:
-            b2 = rc2.json()
-            fid_b = b2.get("id")
-            if fid_b:
-                created_field_ids.append(fid_b)
-            check("(4d) response.required defaults to False",
-                  b2.get("required") is False,
-                  detail=f"got {b2.get('required')!r}")
-            rg2 = requests.get(f"{BASE}/me/custom-fields", headers=auth_headers(worker_tok), timeout=TIMEOUT)
-            if rg2.status_code == 200:
-                e2 = next((f for f in rg2.json().get("fields", []) if f.get("id") == fid_b), None)
-                if e2:
-                    check("(4d) GET list entry.required == False",
-                          e2.get("required") is False,
-                          detail=f"got {e2.get('required')!r}")
-
-        # cleanup
-        for fid in list(created_field_ids):
-            try:
-                rd = requests.delete(
-                    f"{BASE}/me/custom-fields/{fid}",
-                    headers=auth_headers(worker_tok),
-                    timeout=TIMEOUT,
-                )
-                if rd.status_code == 200:
-                    print(f"  cleanup: deleted custom field {fid}")
-                else:
-                    print(f"  cleanup: delete {fid} got {rd.status_code} {rd.text[:120]}")
-            except Exception as e:
-                print(f"  cleanup error: {e}")
-
-    print("\n" + "=" * 72)
-    print(f"RESULT: {pass_count} passed, {fail_count} failed")
-    print("=" * 72)
-    if fail_lines:
-        print("\nFailed assertions:")
-        for ln in fail_lines:
-            print(ln)
-        sys.exit(1)
+    print("\n ALL PHASE-9 SCAN-TO-DISPATCH TESTS PASSED ")
 
 
 if __name__ == "__main__":

@@ -1873,6 +1873,11 @@ async def shipments_stats(current_user: Dict[str, Any] = Depends(get_current_use
     total = await db.shipments.count_documents(base)
     delivered = await db.shipments.count_documents({**base, "status": "Delivered"})
     pending = await db.shipments.count_documents({**base, "status": "Pending"})
+    # Phase-9: "Dispatch" is an intermediate status between Pending
+    # and Shipped used by the barcode "Scan to Dispatch" workflow.
+    # Counted separately so the Shipments filter tab can badge it.
+    dispatch = await db.shipments.count_documents({**base, "status": "Dispatch"})
+    shipped = await db.shipments.count_documents({**base, "status": "Shipped"})
     cod_cursor = db.shipments.aggregate([
         {"$match": {**base, "payment_mode": "COD", "status": {"$ne": "Cancelled"}}},
         {"$group": {"_id": None, "sum": {"$sum": "$amount"}, "count": {"$sum": 1}}},
@@ -1895,11 +1900,107 @@ async def shipments_stats(current_user: Dict[str, Any] = Depends(get_current_use
         "total": total,
         "delivered": delivered,
         "pending": pending,
+        "dispatch": dispatch,
+        "shipped": shipped,
         "cod_total": cod_sum,
         "cod_count": cod_count,
         "prepaid_total": prepaid_sum,
         "prepaid_count": prepaid_count,
         "revenue_total": cod_sum + prepaid_sum,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Phase-9: Scan-to-Dispatch — warehouse-optimised barcode workflow.
+# ---------------------------------------------------------------------------
+# A single POST endpoint that atomically resolves a scanned barcode
+# (tracking_id) into one of three outcomes and returns a compact,
+# structured result the mobile scanner UI maps to either a cream
+# success toast, a warn banner, or a red failure badge.
+#
+#   * "moved"   → status was "Pending", now flipped to "Dispatch"
+#   * "already" → status was already "Dispatch" (idempotent no-op)
+#   * "failed"  → not found OR in a wrong status (Shipped/Delivered/…)
+#
+# The client loops calls on each scan; duplicate-scan debouncing is
+# handled on the client (spec: "ignore within a few seconds").
+
+class ScanDispatchRequest(BaseModel):
+    tracking_id: str
+
+
+@api_router.post("/shipments/scan-dispatch")
+async def scan_to_dispatch(
+    payload: ScanDispatchRequest,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    tid = (payload.tracking_id or "").strip()
+    if not tid:
+        return {
+            "outcome": "failed",
+            "reason": "empty_tracking_id",
+            "message": "Empty barcode",
+            "shipment": None,
+        }
+    doc = await db.shipments.find_one(
+        {"user_id": current_user["id"], "tracking_id": tid},
+        {"_id": 0},
+    )
+    if not doc:
+        return {
+            "outcome": "failed",
+            "reason": "not_found",
+            "message": f"Tracking {tid} not found",
+            "shipment": None,
+        }
+    status = str(doc.get("status") or "").strip()
+    if status == "Dispatch":
+        return {
+            "outcome": "already",
+            "reason": "already_dispatch",
+            "message": "Already in Dispatch",
+            "shipment": doc,
+        }
+    if status != "Pending":
+        return {
+            "outcome": "failed",
+            "reason": f"wrong_status:{status or 'unknown'}",
+            "message": (
+                f"Cannot dispatch — status is {status or 'unknown'}"
+            ),
+            "shipment": doc,
+        }
+    # Pending → Dispatch. Use atomic conditional update so a race between
+    # two scanners can't double-flip state.
+    res = await db.shipments.update_one(
+        {
+            "user_id": current_user["id"],
+            "tracking_id": tid,
+            "status": "Pending",
+        },
+        {"$set": {"status": "Dispatch", "dispatched_at": utcnow_iso()}},
+    )
+    if res.modified_count != 1:
+        # Another scan won the race — re-fetch and treat as "already".
+        cur = await db.shipments.find_one(
+            {"user_id": current_user["id"], "tracking_id": tid},
+            {"_id": 0},
+        )
+        return {
+            "outcome": "already",
+            "reason": "race_already_dispatch",
+            "message": "Already in Dispatch",
+            "shipment": cur,
+        }
+    new_doc = await db.shipments.find_one(
+        {"user_id": current_user["id"], "tracking_id": tid},
+        {"_id": 0},
+    )
+    return {
+        "outcome": "moved",
+        "reason": "ok",
+        "message": f"{tid} moved to Dispatch",
+        "shipment": new_doc,
     }
 
 

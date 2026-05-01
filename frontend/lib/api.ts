@@ -624,12 +624,31 @@ export const Api = {
         total: number;
         delivered: number;
         pending: number;
+        dispatch?: number;
+        shipped?: number;
         cod_total: number;
         cod_count: number;
         prepaid_total: number;
         prepaid_count: number;
         revenue_total: number;
       }>("/shipments/stats")
+      .then((r) => r.data),
+  /**
+   * Phase-9: Warehouse-optimised "Scan to Dispatch" endpoint. Flips
+   * a shipment from Pending → Dispatch atomically (no race), echoes
+   * the outcome bucket the scanner UI needs:
+   *   "moved"   — was Pending, now Dispatch (cream success toast)
+   *   "already" — was already Dispatch (warn banner)
+   *   "failed"  — not found OR wrong status (red badge)
+   */
+  scanDispatch: (tracking_id: string) =>
+    api
+      .post<{
+        outcome: "moved" | "already" | "failed";
+        reason: string;
+        message: string;
+        shipment: Shipment | null;
+      }>("/shipments/scan-dispatch", { tracking_id })
       .then((r) => r.data),
   /**
    * Lookup an existing shipment by tracking_id. Returns null when no
