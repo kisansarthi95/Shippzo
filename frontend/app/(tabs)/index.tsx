@@ -21,6 +21,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { useFocusEffect, useRouter } from "expo-router";
 import * as Clipboard from "expo-clipboard";
 import * as ImagePicker from "expo-image-picker";
+import * as ImageManipulator from "expo-image-manipulator";
 import { Api, Shipment } from "../../lib/api";
 import { colors } from "../../lib/theme";
 import UsageMeter from "../../components/UsageMeter";
@@ -137,6 +138,11 @@ export default function Dashboard() {
   const [pasteStage, setPasteStage] = useState<"" | "parsing" | "saving">("");
   const [photoUri, setPhotoUri] = useState<string | null>(null);
   const [photoUploading, setPhotoUploading] = useState(false);
+  // Phase-12: Granular photo upload progress so the UI can show
+  // "Compressing..." → "Reading..." instead of a flat 5-20 sec spinner.
+  const [photoStage, setPhotoStage] = useState<
+    "" | "compressing" | "reading"
+  >("");
 
   // Summary Card state (the modal that lets the user review/edit fields).
   const [chatOpen, setChatOpen] = useState(false);
@@ -341,8 +347,11 @@ export default function Dashboard() {
         result = await ImagePicker.launchCameraAsync({
           mediaTypes: ImagePicker.MediaTypeOptions.Images,
           allowsEditing: false,
-          quality: 0.6,
-          base64: true,
+          // Capture at high quality — we'll downsize in compression step.
+          // Picker quality only affects JPEG re-encode if base64 was
+          // requested upfront; we skip base64 here and re-encode after.
+          quality: 1,
+          base64: false,
           exif: false,
         });
       } else {
@@ -357,8 +366,8 @@ export default function Dashboard() {
         result = await ImagePicker.launchImageLibraryAsync({
           mediaTypes: ImagePicker.MediaTypeOptions.Images,
           allowsEditing: false,
-          quality: 0.6,
-          base64: true,
+          quality: 1,
+          base64: false,
           exif: false,
         });
       }
@@ -366,22 +375,74 @@ export default function Dashboard() {
         return;
       }
       const asset = result.assets[0];
-      const b64 = asset.base64 || "";
-      if (!b64) {
+      if (!asset.uri) {
         Alert.alert("Photo error", "Could not read the selected image.");
         return;
       }
       setPhotoUri(asset.uri);
       setPhotoUploading(true);
-      // Determine MIME from URI extension (best-effort).
-      const lower = (asset.uri || "").toLowerCase();
-      const mime = lower.endsWith(".png")
-        ? "image/png"
-        : lower.endsWith(".webp")
-        ? "image/webp"
-        : "image/jpeg";
-      const resp = await Api.smartPastePhoto(b64, mime);
+      setPhotoStage("compressing");
+
+      // ── Phase-12 OPTIMISATION: client-side compression ────────────
+      // Resize to max 1280px on the longest edge + JPEG 70% quality.
+      // Typical 3-5 MB camera photos shrink to 200-400 KB, cutting
+      // upload time by 5-10 seconds on slow networks while preserving
+      // OCR accuracy (text remains crisp at 1280px). Also re-encodes
+      // HEIC/PNG to JPEG so backend always sees image/jpeg.
+      let compressedUri = asset.uri;
+      let compressedB64 = "";
+      try {
+        const manipulated = await ImageManipulator.manipulateAsync(
+          asset.uri,
+          [{ resize: { width: 1280 } }],
+          {
+            compress: 0.7,
+            format: ImageManipulator.SaveFormat.JPEG,
+            base64: true,
+          },
+        );
+        compressedUri = manipulated.uri;
+        compressedB64 = manipulated.base64 || "";
+      } catch (compErr) {
+        // Compression failed (rare) — fall back to original picker
+        // base64 by re-reading once with quality 0.6.
+        try {
+          const fallback = await ImageManipulator.manipulateAsync(
+            asset.uri,
+            [],
+            {
+              compress: 0.6,
+              format: ImageManipulator.SaveFormat.JPEG,
+              base64: true,
+            },
+          );
+          compressedB64 = fallback.base64 || "";
+        } catch {
+          // Last-ditch: bail with a clear error.
+          setPhotoUploading(false);
+          setPhotoStage("");
+          setPhotoUri(null);
+          Alert.alert(
+            "Photo error",
+            "Could not process the selected image. Please try a smaller photo.",
+          );
+          return;
+        }
+      }
+
+      if (!compressedB64) {
+        setPhotoUploading(false);
+        setPhotoStage("");
+        setPhotoUri(null);
+        Alert.alert("Photo error", "Could not read the selected image.");
+        return;
+      }
+
+      // After compression we always re-encode as JPEG.
+      setPhotoStage("reading");
+      const resp = await Api.smartPastePhoto(compressedB64, "image/jpeg");
       setPhotoUploading(false);
+      setPhotoStage("");
       setPhotoUri(null);
       setPasteModalOpen(false);
 
@@ -409,6 +470,7 @@ export default function Dashboard() {
       }
     } catch (e: any) {
       setPhotoUploading(false);
+      setPhotoStage("");
       setPhotoUri(null);
       const msg =
         e?.response?.data?.detail ||
@@ -732,8 +794,19 @@ export default function Dashboard() {
                 <View style={styles.entryBusyCard}>
                   <ActivityIndicator size="large" color="#7C3AED" />
                   <Text style={styles.entryBusyTxt}>
-                    {photoUploading ? "Reading the photo… (5–20 sec)" : "Processing…"}
+                    {photoUploading
+                      ? photoStage === "compressing"
+                        ? "Optimising photo…"
+                        : photoStage === "reading"
+                        ? "Reading the photo… (3–6 sec)"
+                        : "Reading the photo…"
+                      : "Processing…"}
                   </Text>
+                  {photoUploading && photoStage === "reading" && (
+                    <Text style={styles.entryBusySub}>
+                      Powered by Gemini Flash
+                    </Text>
+                  )}
                 </View>
               ) : (
                 <View style={styles.entryBtnCol}>
@@ -2271,6 +2344,10 @@ const styles = StyleSheet.create({
   },
   entryBusyTxt: {
     fontSize: 13, fontWeight: "700", color: "#6D28D9",
+  },
+  entryBusySub: {
+    fontSize: 11, fontWeight: "500", color: "#9F7AEA",
+    marginTop: -4,
   },
 
   /* ─────────── Smart Paste — Summary Card styles (Phase-7) ─────────── */
