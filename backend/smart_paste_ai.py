@@ -1257,28 +1257,24 @@ async def parse_image_with_ai(
 
     # ── Address-recovery fallback (Phase-5d patch) ───────────────────
     # Gemini sometimes returns ADDRESS_1 = "-" even when there's a clearly
-    # visible street/house line in the image — most common on screenshots
-    # of e-commerce order screens where city/state/pincode appear after
-    # the street and the model thinks the locality has covered it.
+    # visible street/house line in the image — most common on:
+    #   - Visiting cards where address text is smaller than name/logo
+    #   - Screenshots of e-commerce order screens where city/state/
+    #     pincode appear after the street and the model thinks the
+    #     locality has covered it
     # If we got CITY or PINCODE but ADDRESS_1 is blank, re-prompt with a
     # tightly scoped "address only" question. Costs one extra call only
     # on bad cases — typical happy path runs zero retries.
     #
-    # Phase-12 OPTIMISATION: This retry is OFF by default to keep
-    # photo OCR consistently fast (saves 4-10s on the unhappy path).
-    # In rare cases ADDRESS_1 may be blank — the user can simply
-    # type/paste the missing line in the Summary Card. Set
-    # SMART_PASTE_VISION_ADDRESS_RETRY=1 in the backend .env to
-    # re-enable the auto-retry.
-    _ADDRESS_RETRY_ON = os.getenv(
-        "SMART_PASTE_VISION_ADDRESS_RETRY", "0"
-    ).strip().lower() in {"1", "true", "yes", "on"}
+    # Phase-12 NOTE: retry is ALWAYS ON (critical for visiting-card
+    # OCR accuracy). The first-call latency win comes from client-side
+    # image compression (see frontend) — not from disabling this retry.
     addr1 = (fields.get("ADDRESS_1") or "").strip()
     has_locality = bool(
         (fields.get("CITY") or "").strip()
         or (fields.get("PINCODE") or "").strip()
     )
-    if _ADDRESS_RETRY_ON and (not addr1 or addr1 == "-") and has_locality:
+    if (not addr1 or addr1 == "-") and has_locality:
         try:
             from emergentintegrations.llm.chat import (
                 LlmChat as _Chat2, UserMessage as _UM2, ImageContent as _IC2,

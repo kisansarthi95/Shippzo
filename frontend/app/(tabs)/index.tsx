@@ -384,19 +384,21 @@ export default function Dashboard() {
       setPhotoStage("compressing");
 
       // ── Phase-12 OPTIMISATION: client-side compression ────────────
-      // Resize to max 1280px on the longest edge + JPEG 70% quality.
-      // Typical 3-5 MB camera photos shrink to 200-400 KB, cutting
-      // upload time by 5-10 seconds on slow networks while preserving
-      // OCR accuracy (text remains crisp at 1280px). Also re-encodes
-      // HEIC/PNG to JPEG so backend always sees image/jpeg.
+      // Resize to max 1600px on the longest edge + JPEG 75% quality.
+      // Typical 3-5 MB camera photos shrink to 300-600 KB, cutting
+      // upload time by 4-8 seconds on slow networks while preserving
+      // OCR accuracy for SMALL TEXT like visiting-card addresses
+      // (1600px keeps 10-point text crisp; 1280px was slightly soft
+      // for dense cards). Also re-encodes HEIC/PNG to JPEG so the
+      // backend always sees image/jpeg.
       let compressedUri = asset.uri;
       let compressedB64 = "";
       try {
         const manipulated = await ImageManipulator.manipulateAsync(
           asset.uri,
-          [{ resize: { width: 1280 } }],
+          [{ resize: { width: 1600 } }],
           {
-            compress: 0.7,
+            compress: 0.75,
             format: ImageManipulator.SaveFormat.JPEG,
             base64: true,
           },
