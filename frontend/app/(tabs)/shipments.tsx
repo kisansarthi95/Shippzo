@@ -632,6 +632,20 @@ export default function Shipments() {
         </ScrollView>
       </View>
 
+  // Phase-11: Delivery-confirmation count — auto-flagged shipped
+  // parcels that need a customer ping. Badge is lightweight (just
+  // counts), loaded on focus alongside other lists.
+  const [needConfirmCount, setNeedConfirmCount] = useState(0);
+  const loadNeedConfirm = useCallback(async () => {
+    try {
+      const r = await Api.deliveryConfList(5);
+      setNeedConfirmCount(r.counts?.list || 0);
+    } catch {
+      setNeedConfirmCount(0);
+    }
+  }, []);
+  useEffect(() => { loadNeedConfirm(); }, [loadNeedConfirm]);
+
       {/* Phase-9/10: Contextual "Scan" action card. Visible only when
           Pending or Dispatch tab is active (All also shows Pending
           variant as a general shortcut). Colours flip based on mode:
@@ -703,6 +717,33 @@ export default function Shipments() {
           </TouchableOpacity>
         );
       })()}
+
+      {/* Phase-11: Need Delivery Confirmation card (Shipped → Delivered).
+          Shows whenever there are flagged shipments, regardless of
+          active filter — this is a persistent workflow alert. */}
+      {needConfirmCount > 0 && (status === "All" || status === "Shipped" || status === "Dispatch") && (
+        <TouchableOpacity
+          activeOpacity={0.85}
+          onPress={() => router.push("/delivery-confirmation")}
+          style={styles.confirmCard}
+          testID="need-delivery-confirm-card"
+        >
+          <View style={styles.confirmCardIconBox}>
+            <Ionicons name="chatbubble-ellipses" size={24} color="#B45309" />
+          </View>
+          <View style={{ flex: 1, marginLeft: 12 }}>
+            <Text style={styles.confirmCardTitle}>
+              Need Delivery Confirmation ({needConfirmCount})
+            </Text>
+            <Text style={styles.confirmCardSub} numberOfLines={2}>
+              Shipped parcels need confirmation
+            </Text>
+          </View>
+          <View style={styles.confirmCardArrow}>
+            <Ionicons name="chevron-forward" size={22} color="#B45309" />
+          </View>
+        </TouchableOpacity>
+      )}
 
       {selectMode && (
         <View style={styles.bulkBar} testID="bulk-bar">
@@ -1287,6 +1328,48 @@ const styles = StyleSheet.create({
     color: "#FFFFFF",
     fontWeight: "800",
     fontSize: 13,
+  },
+
+  // Phase-11: "Need Delivery Confirmation" card — soft orange palette
+  // per spec (Warning / Pending tone). Full-card tap surface opens
+  // /delivery-confirmation screen where admin can bulk-select +
+  // WhatsApp + Mark as Delivered.
+  confirmCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#FFF3E0",
+    borderWidth: 1,
+    borderColor: "#FCD7A0",
+    borderRadius: 14,
+    marginHorizontal: 12,
+    marginTop: 2,
+    marginBottom: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+  },
+  confirmCardIconBox: {
+    width: 42,
+    height: 42,
+    borderRadius: 11,
+    backgroundColor: "#FFE5BA",
+    borderWidth: 1,
+    borderColor: "#FCD7A0",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  confirmCardTitle: {
+    fontSize: 14,
+    fontWeight: "800",
+    color: "#7C2D12",
+  },
+  confirmCardSub: {
+    marginTop: 2,
+    fontSize: 12,
+    color: "#9A5F22",
+  },
+  confirmCardArrow: {
+    marginLeft: 8,
+    padding: 6,
   },
   filterText: { fontWeight: "700", fontSize: 13, color: colors.text },
   filterCount: {

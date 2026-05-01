@@ -663,6 +663,32 @@ export const Api = {
         shipment: Shipment | null;
       }>("/shipments/scan-ship", { tracking_id })
       .then((r) => r.data),
+
+  /** Phase-11: Delivery Confirmation (Shipped → Delivered via WhatsApp) */
+  deliveryConfList: (threshold_days: number = 5) =>
+    api
+      .get<{
+        threshold_days: number;
+        counts: { list: number; sent: number; replied: number; pending: number };
+        shipments: Array<Shipment & { days_since_shipped: number }>;
+      }>(`/shipments/delivery-confirmation?threshold_days=${threshold_days}`)
+      .then((r) => r.data),
+  deliveryConfMarkSent: (shipment_ids: string[]) =>
+    api
+      .post<{
+        updated: number;
+        skipped: number;
+        updated_ids: string[];
+        skipped_ids: string[];
+      }>("/shipments/delivery-confirmation/mark-sent", { shipment_ids })
+      .then((r) => r.data),
+  deliveryConfMarkDelivered: (shipment_ids: string[]) =>
+    api
+      .post<{ updated: number; requested: number }>(
+        "/shipments/delivery-confirmation/mark-delivered",
+        { shipment_ids },
+      )
+      .then((r) => r.data),
   /**
    * Lookup an existing shipment by tracking_id. Returns null when no
    * match (HTTP 404) instead of throwing, so callers don't have to

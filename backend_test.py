@@ -1,349 +1,373 @@
 """
-Phase-9 Scan-to-Dispatch backend regression.
+Phase-11 Delivery Confirmation backend tests.
 
-Tests:
-  1. GET /api/shipments/stats returns dispatch + shipped counts.
-  2. POST /api/shipments creates Pending shipment.
-  3. POST /api/shipments/scan-dispatch moves Pending -> Dispatch.
-  4. Idempotent — second scan returns already_dispatch.
-  5. Non-existent tracking returns not_found (200).
-  6. Wrong-status shipment returns wrong_status:<status>.
-  7. Empty tracking_id returns empty_tracking_id.
-  8. Race: two concurrent scans on same Pending — exactly one "moved",
-     other "already".
+Covers:
+  1. GET  /api/shipments/delivery-confirmation (default + threshold=0)
+  2. POST /api/shipments/delivery-confirmation/mark-sent (new + same-day-dup)
+  3. POST /api/shipments/delivery-confirmation/mark-delivered (Shipped-only filter)
+  4. Empty shipment_ids contract on both POSTs.
+
+Setup helper: creates shipments directly via POST /api/shipments (admin
+bypasses plan caps) and then force-sets status="Shipped" + shipped_at
+in Mongo so we can control days_since_shipped precisely.
 """
-import asyncio
-import time
-import uuid
+from __future__ import annotations
 
-import httpx
+import os
+import sys
+import uuid
+from datetime import datetime, timezone, timedelta
+from typing import Any, Dict, List, Optional
+
+import requests
+from pymongo import MongoClient
 
 BASE = "https://logistics-hub-740.preview.emergentagent.com/api"
 ADMIN_EMAIL = "admin@test.com"
 ADMIN_PASSWORD = "Admin@12345"
 
-created_shipment_ids: list[str] = []
-borrowed_revert: list[tuple[str, str]] = []  # (id, original_status) — flip back at cleanup
-_orig_admin_plan: dict = {}
+MONGO_URL = "mongodb://localhost:27017"
+DB_NAME = "test_database"
+
+PASSED: List[str] = []
+FAILED: List[str] = []
 
 
-def _bump_admin_to_platinum_temp():
-    """Temporarily upgrade admin plan to platinum so the tests can
-    create new shipments. The original plan is restored at cleanup."""
-    import asyncio as _asyncio
-    import os as _os
-    from motor.motor_asyncio import AsyncIOMotorClient
-    from dotenv import load_dotenv
-    load_dotenv("/app/backend/.env")
-
-    async def _run():
-        c = AsyncIOMotorClient(_os.environ["MONGO_URL"])
-        db = c[_os.environ["DB_NAME"]]
-        u = await db.users.find_one({"email": ADMIN_EMAIL}, {"_id": 0, "plan": 1, "plan_expires_at": 1})
-        if not u:
-            raise SystemExit("admin user not found")
-        _orig_admin_plan["plan"] = u.get("plan", "free_trial")
-        _orig_admin_plan["plan_expires_at"] = u.get("plan_expires_at", "")
-        from datetime import datetime, timezone, timedelta
-        new_exp = (datetime.now(timezone.utc) + timedelta(days=30)).isoformat()
-        await db.users.update_one(
-            {"email": ADMIN_EMAIL},
-            {"$set": {"plan": "platinum", "plan_expires_at": new_exp}},
-        )
-        c.close()
-    _asyncio.run(_run())
-    print(f"[setup] admin plan temporarily set to platinum (was {_orig_admin_plan.get('plan')})")
+def p(ok: bool, label: str, extra: str = ""):
+    line = f"{'PASS' if ok else 'FAIL'} | {label}"
+    if extra:
+        line += f" -- {extra}"
+    (PASSED if ok else FAILED).append(line)
+    print(line)
 
 
-def _restore_admin_plan():
-    if not _orig_admin_plan:
-        return
-    import asyncio as _asyncio
-    import os as _os
-    from motor.motor_asyncio import AsyncIOMotorClient
-    from dotenv import load_dotenv
-    load_dotenv("/app/backend/.env")
+def login(email: str, password: str) -> str:
+    r = requests.post(f"{BASE}/auth/login", json={"email": email, "password": password}, timeout=20)
+    assert r.status_code == 200, f"login failed: {r.status_code} {r.text}"
+    return r.json()["token"]
 
-    async def _run():
-        c = AsyncIOMotorClient(_os.environ["MONGO_URL"])
-        db = c[_os.environ["DB_NAME"]]
-        await db.users.update_one(
-            {"email": ADMIN_EMAIL},
+
+def auth(token: str) -> Dict[str, str]:
+    return {"Authorization": f"Bearer {token}"}
+
+
+def get_user_id(email: str) -> str:
+    mc = MongoClient(MONGO_URL)
+    try:
+        u = mc[DB_NAME].users.find_one({"email": email}, {"id": 1})
+        assert u, f"user not found: {email}"
+        return u["id"]
+    finally:
+        mc.close()
+
+
+def create_shipment(token: str, tracking_id: str, name: str, user_id: str = "") -> Dict[str, Any]:
+    """Insert a shipment directly into Mongo (bypasses plan-limit gate on
+    POST /shipments for the admin account, which is on free_trial in this
+    environment). The created doc mirrors the Shipment model so the
+    delivery-confirmation endpoints still see the correct shape.
+    """
+    mc = MongoClient(MONGO_URL)
+    try:
+        sid = str(uuid.uuid4())
+        doc = {
+            "id": sid,
+            "user_id": user_id,
+            "tracking_id": tracking_id,
+            "courier_id": None,
+            "courier_name": "",
+            "master_order_id": "",
+            "order_id": "",
+            "customer_name": name,
+            "customer_phone": "9123400001",
+            "customer_alt_phone": "",
+            "address_line1": "12, MG Road",
+            "address_line2": "",
+            "city": "Ahmedabad",
+            "state": "Gujarat",
+            "pincode": "380001",
+            "payment_mode": "Prepaid",
+            "amount": 499.0,
+            "cod_amount": 0.0,
+            "items": ["Test Item"],
+            "item_description": "",
+            "weight": "500",
+            "token_amount": 0.0,
+            "box_dimensions": "",
+            "shipment_notes": "",
+            "custom_values": {},
+            "status": "Pending",
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "delivered_at": None,
+            "dispatched_at": None,
+            "shipped_at": None,
+            "confirmation_status": "pending",
+            "last_confirmation_sent_at": None,
+            "last_confirmation_reply": None,
+            "sheet_row_key": "",
+            "sheet_row_num": None,
+        }
+        mc[DB_NAME].shipments.insert_one(doc)
+        doc.pop("_id", None)
+        return doc
+    finally:
+        mc.close()
+
+
+def set_shipped_in_mongo(shipment_id: str, days_ago: int):
+    """Directly force status='Shipped' + shipped_at = now - days_ago.
+    Bypasses the scan flow so we can control the threshold precisely.
+    """
+    mc = MongoClient(MONGO_URL)
+    try:
+        db = mc[DB_NAME]
+        shipped_at = (datetime.now(timezone.utc) - timedelta(days=days_ago)).isoformat()
+        res = db.shipments.update_one(
+            {"id": shipment_id},
             {"$set": {
-                "plan": _orig_admin_plan.get("plan", "free_trial"),
-                "plan_expires_at": _orig_admin_plan.get("plan_expires_at", ""),
+                "status": "Shipped",
+                "shipped_at": shipped_at,
+                "confirmation_status": "pending",
+                "last_confirmation_sent_at": None,
             }},
         )
-        c.close()
-    _asyncio.run(_run())
-    print(f"[cleanup] admin plan restored to {_orig_admin_plan.get('plan')}")
+        assert res.matched_count == 1, f"mongo matched 0 for {shipment_id}"
+    finally:
+        mc.close()
 
 
-def fail(msg: str):
-    print(f"  FAIL: {msg}")
-    raise SystemExit(1)
-
-
-def ok(msg: str):
-    print(f"  OK  : {msg}")
-
-
-def login(client: httpx.Client) -> str:
-    r = client.post(f"{BASE}/auth/login", json={"email": ADMIN_EMAIL, "password": ADMIN_PASSWORD})
-    if r.status_code != 200:
-        fail(f"login failed {r.status_code}: {r.text[:200]}")
-    tok = r.json().get("token")
-    if not tok:
-        fail("login missing token")
-    return tok
-
-
-def get_courier_id(client: httpx.Client, headers: dict) -> str:
-    r = client.get(f"{BASE}/couriers", headers=headers)
-    if r.status_code != 200:
-        fail(f"GET /couriers failed {r.status_code}")
-    couriers = r.json()
-    if not couriers:
-        fail("no couriers available for admin")
-    return couriers[0]["id"]
-
-
-def create_shipment(client, headers, courier_id, tracking_id, name="Rahul Sharma") -> dict:
-    payload = {
-        "tracking_id": tracking_id,
-        "courier_id": courier_id,
-        "customer_name": name,
-        "customer_phone": "9876543210",
-        "address_line1": "12 Marine Drive",
-        "city": "Mumbai",
-        "state": "Maharashtra",
-        "pincode": "400001",
-        "payment_mode": "Prepaid",
-        "amount": 599.0,
-        "weight": "1",
-    }
-    r = client.post(f"{BASE}/shipments", json=payload, headers=headers)
-    if r.status_code != 200:
-        fail(f"POST /shipments failed {r.status_code}: {r.text[:300]}")
-    doc = r.json()
-    created_shipment_ids.append(doc["id"])
-    return doc
-
-
-def test_stats_fields(client, headers):
-    print("\n[1] GET /api/shipments/stats — includes dispatch + shipped")
-    r = client.get(f"{BASE}/shipments/stats", headers=headers)
-    if r.status_code != 200:
-        fail(f"status {r.status_code}: {r.text[:200]}")
-    j = r.json()
-    for k in ("total", "delivered", "pending", "dispatch", "shipped",
-              "cod_total", "cod_count", "prepaid_total", "prepaid_count", "revenue_total"):
-        if k not in j:
-            fail(f"stats missing key: {k}")
-    for k in ("dispatch", "shipped"):
-        if not isinstance(j[k], int):
-            fail(f"stats[{k}] not int: {j[k]!r}")
-    ok(f"stats OK — total={j['total']} pending={j['pending']} dispatch={j['dispatch']} shipped={j['shipped']} delivered={j['delivered']}")
-
-
-def test_scan_dispatch_happy(client, headers, courier_id):
-    print("\n[2+3] Create Pending -> scan-dispatch -> moved")
-    tid = f"ZTST{int(time.time())}{uuid.uuid4().hex[:4].upper()}"
-    doc = create_shipment(client, headers, courier_id, tid)
-    if doc.get("status") != "Pending":
-        fail(f"new shipment status expected 'Pending' got {doc.get('status')!r}")
-    ok(f"created shipment tid={tid} status=Pending id={doc['id']}")
-
-    r = client.post(f"{BASE}/shipments/scan-dispatch", json={"tracking_id": tid}, headers=headers)
-    if r.status_code != 200:
-        fail(f"scan-dispatch status {r.status_code}: {r.text[:300]}")
-    res = r.json()
-    if res.get("outcome") != "moved":
-        fail(f"expected outcome moved, got {res}")
-    if res.get("reason") != "ok":
-        fail(f"expected reason ok, got {res.get('reason')}")
-    expected_msg = f"{tid} moved to Dispatch"
-    if res.get("message") != expected_msg:
-        fail(f"message mismatch: expected {expected_msg!r} got {res.get('message')!r}")
-    sh = res.get("shipment") or {}
-    if sh.get("status") != "Dispatch":
-        fail(f"response.shipment.status expected Dispatch, got {sh.get('status')}")
-    if not sh.get("dispatched_at"):
-        fail("response.shipment.dispatched_at not set")
-    ok(f"moved: status=Dispatch dispatched_at={sh.get('dispatched_at')}")
-
-    r2 = client.get(f"{BASE}/shipments", headers=headers, params={"limit": 500})
-    if r2.status_code != 200:
-        fail(f"GET /shipments {r2.status_code}")
-    listing = r2.json()
-    found = next((s for s in listing if s["tracking_id"] == tid), None)
-    if not found:
-        fail("shipment not in listing after scan")
-    if found["status"] != "Dispatch":
-        fail(f"persisted status={found['status']}, expected Dispatch")
-    ok("GET /shipments confirms status=Dispatch")
-    return tid
-
-
-def test_scan_dispatch_already(client, headers, tid):
-    print("\n[4] Second scan on same tracking -> already")
-    r = client.post(f"{BASE}/shipments/scan-dispatch", json={"tracking_id": tid}, headers=headers)
-    if r.status_code != 200:
-        fail(f"status {r.status_code}: {r.text[:300]}")
-    res = r.json()
-    if res.get("outcome") != "already":
-        fail(f"expected outcome already, got {res}")
-    if res.get("reason") != "already_dispatch":
-        fail(f"expected reason already_dispatch, got {res.get('reason')}")
-    if not res.get("shipment"):
-        fail("shipment should be non-null on already")
-    if (res.get("shipment") or {}).get("status") != "Dispatch":
-        fail("shipment.status should still be Dispatch")
-    ok("idempotent — second scan returns already_dispatch")
-
-
-def test_scan_dispatch_not_found(client, headers):
-    print("\n[5] Random tracking -> failed not_found (HTTP 200)")
-    fake = "ZZZNOPE123"
-    r = client.post(f"{BASE}/shipments/scan-dispatch", json={"tracking_id": fake}, headers=headers)
-    if r.status_code != 200:
-        fail(f"expected HTTP 200 for not-found, got {r.status_code}")
-    res = r.json()
-    if res.get("outcome") != "failed":
-        fail(f"expected failed, got {res}")
-    if res.get("reason") != "not_found":
-        fail(f"expected reason not_found, got {res.get('reason')}")
-    if res.get("shipment") is not None:
-        fail(f"shipment should be null, got {res.get('shipment')!r}")
-    ok("not_found handled with HTTP 200")
-
-
-def borrow_pending(client, headers, exclude_tids=None) -> dict:
-    """Find an existing Pending shipment for tests that can't create
-    new ones (admin is on free_trial with label cap reached)."""
-    exclude = set(exclude_tids or [])
-    r = client.get(f"{BASE}/shipments", headers=headers, params={"status": "Pending", "limit": 500})
-    if r.status_code != 200:
-        fail(f"GET /shipments failed {r.status_code}")
-    for s in r.json():
-        if s["tracking_id"] not in exclude:
-            return s
-    fail("no available Pending shipment to borrow")
-
-
-def test_scan_dispatch_wrong_status(client, headers):
-    print("\n[6] Wrong-status shipment (Shipped) -> failed wrong_status:Shipped")
-    sh = borrow_pending(client, headers)
-    sid = sh["id"]
-    tid = sh["tracking_id"]
-    original_status = sh.get("status", "Pending")
-    borrowed_revert.append((sid, original_status))
-    r = client.put(f"{BASE}/shipments/{sid}", json={"status": "Shipped"}, headers=headers)
-    if r.status_code != 200:
-        fail(f"PUT /shipments failed {r.status_code}: {r.text[:300]}")
-    if r.json().get("status") != "Shipped":
-        fail(f"PUT response status not Shipped: {r.json().get('status')}")
-    ok(f"flipped existing shipment to Shipped: tid={tid}")
-
-    r = client.post(f"{BASE}/shipments/scan-dispatch", json={"tracking_id": tid}, headers=headers)
-    if r.status_code != 200:
-        fail(f"scan-dispatch status {r.status_code}")
-    res = r.json()
-    if res.get("outcome") != "failed":
-        fail(f"expected failed, got {res}")
-    if res.get("reason") != "wrong_status:Shipped":
-        fail(f"expected reason wrong_status:Shipped, got {res.get('reason')!r}")
-    if not res.get("shipment"):
-        fail("shipment should be non-null on wrong_status")
-    ok("wrong_status:Shipped returned correctly")
-
-
-def test_scan_dispatch_empty(client, headers):
-    print("\n[7] Empty tracking_id -> failed empty_tracking_id")
-    r = client.post(f"{BASE}/shipments/scan-dispatch", json={"tracking_id": ""}, headers=headers)
-    if r.status_code != 200:
-        fail(f"status {r.status_code}")
-    res = r.json()
-    if res.get("outcome") != "failed":
-        fail(f"expected failed, got {res}")
-    if res.get("reason") != "empty_tracking_id":
-        fail(f"expected reason empty_tracking_id, got {res.get('reason')!r}")
-    ok("empty_tracking_id handled")
-
-
-async def test_scan_dispatch_race(token, client, headers):
-    print("\n[8] Race — 2 concurrent scans on same Pending")
-    sh = borrow_pending(client, headers)
-    sid = sh["id"]
-    tid = sh["tracking_id"]
-    original_status = sh.get("status", "Pending")
-    borrowed_revert.append((sid, original_status))
-    async with httpx.AsyncClient(timeout=30) as c:
-        ah = {"Authorization": f"Bearer {token}"}
-        body = {"tracking_id": tid}
-        results = await asyncio.gather(
-            c.post(f"{BASE}/shipments/scan-dispatch", json=body, headers=ah),
-            c.post(f"{BASE}/shipments/scan-dispatch", json=body, headers=ah),
+def mongo_force_sent_today(shipment_id: str):
+    """Force last_confirmation_sent_at=now so mark-sent will skip it."""
+    mc = MongoClient(MONGO_URL)
+    try:
+        db = mc[DB_NAME]
+        now_iso = datetime.now(timezone.utc).isoformat()
+        db.shipments.update_one(
+            {"id": shipment_id},
+            {"$set": {
+                "confirmation_status": "sent",
+                "last_confirmation_sent_at": now_iso,
+            }},
         )
-        outcomes = [r.json() for r in results if r.status_code == 200]
-        if len(outcomes) != 2:
-            fail(f"some requests did not return 200: {[(r.status_code, r.text[:120]) for r in results]}")
-        print(f"  outcomes: {[o.get('outcome') for o in outcomes]}, reasons: {[o.get('reason') for o in outcomes]}")
-        moved_count = sum(1 for o in outcomes if o.get("outcome") == "moved")
-        already_count = sum(1 for o in outcomes if o.get("outcome") == "already")
-        if moved_count != 1 or already_count != 1:
-            fail(f"expected exactly 1 moved and 1 already, got moved={moved_count} already={already_count}")
-        r = await c.get(f"{BASE}/shipments", headers=ah, params={"limit": 500})
-        listing = r.json()
-        found = next((s for s in listing if s["tracking_id"] == tid), None)
-        if not found or found.get("status") != "Dispatch":
-            fail(f"final status not Dispatch: {found.get('status') if found else 'not-found'}")
-    ok("race handled correctly — 1 moved, 1 already, final status Dispatch")
+    finally:
+        mc.close()
 
 
-def cleanup(client, headers):
-    print("\n[cleanup] Reverting borrowed shipments and deleting created ones...")
-    for sid, orig_status in borrowed_revert:
-        try:
-            r = client.put(f"{BASE}/shipments/{sid}", json={"status": orig_status}, headers=headers)
-            if r.status_code == 200:
-                print(f"  reverted {sid} -> {orig_status}")
-            else:
-                print(f"  revert {sid} returned {r.status_code}: {r.text[:120]}")
-        except Exception as e:
-            print(f"  revert {sid} error: {e}")
-    for sid in created_shipment_ids:
-        try:
-            r = client.delete(f"{BASE}/shipments/{sid}", headers=headers)
-            if r.status_code == 200:
-                print(f"  deleted {sid}")
-            else:
-                print(f"  delete {sid} returned {r.status_code}")
-        except Exception as e:
-            print(f"  delete {sid} error: {e}")
+def mongo_set_status(shipment_id: str, status: str):
+    mc = MongoClient(MONGO_URL)
+    try:
+        mc[DB_NAME].shipments.update_one({"id": shipment_id}, {"$set": {"status": status}})
+    finally:
+        mc.close()
+
+
+def delete_shipment_direct(shipment_id: str):
+    """Hard-delete from Mongo (avoid triggering Sheet tombstone)."""
+    mc = MongoClient(MONGO_URL)
+    try:
+        mc[DB_NAME].shipments.delete_one({"id": shipment_id})
+    finally:
+        mc.close()
+
+
+def get_shipment_by_id(shipment_id: str) -> Optional[Dict[str, Any]]:
+    mc = MongoClient(MONGO_URL)
+    try:
+        return mc[DB_NAME].shipments.find_one({"id": shipment_id}, {"_id": 0})
+    finally:
+        mc.close()
+
+
+# ────────────────────────────────────────────────────────────
+# Tests
+# ────────────────────────────────────────────────────────────
+
+def test_1_default_threshold_shape(token: str):
+    print("\n=== Test 1: GET default threshold=5 returns expected shape ===")
+    r = requests.get(f"{BASE}/shipments/delivery-confirmation", headers=auth(token), timeout=20)
+    p(r.status_code == 200, "GET default threshold returns 200", f"status={r.status_code}")
+    if r.status_code != 200:
+        print(r.text[:400])
+        return
+    body = r.json()
+    p("threshold_days" in body, "response has threshold_days")
+    p(body.get("threshold_days") == 5, "threshold_days default = 5", f"got {body.get('threshold_days')}")
+    p("counts" in body and isinstance(body["counts"], dict), "response has counts dict")
+    counts = body.get("counts") or {}
+    for k in ("list", "sent", "replied", "pending"):
+        p(k in counts, f"counts has '{k}'")
+    p("shipments" in body and isinstance(body["shipments"], list), "response has shipments list")
+
+
+def test_2_and_3_thresholds(token: str, user_id: str) -> Dict[str, str]:
+    print("\n=== Test 2+3+4: threshold filtering ===")
+    tid_a = f"DC7-{uuid.uuid4().hex[:6].upper()}"
+    tid_b = f"DC0-{uuid.uuid4().hex[:6].upper()}"
+    sa = create_shipment(token, tid_a, "Rahul Verma", user_id=user_id)
+    sb = create_shipment(token, tid_b, "Priya Nair", user_id=user_id)
+    sid_a, sid_b = sa["id"], sb["id"]
+
+    set_shipped_in_mongo(sid_a, days_ago=7)
+    set_shipped_in_mongo(sid_b, days_ago=0)
+
+    # threshold=5 (default): A in, B out
+    r = requests.get(f"{BASE}/shipments/delivery-confirmation", headers=auth(token), timeout=20)
+    p(r.status_code == 200, "GET threshold=5 returns 200")
+    shipments = r.json().get("shipments", [])
+    ids_5 = {s["id"] for s in shipments}
+    p(sid_a in ids_5, "[Test 2] shipment A (days=7) appears in threshold=5")
+    p(sid_b not in ids_5, "[Test 3] shipment B (days=0) NOT in threshold=5")
+
+    entry_a = next((s for s in shipments if s["id"] == sid_a), None)
+    if entry_a:
+        p("days_since_shipped" in entry_a, "entry has days_since_shipped field")
+        p(isinstance(entry_a.get("days_since_shipped"), int), "days_since_shipped is int")
+        p(entry_a["days_since_shipped"] >= 5, f"shipment A days_since_shipped >= 5 (got {entry_a['days_since_shipped']})")
+        p(entry_a.get("status") == "Shipped", "entry A status=Shipped")
+        p(entry_a.get("confirmation_status") != "confirmed", "entry A not confirmed")
+
+    # threshold=0: both in
+    r0 = requests.get(f"{BASE}/shipments/delivery-confirmation?threshold_days=0", headers=auth(token), timeout=20)
+    p(r0.status_code == 200, "GET threshold=0 returns 200")
+    body0 = r0.json()
+    ids_0 = {s["id"] for s in body0.get("shipments", [])}
+    p(sid_b in ids_0, "[Test 4] shipment B appears when threshold=0")
+    p(sid_a in ids_0, "[Test 4] shipment A still appears when threshold=0")
+    p(body0.get("threshold_days") == 0, f"threshold_days echoed as 0 (got {body0.get('threshold_days')})")
+
+    return {"sid_a": sid_a, "sid_b": sid_b}
+
+
+def test_5_mark_sent(token: str, sid_a: str, sid_b: str):
+    print("\n=== Test 5: mark-sent new + same-day-skip ===")
+    # Pre-flag sid_b as already sent today.
+    mongo_force_sent_today(sid_b)
+
+    r = requests.post(
+        f"{BASE}/shipments/delivery-confirmation/mark-sent",
+        json={"shipment_ids": [sid_a, sid_b]},
+        headers=auth(token), timeout=20,
+    )
+    p(r.status_code == 200, f"mark-sent returns 200", f"got {r.status_code}")
+    body = r.json()
+    for k in ("updated", "skipped", "updated_ids", "skipped_ids"):
+        p(k in body, f"response has '{k}'")
+    p(body.get("updated") == 1, f"updated count == 1 (got {body.get('updated')})")
+    p(body.get("skipped") == 1, f"skipped count == 1 (got {body.get('skipped')})")
+    p(sid_a in (body.get("updated_ids") or []), "sid_a in updated_ids")
+    p(sid_b in (body.get("skipped_ids") or []), "sid_b in skipped_ids (already sent today)")
+
+    # Verify mongo state: sid_a now 'sent' with today prefix
+    doc_a = get_shipment_by_id(sid_a)
+    today = datetime.now(timezone.utc).isoformat()[:10]
+    p(doc_a.get("confirmation_status") == "sent", f"sid_a confirmation_status='sent' (got {doc_a.get('confirmation_status')})")
+    last_sent = (doc_a.get("last_confirmation_sent_at") or "")
+    p(last_sent.startswith(today), f"sid_a last_confirmation_sent_at starts with {today} (got {last_sent[:20]})")
+
+    # Second call with sid_a same day → should skip
+    r2 = requests.post(
+        f"{BASE}/shipments/delivery-confirmation/mark-sent",
+        json={"shipment_ids": [sid_a]},
+        headers=auth(token), timeout=20,
+    )
+    p(r2.status_code == 200, "second mark-sent returns 200")
+    body2 = r2.json()
+    p(body2.get("updated") == 0, f"second call: updated=0 (got {body2.get('updated')})")
+    p(body2.get("skipped") == 1, f"second call: skipped=1 (got {body2.get('skipped')})")
+    p(sid_a in (body2.get("skipped_ids") or []), "second call: sid_a in skipped_ids")
+
+
+def test_6_mark_delivered(token: str, user_id: str) -> List[str]:
+    print("\n=== Test 6: mark-delivered only flips Shipped ===")
+    s1 = create_shipment(token, f"MD1-{uuid.uuid4().hex[:6].upper()}", "Sunita Iyer", user_id=user_id)
+    s2 = create_shipment(token, f"MD2-{uuid.uuid4().hex[:6].upper()}", "Anil Kumar", user_id=user_id)
+    s3 = create_shipment(token, f"MD3-{uuid.uuid4().hex[:6].upper()}", "Meera Joshi", user_id=user_id)
+    id1, id2, id3 = s1["id"], s2["id"], s3["id"]
+
+    set_shipped_in_mongo(id1, days_ago=0)     # Shipped
+    mongo_set_status(id2, "Dispatch")          # not Shipped
+    mongo_set_status(id3, "Delivered")         # already Delivered
+
+    r = requests.post(
+        f"{BASE}/shipments/delivery-confirmation/mark-delivered",
+        json={"shipment_ids": [id1, id2, id3]},
+        headers=auth(token), timeout=20,
+    )
+    p(r.status_code == 200, "mark-delivered returns 200")
+    body = r.json()
+    p("updated" in body and "requested" in body, "response has updated + requested")
+    p(body.get("requested") == 3, f"requested == 3 (got {body.get('requested')})")
+    p(body.get("updated") == 1, f"updated == 1 (Shipped-only filter) (got {body.get('updated')})")
+
+    doc1 = get_shipment_by_id(id1)
+    p(doc1.get("status") == "Delivered", f"id1 status=Delivered (got {doc1.get('status')})")
+    p(doc1.get("confirmation_status") == "confirmed", f"id1 confirmation_status=confirmed (got {doc1.get('confirmation_status')})")
+    p(bool(doc1.get("delivered_at")), f"id1 delivered_at set (got {doc1.get('delivered_at')})")
+
+    doc2 = get_shipment_by_id(id2)
+    p(doc2.get("status") == "Dispatch", f"id2 (Dispatch) untouched (got {doc2.get('status')})")
+    p(doc2.get("confirmation_status") != "confirmed", f"id2 confirmation_status not confirmed (got {doc2.get('confirmation_status')})")
+
+    doc3 = get_shipment_by_id(id3)
+    p(doc3.get("status") == "Delivered", "id3 still Delivered")
+    p(doc3.get("confirmation_status") != "confirmed",
+      f"id3 confirmation_status NOT flipped to 'confirmed' since current status != Shipped (got {doc3.get('confirmation_status')})")
+
+    return [id1, id2, id3]
+
+
+def test_7_empty_ids(token: str):
+    print("\n=== Test 7: Empty shipment_ids contracts ===")
+    r1 = requests.post(f"{BASE}/shipments/delivery-confirmation/mark-sent",
+                       json={"shipment_ids": []}, headers=auth(token), timeout=20)
+    p(r1.status_code == 200, "mark-sent empty list returns 200")
+    b1 = r1.json()
+    p(b1.get("updated") == 0 and b1.get("skipped") == 0,
+      f"mark-sent empty: updated=0, skipped=0 (got updated={b1.get('updated')}, skipped={b1.get('skipped')})")
+    p(b1.get("updated_ids") == [] and b1.get("skipped_ids") == [], "mark-sent empty ids lists are []")
+
+    r2 = requests.post(f"{BASE}/shipments/delivery-confirmation/mark-delivered",
+                       json={"shipment_ids": []}, headers=auth(token), timeout=20)
+    p(r2.status_code == 200, "mark-delivered empty list returns 200")
+    b2 = r2.json()
+    p(b2.get("updated") == 0, f"mark-delivered empty: updated=0 (got {b2.get('updated')})")
 
 
 def main():
-    _bump_admin_to_platinum_temp()
-    with httpx.Client(timeout=30) as client:
-        token = login(client)
-        headers = {"Authorization": f"Bearer {token}"}
-        courier_id = get_courier_id(client, headers)
-        print(f"Logged in as {ADMIN_EMAIL}, courier_id={courier_id}")
+    print(f"BASE={BASE}")
+    token = login(ADMIN_EMAIL, ADMIN_PASSWORD)
+    user_id = get_user_id(ADMIN_EMAIL)
+    print(f"Logged in admin (user_id={user_id}), token=***{token[-10:]}")
 
-        try:
-            test_stats_fields(client, headers)
-            moved_tid = test_scan_dispatch_happy(client, headers, courier_id)
-            test_scan_dispatch_already(client, headers, moved_tid)
-            test_scan_dispatch_not_found(client, headers)
-            test_scan_dispatch_wrong_status(client, headers)
-            test_scan_dispatch_empty(client, headers)
-            asyncio.run(test_scan_dispatch_race(token, client, headers))
-        finally:
-            cleanup(client, headers)
-            _restore_admin_plan()
+    created_ids: List[str] = []
+    try:
+        test_1_default_threshold_shape(token)
 
-    print("\n ALL PHASE-9 SCAN-TO-DISPATCH TESTS PASSED ")
+        ids = test_2_and_3_thresholds(token, user_id)
+        created_ids.extend([ids["sid_a"], ids["sid_b"]])
+
+        test_5_mark_sent(token, ids["sid_a"], ids["sid_b"])
+
+        md_ids = test_6_mark_delivered(token, user_id)
+        created_ids.extend(md_ids)
+
+        test_7_empty_ids(token)
+    finally:
+        for sid in created_ids:
+            try:
+                delete_shipment_direct(sid)
+            except Exception as e:
+                print(f"cleanup failed for {sid}: {e}")
+
+    print("\n========== SUMMARY ==========")
+    print(f"PASSED: {len(PASSED)}")
+    print(f"FAILED: {len(FAILED)}")
+    if FAILED:
+        print("\n--- FAILURES ---")
+        for f in FAILED:
+            print(f)
+        sys.exit(1)
+    print("All assertions passed.")
 
 
 if __name__ == "__main__":

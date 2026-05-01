@@ -8028,3 +8028,123 @@ agent_communication:
         temporarily upgraded the user to "platinum" via direct Mongo
         update to run the test, then REVERTED to "free_trial" after
         cleanup. No test data remains; both created shipments deleted.
+
+---
+
+## Backend Test Run: Phase-11 Delivery Confirmation (2026-05-01)
+
+backend:
+  - task: "Phase-11 Delivery Confirmation endpoints"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "testing"
+        -comment: |
+            All 52/52 assertions passed via /app/backend_test.py against
+            https://logistics-hub-740.preview.emergentagent.com/api.
+
+            Tested endpoints:
+              • GET  /api/shipments/delivery-confirmation[?threshold_days=N]
+              • POST /api/shipments/delivery-confirmation/mark-sent
+              • POST /api/shipments/delivery-confirmation/mark-delivered
+
+            Setup: Shipments were inserted directly into MongoDB for the
+            admin user, since admin@test.com is on free_trial with the 10-
+            label cap exhausted and POST /api/shipments returns 402 in
+            this environment. Going via Mongo for SETUP ONLY — every
+            delivery-confirmation endpoint itself was exercised via real
+            HTTP against the public preview URL.
+
+            Scenario coverage:
+
+            1. GET default threshold=5 → HTTP 200; response body contains
+               {threshold_days=5, counts:{list,sent,replied,pending},
+               shipments:[]-like list}. All bucket keys present. ✅
+
+            2. Shipment A created, status forced to "Shipped", shipped_at
+               = now - 7 days. GET default (threshold=5) returned it in
+               shipments[] with days_since_shipped=7 (int), status=
+               "Shipped", confirmation_status!="confirmed". ✅
+
+            3. Shipment B created, status forced to "Shipped", shipped_at
+               = now (days=0). GET default (threshold=5) did NOT return
+               it. ✅
+
+            4. Same shipment B with ?threshold_days=0 → DOES appear, and
+               response.threshold_days echoed as 0. Shipment A also still
+               present. ✅
+
+            5. mark-sent: body {shipment_ids:[A_new, B_already_sent_today]}
+               → updated=1, skipped=1, A in updated_ids, B in skipped_ids
+               (last_confirmation_sent_at was pre-populated with today's
+               ISO for B to exercise the same-day safety rule). Post-call
+               doc for A: confirmation_status="sent", last_confirmation_
+               sent_at starts with today's YYYY-MM-DD. ✅
+               Second call on A the same day → updated=0, skipped=1, A in
+               skipped_ids (confirms the YYYY-MM-DD prefix skip logic). ✅
+
+            6. mark-delivered mixed batch:
+                 id1 = Shipped  → flipped: status="Delivered",
+                                  confirmation_status="confirmed",
+                                  delivered_at set.
+                 id2 = Dispatch → UNTOUCHED (status still "Dispatch",
+                                  confirmation_status still "pending").
+                 id3 = Delivered→ UNTOUCHED (status still "Delivered",
+                                  confirmation_status NOT flipped to
+                                  "confirmed"; matches the server-side
+                                  status=="Shipped" filter).
+               Response: {updated:1, requested:3}. ✅
+
+            7. Empty shipment_ids contracts (no 422):
+                 mark-sent      → {updated:0, skipped:0,
+                                   updated_ids:[], skipped_ids:[]}
+                 mark-delivered → {updated:0, requested:0 (effectively)}
+               Both HTTP 200. ✅
+
+            Pydantic model fields confirmed reachable via GET response:
+              confirmation_status, last_confirmation_sent_at, days_since_
+              shipped (computed). last_confirmation_reply not exercised
+              (no write path yet, per review scope).
+
+            Cleanup: all 5 test shipments (2 for the threshold tests, 3
+            for the mark-delivered test) were hard-deleted from Mongo
+            after the run. Google Sheet NOT touched (test shipments had
+            no sheet_row_num, so even the legacy DELETE /shipments path
+            would have been a no-op on the sheet). No orphan state.
+
+agent_communication:
+    -agent: "testing"
+    -message: |
+        Phase-11 Delivery Confirmation — 52/52 assertions pass. All three
+        new endpoints behave exactly to spec:
+          • GET returns 200 with threshold_days + counts{list,sent,replied,
+            pending} + shipments[] (each enriched with days_since_shipped
+            as int).
+          • Filter: status=="Shipped" AND confirmation_status!="confirmed"
+            AND days_since_shipped>=threshold_days. Verified with 7-day-
+            old and same-day rows across threshold=5 and threshold=0.
+          • mark-sent: bulk-sets confirmation_status="sent" +
+            last_confirmation_sent_at=now; same-day safety correctly
+            moves an already-sent row into skipped_ids (verified with
+            both pre-populated and repeat-call scenarios).
+          • mark-delivered: atomic update filtered on status=="Shipped";
+            Dispatch + already-Delivered rows are silently skipped, and
+            only Shipped rows flip to status="Delivered" + confirmation_
+            status="confirmed" + delivered_at=now.
+          • Empty shipment_ids returns 200 with zero counters (not 422).
+
+        Note: admin@test.com is on free_trial with the 10-label quota
+        exhausted in this preview environment, so POST /api/shipments
+        returns 402. Test harness sets up shipment docs directly via
+        Mongo for SETUP only; every delivery-confirmation endpoint under
+        test is exercised through real HTTP against the public preview
+        URL. This does not affect the test's validity for the Phase-11
+        endpoints themselves.
+
+        Ready for main agent to summarise & finish.
+

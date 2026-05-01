@@ -899,6 +899,15 @@ class Shipment(BaseModel):
     # can render "dispatched 2 min ago" / "shipped at …" indicators.
     dispatched_at: Optional[str] = None
     shipped_at: Optional[str] = None
+    # Phase-11: Delivery-confirmation state machine (post-Shipped).
+    #   "pending"   — auto-flagged, not contacted yet
+    #   "sent"      — WhatsApp template dispatched (waiting on reply)
+    #   "replied"   — customer replied (details stored verbatim)
+    #   "confirmed" — admin confirmed delivery (moves status to Delivered)
+    #   "failed"    — customer said parcel NOT received
+    confirmation_status: str = "pending"
+    last_confirmation_sent_at: Optional[str] = None
+    last_confirmation_reply: Optional[str] = None
     sheet_row_key: str = ""     # used to dedupe/reference imported rows
     # Soft-delete audit: if this shipment was appended to the Master Sheet
     # (via Smart Paste), we remember the exact row number so deletion can
@@ -2088,6 +2097,145 @@ async def scan_to_shipped(
         "message": f"{tid} moved to Shipped",
         "shipment": new_doc,
     }
+
+
+# ---------------------------------------------------------------------------
+# Phase-11: Delivery Confirmation (Shipped → Delivered via WhatsApp ping).
+# ---------------------------------------------------------------------------
+# A confirmation workflow, NOT a scanner. Once a parcel has been
+# "Shipped" for N days (default 5), it enters the delivery-confirmation
+# queue. Admin bulk-selects, taps "Send WhatsApp" to open the WhatsApp
+# deep link pre-filled with the Gujarati template, and optionally
+# "Mark as Delivered" to flip status → Delivered.
+#
+# State machine (shipment.confirmation_status):
+#   pending   → auto-flagged, not contacted yet
+#   sent      → WhatsApp message dispatched today
+#   replied   → customer replied (manual mark)
+#   confirmed → admin confirmed delivery (status becomes "Delivered")
+#   failed    → customer said not received
+
+DELIVERY_CONF_MIN_DAYS = 5   # default threshold — overridable per user
+
+def _days_since_iso(iso_str: Optional[str]) -> int:
+    if not iso_str:
+        return 0
+    try:
+        dt = datetime.fromisoformat(iso_str.replace("Z", "+00:00"))
+        delta = datetime.now(timezone.utc) - dt
+        return max(0, int(delta.total_seconds() // 86400))
+    except Exception:
+        return 0
+
+
+@api_router.get("/shipments/delivery-confirmation")
+async def delivery_confirmation_list(
+    threshold_days: int = DELIVERY_CONF_MIN_DAYS,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    """Return shipments needing delivery confirmation.
+
+    Filter: status="Shipped" AND days_since_shipped >= threshold
+    AND confirmation_status != "confirmed". Enriched with computed
+    `days_since_shipped` and bucket counts for the List / Sent /
+    Replied / Pending tabs.
+    """
+    q = {
+        "user_id": current_user["id"],
+        "status": "Shipped",
+        "confirmation_status": {"$ne": "confirmed"},
+    }
+    rows = await db.shipments.find(q, {"_id": 0}).sort("shipped_at", 1).to_list(5000)
+    enriched: List[Dict[str, Any]] = []
+    for r in rows:
+        days = _days_since_iso(r.get("shipped_at") or r.get("created_at"))
+        if days < int(threshold_days or 0):
+            continue
+        r["days_since_shipped"] = days
+        enriched.append(r)
+    # Bucket counts for the tabs.
+    counts = {
+        "list":    len(enriched),
+        "sent":    sum(1 for r in enriched if r.get("confirmation_status") == "sent"),
+        "replied": sum(1 for r in enriched if r.get("confirmation_status") == "replied"),
+        "pending": sum(1 for r in enriched if (r.get("confirmation_status") or "pending") == "pending"),
+    }
+    return {
+        "threshold_days": int(threshold_days),
+        "counts": counts,
+        "shipments": enriched,
+    }
+
+
+class DeliveryConfirmationBulkRequest(BaseModel):
+    shipment_ids: List[str] = Field(default_factory=list)
+
+
+@api_router.post("/shipments/delivery-confirmation/mark-sent")
+async def delivery_confirmation_mark_sent(
+    payload: DeliveryConfirmationBulkRequest,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    """Bulk-mark selected shipments as WhatsApp-sent. Safety rule:
+    skip any shipment already sent TODAY to avoid accidental spam.
+    Returns a breakdown of updated vs skipped ids.
+    """
+    ids = [i for i in (payload.shipment_ids or []) if i]
+    if not ids:
+        return {"updated": 0, "skipped": 0, "updated_ids": [], "skipped_ids": []}
+    today_prefix = utcnow_iso()[:10]  # YYYY-MM-DD
+    rows = await db.shipments.find(
+        {"user_id": current_user["id"], "id": {"$in": ids}},
+        {"_id": 0, "id": 1, "confirmation_status": 1, "last_confirmation_sent_at": 1},
+    ).to_list(len(ids))
+    updated_ids: List[str] = []
+    skipped_ids: List[str] = []
+    for r in rows:
+        last = r.get("last_confirmation_sent_at") or ""
+        if last.startswith(today_prefix):
+            skipped_ids.append(r["id"])
+            continue
+        updated_ids.append(r["id"])
+    if updated_ids:
+        await db.shipments.update_many(
+            {"user_id": current_user["id"], "id": {"$in": updated_ids}},
+            {"$set": {
+                "confirmation_status": "sent",
+                "last_confirmation_sent_at": utcnow_iso(),
+            }},
+        )
+    return {
+        "updated": len(updated_ids),
+        "skipped": len(skipped_ids),
+        "updated_ids": updated_ids,
+        "skipped_ids": skipped_ids,
+    }
+
+
+@api_router.post("/shipments/delivery-confirmation/mark-delivered")
+async def delivery_confirmation_mark_delivered(
+    payload: DeliveryConfirmationBulkRequest,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    """Bulk-confirm delivery: status → Delivered, confirmation → confirmed.
+    Only shipments currently in Shipped status are flipped (safety).
+    """
+    ids = [i for i in (payload.shipment_ids or []) if i]
+    if not ids:
+        return {"updated": 0, "skipped_ids": []}
+    res = await db.shipments.update_many(
+        {
+            "user_id": current_user["id"],
+            "id": {"$in": ids},
+            "status": "Shipped",
+        },
+        {"$set": {
+            "status": "Delivered",
+            "confirmation_status": "confirmed",
+            "delivered_at": utcnow_iso(),
+        }},
+    )
+    return {"updated": int(res.modified_count), "requested": len(ids)}
 
 
 @api_router.get("/sheets/sample-template", response_class=PlainTextResponse)
