@@ -894,6 +894,11 @@ class Shipment(BaseModel):
     status: str = "Pending"
     created_at: str = Field(default_factory=utcnow_iso)
     delivered_at: Optional[str] = None
+    # Phase-9/10: warehouse scan timestamps. Set by /scan-dispatch and
+    # /scan-ship respectively; surfaced via GET /shipments so the UI
+    # can render "dispatched 2 min ago" / "shipped at …" indicators.
+    dispatched_at: Optional[str] = None
+    shipped_at: Optional[str] = None
     sheet_row_key: str = ""     # used to dedupe/reference imported rows
     # Soft-delete audit: if this shipment was appended to the Master Sheet
     # (via Smart Paste), we remember the exact row number so deletion can
