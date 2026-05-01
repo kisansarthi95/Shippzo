@@ -386,7 +386,7 @@ export default function Shipments() {
   const statusCounts = useMemo(() => {
     const counts: Record<StatusFilter, number> = {
       "All": items.length,
-      "Dispatch": 0, "Shipped": 0, "Delivered": 0, "Modified": 0,
+      "Pending": 0, "Dispatch": 0, "Shipped": 0, "Delivered": 0, "Modified": 0,
       "Cancel by buyer": 0, "Cancelled": 0, "Returned": 0,
     };
     for (const s of items) {
