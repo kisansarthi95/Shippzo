@@ -147,6 +147,15 @@ export default function Shipments() {
   const LS_LAST_PERPAGE = "@bulk_last_perpage";
   const [lastUsedPerPage, setLastUsedPerPage] = useState<BulkPerPage | null>(null);
 
+  // Phase-16 / P2 — Bulk Save Contacts. When the user taps "Save
+  // Contacts" from the bulk bar, we open a small category-picker
+  // sheet regardless of the auto_assign setting (per product spec:
+  // the bulk flow should always let the user confirm / override
+  // category for the whole batch without going to Settings).
+  const [bulkContactPickerOpen, setBulkContactPickerOpen] = useState(false);
+  const [bulkContactCats, setBulkContactCats] = useState<string[]>([]);
+  const [bulkContactBusy, setBulkContactBusy] = useState(false);
+
   useEffect(() => {
     AsyncStorage.getItem(LS_LAST_PERPAGE)
       .then((v) => {
@@ -520,6 +529,59 @@ export default function Shipments() {
         "Save Contact failed",
         e?.response?.data?.detail || e?.message || "Try again.",
       );
+    }
+  };
+
+  // Phase-16 / P2 — open the bulk "Save Contacts" flow. Loads the
+  // user's category list first so the picker can show real chips
+  // (not hardcoded KSS/KOC). If the user has no categories yet, we
+  // download straight without asking — there's nothing to choose.
+  const openBulkContactPicker = async () => {
+    if (selectedIds.size === 0) {
+      Alert.alert("Select shipments", "Tap shipments to select first.");
+      return;
+    }
+    try {
+      const cs = await Api.getContactSettings();
+      const cats: string[] = Array.isArray(cs?.category?.categories)
+        ? cs.category.categories
+        : [];
+      setBulkContactCats(cats);
+      if (cats.length === 0) {
+        // No categories configured → proceed with auto mapping.
+        await runBulkContactDownload("");
+        return;
+      }
+      setBulkContactPickerOpen(true);
+    } catch (e: any) {
+      Alert.alert(
+        "Load settings failed",
+        e?.response?.data?.detail || e?.message || "Try again.",
+      );
+    }
+  };
+
+  const runBulkContactDownload = async (overrideCategory: string) => {
+    try {
+      setBulkContactBusy(true);
+      const ids = Array.from(selectedIds);
+      const r = await Api.buildBulkVcf(ids, overrideCategory);
+      const mod = await import("../../lib/contactSave");
+      await mod.saveBulkVcf(r.vcf, `contacts_${ids.length}.vcf`);
+      setBulkContactPickerOpen(false);
+      Alert.alert(
+        "Ready",
+        `Prepared ${r.count} contact${r.count === 1 ? "" : "s"}${
+          r.skipped ? ` (skipped ${r.skipped} without phone)` : ""
+        }. Open the .vcf file to import into your Contacts app.`,
+      );
+    } catch (e: any) {
+      Alert.alert(
+        "Export failed",
+        e?.response?.data?.detail || e?.message || "Try again.",
+      );
+    } finally {
+      setBulkContactBusy(false);
     }
   };
 
@@ -911,6 +973,34 @@ export default function Shipments() {
                 </View>
               );
             })}
+
+            {/* Phase-16/P2: Save Contacts card — exports selected
+                shipments to a .vcf file. Tapping it opens a small
+                category-picker sheet (always, per spec), then hands
+                the .vcf to the OS share sheet. */}
+            <View style={{ alignItems: "center" }}>
+              <View style={{ height: 14 }} />
+              <TouchableOpacity
+                testID="bulk-save-contacts"
+                onPress={openBulkContactPicker}
+                style={[
+                  styles.bulkLayoutCard,
+                  { borderColor: "#7C3AED", backgroundColor: "#F5F3FF" },
+                ]}
+              >
+                <Ionicons
+                  name="person-add-outline"
+                  size={20}
+                  color="#7C3AED"
+                />
+                <Text style={[styles.bulkLayoutTopText, { color: "#7C3AED" }]}>
+                  Save
+                </Text>
+                <Text style={[styles.bulkLayoutSubText, { color: "#7C3AED" }]}>
+                  Contacts
+                </Text>
+              </TouchableOpacity>
+            </View>
           </ScrollView>
         </View>
       )}
@@ -974,6 +1064,101 @@ export default function Shipments() {
                 <Text style={styles.bulkPopupBtnText}>Print</Text>
               </TouchableOpacity>
             </View>
+          </TouchableOpacity>
+        </TouchableOpacity>
+      </Modal>
+
+      {/* Phase-16/P2: Bulk Save-Contacts category picker. Opens after
+          the user taps the "Save Contacts" card. Asks which category
+          to apply to ALL selected contacts so they don't have to
+          change the default in Settings every time. Includes an
+          "Auto (by product)" chip for users who want the per-shipment
+          mapping from their settings. */}
+      <Modal
+        visible={bulkContactPickerOpen}
+        animationType="fade"
+        transparent
+        onRequestClose={() => setBulkContactPickerOpen(false)}
+      >
+        <TouchableOpacity
+          activeOpacity={1}
+          style={styles.bulkPopupBackdrop}
+          onPress={() => !bulkContactBusy && setBulkContactPickerOpen(false)}
+        >
+          <TouchableOpacity activeOpacity={1} style={styles.bulkPopupCard}>
+            <View style={styles.bulkPopupHeaderRow}>
+              <Ionicons name="person-add" size={18} color="#7C3AED" />
+              <Text style={styles.bulkPopupTitle}>
+                Apply category to {selectedIds.size} contact
+                {selectedIds.size !== 1 ? "s" : ""}
+              </Text>
+              <TouchableOpacity
+                onPress={() => !bulkContactBusy && setBulkContactPickerOpen(false)}
+                hitSlop={10}
+                disabled={bulkContactBusy}
+              >
+                <Ionicons name="close" size={22} color={colors.text} />
+              </TouchableOpacity>
+            </View>
+            <Text
+              style={{
+                fontSize: 12, color: "#6B7280", marginHorizontal: 4, marginBottom: 10,
+              }}
+            >
+              Pick one category for every contact in this batch, or tap
+              "Auto" to use your Product → Category rules per shipment.
+            </Text>
+            <View
+              style={{
+                flexDirection: "row", flexWrap: "wrap", gap: 8,
+                marginBottom: 12,
+              }}
+            >
+              <TouchableOpacity
+                testID="bulk-save-contacts-auto"
+                disabled={bulkContactBusy}
+                onPress={() => runBulkContactDownload("")}
+                style={{
+                  paddingHorizontal: 14, paddingVertical: 10,
+                  backgroundColor: "#EDE9FE",
+                  borderRadius: 8, borderWidth: 1, borderColor: "#C4B5FD",
+                }}
+              >
+                <Text style={{ fontSize: 13, fontWeight: "800", color: "#5B21B6" }}>
+                  Auto (by product)
+                </Text>
+              </TouchableOpacity>
+              {bulkContactCats.map((c) => (
+                <TouchableOpacity
+                  key={c}
+                  testID={`bulk-save-contacts-cat-${c}`}
+                  disabled={bulkContactBusy}
+                  onPress={() => runBulkContactDownload(c)}
+                  style={{
+                    paddingHorizontal: 14, paddingVertical: 10,
+                    backgroundColor: "#7C3AED",
+                    borderRadius: 8,
+                  }}
+                >
+                  <Text style={{ fontSize: 13, fontWeight: "800", color: "#fff" }}>
+                    {c}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+            {bulkContactBusy && (
+              <View
+                style={{
+                  flexDirection: "row", alignItems: "center",
+                  gap: 8, marginTop: 6,
+                }}
+              >
+                <ActivityIndicator size="small" color="#7C3AED" />
+                <Text style={{ fontSize: 12, color: "#7C3AED", fontWeight: "700" }}>
+                  Preparing contacts… ({selectedIds.size})
+                </Text>
+              </View>
+            )}
           </TouchableOpacity>
         </TouchableOpacity>
       </Modal>
