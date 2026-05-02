@@ -195,3 +195,139 @@ def _is_locality_within(district: str, city: str) -> bool:
     # Exact / containment match (e.g. district "Ahmedabad" vs
     # city "Ahmedabad city" or vice versa).
     return d in c or c in d
+
+
+# ──────────── Phase-15: City → State + Pincode reverse lookup ─────────
+# Used by the Smart Paste Summary Card to AUTO-FILL state and SUGGEST
+# pincode candidates when the user has a city/locality but no pincode.
+# Backed by the same free India Post API + a Mongo cache so a city is
+# resolved exactly once.
+
+_CITY_API_URL = "https://api.postalpincode.in/postoffice/{}"
+
+
+async def resolve_city(db, city: str) -> Optional[Dict[str, Any]]:
+    """Resolve a city / locality name to a list of post offices.
+
+    Returns:
+        {
+          "state":      "Gujarat",   # only when ALL matches share one
+                                     # state — empty string otherwise
+          "state_confidence": "high" | "medium" | "low",
+          "suggestions": [
+            {"pincode": "395003", "office": "Adajan", "district": "Surat"},
+            ...
+          ],
+          "count": int,
+        }
+        or None when the API gives nothing usable.
+
+    A "high" confidence on `state` means the caller can silently
+    auto-fill it; "medium" means show the value but flag it visually;
+    "low" means the caller should NOT auto-apply.
+
+    Caching:
+      We key by lower-cased trimmed city name. Because India Post
+      mappings are essentially static, we cache forever in the
+      `city_cache` collection (separate from pincode_cache).
+    """
+    name = (city or "").strip()
+    if len(name) < 3:
+        return None
+    key = name.lower()
+
+    # 1. Cache hit.
+    try:
+        cached = await db.city_cache.find_one({"_id": key})
+        if cached:
+            cached.pop("_id", None)
+            return cached
+    except Exception as e:
+        _LOG.warning("city cache read failed: %s", e)
+
+    # 2. External API call.
+    try:
+        async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+            resp = await client.get(_CITY_API_URL.format(name))
+        if resp.status_code != 200:
+            return None
+        body = resp.json()
+        if not isinstance(body, list) or not body:
+            return None
+        first = body[0]
+        if first.get("Status") != "Success":
+            return None
+        offices = first.get("PostOffice") or []
+        if not offices:
+            return None
+    except (httpx.HTTPError, ValueError, KeyError) as e:
+        _LOG.warning("city API failed for %s: %s", name, e)
+        return None
+    except Exception:
+        _LOG.exception("city API unexpected error for %s", name)
+        return None
+
+    # 3. Reduce + dedupe.
+    seen = set()
+    suggestions: list[Dict[str, str]] = []
+    states: set[str] = set()
+    for po in offices:
+        pin = (po.get("Pincode") or "").strip()
+        if not pin or pin in seen:
+            continue
+        seen.add(pin)
+        st  = (po.get("State") or "").strip()
+        dist = (po.get("District") or "").strip()
+        off  = (po.get("Name") or "").strip()
+        if st:
+            states.add(st)
+        suggestions.append({
+            "pincode":  pin,
+            "office":   off,
+            "district": dist,
+            "state":    st,
+        })
+
+    # Cap suggestions so the UI doesn't drown the user.
+    suggestions = suggestions[:8]
+
+    # State confidence rules:
+    #   1 distinct state across all matches  → high
+    #   2 distinct states but >70% of matches share one → medium
+    #   3+ states → low
+    state = ""
+    confidence = "low"
+    if len(states) == 1:
+        state = next(iter(states))
+        confidence = "high"
+    elif len(states) >= 2:
+        # Count occurrences of each state in the suggestions list
+        # (offices we kept) and pick the dominant one if >70%.
+        counts: Dict[str, int] = {}
+        for s in suggestions:
+            ss = s["state"]
+            counts[ss] = counts.get(ss, 0) + 1
+        if counts:
+            top_state, top_count = max(counts.items(), key=lambda kv: kv[1])
+            if top_count / max(len(suggestions), 1) >= 0.7:
+                state = top_state
+                confidence = "medium"
+
+    out = {
+        "state":             state,
+        "state_confidence":  confidence,
+        "suggestions":       suggestions,
+        "count":             len(suggestions),
+    }
+
+    # 4. Cache forever.
+    try:
+        await db.city_cache.update_one(
+            {"_id": key},
+            {"$set": {**out, "_id": key}},
+            upsert=True,
+        )
+    except Exception as e:
+        _LOG.warning("city cache write failed: %s", e)
+
+    return out

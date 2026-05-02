@@ -832,6 +832,37 @@ export const Api = {
       source: "llm" | "regex" | "fallback";
     }>("/smart-paste/chat", { fields, reply }).then((r) => r.data),
 
+  // Phase-15: City → State + Pincode candidate lookup. Powers the
+  // Smart Paste Summary Card auto-fill / "Confirm pincode" UX.
+  // Free India Post API behind a Mongo cache, so repeat lookups
+  // for the same city are instant and don't hit the network.
+  lookupByCity: (q: string) =>
+    api.get<{
+      ok: boolean;
+      city: string;
+      state: string;
+      state_confidence: "high" | "medium" | "low";
+      suggestions: Array<{
+        pincode: string;
+        office: string;
+        district: string;
+        state: string;
+      }>;
+      count: number;
+    }>(`/lookup/by-city`, { params: { q } }).then((r) => r.data),
+
+  // Forward lookup: pincode → state/district. Used by the inline
+  // "Confirm pincode" button to verify a pasted pincode.
+  lookupByPincode: (pincode: string) =>
+    api.get<{
+      ok: boolean;
+      pincode: string;
+      state: string;
+      district: string;
+      taluka: string;
+      office: string;
+    }>(`/lookup/by-pincode/${encodeURIComponent(pincode)}`).then((r) => r.data),
+
   // Photo OCR — Gemini Vision. Uses an extended 90 s timeout because
   // vision calls + the address-recovery follow-up can take up to ~45 s
   // on a slow mobile connection. The default 25 s axios timeout would

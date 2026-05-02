@@ -47,7 +47,7 @@ from smart_paste_ai import (
     to_legacy_fields as sm_to_legacy_fields,
     DEFAULT_SHIPBOT_PROMPT,
 )
-from pincode_lookup import enrich_with_pincode, validate_pincode_consistency
+from pincode_lookup import enrich_with_pincode, validate_pincode_consistency, resolve_city, resolve_pincode
 from fastapi import Depends as _AuthDepends  # noqa: F401
 import os
 import io
@@ -2413,6 +2413,74 @@ async def get_customer_by_phone(
             },
         }
     return {"found": False, "customer": None, "count": 0}
+
+
+# ───────── Phase-15: Auto-fill State + Pincode from City ──────────────
+# Smart Paste Summary Card calls this when the user has typed/pasted a
+# city / locality but doesn't know the pincode + state. Backed by India
+# Post (cached forever in Mongo). Returns up to 8 pincode candidates so
+# the user just taps one to confirm — no typing required.
+
+@api_router.get("/lookup/by-city")
+async def lookup_by_city(
+    q: str,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    """City → state + pincode candidates.
+
+    Query: ?q=Surat (3+ chars required; 2-letter inputs return a
+    no-result reply since they yield far too many India-Post matches).
+
+    Response (200):
+    {
+      "ok": true,
+      "city": "Surat",
+      "state": "Gujarat",
+      "state_confidence": "high",   // high / medium / low
+      "suggestions": [
+        {"pincode": "395003", "office": "Adajan", "district": "Surat",
+         "state": "Gujarat"}, ...
+      ],
+      "count": 8
+    }
+
+    Response when nothing useful found (still 200, no-op):
+    { "ok": true, "city": "...", "state": "", "suggestions": [], ...}
+    """
+    name = (q or "").strip()
+    if len(name) < 3:
+        return {
+            "ok": True, "city": name, "state": "",
+            "state_confidence": "low",
+            "suggestions": [], "count": 0,
+        }
+    info = await resolve_city(db, name)
+    if not info:
+        return {
+            "ok": True, "city": name, "state": "",
+            "state_confidence": "low",
+            "suggestions": [], "count": 0,
+        }
+    return {"ok": True, "city": name, **info}
+
+
+@api_router.get("/lookup/by-pincode/{pincode}")
+async def lookup_by_pincode(
+    pincode: str,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    """Pincode → state + district + locality. Single-record helper for
+    the inline "Confirm pincode" flow. 404 when invalid / unknown."""
+    info = await resolve_pincode(db, pincode)
+    if not info:
+        raise HTTPException(status_code=404, detail="Pincode not found")
+    return {
+        "ok": True, "pincode": pincode,
+        "state":    info.get("state", ""),
+        "district": info.get("district", ""),
+        "taluka":   info.get("taluka", ""),
+        "office":   info.get("office", ""),
+    }
 
 
 

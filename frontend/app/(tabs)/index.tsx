@@ -154,6 +154,23 @@ export default function Dashboard() {
   const [suggestedCustomer, setSuggestedCustomer] = useState<any | null>(null);
   const [dupFound, setDupFound] = useState<any[]>([]);
 
+  // Phase-15: City → State + Pincode auto-fill. When the user types
+  // (or pastes) a city in the Summary Card and we have no pincode yet,
+  // hit /lookup/by-city, auto-apply the state when confidence is high
+  // and surface tappable pincode chips below the row. Saves the user
+  // from typing 6 digits manually.
+  type CityHint = {
+    city: string;       // the lookup key — used to ignore stale responses
+    state: string;
+    confidence: "high" | "medium" | "low";
+    suggestions: Array<{ pincode: string; office: string; district: string; state: string }>;
+    loading: boolean;
+  };
+  const [cityHint, setCityHint] = useState<CityHint | null>(null);
+  // Track the auto-applied state so we can show a "Confirmed ✓" pill
+  // and let the user revert with one tap.
+  const [autoState, setAutoState] = useState<{ city: string; state: string } | null>(null);
+
   // Per-user Custom Fields (plan-gated). Loaded once on mount.
   // Surfaced inline in the Smart Paste Summary modal so high-volume
   // users can fill their bespoke columns without jumping to the
@@ -216,6 +233,74 @@ export default function Dashboard() {
   // Plan-gated: hide duplicate-banner UI when admin disables this feature.
   const flagDupCheck = useFeatureFlag("smart_paste_duplicate_check");
   const flagRepeatBanner = useFeatureFlag("repeat_customer_banner");
+
+  // Phase-15: debounced city → state/pincode lookup. Triggers ~600 ms
+  // after the user stops typing in the City field, only when:
+  //   * the Summary Card is open (chatOpen),
+  //   * the city has at least 3 chars,
+  //   * pincode is empty (or invalid) — i.e. the lookup actually
+  //     adds value; we don't waste an API call when the user already
+  //     has a valid 6-digit pincode.
+  // The state setter ignores stale responses (out-of-order resolves)
+  // by checking the city name on the response against the field at
+  // resolve time.
+  useEffect(() => {
+    if (!chatOpen) return;
+    const cityRaw = String((chatFields as any).city ?? "").trim();
+    const pinRaw  = String((chatFields as any).pincode ?? "").trim();
+    if (cityRaw.length < 3) {
+      setCityHint(null);
+      return;
+    }
+    // If we already have a valid 6-digit pincode, skip the city lookup —
+    // the existing pincode→state path is more authoritative.
+    if (/^\d{6}$/.test(pinRaw)) {
+      return;
+    }
+    const handle = setTimeout(async () => {
+      setCityHint({
+        city: cityRaw, state: "", confidence: "low",
+        suggestions: [], loading: true,
+      });
+      try {
+        const r = await Api.lookupByCity(cityRaw);
+        // Drop stale: only commit if the city the user has now still
+        // matches what we asked for.
+        const stillCity = String((chatFields as any).city ?? "").trim();
+        if (stillCity !== cityRaw) return;
+        setCityHint({
+          city: cityRaw,
+          state: r.state || "",
+          confidence: r.state_confidence,
+          suggestions: r.suggestions || [],
+          loading: false,
+        });
+        // Auto-apply state when we're confident AND user hasn't typed
+        // a different state already. Record the auto-application so
+        // the UI can show a "Confirmed ✓" pill and let them undo it.
+        if (
+          r.state &&
+          r.state_confidence === "high" &&
+          !String((chatFields as any).state ?? "").trim()
+        ) {
+          setChatFields((p) => ({ ...p, state: r.state }));
+          setAutoState({ city: cityRaw, state: r.state });
+        }
+      } catch {
+        setCityHint(null);
+      }
+    }, 600);
+    return () => clearTimeout(handle);
+  }, [chatFields, chatOpen]);
+
+  // When the user wipes the city field, also clear the auto-applied
+  // state — otherwise stale "Confirmed ✓" hints would linger.
+  useEffect(() => {
+    const c = String((chatFields as any).city ?? "").trim();
+    if (autoState && autoState.city !== c) {
+      setAutoState(null);
+    }
+  }, [chatFields, autoState]);
 
 
   // Human-readable labels + placeholders for each schema field.
@@ -1137,6 +1222,87 @@ export default function Dashboard() {
                             200
                           }
                         />
+
+                        {/* Phase-15: City → Pincode chip suggestions
+                            shown directly below the PINCODE input, ONLY
+                            when (a) the user has a city, (b) we have
+                            lookup results, (c) the pincode field is
+                            still empty / partial. Tapping a chip fills
+                            BOTH pincode AND state in one go. */}
+                        {key === "PINCODE" && cityHint &&
+                         !cityHint.loading &&
+                         cityHint.suggestions.length > 0 &&
+                         !/^\d{6}$/.test(val) && (
+                          <View style={styles.spHintBox}>
+                            <View style={styles.spHintHeader}>
+                              <Ionicons name="sparkles" size={13} color="#7C3AED" />
+                              <Text style={styles.spHintTitle}>
+                                Suggested for "{cityHint.city}" — tap to confirm
+                              </Text>
+                            </View>
+                            <View style={styles.spHintChips}>
+                              {cityHint.suggestions.slice(0, 6).map((sg) => (
+                                <TouchableOpacity
+                                  key={sg.pincode}
+                                  style={styles.spHintChip}
+                                  onPress={() => {
+                                    setChatFields((p) => ({
+                                      ...p,
+                                      pincode: sg.pincode,
+                                      // Also commit state if user
+                                      // hasn't typed one — saves an
+                                      // extra tap.
+                                      state: String((p as any).state || "").trim()
+                                        ? (p as any).state
+                                        : sg.state,
+                                    }));
+                                  }}
+                                  testID={`city-hint-${sg.pincode}`}
+                                >
+                                  <Ionicons
+                                    name="checkmark-circle-outline"
+                                    size={13}
+                                    color="#7C3AED"
+                                  />
+                                  <View>
+                                    <Text style={styles.spHintChipPin}>
+                                      {sg.pincode}
+                                    </Text>
+                                    <Text
+                                      style={styles.spHintChipArea}
+                                      numberOfLines={1}
+                                    >
+                                      {sg.office}
+                                    </Text>
+                                  </View>
+                                </TouchableOpacity>
+                              ))}
+                            </View>
+                          </View>
+                        )}
+
+                        {/* Auto-applied state pill: only on the STATE
+                            row, only when we silently auto-filled it
+                            from the city lookup. Lets the user tap to
+                            revert if it was wrong. */}
+                        {key === "STATE" && autoState &&
+                         autoState.state === val && (
+                          <View style={styles.spAutoPill}>
+                            <Ionicons name="sparkles" size={11} color="#16A34A" />
+                            <Text style={styles.spAutoPillTxt}>
+                              Auto-filled from "{autoState.city}"
+                            </Text>
+                            <TouchableOpacity
+                              onPress={() => {
+                                setChatFields((p) => ({ ...p, state: "" }));
+                                setAutoState(null);
+                              }}
+                              hitSlop={6}
+                            >
+                              <Text style={styles.spAutoPillUndo}>Undo</Text>
+                            </TouchableOpacity>
+                          </View>
+                        )}
                       </View>
                     </View>
                   );
@@ -2408,6 +2574,79 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8, paddingVertical: 6,
     backgroundColor: "#fff",
     minHeight: 34,
+  },
+  // Phase-15: City → Pincode suggestion chip block
+  spHintBox: {
+    marginTop: 8,
+    padding: 10,
+    backgroundColor: "#F5F3FF",
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "#DDD6FE",
+  },
+  spHintHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    marginBottom: 8,
+  },
+  spHintTitle: {
+    fontSize: 11,
+    fontWeight: "800",
+    color: "#5B21B6",
+    flex: 1,
+  },
+  spHintChips: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+  spHintChip: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    backgroundColor: "#fff",
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "#C4B5FD",
+    minWidth: 110,
+  },
+  spHintChipPin: {
+    fontSize: 13,
+    fontWeight: "800",
+    color: "#5B21B6",
+  },
+  spHintChipArea: {
+    fontSize: 10,
+    fontWeight: "600",
+    color: "#7C3AED",
+    maxWidth: 90,
+  },
+  // Auto-applied state pill (with Undo)
+  spAutoPill: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    marginTop: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    backgroundColor: "#DCFCE7",
+    borderRadius: 6,
+    alignSelf: "flex-start",
+  },
+  spAutoPillTxt: {
+    fontSize: 10.5,
+    fontWeight: "700",
+    color: "#15803D",
+  },
+  spAutoPillUndo: {
+    fontSize: 10.5,
+    fontWeight: "800",
+    color: "#DC2626",
+    textDecorationLine: "underline",
+    marginLeft: 4,
   },
   spReqHint: {
     flexDirection: "row", alignItems: "center", gap: 6,
