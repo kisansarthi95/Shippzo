@@ -1,482 +1,201 @@
 """
-Phase-16 Contact Save Settings + Build Endpoints Backend Test.
+Phase-16 Contact Save — Re-test of 2 previously-failing cases for
+POST /api/contacts/build-vcf
 
-Covers:
-  GET  /api/me/contact-settings
-  PUT  /api/me/contact-settings
-  POST /api/contacts/build-one
-  POST /api/contacts/build-vcf
-
-Target: https://logistics-hub-740.preview.emergentagent.com/api
-Creds:  admin@test.com / Admin@12345
+Tested against the public preview backend.
 """
 import os
 import sys
 import json
-import uuid
-from typing import Any, Dict, List, Tuple
-
 import requests
 
-BASE = os.environ.get(
-    "BACKEND_BASE",
-    "https://logistics-hub-740.preview.emergentagent.com/api",
-)
+BASE_URL = "https://logistics-hub-740.preview.emergentagent.com/api"
+
 ADMIN_EMAIL = "admin@test.com"
-ADMIN_PASS = "Admin@12345"
-
-PASS: List[str] = []
-FAIL: List[Tuple[str, str]] = []
+ADMIN_PASSWORD = "Admin@12345"
 
 
-def expect(cond: bool, label: str, detail: str = ""):
-    if cond:
-        PASS.append(label)
-        print(f"  PASS  {label}")
-    else:
-        FAIL.append((label, detail))
-        print(f"  FAIL  {label}  --  {detail}")
+def log(msg):
+    print(msg, flush=True)
 
 
-def login(email: str, password: str) -> str:
-    r = requests.post(f"{BASE}/auth/login", json={"email": email, "password": password}, timeout=20)
+def login(email, password):
+    r = requests.post(f"{BASE_URL}/auth/login",
+                      json={"email": email, "password": password},
+                      timeout=30)
     assert r.status_code == 200, f"login failed: {r.status_code} {r.text}"
-    return r.json()["token"]
-
-
-def H(token: str) -> Dict[str, str]:
-    return {"Authorization": f"Bearer {token}"}
-
-
-def pretty(obj: Any) -> str:
-    try:
-        return json.dumps(obj, indent=2, default=str, ensure_ascii=False)
-    except Exception:
-        return str(obj)
-
-
-# ───────────────── Test 1: GET default shape ──────────────────────────
-def test_get_default_shape(token: str):
-    print("\n[Test 1] GET /api/me/contact-settings (defaults)")
-    r = requests.get(f"{BASE}/me/contact-settings", headers=H(token), timeout=20)
-    expect(r.status_code == 200, "T1.status=200", f"got {r.status_code} body={r.text}")
-    if r.status_code != 200:
-        return
     data = r.json()
-    print(pretty(data))
-    nf = data.get("name_format", {})
-    expect(nf.get("prefix_enabled") is True, "T1.name_format.prefix_enabled=true")
-    expect(nf.get("prefix_position") == "start", "T1.name_format.prefix_position=start")
-    expect(nf.get("name_type") == "full", "T1.name_format.name_type=full")
-    expect(nf.get("product_placement") == "after_name", "T1.name_format.product_placement=after_name")
-    expect(nf.get("location") == "city", "T1.name_format.location=city")
-    fm = data.get("field_mapping", {})
-    expect(fm.get("address_target") == "address", "T1.field_mapping.address_target=address")
-    expect(fm.get("product_target") == "notes", "T1.field_mapping.product_target=notes")
-    ni = fm.get("notes_include", {})
-    expect(ni.get("order_id") is False, "T1.notes_include.order_id=false")
-    cat = data.get("category", {})
-    expect(cat.get("auto_assign") is True, "T1.category.auto_assign=true")
-    expect(cat.get("manual_popup") is False, "T1.category.manual_popup=false")
+    return data["token"]
 
 
-# ───────────────── Test 2: PUT with category merge-save ───────────────
-def test_put_category_merge(token: str):
-    print("\n[Test 2] PUT /api/me/contact-settings (merge-save category only)")
+def auth_headers(token):
+    return {"Authorization": f"Bearer {token}",
+            "Content-Type": "application/json"}
+
+
+def create_shipment(token, *, name, phone, items_list, tracking_id):
     payload = {
-        "category": {
-            "categories": ["KSS", "KOC"],
-            "default_category": "KOC",
-            "auto_assign": True,
-            "manual_popup": False,
-            "product_mapping": [
-                {"keyword": "garlic", "category": "KSS"},
-                {"keyword": "soap", "category": "KOC"},
-            ],
-        },
-    }
-    r = requests.put(f"{BASE}/me/contact-settings", headers=H(token), json=payload, timeout=20)
-    expect(r.status_code == 200, "T2.status=200", f"got {r.status_code} body={r.text}")
-    if r.status_code != 200:
-        return
-    data = r.json()
-    print(pretty(data))
-    cat = data.get("category", {})
-    expect(cat.get("categories") == ["KSS", "KOC"], "T2.category.categories preserved")
-    expect(cat.get("default_category") == "KOC", "T2.default_category=KOC")
-    pm = cat.get("product_mapping", [])
-    expect(len(pm) == 2, f"T2.product_mapping length=2 (got {len(pm)})")
-    expect(
-        any(p.get("keyword") == "garlic" and p.get("category") == "KSS" for p in pm),
-        "T2.product_mapping has garlic->KSS",
-    )
-    nf = data.get("name_format", {})
-    expect(nf.get("prefix_enabled") is True, "T2.name_format.prefix_enabled still true")
-    expect(nf.get("name_type") == "full", "T2.name_format.name_type still full")
-    expect(nf.get("location") == "city", "T2.name_format.location still city")
-    fm = data.get("field_mapping", {})
-    expect(fm.get("address_target") == "address", "T2.field_mapping.address_target still address")
-    expect(fm.get("product_target") == "notes", "T2.field_mapping.product_target still notes")
-
-
-# ───────────────── Test 3: build-one inline shipment ──────────────────
-SHIPMENT_PAYLOAD = {
-    "customer_name": "Ramesh Patel",
-    "customer_phone": "9876543210",
-    "items": "Garlic",
-    "address_line1": "Shop 12, Main Bazaar",
-    "city": "Surat",
-    "state": "Gujarat",
-    "pincode": "395003",
-    "order_id": "ORD-1024",
-    "quantity": "2kg",
-    "payment_mode": "COD",
-}
-
-
-def test_build_one_default(token: str):
-    print("\n[Test 3] POST /api/contacts/build-one (inline, defaults)")
-    r = requests.post(
-        f"{BASE}/contacts/build-one",
-        headers=H(token),
-        json={"shipment": SHIPMENT_PAYLOAD},
-        timeout=20,
-    )
-    expect(r.status_code == 200, "T3.status=200", f"got {r.status_code} body={r.text}")
-    if r.status_code != 200:
-        return
-    data = r.json()
-    print(pretty(data))
-    expect(data.get("name") == "[KSS] Ramesh Patel | Garlic | Surat",
-           f"T3.name='[KSS] Ramesh Patel | Garlic | Surat' (got {data.get('name')!r})")
-    expect(data.get("phone") == "9876543210", f"T3.phone=9876543210 (got {data.get('phone')!r})")
-    postal = data.get("postal", "")
-    expect("Shop 12" in postal, f"T3.postal contains 'Shop 12' (got {postal!r})")
-    expect("395003" in postal, f"T3.postal contains '395003' (got {postal!r})")
-    expect(data.get("notes") == "Ordered: Garlic",
-           f"T3.notes='Ordered: Garlic' (got {data.get('notes')!r})")
-    expect(data.get("category") == "KSS",
-           f"T3.category='KSS' (got {data.get('category')!r})")
-
-
-# ───────────────── Test 4: build-one override category ────────────────
-def test_build_one_override(token: str):
-    print("\n[Test 4] POST /api/contacts/build-one (override_category='KOC')")
-    r = requests.post(
-        f"{BASE}/contacts/build-one",
-        headers=H(token),
-        json={"shipment": SHIPMENT_PAYLOAD, "override_category": "KOC"},
-        timeout=20,
-    )
-    expect(r.status_code == 200, "T4.status=200", f"got {r.status_code} body={r.text}")
-    if r.status_code != 200:
-        return
-    data = r.json()
-    print(pretty(data))
-    name = data.get("name", "")
-    expect(name.startswith("[KOC] Ramesh"), f"T4.name starts with '[KOC] Ramesh' (got {name!r})")
-    expect(data.get("category") == "KOC", f"T4.category='KOC' (got {data.get('category')!r})")
-
-
-# ───────────────── Test 5: PUT custom name_format + build ─────────────
-def test_put_and_build_firstname_noprefix(token: str):
-    print("\n[Test 5] PUT name_format (first, no location, no prefix) + build-one")
-    payload = {
-        "name_format": {
-            "prefix_enabled": False,
-            "prefix_position": "start",
-            "name_type": "first",
-            "product_placement": "after_name",
-            "location": "none",
-        },
-    }
-    r = requests.put(f"{BASE}/me/contact-settings", headers=H(token), json=payload, timeout=20)
-    expect(r.status_code == 200, "T5.PUT status=200", f"got {r.status_code} body={r.text}")
-    if r.status_code != 200:
-        return
-    data = r.json()
-    nf = data.get("name_format", {})
-    expect(nf.get("prefix_enabled") is False, "T5.name_format.prefix_enabled=false")
-    expect(nf.get("name_type") == "first", "T5.name_format.name_type=first")
-    expect(nf.get("location") == "none", "T5.name_format.location=none")
-    cat = data.get("category", {})
-    expect(cat.get("categories") == ["KSS", "KOC"], "T5.category.categories preserved from T2")
-
-    r2 = requests.post(
-        f"{BASE}/contacts/build-one",
-        headers=H(token),
-        json={"shipment": SHIPMENT_PAYLOAD},
-        timeout=20,
-    )
-    expect(r2.status_code == 200, "T5.build status=200", f"got {r2.status_code} body={r2.text}")
-    if r2.status_code != 200:
-        return
-    built = r2.json()
-    print(pretty(built))
-    expect(built.get("name") == "Ramesh | Garlic",
-           f"T5.name='Ramesh | Garlic' (got {built.get('name')!r})")
-
-
-# ───────────────── Test 6: build-vcf with real shipments ──────────────
-def _get_default_courier(token: str) -> str:
-    rs = requests.get(f"{BASE}/couriers", headers=H(token), timeout=20).json()
-    if isinstance(rs, list) and rs:
-        return rs[0]["id"]
-    r = requests.post(
-        f"{BASE}/couriers", headers=H(token),
-        json={"name": "Test Courier", "series_prefix": "TC", "next_number": 1, "number_padding": 4},
-        timeout=20,
-    )
-    return r.json()["id"]
-
-
-def _create_shipment(token: str, name: str, phone: str, courier_id: str) -> str:
-    tid = f"TESTVCF-{uuid.uuid4().hex[:6].upper()}"
-    payload = {
-        "tracking_id": tid,
-        "courier_id": courier_id,
-        "courier_name": "Test Courier",
+        "tracking_id": tracking_id,
         "customer_name": name,
         "customer_phone": phone,
-        "address_line1": "Block A, Flat 101",
+        "address_line1": "20 Dev Atelier",
         "city": "Ahmedabad",
         "state": "Gujarat",
-        "pincode": "380001",
-        "items": ["garlic"],
-        "amount": 250.0,
-        "payment_mode": "COD",
-    }
-    r = requests.post(f"{BASE}/shipments", headers=H(token), json=payload, timeout=20)
-    assert r.status_code == 200, f"create shipment failed: {r.status_code} {r.text}"
-    return r.json()["id"]
-
-
-def _create_shipment_no_phone(token: str, name: str, courier_id: str) -> str:
-    tid = f"TESTVCFNP-{uuid.uuid4().hex[:6].upper()}"
-    payload = {
-        "tracking_id": tid,
-        "courier_id": courier_id,
-        "courier_name": "Test Courier",
-        "customer_name": name,
-        "customer_phone": "",
-        "address_line1": "Some addr",
-        "city": "Rajkot",
-        "state": "Gujarat",
-        "pincode": "360001",
-        "items": ["soap"],
-        "amount": 100.0,
+        "pincode": "380015",
         "payment_mode": "Prepaid",
+        "amount": 750.0,
+        "items": items_list,
+        "weight": "1",
     }
-    r = requests.post(f"{BASE}/shipments", headers=H(token), json=payload, timeout=20)
-    assert r.status_code == 200, f"create shipment failed: {r.status_code} {r.text}"
-    return r.json()["id"]
-
-
-def test_build_vcf(token: str):
-    print("\n[Test 6] POST /api/contacts/build-vcf (3 shipments w/ phone)")
-    courier_id = _get_default_courier(token)
-    sids = [
-        _create_shipment(token, "Meena Shah", "9111111111", courier_id),
-        _create_shipment(token, "Rakesh Joshi", "9222222222", courier_id),
-        _create_shipment(token, "Priya Mehta", "9333333333", courier_id),
-    ]
-    r = requests.post(
-        f"{BASE}/contacts/build-vcf",
-        headers=H(token),
-        json={"shipment_ids": sids},
-        timeout=20,
-    )
-    expect(r.status_code == 200, "T6.status=200", f"got {r.status_code} body={r.text}")
+    r = requests.post(f"{BASE_URL}/shipments",
+                      json=payload, headers=auth_headers(token), timeout=60)
     if r.status_code != 200:
-        return sids, courier_id
-    data = r.json()
-    vcf = data.get("vcf", "")
-    count = data.get("count", 0)
-    begin_n = vcf.count("BEGIN:VCARD")
-    end_n = vcf.count("END:VCARD")
-    fn_n = vcf.count("FN:")
-    tel_n = vcf.count("TEL")
-    expect(begin_n == 3, f"T6.BEGIN:VCARD x3 (got {begin_n})")
-    expect(end_n == 3, f"T6.END:VCARD x3 (got {end_n})")
-    expect(fn_n == 3, f"T6.FN: x3 (got {fn_n})")
-    expect(tel_n >= 3, f"T6.TEL line for each vcard (got {tel_n})")
-    expect(count == 3, f"T6.count=3 (got {count})")
-    print(vcf[:600])
-    return sids, courier_id
+        log(f"  POST /shipments → {r.status_code} body={r.text[:400]}")
+    assert r.status_code == 200, "create_shipment failed"
+    return r.json()
 
 
-def test_build_vcf_no_phone(token: str, courier_id: str):
-    print("\n[Test 7] POST /api/contacts/build-vcf (all no-phone -> 400)")
-    sids = [
-        _create_shipment_no_phone(token, "NoPhone One", courier_id),
-        _create_shipment_no_phone(token, "NoPhone Two", courier_id),
-    ]
+def delete_shipment(token, ship_id):
     try:
-        r = requests.post(
-            f"{BASE}/contacts/build-vcf",
-            headers=H(token),
-            json={"shipment_ids": sids},
-            timeout=20,
-        )
-        expect(r.status_code == 400, f"T7.status=400 (got {r.status_code})",
-               f"body={r.text[:200]}")
-    finally:
-        for sid in sids:
-            try:
-                requests.delete(f"{BASE}/shipments/{sid}", headers=H(token), timeout=10)
-            except Exception:
-                pass
-
-
-def test_build_one_empty(token: str):
-    print("\n[Test 8] POST /api/contacts/build-one (empty body -> 400)")
-    r = requests.post(
-        f"{BASE}/contacts/build-one",
-        headers=H(token),
-        json={},
-        timeout=20,
-    )
-    expect(r.status_code == 400, f"T8.status=400 (got {r.status_code})", f"body={r.text[:200]}")
-
-
-def test_get_no_auth():
-    print("\n[Test 9] GET /api/me/contact-settings (no auth -> 401)")
-    r = requests.get(f"{BASE}/me/contact-settings", timeout=20)
-    expect(r.status_code in (401, 403), f"T9.status in 401/403 (got {r.status_code})")
-
-
-def test_persistence(token: str):
-    print("\n[Test 10] Persistence round-trip")
-    payload = {
-        "name_format": {
-            "prefix_enabled": True,
-            "prefix_position": "end",
-            "name_type": "first",
-            "product_placement": "end",
-            "location": "taluka",
-        },
-        "field_mapping": {
-            "address_target": "notes",
-            "product_target": "both",
-            "notes_include": {
-                "order_id": True,
-                "quantity": True,
-                "payment_mode": False,
-            },
-        },
-        "category": {
-            "categories": ["A1", "B2", "C3"],
-            "default_category": "A1",
-            "auto_assign": False,
-            "manual_popup": True,
-            "product_mapping": [
-                {"keyword": "honey", "category": "A1"},
-            ],
-        },
-    }
-    r = requests.put(f"{BASE}/me/contact-settings", headers=H(token), json=payload, timeout=20)
-    expect(r.status_code == 200, "T10.PUT status=200", f"got {r.status_code} body={r.text}")
-    if r.status_code != 200:
-        return
-    r2 = requests.get(f"{BASE}/me/contact-settings", headers=H(token), timeout=20)
-    expect(r2.status_code == 200, "T10.GET status=200")
-    got = r2.json()
-    print(pretty(got))
-    expect(got.get("name_format", {}).get("prefix_position") == "end", "T10.name_format.prefix_position=end")
-    expect(got.get("name_format", {}).get("location") == "taluka", "T10.name_format.location=taluka")
-    expect(got.get("field_mapping", {}).get("address_target") == "notes", "T10.field_mapping.address_target=notes")
-    expect(got.get("field_mapping", {}).get("product_target") == "both", "T10.field_mapping.product_target=both")
-    expect(got.get("field_mapping", {}).get("notes_include", {}).get("order_id") is True,
-           "T10.notes_include.order_id=true")
-    expect(got.get("field_mapping", {}).get("notes_include", {}).get("quantity") is True,
-           "T10.notes_include.quantity=true")
-    expect(got.get("category", {}).get("categories") == ["A1", "B2", "C3"],
-           "T10.category.categories=[A1,B2,C3]")
-    expect(got.get("category", {}).get("default_category") == "A1", "T10.default_category=A1")
-    expect(got.get("category", {}).get("auto_assign") is False, "T10.auto_assign=false")
-    expect(got.get("category", {}).get("manual_popup") is True, "T10.manual_popup=true")
-    pm = got.get("category", {}).get("product_mapping", [])
-    expect(len(pm) == 1 and pm[0].get("keyword") == "honey" and pm[0].get("category") == "A1",
-           "T10.product_mapping preserved")
-
-
-def cleanup_shipments(token: str, sids: List[str]):
-    for sid in sids:
-        try:
-            requests.delete(f"{BASE}/shipments/{sid}", headers=H(token), timeout=10)
-        except Exception:
-            pass
-
-
-def restore_defaults(token: str):
-    """Reset contact settings so we don't leave test state polluting the admin account."""
-    payload = {
-        "name_format": {
-            "prefix_enabled": True,
-            "prefix_position": "start",
-            "name_type": "full",
-            "product_placement": "after_name",
-            "location": "city",
-        },
-        "field_mapping": {
-            "address_target": "address",
-            "product_target": "notes",
-            "notes_include": {"order_id": False, "quantity": False, "payment_mode": False},
-        },
-        "category": {
-            "categories": [],
-            "default_category": "",
-            "auto_assign": True,
-            "manual_popup": False,
-            "product_mapping": [],
-        },
-    }
-    try:
-        requests.put(f"{BASE}/me/contact-settings", headers=H(token), json=payload, timeout=10)
-    except Exception:
-        pass
+        requests.delete(f"{BASE_URL}/shipments/{ship_id}",
+                        headers=auth_headers(token), timeout=30)
+    except Exception as e:
+        log(f"  cleanup delete failed: {e}")
 
 
 def main():
-    print("=== Phase-16 Contact Save Settings backend tests ===")
-    print(f"BASE={BASE}")
-    token = login(ADMIN_EMAIL, ADMIN_PASS)
-    print("Logged in as admin.")
+    failures = []
+    log(f"BASE_URL = {BASE_URL}")
 
-    test_get_default_shape(token)
-    test_put_category_merge(token)
-    test_build_one_default(token)
-    test_build_one_override(token)
-    test_put_and_build_firstname_noprefix(token)
+    log("\n[Setup] Logging in as admin…")
+    token = login(ADMIN_EMAIL, ADMIN_PASSWORD)
+    log("  ✓ admin token acquired")
 
-    sids: List[str] = []
-    courier_id = None
+    created_ids = []
+
+    # ----------------------------------------------------------------
+    # CASE 1 — Build VCF for 3 shipments with valid phones
+    # ----------------------------------------------------------------
+    log("\n[CASE 1] Build VCF for 3 shipments with phones")
     try:
-        sids, courier_id = test_build_vcf(token)
+        import time
+        ts = int(time.time())
+        ship_ids_with_phone = []
+        # Use Indian-looking customer + 10-digit numbers
+        cases = [
+            ("Ramesh Patel",  "9812345601", ["Garlic"],          f"VCFTST-{ts}-A"),
+            ("Sunita Sharma", "9812345602", ["Honey", "Ghee"],   f"VCFTST-{ts}-B"),
+            ("Amit Mehta",    "9812345603", ["Turmeric"],        f"VCFTST-{ts}-C"),
+        ]
+        for nm, ph, itms, trk in cases:
+            sh = create_shipment(token, name=nm, phone=ph,
+                                 items_list=itms, tracking_id=trk)
+            ship_ids_with_phone.append(sh["id"])
+            created_ids.append(sh["id"])
+            log(f"  ✓ created shipment id={sh['id'][:8]}… "
+                f"items={sh.get('items')!r}")
+
+        # POST /api/contacts/build-vcf
+        r = requests.post(f"{BASE_URL}/contacts/build-vcf",
+                          json={"shipment_ids": ship_ids_with_phone},
+                          headers=auth_headers(token), timeout=60)
+        log(f"  build-vcf status={r.status_code}")
+        if r.status_code != 200:
+            log(f"  body={r.text[:600]}")
+            failures.append(f"CASE1 expected 200, got {r.status_code}")
+        else:
+            body = r.json()
+            vcf = body.get("vcf", "")
+            count = body.get("count")
+            n = len(ship_ids_with_phone)
+            begin_count = vcf.count("BEGIN:VCARD")
+            end_count = vcf.count("END:VCARD")
+            log(f"  count={count} BEGIN:VCARD x {begin_count} "
+                f"END:VCARD x {end_count} skipped={body.get('skipped')}")
+            log(f"  vcf head:\n{vcf[:300]}")
+            if begin_count != n:
+                failures.append(
+                    f"CASE1 BEGIN:VCARD expected {n} got {begin_count}")
+            if end_count != n:
+                failures.append(
+                    f"CASE1 END:VCARD expected {n} got {end_count}")
+            if count != n:
+                failures.append(f"CASE1 count expected {n} got {count}")
+            if not failures:
+                log("  ✓ CASE 1 PASS")
+    except AssertionError as ae:
+        failures.append(f"CASE1 assertion: {ae}")
     except Exception as e:
-        FAIL.append(("T6.run", str(e)))
-        print(f"  FAIL  T6.run  --  {e}")
+        failures.append(f"CASE1 unexpected: {e}")
+
+    # ----------------------------------------------------------------
+    # CASE 2 — All shipments lack customer_phone → expect 400 (not 500)
+    # ----------------------------------------------------------------
+    log("\n[CASE 2] Build VCF where all shipments lack customer_phone")
     try:
-        if courier_id:
-            test_build_vcf_no_phone(token, courier_id)
+        import time
+        ts = int(time.time())
+        nophone_ids = []
+        for i in range(2):
+            payload = {
+                "tracking_id": f"VCFTST-NOPH-{ts}-{i}",
+                "customer_name": f"Nophone Customer {i}",
+                "customer_phone": "",      # explicitly empty
+                "address_line1": "X",
+                "city": "Mumbai",
+                "state": "Maharashtra",
+                "pincode": "400001",
+                "items": ["Garlic"],
+                "weight": "1",
+            }
+            r = requests.post(f"{BASE_URL}/shipments", json=payload,
+                              headers=auth_headers(token), timeout=60)
+            if r.status_code != 200:
+                log(f"  POST /shipments (no phone) → {r.status_code} {r.text[:400]}")
+            assert r.status_code == 200
+            sh = r.json()
+            nophone_ids.append(sh["id"])
+            created_ids.append(sh["id"])
+            log(f"  ✓ created no-phone shipment id={sh['id'][:8]}… "
+                f"phone={sh.get('customer_phone')!r}")
+
+        r = requests.post(f"{BASE_URL}/contacts/build-vcf",
+                          json={"shipment_ids": nophone_ids},
+                          headers=auth_headers(token), timeout=60)
+        log(f"  build-vcf status={r.status_code} body={r.text[:300]}")
+        if r.status_code == 500:
+            failures.append(
+                "CASE2 returned 500 (regression — bug NOT fixed)")
+        elif r.status_code != 400:
+            failures.append(
+                f"CASE2 expected 400, got {r.status_code}")
+        else:
+            log("  ✓ CASE 2 PASS (400 returned)")
+    except AssertionError as ae:
+        failures.append(f"CASE2 assertion: {ae}")
     except Exception as e:
-        FAIL.append(("T7.run", str(e)))
-        print(f"  FAIL  T7.run  --  {e}")
+        failures.append(f"CASE2 unexpected: {e}")
 
-    test_build_one_empty(token)
-    test_get_no_auth()
-    test_persistence(token)
+    # ----------------------------------------------------------------
+    # Cleanup
+    # ----------------------------------------------------------------
+    log("\n[Cleanup] Deleting test shipments…")
+    for sid in created_ids:
+        delete_shipment(token, sid)
+    log(f"  cleaned {len(created_ids)} shipments")
 
-    if sids:
-        cleanup_shipments(token, sids)
-    restore_defaults(token)
-
-    print("\n--- SUMMARY ---")
-    print(f"PASS: {len(PASS)}")
-    print(f"FAIL: {len(FAIL)}")
-    for label, detail in FAIL:
-        print(f"  x {label}  :: {detail}")
-    sys.exit(0 if not FAIL else 1)
+    # ----------------------------------------------------------------
+    # Summary
+    # ----------------------------------------------------------------
+    log("\n" + "=" * 60)
+    if failures:
+        log(f"FAILED ({len(failures)}):")
+        for f in failures:
+            log(f"  ✗ {f}")
+        sys.exit(1)
+    else:
+        log("ALL 2 CASES PASS")
+        sys.exit(0)
 
 
 if __name__ == "__main__":

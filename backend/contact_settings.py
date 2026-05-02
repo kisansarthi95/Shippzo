@@ -107,7 +107,12 @@ def build_contact(
 
     raw_name   = (shipment.get("customer_name")  or "").strip()
     raw_phone  = (shipment.get("customer_phone") or "").strip()
-    raw_items  = (shipment.get("items")          or "").strip()
+    # Shipments persisted via the model store `items` as List[str];
+    # inline-preview callers pass a plain string. Coerce defensively.
+    _items     = shipment.get("items") or ""
+    if isinstance(_items, list):
+        _items = ", ".join(str(x) for x in _items if x)
+    raw_items  = str(_items).strip()
     raw_city   = (shipment.get("city")           or "").strip()
     raw_taluka = (shipment.get("taluka")         or "").strip()
     raw_vill   = (shipment.get("village")        or shipment.get("locality") or "").strip()

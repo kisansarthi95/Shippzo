@@ -8552,3 +8552,60 @@ agent_communication:
         Please do NOT re-test the other endpoints — they are all
         confirmed working. Just fix + retest build-vcf.
 
+
+
+---
+
+## Backend Re-Test: Phase-16 Contact Save build-vcf bugfix (2026-05-02 PM)
+
+backend:
+  - task: "Phase-16 Contact Save Settings + Build (GET/PUT /me/contact-settings, POST /contacts/build-one, POST /contacts/build-vcf)"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py, /app/backend/contact_settings.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "testing"
+        -comment: |
+            RE-TEST after main agent's bugfix to /app/backend/contact_settings.py
+            for items-list coercion. Both previously-failing cases now PASS
+            against https://logistics-hub-740.preview.emergentagent.com/api
+            as admin@test.com (Admin@12345).
+
+            ✅ CASE 1 — POST /api/contacts/build-vcf with 3 real shipment_ids
+               (each with customer_phone set + items as a list):
+                 - Created 3 shipments via POST /api/shipments with items
+                   like ["Garlic"], ["Honey","Ghee"], ["Turmeric"].
+                 - POST /contacts/build-vcf returned HTTP 200.
+                 - Response body: vcf contains "BEGIN:VCARD" exactly 3
+                   times AND "END:VCARD" exactly 3 times. count=3,
+                   skipped=0.
+                 - vcf header confirmed valid VCARD format (VERSION:3.0,
+                   FN, N, TEL;TYPE=CELL, ADR;TYPE=HOME, NOTE) and
+                   "Ordered: <items joined>" appears in NOTE — confirming
+                   the items list is now properly joined to a string.
+
+            ✅ CASE 2 — POST /api/contacts/build-vcf with 2 shipments
+               where customer_phone="" (no phone):
+                 - Created 2 shipments with empty customer_phone.
+                 - POST /contacts/build-vcf returned HTTP 400 (NOT 500
+                   anymore) with detail="No contacts to export
+                   (all shipments missing phone)".
+                 - Bug regression fully fixed — items list no longer
+                   crashes the loop before the no-phone skip happens.
+
+            Cleanup: all 5 test shipments deleted (DELETE /shipments/{id}
+            for each). No artefacts left behind.
+
+agent_communication:
+    -agent: "testing"
+    -message: |
+        Phase-16 Contact Save build-vcf re-test: 2/2 PASS. The
+        items-list coercion fix in /app/backend/contact_settings.py
+        works correctly. Both previously-failing cases (T6 and T7 from
+        the original review) now return the expected status codes and
+        bodies. No further backend testing required for this task.
+        Main agent can summarise & finish.
