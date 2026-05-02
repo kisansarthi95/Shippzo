@@ -863,6 +863,26 @@ export const Api = {
       office: string;
     }>(`/lookup/by-pincode/${encodeURIComponent(pincode)}`).then((r) => r.data),
 
+  // ── Phase-16: Save Contact (per-user settings + VCF builder) ───
+  getContactSettings: () =>
+    api.get<any>("/me/contact-settings").then((r) => r.data),
+  putContactSettings: (patch: any) =>
+    api.put<any>("/me/contact-settings", patch).then((r) => r.data),
+  buildOneContact: (args: {
+    shipment_id?: string;
+    shipment?: Record<string, any>;
+    override_category?: string;
+  }) =>
+    api.post<{
+      name: string; phone: string; postal: string;
+      notes: string; category: string;
+    }>("/contacts/build-one", args).then((r) => r.data),
+  buildBulkVcf: (shipment_ids: string[], override_category: string = "") =>
+    api.post<{ vcf: string; count: number; skipped: number }>(
+      "/contacts/build-vcf",
+      { shipment_ids, override_category },
+    ).then((r) => r.data),
+
   // Photo OCR — Gemini Vision. Uses an extended 90 s timeout because
   // vision calls + the address-recovery follow-up can take up to ~45 s
   // on a slow mobile connection. The default 25 s axios timeout would

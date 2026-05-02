@@ -471,6 +471,58 @@ export default function Shipments() {
     Alert.alert("Copied", "Tracking details copied to clipboard.");
   };
 
+  // Phase-16: Save Contact. Flow:
+  //   1. Pull per-user preferences + shipment into backend builder
+  //   2. If settings.manual_popup is ON, prompt for category first
+  //   3. Fire Android INSERT intent with the built payload; user
+  //      confirms SAVE in the system contacts app.
+  const handleSaveContact = async (ship: Shipment) => {
+    if (!ship.customer_phone) {
+      Alert.alert("No phone", "Customer phone is required to save as contact.");
+      return;
+    }
+    try {
+      const cs = await Api.getContactSettings();
+      const mustAskCategory =
+        cs?.category?.manual_popup &&
+        Array.isArray(cs?.category?.categories) &&
+        cs.category.categories.length > 0;
+
+      const doSave = async (overrideCategory: string) => {
+        const built = await Api.buildOneContact({
+          shipment_id: ship.id,
+          override_category: overrideCategory || "",
+        });
+        const mod = await import("../../lib/contactSave");
+        await mod.openSaveContactIntent({
+          name:   built.name,
+          phone:  built.phone,
+          postal: built.postal,
+          notes:  built.notes,
+        });
+      };
+
+      if (mustAskCategory) {
+        const cats: string[] = cs.category.categories;
+        Alert.alert(
+          "Choose category",
+          `Pick a category for "${ship.customer_name || "this contact"}".`,
+          [
+            ...cats.map((c) => ({ text: c, onPress: () => doSave(c) })),
+            { text: "Cancel", style: "cancel" as const },
+          ],
+        );
+      } else {
+        await doSave("");
+      }
+    } catch (e: any) {
+      Alert.alert(
+        "Save Contact failed",
+        e?.response?.data?.detail || e?.message || "Try again.",
+      );
+    }
+  };
+
   return (
     <SafeAreaView style={styles.safe} edges={["top"]}>
       <View style={styles.header}>
@@ -1042,6 +1094,15 @@ export default function Shipments() {
                     testID={`print-${item.tracking_id}`}
                   />
                 ) : null}
+                {/* Phase-16: Save Contact — opens the native contact
+                    INSERT intent with the shipment's info pre-filled.
+                    Always visible (no plan gate) because it's a
+                    zero-cost utility and a frequent request. */}
+                <ActionBtn
+                  icon="person-add-outline" color="#7C3AED"
+                  onPress={() => handleSaveContact(item)}
+                  testID={`save-contact-${item.tracking_id}`}
+                />
                 {flagDelete ? (
                   <ActionBtn
                     icon="trash-outline" color={colors.dangerText}

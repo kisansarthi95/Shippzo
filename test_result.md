@@ -8393,3 +8393,162 @@ agent_communication:
 
         No regressions observed. Ready for main agent to summarise & finish.
 
+
+---
+
+## Backend Test Run: Phase-16 Contact Save Settings + Build Endpoints (2026-05-02)
+
+backend:
+  - task: "Phase-16 Contact Save Settings + Build (GET/PUT /me/contact-settings, POST /contacts/build-one, POST /contacts/build-vcf)"
+    implemented: true
+    working: false
+    file: "/app/backend/server.py, /app/backend/contact_settings.py"
+    stuck_count: 1
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: false
+        -agent: "testing"
+        -comment: |
+            53/55 assertions passed via /app/backend_test.py against
+            https://logistics-hub-740.preview.emergentagent.com/api
+            as admin@test.com.
+
+            PASSING (8/10 review cases):
+              ✅ T1 — GET /me/contact-settings returns default shape
+                 (name_format.prefix_enabled=true, prefix_position=start,
+                  name_type=full, product_placement=after_name,
+                  location=city; field_mapping.address_target=address,
+                  product_target=notes, notes_include.order_id=false;
+                  category.auto_assign=true, manual_popup=false).
+              ✅ T2 — PUT with category-only payload merges correctly
+                 (categories=[KSS,KOC], default=KOC, product_mapping
+                  preserved), and name_format / field_mapping retain
+                  defaults (merge behaviour verified).
+              ✅ T3 — POST /contacts/build-one with inline shipment
+                 produced EXACTLY the expected output:
+                   name = "[KSS] Ramesh Patel | Garlic | Surat"
+                   phone = "9876543210"
+                   postal = "Shop 12, Main Bazaar, Surat, Gujarat, 395003"
+                          (contains "Shop 12" and "395003")
+                   notes = "Ordered: Garlic"
+                   category = "KSS"
+              ✅ T4 — override_category="KOC" correctly overrides
+                 auto-assign: name starts with "[KOC] Ramesh",
+                 category="KOC".
+              ✅ T5 — PUT name_format (prefix_enabled=false,
+                 name_type=first, location=none) + build with same
+                 shipment produced EXACTLY name="Ramesh | Garlic".
+                 Confirmed name_format change did NOT reset category
+                 (merge behaviour intact).
+              ✅ T8 — POST /contacts/build-one with empty body
+                 (no shipment_id, no shipment) → 400 with
+                 detail="shipment_id or shipment required".
+              ✅ T9 — GET /me/contact-settings without Authorization
+                 header → 401 Unauthorized.
+              ✅ T10 — Persistence round-trip: PUT full payload
+                 (prefix_position=end, name_type=first, location=taluka,
+                  address_target=notes, product_target=both,
+                  notes_include.order_id=true, notes_include.quantity=true,
+                  categories=[A1,B2,C3], auto_assign=false,
+                  manual_popup=true, product_mapping=[honey→A1]) and
+                  subsequent GET returned the EXACT values verbatim.
+
+            FAILING (2/10 review cases — BOTH caused by the SAME bug):
+              ❌ T6 — POST /contacts/build-vcf with 3 real shipment IDs
+                 (created fresh with customer_phone set) → 500 Internal
+                 Server Error. Expected 200 with vcf containing
+                 BEGIN:VCARD x3 and count=3.
+              ❌ T7 — POST /contacts/build-vcf with shipments where
+                 none have phone → 500 Internal Server Error.
+                 Expected 400 ("No contacts to export...").
+
+            RCA — Backend stack trace (from /var/log/supervisor/backend.err.log):
+
+              File "/app/backend/server.py", line 4545, in build_bulk_vcf
+                c = contact_build(s, settings, payload.override_category or "")
+              File "/app/backend/contact_settings.py", line 110, in build_contact
+                raw_items  = (shipment.get("items") or "").strip()
+              AttributeError: 'list' object has no attribute 'strip'
+
+            The `Shipment` model defines `items: List[str]` (line 890
+            of server.py). Every persisted shipment in Mongo has
+            `items` as a LIST (e.g. ["garlic"]). But build_contact()
+            in /app/backend/contact_settings.py line 110 does:
+
+                raw_items  = (shipment.get("items") or "").strip()
+
+            treating items as a string. For the inline-shipment path
+            (build-one test 3), the caller happens to pass items as a
+            string ("Garlic"), so it works. For the DB-loaded path
+            (build-vcf), items is always a list → 500.
+
+            SUGGESTED FIX (one line in /app/backend/contact_settings.py):
+              Replace:
+                raw_items  = (shipment.get("items") or "").strip()
+              With something like:
+                _items = shipment.get("items") or ""
+                if isinstance(_items, list):
+                    _items = ", ".join(str(x) for x in _items if x)
+                raw_items = str(_items).strip()
+
+              Also consider checking `item_description` as a fallback
+              (it's the plain-text field on the Shipment model).
+
+            CONSEQUENCES:
+              - build-vcf is completely broken for any saved shipment
+                (since all shipments store items as a list).
+              - build-one via shipment_id (not shipment-inline) would
+                also hit this; T3/T4/T5 only passed because they use
+                the inline-shipment path with items as a string.
+
+            No cleanup needed beyond the 3 test shipments created
+            (IDs starting TESTVCF-...). Cleanup partially succeeded
+            (attempted DELETE on each); the 2 no-phone shipments from
+            T7 were still created before the 500 error so they were
+            explicitly cleaned up after the test. Contact settings
+            were restored to defaults at end of run.
+
+agent_communication:
+    -agent: "testing"
+    -message: |
+        Phase-16 Contact Save Settings is MOSTLY working (53/55
+        assertions, 8/10 review cases).
+
+        One backend bug blocks build-vcf entirely:
+
+          /app/backend/contact_settings.py line 110 calls .strip() on
+          shipment["items"] which is always a Python list on real
+          saved shipments (Shipment model: items: List[str]). Only
+          the inline-shipment build-one path works today because
+          callers pass items as a raw string.
+
+          Fix is a ~3 line coercion in contact_settings.build_contact:
+
+              _items = shipment.get("items") or ""
+              if isinstance(_items, list):
+                  _items = ", ".join(str(x) for x in _items if x)
+              raw_items = str(_items).strip()
+
+          After this fix, T6/T7 should pass (no other matchers need to
+          change — _match_category already lowercases + substring-
+          matches the joined string, so "garlic" in "garlic" still
+          works).
+
+        All other behaviour matches the review contract exactly:
+         - Default shape returned by GET (empty categories, auto_assign
+           true, address_target=address, product_target=notes etc).
+         - PUT merge-save (category-only update preserves name_format /
+           field_mapping, and vice-versa).
+         - build-one default produced EXACTLY
+           "[KSS] Ramesh Patel | Garlic | Surat" / phone / postal /
+           notes / category as specified.
+         - override_category works.
+         - first-name + no-location + no-prefix produces "Ramesh | Garlic".
+         - empty body → 400, unauthenticated GET → 401.
+         - PUT→GET round-trip preserves every field verbatim.
+
+        Main agent: only the items-list coercion fix is required.
+        Please do NOT re-test the other endpoints — they are all
+        confirmed working. Just fix + retest build-vcf.
+

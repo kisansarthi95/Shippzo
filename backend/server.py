@@ -48,6 +48,12 @@ from smart_paste_ai import (
     DEFAULT_SHIPBOT_PROMPT,
 )
 from pincode_lookup import enrich_with_pincode, validate_pincode_consistency, resolve_city, resolve_pincode
+from contact_settings import (
+    ContactSaveSettings,
+    default_settings as contact_default_settings,
+    build_contact as contact_build,
+    to_vcard as contact_to_vcard,
+)
 from fastapi import Depends as _AuthDepends  # noqa: F401
 import os
 import io
@@ -4423,6 +4429,135 @@ class CustomFieldUpdate(BaseModel):
     required: Optional[bool] = None
     sort_order: Optional[int] = None
     active: Optional[bool] = None
+
+
+# ───────── Phase-16: Contact Save Settings + VCF generation ──────────
+# Per-user preferences for building a native contact from a shipment.
+# Everything (categories, product → category mapping, placement) is
+# customizable; nothing is hardcoded. See /app/backend/contact_settings.py
+# for the pure builder/serialiser logic.
+
+class _ContactSaveSettingsUpsert(BaseModel):
+    name_format:    Optional[Dict[str, Any]] = None
+    field_mapping:  Optional[Dict[str, Any]] = None
+    category:       Optional[Dict[str, Any]] = None
+
+
+@api_router.get("/me/contact-settings")
+async def get_contact_settings(
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    doc = await db.contact_settings.find_one(
+        {"user_id": current_user["id"]}, {"_id": 0, "user_id": 0},
+    )
+    if not doc:
+        doc = contact_default_settings()
+    # Always echo through the Pydantic model so missing subkeys get
+    # filled with defaults — the UI can rely on every field existing.
+    return ContactSaveSettings(**doc).model_dump()
+
+
+@api_router.put("/me/contact-settings")
+async def put_contact_settings(
+    payload: _ContactSaveSettingsUpsert,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    """Merge-save: only the sections the client sent are overwritten,
+    the rest remain untouched. Simpler than sending the full doc back
+    every time the user flips a single toggle."""
+    existing = await db.contact_settings.find_one(
+        {"user_id": current_user["id"]}, {"_id": 0, "user_id": 0},
+    ) or contact_default_settings()
+    merged = dict(existing)
+    if payload.name_format is not None:
+        merged["name_format"] = payload.name_format
+    if payload.field_mapping is not None:
+        merged["field_mapping"] = payload.field_mapping
+    if payload.category is not None:
+        merged["category"] = payload.category
+    # Validate shape, reject garbage values (Pydantic will raise 422).
+    validated = ContactSaveSettings(**merged).model_dump()
+    await db.contact_settings.update_one(
+        {"user_id": current_user["id"]},
+        {"$set": {**validated, "user_id": current_user["id"]}},
+        upsert=True,
+    )
+    return validated
+
+
+class _ContactBuildRequest(BaseModel):
+    shipment_id:       Optional[str] = None
+    # Inline shipment payload for preview-mode calls on the Settings
+    # screen (shows a live preview without persisting anything).
+    shipment:          Optional[Dict[str, Any]] = None
+    override_category: Optional[str] = ""
+
+
+@api_router.post("/contacts/build-one")
+async def build_one_contact(
+    payload: _ContactBuildRequest,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    """Return the contact fields for ONE shipment (or an inline dict
+    used by the Settings live-preview). The native-intent launch
+    happens entirely on the client — we only compute the payload."""
+    settings = await get_contact_settings(current_user)  # type: ignore[arg-type]
+    ship: Dict[str, Any] = {}
+    if payload.shipment_id:
+        ship = await db.shipments.find_one(
+            {"id": payload.shipment_id, "user_id": current_user["id"]},
+            {"_id": 0},
+        ) or {}
+        if not ship:
+            raise HTTPException(status_code=404, detail="Shipment not found")
+    elif payload.shipment:
+        ship = payload.shipment
+    else:
+        raise HTTPException(status_code=400, detail="shipment_id or shipment required")
+    return contact_build(ship, settings, payload.override_category or "")
+
+
+class _ContactBulkRequest(BaseModel):
+    shipment_ids:      List[str]
+    override_category: Optional[str] = ""
+
+
+@api_router.post("/contacts/build-vcf")
+async def build_bulk_vcf(
+    payload: _ContactBulkRequest,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    """Bulk export: return a text/vcard body with one VCARD per
+    shipment. Frontend turns this into a downloadable .vcf file.
+    When override_category is set, it wins over auto-assign for all
+    shipments (the "Apply category to all" popup flow)."""
+    if not payload.shipment_ids:
+        raise HTTPException(status_code=400, detail="shipment_ids empty")
+    settings = await get_contact_settings(current_user)  # type: ignore[arg-type]
+    rows = await db.shipments.find(
+        {"id": {"$in": payload.shipment_ids},
+         "user_id": current_user["id"]},
+        {"_id": 0},
+    ).to_list(len(payload.shipment_ids))
+    vcards: List[str] = []
+    skipped = 0
+    for s in rows:
+        c = contact_build(s, settings, payload.override_category or "")
+        if not c.get("phone"):
+            # No phone → useless contact; skip silently.
+            skipped += 1
+            continue
+        vcards.append(contact_to_vcard(c))
+    if not vcards:
+        raise HTTPException(
+            status_code=400,
+            detail="No contacts to export (all shipments missing phone)",
+        )
+    return {
+        "vcf":     "\r\n\r\n".join(vcards) + "\r\n",
+        "count":   len(vcards),
+        "skipped": skipped,
+    }
 
 
 @api_router.get("/me/custom-fields")

@@ -1860,6 +1860,29 @@ export default function SettingsScreen() {
             </TouchableOpacity>
           </Section>
 
+          {/* Phase-16: Save Contact settings. Owns the per-user prefs
+              that drive how the shipment card's "Save Contact" button
+              builds the final native-contact payload. Categories and
+              product → category mapping are user-owned (not hardcoded).*/}
+          <Section title="Save Contact">
+            <Text style={styles.toggleSub}>
+              Customize how the "Save Contact" button builds the contact
+              name, categories and notes. Add your own category codes
+              (e.g. KSS, KOC) and product → category rules.
+            </Text>
+            <TouchableOpacity
+              testID="settings-hub-contact-save"
+              onPress={() => router.push("/settings/contact-save" as any)}
+              style={[
+                styles.saveBtn,
+                { marginTop: 12, backgroundColor: "#7C3AED" },
+              ]}
+            >
+              <Ionicons name="person-add-outline" size={18} color="#fff" />
+              <Text style={styles.saveBtnText}>Open Save Contact Settings</Text>
+            </TouchableOpacity>
+          </Section>
+
 
           {/* Column picker modal */}
           <Modal
