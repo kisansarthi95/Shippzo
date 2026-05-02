@@ -8,9 +8,13 @@
  *   2. Bulk save → write the VCF body to a cache file and fire the
  *      platform share sheet so the user can drop it into Contacts.
  */
-import { Platform, Alert, Linking } from "react-native";
+import { Platform, Alert } from "react-native";
 import * as IntentLauncher from "expo-intent-launcher";
-import * as FileSystem from "expo-file-system";
+// expo-file-system v19 dropped `EncodingType` from the root export —
+// the legacy API (which still supports writeAsStringAsync + encoding
+// flags) is now under /legacy. Using it keeps this file working on
+// both SDK 52 (new) and older builds without a conditional fork.
+import * as FileSystem from "expo-file-system/legacy";
 import * as Sharing from "expo-sharing";
 
 export type ContactPayload = {
