@@ -147,7 +147,6 @@ export default function SmartCycleButton({ onPress, busy, testID }: Props) {
           <Text
             style={styles.label}
             numberOfLines={1}
-            adjustsFontSizeToFit
             allowFontScaling={false}
           >
             {current.label}
@@ -177,53 +176,57 @@ export default function SmartCycleButton({ onPress, busy, testID }: Props) {
 
 const styles = StyleSheet.create({
   wrap: {
-    // Sized to match the 44px header height of sibling icon buttons
-    // while still fitting the longest label ("Scan Photo"). 86px is
-    // the snug width — anything wider overflows past the trailing
-    // scanner button on 390-wide phones (the dashboard header is
-    // gap-tight when the brand line wraps to two lines).
-    width: 86,
+    // Per product direction: the button MUST match the sibling
+    // refresh/scanner icon buttons exactly (44×44 square). Icon sits
+    // on top, tiny label below, with a 3-dot state indicator at the
+    // very bottom — all inside the square, no horizontal overflow.
+    width: 44,
     height: 44,
   },
-  pressed: { transform: [{ scale: 0.96 }] },
+  pressed: { transform: [{ scale: 0.94 }] },
   pill: {
     flex: 1,
     borderRadius: 10,
     borderWidth: 1,
-    paddingHorizontal: 8,
-    paddingTop: 6,
-    paddingBottom: 4,
+    // Tight padding so the 3 stacked rows (icon, label, dots) still
+    // fit inside a 44-px square without clipping on any Android /
+    // iOS system font size.
+    paddingHorizontal: 2,
+    paddingTop: 4,
+    paddingBottom: 3,
+    alignItems: "center",
     justifyContent: "space-between",
   },
   row: {
-    flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    gap: 5,
   },
   label: {
-    fontSize: 11.5,
-    fontWeight: "800",
+    // 8.5px keeps the longest label ("Scan Photo") on a single line
+    // inside the 44-wide square. Very dense but legible at 3× dpi.
+    fontSize: 8.5,
+    fontWeight: "900",
     color: "#fff",
-    letterSpacing: 0.2,
+    letterSpacing: 0.1,
+    marginTop: 1,
+    textAlign: "center",
   },
   dotsRow: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    gap: 4,
-    marginTop: 2,
+    gap: 2.5,
   },
   dot: {
-    width: 4,
-    height: 4,
-    borderRadius: 2,
+    width: 3,
+    height: 3,
+    borderRadius: 1.5,
     backgroundColor: "rgba(255,255,255,0.45)",
   },
   dotActive: {
-    width: 12,
-    height: 4,
-    borderRadius: 2,
+    width: 7,
+    height: 3,
+    borderRadius: 1.5,
     backgroundColor: "#fff",
   },
 });

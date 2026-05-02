@@ -902,6 +902,21 @@ export default function SettingsScreen() {
                       <Ionicons name="chevron-forward" size={22} color="#9CA3AF" />
                     </TouchableOpacity>
                     <TouchableOpacity
+                      testID="settings-hub-admin-wa-pricing"
+                      style={styles.hubRow}
+                      onPress={() => router.push("/admin/whatsapp-pricing" as any)}
+                      activeOpacity={0.6}
+                    >
+                      <View style={[styles.hubIconWrap, { backgroundColor: "#DCFCE7" }]}>
+                        <Ionicons name="logo-whatsapp" size={22} color="#16A34A" />
+                      </View>
+                      <Text style={styles.hubTitle}>WhatsApp Pricing</Text>
+                      <View style={styles.adminPill}>
+                        <Text style={styles.adminPillTxt}>ADMIN</Text>
+                      </View>
+                      <Ionicons name="chevron-forward" size={22} color="#9CA3AF" />
+                    </TouchableOpacity>
+                    <TouchableOpacity
                       testID="settings-hub-admin-master-sheet"
                       style={[styles.hubRow, styles.hubRowLast]}
                       onPress={() => router.push("/admin/master-sheet" as any)}

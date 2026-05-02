@@ -8279,3 +8279,117 @@ agent_communication:
 
         Ready for main agent to summarise & finish.
 
+
+---
+
+## Backend Test Run: WhatsApp Manual Messaging Pricing (Phase-14) — 2026-05-02
+
+backend:
+  - task: "WhatsApp Manual Messaging Pricing — Admin + Me endpoints"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "testing"
+        -comment: |
+            All 46/46 assertions passed via /app/backend_test.py against
+            https://logistics-hub-740.preview.emergentagent.com/api.
+
+            CASES VERIFIED (all 8 from the review request):
+            ─────────────────────────────────────────────────────
+            CASE 1 — GET /api/admin/whatsapp-pricing (admin) baseline:
+              • HTTP 200
+              • order == ["free_trial","silver","gold","platinum"] ✅
+              • defaults.enabled == false ✅
+              • defaults.rates: all 4 plans present, each == 0.0 ✅
+              • current.rates: all 4 plans present ✅
+              • current.enabled == false initially (after reset) ✅
+
+            CASE 2 — GET /api/admin/whatsapp-pricing (user2) → 403 ✅
+              Non-admin correctly rejected by _require_admin().
+
+            CASE 3 — PUT (admin) with enabled=true + silver=0.5 /
+                      gold=1 / platinum=1.5:
+              • HTTP 200 ✅
+              • Response current.enabled == true ✅
+              • current.rates.silver == 0.5 ✅
+              • current.rates.gold == 1.0 (int coerced to float) ✅
+              • current.rates.platinum == 1.5 ✅
+              • current.rates.free_trial remains 0.0 ✅
+
+            CASE 4 — PUT with per_message_credits = -1 → 400 ✅
+              Backend returns:
+                detail="silver.per_message_credits must be ≥ 0"
+
+            CASE 5 — PUT with only "plans" (no "enabled") from a state
+                      where enabled=true:
+              • HTTP 200 ✅
+              • current.enabled REMAINS true (no implicit flip) ✅
+              • gold updated to 2.0, BUT silver=0.5 and platinum=1.5
+                are PRESERVED (merge semantics work correctly via
+                {**current["rates"], **cleaned_rates}) ✅
+
+            CASE 6 — GET /api/me/whatsapp-pricing (user2 regular user):
+              • HTTP 200 ✅
+              • Response keys: {enabled, plan, per_message_credits} ✅
+              • enabled == true (matches global admin flag) ✅
+              • plan == "silver" (user2's actual plan) ✅
+              • per_message_credits == 0.5 (correctly looked up from
+                admin rates for user2's plan after CASE 5 state) ✅
+
+            CASE 7 — PUT reset (enabled=false, all rates 0):
+              • HTTP 200 on PUT ✅
+              • Subsequent GET shows current.enabled == false ✅
+              • All 4 current.rates == 0.0 ✅
+
+            CASE 8 — Idempotency (two sequential GETs after reset):
+              • Both 200 ✅
+              • JSON responses are byte-identical ✅
+
+            NOTES
+            ─────────────────────────────────────────────────────
+            • Negative-rejection message surfaces the plan key + field
+              name ("silver.per_message_credits must be ≥ 0") which is
+              helpful for UI.
+            • Partial PUT correctly preserves both:
+                (a) the enabled flag (defaults to stored value)
+                (b) other plans' rates not mentioned in payload
+            • /me endpoint does NOT require admin — any logged-in user
+              gets exactly their own plan's rate + the global enabled
+              flag. No rate for other plans leaks.
+            • Tested user2 on "silver" plan at live rates (rate=0.5)
+              across CASE 6 — dynamic plan→rate mapping works.
+
+agent_communication:
+    -agent: "testing"
+    -message: |
+        Phase-14 WhatsApp Manual Messaging Pricing — 46/46 assertions
+        PASS. All 8 review-request test cases verified against
+        https://logistics-hub-740.preview.emergentagent.com/api:
+
+          ✅ CASE 1 — GET /admin/whatsapp-pricing (admin) returns full
+              payload: order/defaults/current with correct shape and
+              defaults (all 0, enabled=false).
+          ✅ CASE 2 — Non-admin GET returns 403.
+          ✅ CASE 3 — PUT with enabled=true + partial rates updates
+              correctly (silver=0.5, gold=1.0, platinum=1.5,
+              free_trial stays 0).
+          ✅ CASE 4 — PUT with per_message_credits=-1 returns 400
+              with descriptive error.
+          ✅ CASE 5 — PUT without the "enabled" field correctly
+              preserves the stored enabled=true (no implicit flip),
+              and merge semantics preserve other plans' rates.
+          ✅ CASE 6 — GET /me/whatsapp-pricing returns {enabled,
+              plan, per_message_credits} with user's plan correctly
+              resolved to its admin-set rate.
+          ✅ CASE 7 — Reset to enabled=false / rates=0 persists
+              correctly; GET reflects reset state.
+          ✅ CASE 8 — Two sequential GETs are byte-identical
+              (idempotent).
+
+        No regressions observed. Ready for main agent to summarise & finish.
+

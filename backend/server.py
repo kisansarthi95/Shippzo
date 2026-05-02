@@ -5507,6 +5507,132 @@ async def admin_reset_plan_limits(
     return await admin_get_plan_limits(current_user)
 
 
+# ──────────── Admin — WhatsApp Manual Messaging Pricing (Phase-14) ─────
+# Per-plan credits charged when a user taps the WhatsApp "Send" button
+# on a shipment (delivery confirmation, dispatch notification, etc.).
+# These messages are MANUAL (user opens WhatsApp via wa.me deeplink and
+# hits send themselves) — we just book-keep the charge. A future phase
+# will layer an SMS/WhatsApp API gateway on top of the same pricing
+# table, so the schema is designed to be forward-compatible.
+#
+# Defaults are 0 credits on every plan — admin opts in by raising the
+# rate. When the rate is 0, no debit happens (stays free).
+
+_WA_PLAN_ORDER = ["free_trial", "silver", "gold", "platinum"]
+_WA_DEFAULT_RATES: Dict[str, float] = {
+    "free_trial": 0.0,
+    "silver":     0.0,
+    "gold":       0.0,
+    "platinum":   0.0,
+}
+
+
+class WhatsAppPricingRow(BaseModel):
+    """Per-plan rate in CREDITS (not ₹) charged per manual message."""
+    per_message_credits: Optional[float] = None
+
+
+class WhatsAppPricingPayload(BaseModel):
+    enabled: Optional[bool] = None
+    plans: Dict[str, WhatsAppPricingRow]
+
+
+async def _load_whatsapp_pricing() -> Dict[str, Any]:
+    """Read the stored WhatsApp pricing doc, merging defaults so the
+    caller never has to care which keys are missing."""
+    doc = await db.admin_config.find_one(
+        {"_id": "default"}, {"_id": 0, "whatsapp_pricing": 1}
+    ) or {}
+    saved = doc.get("whatsapp_pricing") or {}
+    rates: Dict[str, float] = dict(_WA_DEFAULT_RATES)
+    for k, v in (saved.get("rates") or {}).items():
+        if k in rates and isinstance(v, (int, float)) and v >= 0:
+            rates[k] = float(v)
+    return {
+        "enabled": bool(saved.get("enabled", False)),
+        "rates":   rates,
+    }
+
+
+@api_router.get("/admin/whatsapp-pricing")
+async def admin_get_whatsapp_pricing(
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    """Returns the current enabled-flag and per-plan credit rates, plus
+    a copy of the defaults so the UI can render "Reset to default"."""
+    _require_admin(current_user)
+    data = await _load_whatsapp_pricing()
+    return {
+        "order":    _WA_PLAN_ORDER,
+        "defaults": {"enabled": False, "rates": dict(_WA_DEFAULT_RATES)},
+        "current":  data,
+    }
+
+
+@api_router.put("/admin/whatsapp-pricing")
+async def admin_put_whatsapp_pricing(
+    payload: WhatsAppPricingPayload,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    """Saves the admin's WhatsApp pricing. Accepts fractional credits
+    (e.g. 0.5) so admins can set half-credit rates for cheap messaging."""
+    _require_admin(current_user)
+    cleaned_rates: Dict[str, float] = {}
+    for plan_key in _WA_PLAN_ORDER:
+        row = payload.plans.get(plan_key)
+        if row is None or row.per_message_credits is None:
+            continue
+        try:
+            v = float(row.per_message_credits)
+            if v < 0:
+                raise ValueError
+        except (TypeError, ValueError):
+            raise HTTPException(
+                status_code=400,
+                detail=f"{plan_key}.per_message_credits must be ≥ 0",
+            )
+        cleaned_rates[plan_key] = round(v, 2)
+
+    # Default enabled = whatever's stored already (don't flip implicitly)
+    current = await _load_whatsapp_pricing()
+    enabled = (
+        bool(payload.enabled)
+        if payload.enabled is not None
+        else current["enabled"]
+    )
+
+    await db.admin_config.update_one(
+        {"_id": "default"},
+        {"$set": {
+            "whatsapp_pricing": {
+                "enabled": enabled,
+                "rates":   {**current["rates"], **cleaned_rates},
+            },
+        }},
+        upsert=True,
+    )
+    return await admin_get_whatsapp_pricing(current_user)
+
+
+@api_router.get("/me/whatsapp-pricing")
+async def me_get_whatsapp_pricing(
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    """Read-only endpoint for the normal user's app — exposes ONLY the
+    rate for the current user's own plan, plus the global enabled flag.
+    The UI uses this to show "X credits will be charged" next to the
+    WhatsApp send button and to decide whether to show the notice at
+    all (when enabled=false, no debit happens and no notice is shown)."""
+    data = await _load_whatsapp_pricing()
+    plan_key = (current_user.get("plan") or "free_trial")
+    rate = data["rates"].get(plan_key, 0.0)
+    return {
+        "enabled":             data["enabled"],
+        "plan":                plan_key,
+        "per_message_credits": rate,
+    }
+
+
 @api_router.get("/me/feature-flags")
 async def me_feature_flags(
     current_user: Dict[str, Any] = Depends(get_current_user)
