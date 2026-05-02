@@ -38,11 +38,13 @@ const PLAN_META: Record<PlanKey, { label: string; color: string; accent: string 
   platinum:   { label: "Platinum",   color: "#1E3A8A", accent: "#DBEAFE" },
 };
 
-const snapshotOf = (enabled: boolean, rates: Record<PlanKey, number>) =>
+const snapshotOf = (enabled: boolean, text: Record<PlanKey, string>) =>
   JSON.stringify({
     enabled,
     rates: Object.fromEntries(
-      (Object.keys(rates) as PlanKey[]).sort().map((k) => [k, Number(rates[k]) || 0]),
+      (Object.keys(text) as PlanKey[]).sort().map(
+        (k) => [k, Number(text[k]) || 0],
+      ),
     ),
   });
 
@@ -52,7 +54,10 @@ export default function AdminWhatsAppPricingScreen() {
   const [loading, setLoading] = useState(true);
   const [saving,  setSaving]  = useState(false);
   const [enabled, setEnabled] = useState(false);
-  const [rates,   setRates]   = useState<Record<PlanKey, number> | null>(null);
+  // Phase-14 fix: keep raw text per field so partial input like "0."
+  // survives a re-render (a pure number state would collapse "0." to
+  // 0 and drop the dot before the user finishes typing "0.5").
+  const [rateText, setRateText] = useState<Record<PlanKey, string> | null>(null);
   const [defaults, setDefaults] = useState<{ enabled: boolean; rates: Record<PlanKey, number> } | null>(null);
   const [originalSnap, setOriginalSnap] = useState("");
 
@@ -68,9 +73,18 @@ export default function AdminWhatsAppPricingScreen() {
       setLoading(true);
       const r = await api.get<Payload>("/admin/whatsapp-pricing");
       setEnabled(r.data.current.enabled);
-      setRates(r.data.current.rates);
+      // Convert numeric rates to string for input binding — the Number
+      // → String round-trip on mount is safe; once the user edits we
+      // preserve their literal keystrokes (incl. trailing ".").
+      const asText: Record<PlanKey, string> = {
+        free_trial: String(r.data.current.rates.free_trial ?? 0),
+        silver:     String(r.data.current.rates.silver     ?? 0),
+        gold:       String(r.data.current.rates.gold       ?? 0),
+        platinum:   String(r.data.current.rates.platinum   ?? 0),
+      };
+      setRateText(asText);
       setDefaults(r.data.defaults);
-      setOriginalSnap(snapshotOf(r.data.current.enabled, r.data.current.rates));
+      setOriginalSnap(snapshotOf(r.data.current.enabled, asText));
     } catch (e: any) {
       Alert.alert(
         "Load failed",
@@ -84,44 +98,55 @@ export default function AdminWhatsAppPricingScreen() {
   useEffect(() => { load(); }, [load]);
 
   const dirty = useMemo(
-    () => !!rates && snapshotOf(enabled, rates) !== originalSnap,
-    [enabled, rates, originalSnap],
+    () => !!rateText && snapshotOf(enabled, rateText) !== originalSnap,
+    [enabled, rateText, originalSnap],
   );
 
   const setRate = (plan: PlanKey, raw: string) => {
-    if (!rates) return;
-    // Allow fractional (e.g. 0.5). Strip anything that's not digits or dot.
+    if (!rateText) return;
+    // Accept digits + at most one decimal dot. Replace the user's input
+    // verbatim so partial states like "0.", "0.0", "" all render as-is
+    // and the cursor doesn't jump. Empty string is allowed and treated
+    // as 0 only at save-time.
     const clean = raw.replace(/[^0-9.]/g, "");
-    // Keep only the first dot.
     const firstDot = clean.indexOf(".");
     const normalised =
       firstDot === -1
         ? clean
-        : clean.slice(0, firstDot + 1) + clean.slice(firstDot + 1).replace(/\./g, "");
-    const val = normalised === "" || normalised === "." ? 0 : Number(normalised);
-    setRates({ ...rates, [plan]: isNaN(val) ? 0 : val });
+        : clean.slice(0, firstDot + 1) +
+          clean.slice(firstDot + 1).replace(/\./g, "");
+    setRateText({ ...rateText, [plan]: normalised });
   };
 
   const resetPlan = (plan: PlanKey) => {
-    if (!rates || !defaults) return;
-    setRates({ ...rates, [plan]: defaults.rates[plan] ?? 0 });
+    if (!rateText || !defaults) return;
+    setRateText({
+      ...rateText,
+      [plan]: String(defaults.rates[plan] ?? 0),
+    });
   };
 
   const handleSave = async () => {
-    if (!rates) return;
+    if (!rateText) return;
     try {
       setSaving(true);
       const r = await api.put<Payload>("/admin/whatsapp-pricing", {
         enabled,
         plans: Object.fromEntries(
-          (Object.keys(rates) as PlanKey[]).map((k) => [
-            k, { per_message_credits: Number(rates[k]) || 0 },
+          (Object.keys(rateText) as PlanKey[]).map((k) => [
+            k, { per_message_credits: Number(rateText[k]) || 0 },
           ]),
         ),
       });
       setEnabled(r.data.current.enabled);
-      setRates(r.data.current.rates);
-      setOriginalSnap(snapshotOf(r.data.current.enabled, r.data.current.rates));
+      const asText: Record<PlanKey, string> = {
+        free_trial: String(r.data.current.rates.free_trial ?? 0),
+        silver:     String(r.data.current.rates.silver     ?? 0),
+        gold:       String(r.data.current.rates.gold       ?? 0),
+        platinum:   String(r.data.current.rates.platinum   ?? 0),
+      };
+      setRateText(asText);
+      setOriginalSnap(snapshotOf(r.data.current.enabled, asText));
       Alert.alert(
         "Saved",
         enabled
@@ -138,7 +163,7 @@ export default function AdminWhatsAppPricingScreen() {
     }
   };
 
-  if (loading || !rates || !defaults) {
+  if (loading || !rateText || !defaults) {
     return (
       <SafeAreaView style={styles.safe} edges={["top"]}>
         <Header onBack={() => router.back()} />
@@ -196,9 +221,10 @@ export default function AdminWhatsAppPricingScreen() {
           {/* Per-plan rates */}
           {planKeys.map((planKey) => {
             const meta = PLAN_META[planKey];
-            const rate = rates[planKey];
+            const text = rateText[planKey];
+            const numRate = Number(text) || 0;
             const defRate = defaults.rates[planKey] ?? 0;
-            const isOverride = Number(rate) !== Number(defRate);
+            const isOverride = numRate !== Number(defRate);
             return (
               <View
                 key={planKey}
@@ -227,7 +253,7 @@ export default function AdminWhatsAppPricingScreen() {
                 <View style={styles.inputRow}>
                   <TextInput
                     style={styles.input}
-                    value={String(rate)}
+                    value={text}
                     onChangeText={(v) => setRate(planKey, v)}
                     keyboardType="decimal-pad"
                     placeholder="0"
@@ -236,9 +262,9 @@ export default function AdminWhatsAppPricingScreen() {
                   />
                   <Text style={styles.suffix}>credits per message</Text>
                 </View>
-                {enabled && Number(rate) > 0 && (
+                {enabled && numRate > 0 && (
                   <Text style={styles.exampleText}>
-                    10 messages = {(Number(rate) * 10).toFixed(2)} credits
+                    10 messages = {(numRate * 10).toFixed(2)} credits
                   </Text>
                 )}
               </View>
