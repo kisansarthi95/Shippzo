@@ -132,11 +132,28 @@ def build_contact(
     # ── Name pieces ──
     nm  = raw_name if s.name_format.name_type == "full" else _first_word(raw_name)
 
-    # Location tail
-    loc = ""
-    if   s.name_format.location == "city":    loc = raw_city
-    elif s.name_format.location == "taluka":  loc = raw_taluka
-    elif s.name_format.location == "village": loc = raw_vill
+    # Location tail — with per-spec fallback: when the selected
+    # location field is empty on the shipment, fall back to City so
+    # we never ship an empty segment. (User explicitly asked for
+    # Taluka → City fallback when taluka is blank.)
+    def _pick_location() -> str:
+        sel = s.name_format.location
+        by_key: Dict[str, str] = {
+            "city":    raw_city,
+            "taluka":  raw_taluka,
+            "village": raw_vill,
+            "none":    "",
+        }
+        primary = (by_key.get(sel) or "").strip()
+        if primary:
+            return primary
+        if sel == "none":
+            return ""
+        # Fallback chain — city is the most commonly populated field,
+        # so it's the safest non-empty substitute.
+        return (raw_city or raw_taluka or raw_vill or "").strip()
+
+    loc = _pick_location()
 
     # Product segment only surfaces on the name line when the user asked
     # for it there — "notes_only" keeps the name clean.
@@ -147,8 +164,9 @@ def build_contact(
     )
 
     # Assemble NAME following placement rules.
-    # Structure is always: [prefix?] CORE [| loc?]
-    # where CORE is "name | product" (after_name) or "name … | product" (end).
+    # Joiner is a SPACE (not " | ") so the contact name stays
+    # searchable in phonebook apps — punctuation-insensitive search
+    # often fails to match pipe-separated tokens.
     parts: List[str] = []
     if s.name_format.product_placement == "after_name":
         parts.append(nm)
@@ -162,12 +180,14 @@ def build_contact(
         parts.append(nm)
         if loc: parts.append(loc)
 
-    core = " | ".join(p for p in parts if p)
+    core = " ".join(p for p in parts if p)
 
-    # Prefix wrapping
+    # Prefix wrapping — NO square brackets around the category so
+    # contacts-app search still hits it via plain-text match. Tag
+    # stays uppercase by convention for easy visual grouping.
     name_final = core
     if s.name_format.prefix_enabled and category:
-        tag = f"[{category}]"
+        tag = category
         if s.name_format.prefix_position == "end":
             name_final = f"{core} {tag}".strip()
         else:
