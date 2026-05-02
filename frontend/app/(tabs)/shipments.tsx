@@ -605,6 +605,20 @@ export default function Shipments() {
               />
             </TouchableOpacity>
           ) : null}
+          {/* Phase-16/P2: Save-Contacts shortcut in the top bar. Only
+              visible in multi-select mode — makes the bulk VCF export
+              reachable WITHOUT having to scroll sideways through the
+              print-layout cards (which was easy to miss). */}
+          {selectMode && (
+            <TouchableOpacity
+              testID="bulk-save-contacts-header"
+              style={[styles.iconBtn, { backgroundColor: "#7C3AED", borderColor: "#7C3AED" }]}
+              onPress={openBulkContactPicker}
+              disabled={selectedIds.size === 0}
+            >
+              <Ionicons name="person-add-outline" size={20} color="#fff" />
+            </TouchableOpacity>
+          )}
           {flagCsvExport && (
           <TouchableOpacity
             testID="export-csv-btn" style={styles.iconBtn}
