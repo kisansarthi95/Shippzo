@@ -8148,3 +8148,134 @@ agent_communication:
 
         Ready for main agent to summarise & finish.
 
+
+
+---
+
+## Backend Test Run: Admin Plan Limits (Phase-13) — 2026-05-02
+
+backend:
+  - task: "Admin Plan Limits — GET/PUT/RESET /api/admin/plan-limits"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py, /app/backend/plans.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "testing"
+        -comment: |
+            All 58/58 assertions PASS via /app/backend_test_phase13.py
+            against http://localhost:8001/api with admin@test.com /
+            user2@test.com.
+
+            COVERAGE
+            ─────────────────────────────────────────────────────
+            T1 — GET /admin/plan-limits (admin auth) → 200
+              ✅ order == ["free_trial","silver","gold","platinum"]
+              ✅ defaults dict has all 4 plan keys
+              ✅ each defaults[key] contains
+                  {name, label_cap, bulk_max, daily_cap, price_inr,
+                   trial_days, period}
+              ✅ defaults[free_trial].label_cap = 10
+              ✅ defaults[silver].label_cap = 50
+              ✅ defaults[gold].label_cap = 300, bulk_max = 50
+              ✅ defaults[platinum].label_cap = 1500, bulk_max = 100,
+                  daily_cap = 100
+              ✅ current dict has same shape MINUS name/period (only
+                  label_cap, bulk_max, daily_cap, price_inr, trial_days
+                  on each plan key)
+
+            T2 — GET /admin/plan-limits with non-admin (user2@test.com)
+              ✅ HTTP 403  detail="Admin access required"
+
+            T3 — PUT /admin/plan-limits with overrides
+              Payload: silver{label_cap:75, price_inr:249},
+                       gold{label_cap:400},
+                       platinum{daily_cap:200}
+              ✅ HTTP 200, returns merged view
+              ✅ current.silver.label_cap = 75 (override)
+              ✅ current.silver.price_inr = 249 (override)
+              ✅ current.silver.bulk_max = 0 (DEFAULT preserved)
+              ✅ current.silver.daily_cap = None (DEFAULT preserved)
+              ✅ current.gold.label_cap = 400 (override)
+              ✅ current.gold.bulk_max = 50 (DEFAULT preserved)
+              ✅ current.gold.price_inr = 499 (DEFAULT preserved)
+              ✅ current.platinum.daily_cap = 200 (override)
+              ✅ current.platinum.label_cap = 1500 (DEFAULT preserved)
+              ✅ current.platinum.bulk_max = 100 (DEFAULT preserved)
+              ✅ current.free_trial.* untouched (label_cap=10)
+
+            T4 — GET /api/me/usage reflects override
+              ✅ admin (free_trial) /me/usage 200 with label_cap field.
+              ✅ user2 plan == silver → /me/usage.label_cap = 75
+                 (override correctly propagated through resolve_plan).
+              After T6 reset → user2 /plans silver.label_cap back to 50.
+
+            T5 — GET /api/plans reflects override
+              ✅ silver.label_cap = 75
+              ✅ silver.price_inr = 249
+              ✅ gold.label_cap = 400
+              ✅ platinum.daily_cap = 200
+
+            T6 — POST /admin/plan-limits/reset
+              ✅ HTTP 200, overrides == {}
+              ✅ silver.label_cap reset to 50
+              ✅ silver.price_inr reset to 199
+              ✅ gold.label_cap reset to 300
+              ✅ platinum.daily_cap reset to 100
+              ✅ Fresh GET /admin/plan-limits confirms persistence
+              ✅ /api/plans silver.label_cap = 50 after reset
+
+            T7 — Negative-value validation → 400 Bad Request
+              ✅ silver.label_cap = -5 → 400
+                  detail="silver.label_cap must be a non-negative integer"
+              ✅ gold.price_inr = -100 → 400
+              ✅ free_trial.trial_days = -1 → 400
+
+            T8 — Backwards compatibility (no regressions)
+              ✅ GET /api/shipments (admin) 200
+              ✅ GET /api/me/usage (admin) 200
+              ✅ GET /api/plans (admin) 200
+              ✅ GET /api/shipments (user2) 200
+
+            NOTES
+            ─────────────────────────────────────────────────────
+            • daily_cap=None (Silver/Gold) preserved correctly through
+              the merge layer — admin overrides storing only set fields,
+              defaults applied for the rest.
+            • bulk_max=0 (Free Trial / Silver) preserved correctly
+              (zero is a valid stored default, not confused with absent).
+            • Override docs under admin_config.plan_limits stay compact:
+              only fields that actually differ from the default are
+              persisted (verified by T3 returning bulk_max=0 from
+              defaults rather than from an override entry).
+            • Reset is destructive (sets plan_limits = {}) and persists
+              across requests.
+
+agent_communication:
+    -agent: "testing"
+    -message: |
+        Phase-13 Admin Plan Limits — 58/58 assertions PASS. All 8
+        review-request test cases verified against
+        http://localhost:8001/api:
+
+          ✅ GET /admin/plan-limits (admin) returns full payload with
+              correct order, defaults, current shape.
+          ✅ GET /admin/plan-limits (non-admin) returns 403.
+          ✅ PUT /admin/plan-limits accepts partial overrides; merged
+              `current` view correctly preserves unset defaults.
+          ✅ /api/me/usage reflects silver label_cap=75 (user2 IS on
+              silver → bonus verification beyond review scope).
+          ✅ /api/plans returns silver.label_cap=75 with overrides
+              applied; reverts to 50 after reset.
+          ✅ POST /admin/plan-limits/reset wipes overrides; subsequent
+              GETs confirm full restoration to plans.py defaults.
+          ✅ Negative values (label_cap, price_inr, trial_days) all
+              return 400 with "must be a non-negative integer".
+          ✅ /api/shipments, /api/me/usage, /api/plans all 200 OK
+              after the refactor — no regressions.
+
+        Ready for main agent to summarise & finish.
+

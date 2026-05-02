@@ -304,7 +304,7 @@ async def auth_signup(payload: SignupRequest):
     # New users start on the 7-day Free Trial (10 labels one-time) UNLESS
     # the device already burned a trial — then they start with no plan
     # (effectively a paywall on the first action).
-    trial_spec = plan_start_payload("free_trial")
+    trial_spec = await plan_start_payload(db, "free_trial")
     if deny_free_trial:
         # No trial: empty plan + no expiry. The plan-gate middleware
         # treats this as "needs to subscribe" and shows upgrade prompts.
@@ -555,7 +555,7 @@ async def auth_google_session(payload: GoogleSessionRequest):
     if user is None:
         is_first = (await db.users.count_documents({})) == 0
         uid = str(uuid.uuid4())
-        trial_spec = plan_start_payload("free_trial")
+        trial_spec = await plan_start_payload(db, "free_trial")
         user_doc = {
             "id": uid,
             "email": email,
@@ -4929,7 +4929,7 @@ async def list_plans(current_user: Dict[str, Any] = Depends(get_current_user)):
     """Return the 4-tier plan catalogue plus a hint about which plan the
     caller is currently on (so the Plans screen can badge it)."""
     return {
-        "plans": public_plan_list(),
+        "plans": await public_plan_list(db),
         "current": current_user.get("plan") or "free_trial",
     }
 
@@ -5344,6 +5344,167 @@ async def admin_put_plan_features(
         upsert=True,
     )
     return {"ok": True, "plans": cleaned}
+
+
+# ───────────── Admin — Plan Limits (Phase-13) ─────────────
+# Lets the admin tune every numeric knob inside a plan (label cap, bulk
+# max, daily cap, trial days) WITHOUT a code push. All values are stored
+# in `admin_config.plan_limits` and layered on top of the hardcoded
+# defaults in /app/backend/plans.py via resolve_plan(...). Marketing copy
+# (name, feel, tagline, badge) is NEVER overrideable.
+
+_PLAN_KEYS_ORDER = ["free_trial", "silver", "gold", "platinum"]
+
+
+class PlanLimitsRow(BaseModel):
+    """One plan's editable numeric fields. Optional — unset = keep default."""
+    label_cap: Optional[int] = None
+    bulk_max: Optional[int] = None
+    daily_cap: Optional[int] = None  # 0 or None = no daily cap
+    price_inr: Optional[int] = None
+    trial_days: Optional[int] = None  # only meaningful for free_trial
+
+
+class PlanLimitsPayload(BaseModel):
+    plans: Dict[str, PlanLimitsRow]
+
+
+@api_router.get("/admin/plan-limits")
+async def admin_get_plan_limits(
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    """Returns per-plan defaults + admin overrides. Frontend renders the
+    override value in each input; empty field = fall back to default."""
+    _require_admin(current_user)
+    doc = await db.admin_config.find_one(
+        {"_id": "default"}, {"_id": 0, "plan_limits": 1}
+    ) or {}
+    overrides = doc.get("plan_limits") or {}
+
+    defaults_out: Dict[str, Dict[str, Any]] = {}
+    merged_out: Dict[str, Dict[str, Any]] = {}
+    for key in _PLAN_KEYS_ORDER:
+        spec = PLAN_TABLE[key]
+        defaults_out[key] = {
+            "name": spec.name,
+            "label_cap": spec.label_cap,
+            "bulk_max": spec.bulk_max,
+            "daily_cap": spec.daily_cap,
+            "price_inr": spec.price_inr,
+            "trial_days": spec.trial_days,
+            "period": spec.period,
+        }
+        # Merge the stored override (if any) on top so the UI shows
+        # the EFFECTIVE current value — not the original default.
+        ov = overrides.get(key) or {}
+        merged_out[key] = {
+            "label_cap":  ov.get("label_cap",  spec.label_cap),
+            "bulk_max":   ov.get("bulk_max",   spec.bulk_max),
+            "daily_cap":  ov.get("daily_cap",  spec.daily_cap),
+            "price_inr":  ov.get("price_inr",  spec.price_inr),
+            "trial_days": ov.get("trial_days", spec.trial_days),
+        }
+    return {
+        "order": _PLAN_KEYS_ORDER,
+        "defaults": defaults_out,
+        "current": merged_out,
+        "overrides": overrides,  # raw, for debugging
+    }
+
+
+@api_router.put("/admin/plan-limits")
+async def admin_put_plan_limits(
+    payload: PlanLimitsPayload,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    """Persists per-plan numeric overrides. Only the 5 editable fields are
+    saved; marketing copy and `period`/`badge` are ignored even if sent.
+    Empty / null / negative values fall back to the defaults (stored as
+    no-op — the field is omitted from the override dict)."""
+    _require_admin(current_user)
+    cleaned: Dict[str, Dict[str, Any]] = {}
+    for plan_key in _PLAN_KEYS_ORDER:
+        row = payload.plans.get(plan_key)
+        if row is None:
+            continue
+        spec = PLAN_TABLE[plan_key]
+        out: Dict[str, Any] = {}
+
+        # label_cap, bulk_max, price_inr: non-negative int
+        for f, default_v in (
+            ("label_cap",  spec.label_cap),
+            ("bulk_max",   spec.bulk_max),
+            ("price_inr",  spec.price_inr),
+        ):
+            v = getattr(row, f)
+            if v is None:
+                continue
+            try:
+                iv = int(v)
+                if iv < 0:
+                    raise ValueError
+            except (TypeError, ValueError):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"{plan_key}.{f} must be a non-negative integer",
+                )
+            # Store override only if it differs from the default (keeps
+            # the admin_config document compact).
+            if iv != default_v:
+                out[f] = iv
+
+        # daily_cap: None / 0 / int — 0 means "no cap"
+        if row.daily_cap is not None:
+            try:
+                dc = int(row.daily_cap)
+            except (TypeError, ValueError):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"{plan_key}.daily_cap must be an integer or 0",
+                )
+            normalised = None if dc <= 0 else dc
+            if normalised != spec.daily_cap:
+                out["daily_cap"] = normalised
+
+        # trial_days: only meaningful for free_trial but we still accept it
+        if row.trial_days is not None:
+            try:
+                td = int(row.trial_days)
+                if td < 0:
+                    raise ValueError
+            except (TypeError, ValueError):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"{plan_key}.trial_days must be a non-negative integer",
+                )
+            if td != (spec.trial_days or 0):
+                out["trial_days"] = td
+
+        if out:
+            cleaned[plan_key] = out
+
+    await db.admin_config.update_one(
+        {"_id": "default"},
+        {"$set": {"plan_limits": cleaned}},
+        upsert=True,
+    )
+    # Return the effective merged view so the UI can refresh instantly.
+    return await admin_get_plan_limits(current_user)
+
+
+@api_router.post("/admin/plan-limits/reset")
+async def admin_reset_plan_limits(
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    """One-click "restore defaults" — wipes all plan-limit overrides so
+    the hardcoded values in plans.py take over again."""
+    _require_admin(current_user)
+    await db.admin_config.update_one(
+        {"_id": "default"},
+        {"$set": {"plan_limits": {}}},
+        upsert=True,
+    )
+    return await admin_get_plan_limits(current_user)
 
 
 @api_router.get("/me/feature-flags")

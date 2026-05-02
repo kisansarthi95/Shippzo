@@ -902,6 +902,21 @@ export default function SettingsScreen() {
                       <Ionicons name="chevron-forward" size={22} color="#9CA3AF" />
                     </TouchableOpacity>
                     <TouchableOpacity
+                      testID="settings-hub-admin-plan-limits"
+                      style={styles.hubRow}
+                      onPress={() => router.push("/admin/plan-limits" as any)}
+                      activeOpacity={0.6}
+                    >
+                      <View style={[styles.hubIconWrap, { backgroundColor: "#FEF3C7" }]}>
+                        <Ionicons name="options-outline" size={22} color="#B45309" />
+                      </View>
+                      <Text style={styles.hubTitle}>Plan Limits</Text>
+                      <View style={styles.adminPill}>
+                        <Text style={styles.adminPillTxt}>ADMIN</Text>
+                      </View>
+                      <Ionicons name="chevron-forward" size={22} color="#9CA3AF" />
+                    </TouchableOpacity>
+                    <TouchableOpacity
                       testID="settings-hub-admin-master-sheet"
                       style={[styles.hubRow, styles.hubRowLast]}
                       onPress={() => router.push("/admin/master-sheet" as any)}

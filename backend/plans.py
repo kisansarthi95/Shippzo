@@ -109,6 +109,87 @@ def plan_for(user: Dict[str, Any]) -> PlanSpec:
     return PLANS.get(user.get("plan") or "free_trial", PLANS["free_trial"])
 
 
+# --- Admin-tunable limits (Phase-13) -------------------------------------
+# The numeric fields (label_cap, bulk_max, daily_cap, price_inr, trial_days)
+# are stored in admin_config.plan_limits so an admin can tune them at
+# runtime WITHOUT a code deploy. Defaults above are the fallback when a
+# key isn't present in the override document.
+_OVERRIDABLE_FIELDS = ("label_cap", "bulk_max", "daily_cap",
+                       "price_inr", "trial_days")
+
+
+async def _load_plan_overrides(db) -> Dict[str, Dict[str, Any]]:
+    """Return the per-plan override map from admin_config.plan_limits.
+    Missing → empty dict (no-op overlay)."""
+    try:
+        doc = await db.admin_config.find_one(
+            {"_id": "default"}, {"_id": 0, "plan_limits": 1}
+        ) or {}
+        ov = doc.get("plan_limits") or {}
+        if isinstance(ov, dict):
+            return ov
+    except Exception:
+        pass
+    return {}
+
+
+def _coerce_override_value(field: str, raw: Any) -> Any:
+    """Sanitise one override value. Returns None to signal 'keep default'."""
+    if raw is None:
+        return None
+    if field == "daily_cap":
+        # Allow null / 0 / "" to mean "no daily cap"
+        if raw == "" or raw == 0:
+            return None
+        try:
+            v = int(raw)
+            return v if v > 0 else None
+        except (TypeError, ValueError):
+            return None
+    # Everything else is a non-negative int. Negative or unparseable → keep default.
+    try:
+        v = int(raw)
+        return v if v >= 0 else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _merge_spec(base: PlanSpec, ov: Dict[str, Any]) -> PlanSpec:
+    """Return a new PlanSpec with override values applied. Non-numeric
+    fields (name, feel, purpose, badge, cta) are NEVER overrideable — those
+    are marketing copy owned by the codebase."""
+    patch: Dict[str, Any] = {}
+    for f in _OVERRIDABLE_FIELDS:
+        if f not in ov:
+            continue
+        val = _coerce_override_value(f, ov[f])
+        if val is None and f != "daily_cap":
+            # None on non-daily = keep default
+            continue
+        patch[f] = val
+    if not patch:
+        return base
+    # dataclasses.replace preserves frozen=True semantics
+    from dataclasses import replace as _dc_replace
+    return _dc_replace(base, **patch)
+
+
+async def resolve_plan(db, user: Dict[str, Any]) -> PlanSpec:
+    """Async variant of plan_for() that layers admin overrides on top
+    of the hardcoded defaults. Call this in every async path that needs
+    plan numerics — ensure_can_create_label, usage_summary, etc."""
+    base = plan_for(user)
+    overrides = await _load_plan_overrides(db)
+    return _merge_spec(base, overrides.get(base.key, {}))
+
+
+async def resolve_plan_by_key(db, key: str) -> PlanSpec:
+    """Same as resolve_plan but keyed by plan slug (for /plans listing)."""
+    base = PLANS.get(key) or PLANS["free_trial"]
+    overrides = await _load_plan_overrides(db)
+    return _merge_spec(base, overrides.get(base.key, {}))
+
+
 # --- Period helpers -------------------------------------------------------
 
 def _month_key(dt: Optional[datetime] = None) -> str:
@@ -153,7 +234,7 @@ async def plan_room_status(db, user: Dict[str, Any]) -> Dict[str, Any]:
     Returns a small dict the caller can reason about — used by Phase-4a
     when the wallet engine may still allow overage on paid plans.
     """
-    plan = plan_for(user)
+    plan = await resolve_plan(db, user)
     uid = user["id"]
     now = _now()
     out = {
@@ -207,7 +288,7 @@ async def ensure_can_create_label(db, user: Dict[str, Any]) -> PlanSpec:
     the shipment row has actually been inserted so we never charge for a
     failed insert.
     """
-    plan = plan_for(user)
+    plan = await resolve_plan(db, user)
     uid = user["id"]
     now = _now()
 
@@ -296,7 +377,7 @@ async def bump_label_usage(db, user: Dict[str, Any]) -> None:
     """Called AFTER a successful shipment insert. Increments the right
     counter(s) for the user's plan. Never raises."""
     try:
-        plan = plan_for(user)
+        plan = await resolve_plan(db, user)
         uid = user["id"]
         if plan.period == "trial":
             await _incr(db, uid, "trial")
@@ -315,7 +396,7 @@ async def ensure_can_bulk(db, user: Dict[str, Any], batch_size: int) -> PlanSpec
     Returns the active plan on success; 402 otherwise. Used by the /bulk
     endpoint we'll wire in Phase 3c once the UI lands.
     """
-    plan = plan_for(user)
+    plan = await resolve_plan(db, user)
     if plan.bulk_max <= 0:
         raise HTTPException(
             status_code=402,
@@ -338,7 +419,7 @@ async def ensure_can_bulk(db, user: Dict[str, Any], batch_size: int) -> PlanSpec
 # --- Usage summary for /api/me/usage ------------------------------------
 
 async def usage_summary(db, user: Dict[str, Any]) -> Dict[str, Any]:
-    plan = plan_for(user)
+    plan = await resolve_plan(db, user)
     uid = user["id"]
     now = _now()
 
@@ -427,11 +508,12 @@ async def usage_summary(db, user: Dict[str, Any]) -> Dict[str, Any]:
 
 # --- Mutations used by /api/plans/upgrade -------------------------------
 
-def plan_start_payload(plan_key: str) -> Dict[str, Any]:
-    """Build the `$set` dict for switching a user to another plan."""
-    plan = PLANS.get(plan_key)
-    if plan is None:
+async def plan_start_payload(db, plan_key: str) -> Dict[str, Any]:
+    """Build the `$set` dict for switching a user to another plan.
+    Reads `admin_config.plan_limits` so trial_days can be tuned by admin."""
+    if plan_key not in PLANS:
         raise HTTPException(status_code=400, detail=f"Unknown plan '{plan_key}'")
+    plan = await resolve_plan_by_key(db, plan_key)
     now = _now()
     payload: Dict[str, Any] = {
         "plan": plan.key,
@@ -445,10 +527,14 @@ def plan_start_payload(plan_key: str) -> Dict[str, Any]:
     return payload
 
 
-def public_plan_list() -> list:
-    """Serializable list of plans for the /plans screen."""
+async def public_plan_list(db) -> list:
+    """Serializable list of plans for the /plans screen.
+    Merges admin overrides so the public-facing pricing/limits always
+    match what admin has configured."""
+    overrides = await _load_plan_overrides(db)
     out = []
-    for p in PLANS.values():
+    for base in PLANS.values():
+        p = _merge_spec(base, overrides.get(base.key, {}))
         out.append({
             "key": p.key,
             "name": p.name,
