@@ -914,6 +914,12 @@ class Shipment(BaseModel):
     confirmation_status: str = "pending"
     last_confirmation_sent_at: Optional[str] = None
     last_confirmation_reply: Optional[str] = None
+    # Phase-12: Dispatch confirmation flow (post-Shipped notify customer).
+    #   "pending" — newly shipped, customer not yet notified
+    #   "sent"    — "your parcel is on its way" message dispatched
+    #   "skipped" — admin-marked as not-needed (e.g. local hand-delivery)
+    dispatch_msg_status: str = "pending"
+    dispatch_msg_sent_at: Optional[str] = None
     sheet_row_key: str = ""     # used to dedupe/reference imported rows
     # Soft-delete audit: if this shipment was appended to the Master Sheet
     # (via Smart Paste), we remember the exact row number so deletion can
@@ -6874,6 +6880,18 @@ try:
     app.include_router(_admin_router)
 except Exception as _adm_exc:
     logger.exception(f"Failed to mount admin router: {_adm_exc}")
+
+# Phase-12 modular: messaging (courier rules, WhatsApp templates,
+# dispatch confirmation flow). Wired with the same late-binding pattern.
+try:
+    from routers.messaging import (
+        messaging_router as _messaging_router,
+        init as _init_messaging_router,
+    )
+    _init_messaging_router()
+    app.include_router(_messaging_router)
+except Exception as _msg_exc:
+    logger.exception(f"Failed to mount messaging router: {_msg_exc}")
 
 
 # --------------------------------------------------------------------
