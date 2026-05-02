@@ -27,6 +27,7 @@ import { colors } from "../../lib/theme";
 import UsageMeter from "../../components/UsageMeter";
 import HomeAlerts from "../../components/HomeAlerts";
 import BrandHeaderAnimator from "../../components/BrandHeaderAnimator";
+import SmartCycleButton from "../../components/SmartCycleButton";
 import { useFeatureFlag } from "../../lib/feature_flags";
 
 type Stats = {
@@ -724,18 +725,11 @@ export default function Dashboard() {
       <View style={styles.header}>
         <BrandHeaderAnimator />
         <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-          <TouchableOpacity
+          <SmartCycleButton
             testID="smart-paste-btn"
-            style={[styles.headerAction, { backgroundColor: "#7C3AED" }]}
             onPress={handleSmartPaste}
-            disabled={pasting}
-          >
-            {pasting ? (
-              <ActivityIndicator color="#fff" size="small" />
-            ) : (
-              <Ionicons name="sparkles" size={20} color="#fff" />
-            )}
-          </TouchableOpacity>
+            busy={pasting}
+          />
           <TouchableOpacity
             testID="dashboard-refresh-btn"
             style={[styles.headerAction, { backgroundColor: colors.primary }]}
