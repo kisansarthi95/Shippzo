@@ -1682,6 +1682,40 @@ export default function Dashboard() {
                 tone="neutral"
                 chevron
               />
+              {/* Phase-12: 3-pill stack for the post-print workflows.
+                  Need Dispatch routes to Pending shipments so the user can
+                  ship them out; Dispatch + Delivery Confirmation route to
+                  the new dedicated screens. */}
+              <ActionPill
+                testID="quick-need-dispatch"
+                icon="cube-outline"
+                label="Need Dispatch"
+                badge={stats?.pending ?? 0}
+                onPress={() =>
+                  router.push({
+                    pathname: "/(tabs)/shipments",
+                    params: { status: "Pending" },
+                  })
+                }
+                tone="warning"
+                chevron
+              />
+              <ActionPill
+                testID="quick-dispatch-confirmation"
+                icon="rocket-outline"
+                label="Dispatch Confirmation"
+                onPress={() => router.push("/dispatch-confirmation" as any)}
+                tone="violet"
+                chevron
+              />
+              <ActionPill
+                testID="quick-delivery-confirmation"
+                icon="checkmark-circle-outline"
+                label="Delivery Confirmation"
+                onPress={() => router.push("/delivery-confirmation" as any)}
+                tone="success"
+                chevron
+              />
             </View>
 
             <View style={styles.sectionHeader}>

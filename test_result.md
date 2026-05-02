@@ -8847,3 +8847,63 @@ agent_communication:
         No regression observed on previously-tested features (admin and
         user courier-rules + whatsapp-templates were all green).
 
+
+
+    -agent: "main"
+    -message: |
+        Phase-12 ROUTING FIX APPLIED + Frontend Implementation Complete.
+
+        BACKEND FIX:
+          Moved `app.include_router(_messaging_router)` to BEFORE
+          `app.include_router(api_router)` in /app/backend/server.py.
+          Verified via curl: dispatch-confirmation and delivery-
+          confirmation-v2 both return 200 OK.
+
+          curl results:
+            GET /api/shipments/dispatch-confirmation         → 200 OK
+            GET /api/shipments/delivery-confirmation-v2      → 200 OK
+          Both return correct shipment lists with bucket counts and
+          per-shipment courier_eta_days.
+
+        FRONTEND PIECES SHIPPED (all wired into the modular router):
+          • /app/frontend/lib/api.ts
+              - Added 12 new methods covering courier rules,
+                WhatsApp templates, dispatch confirmation, delivery
+                confirmation v2, and resolve-template.
+          • /app/frontend/app/dispatch-confirmation.tsx (NEW)
+              - Mirror of delivery-confirmation with:
+                  * Top banner + per-row days_since_shipped
+                  * List/Sent/Pending tabs
+                  * Bulk select + sticky action bar
+                  * Language picker (gu/hi/en) + per-call template
+                    resolution
+                  * Reset-to-pending bulk action
+          • /app/frontend/app/delivery-confirmation.tsx (REWRITTEN)
+              - Now uses /shipments/delivery-confirmation-v2.
+              - "Edit Rule" pill opens a CourierRulesEditor modal
+                (per-courier delivery_eta_days, per-user override on
+                top of admin defaults, _default_ catch-all row).
+              - Language picker pill on the banner.
+              - Per-row badge shows `days/eta` (e.g. "9d / 5d").
+          • /app/frontend/app/(tabs)/index.tsx
+              - 3 new ActionPills under "Print All": Need Dispatch
+                (Pending shipments), Dispatch Confirmation, Delivery
+                Confirmation. Verified visually via screenshot.
+          • /app/frontend/app/settings/whatsapp-templates.tsx (NEW)
+              - 4-type × 3-lang editor with default-language picker,
+                live preview with placeholder substitution, variable
+                chips for one-tap insertion, per-type reset button.
+          • /app/frontend/app/admin/whatsapp-templates.tsx (NEW)
+              - Admin variant editing the global defaults that all
+                users see as their fallback.
+          • /app/frontend/app/(tabs)/settings.tsx
+              - 2 new sections in the settings hub: "WhatsApp Message
+                Templates" and "Courier Delivery Rules".
+              - Admin hub gets a new "WhatsApp Templates" row.
+
+        BACKEND DATA MODEL ADDITIONS:
+          Shipment.dispatch_msg_status: "pending"|"sent"|"skipped"
+          Shipment.dispatch_msg_sent_at: ISO timestamp
+          (added to Pydantic model so they survive serialization)
+
+        Frontend testing not yet requested — pending user verification.

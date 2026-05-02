@@ -689,6 +689,116 @@ export const Api = {
         { shipment_ids },
       )
       .then((r) => r.data),
+
+  /**
+   * Phase-12: V2 Delivery Confirmation list — uses per-courier ETA
+   * rules instead of a single global threshold. Pass `threshold_days`
+   * to override (legacy behaviour). Each shipment carries its own
+   * `courier_eta_days` so the UI can show "5 days / 8 days" badges.
+   */
+  deliveryConfListV2: (threshold_days?: number) =>
+    api
+      .get<{
+        shipments: Array<
+          Shipment & { days_since_shipped: number; courier_eta_days: number }
+        >;
+        counts: { list: number; sent: number; replied: number; pending: number };
+        eta_min: number;
+        eta_max: number;
+        threshold_override: number | null;
+      }>(
+        "/shipments/delivery-confirmation-v2" +
+          (threshold_days != null ? `?threshold_days=${threshold_days}` : ""),
+      )
+      .then((r) => r.data),
+
+  /** Phase-12: Dispatch Confirmation (post-Shipped notification) */
+  dispatchConfList: () =>
+    api
+      .get<{
+        shipments: Array<Shipment & { days_since_shipped: number; dispatch_msg_status?: string }>;
+        counts: { list: number; sent: number; pending: number };
+      }>("/shipments/dispatch-confirmation")
+      .then((r) => r.data),
+  dispatchConfMarkSent: (shipment_ids: string[]) =>
+    api
+      .post<{
+        updated: number;
+        skipped: number;
+        updated_ids: string[];
+        skipped_ids: string[];
+      }>("/shipments/dispatch-confirmation/mark-sent", { shipment_ids })
+      .then((r) => r.data),
+  dispatchConfReset: (shipment_ids: string[]) =>
+    api
+      .post<{ updated: number }>(
+        "/shipments/dispatch-confirmation/reset",
+        { shipment_ids },
+      )
+      .then((r) => r.data),
+
+  /** Phase-12: Courier Rules (per-courier delivery_eta_days) */
+  meCourierRules: () =>
+    api
+      .get<{
+        admin_rules: Record<string, { delivery_eta_days: number }>;
+        user_rules: Record<string, { delivery_eta_days: number }>;
+        courier_names: string[];
+        default_eta_days: number;
+      }>("/me/courier-rules")
+      .then((r) => r.data),
+  meSaveCourierRules: (rules: Record<string, { delivery_eta_days: number }>) =>
+    api.put("/me/courier-rules", { rules }).then((r) => r.data),
+  adminCourierRules: () =>
+    api
+      .get<{
+        rules: Record<string, { delivery_eta_days: number }>;
+        default_eta_days: number;
+      }>("/admin/courier-rules")
+      .then((r) => r.data),
+  adminSaveCourierRules: (rules: Record<string, { delivery_eta_days: number }>) =>
+    api.put("/admin/courier-rules", { rules }).then((r) => r.data),
+
+  /** Phase-12: WhatsApp Templates (4 types × 3 langs) */
+  meWhatsAppTemplates: () =>
+    api
+      .get<{
+        admin_templates: Record<string, Record<string, string>>;
+        user_templates: Record<string, Record<string, string>>;
+        default_language: string;
+        types: string[];
+        languages: string[];
+        defaults: Record<string, Record<string, string>>;
+      }>("/me/whatsapp-templates")
+      .then((r) => r.data),
+  meSaveWhatsAppTemplates: (
+    templates: Record<string, Record<string, string>>,
+    default_language?: string,
+  ) =>
+    api
+      .put("/me/whatsapp-templates", { templates, default_language })
+      .then((r) => r.data),
+  adminWhatsAppTemplates: () =>
+    api
+      .get<{
+        templates: Record<string, Record<string, string>>;
+        saved_overrides: Record<string, Record<string, string>>;
+        defaults: Record<string, Record<string, string>>;
+        types: string[];
+        languages: string[];
+      }>("/admin/whatsapp-templates")
+      .then((r) => r.data),
+  adminSaveWhatsAppTemplates: (
+    templates: Record<string, Record<string, string>>,
+  ) =>
+    api.put("/admin/whatsapp-templates", { templates }).then((r) => r.data),
+  resolveTemplate: (ttype: string, lang?: string) =>
+    api
+      .get<{ template: string; language: string; source: string }>(
+        `/me/resolve-template?ttype=${ttype}` +
+          (lang ? `&lang=${lang}` : ""),
+      )
+      .then((r) => r.data),
   /**
    * Lookup an existing shipment by tracking_id. Returns null when no
    * match (HTTP 404) instead of throwing, so callers don't have to

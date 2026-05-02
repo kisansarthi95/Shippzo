@@ -917,6 +917,21 @@ export default function SettingsScreen() {
                       <Ionicons name="chevron-forward" size={22} color="#9CA3AF" />
                     </TouchableOpacity>
                     <TouchableOpacity
+                      testID="settings-hub-admin-wa-templates"
+                      style={styles.hubRow}
+                      onPress={() => router.push("/admin/whatsapp-templates" as any)}
+                      activeOpacity={0.6}
+                    >
+                      <View style={[styles.hubIconWrap, { backgroundColor: "#DCFCE7" }]}>
+                        <Ionicons name="chatbubble-ellipses-outline" size={22} color="#16A34A" />
+                      </View>
+                      <Text style={styles.hubTitle}>WhatsApp Templates</Text>
+                      <View style={styles.adminPill}>
+                        <Text style={styles.adminPillTxt}>ADMIN</Text>
+                      </View>
+                      <Ionicons name="chevron-forward" size={22} color="#9CA3AF" />
+                    </TouchableOpacity>
+                    <TouchableOpacity
                       testID="settings-hub-admin-master-sheet"
                       style={[styles.hubRow, styles.hubRowLast]}
                       onPress={() => router.push("/admin/master-sheet" as any)}
@@ -1880,6 +1895,54 @@ export default function SettingsScreen() {
             >
               <Ionicons name="person-add-outline" size={18} color="#fff" />
               <Text style={styles.saveBtnText}>Open Save Contact Settings</Text>
+            </TouchableOpacity>
+          </Section>
+
+          {/* Phase-12 — WhatsApp Templates editor (4 types × 3 langs).
+              Lives separately from the legacy single-template editor in
+              the WhatsApp section so users can opt into the multi-message
+              flow incrementally. */}
+          <Section title="WhatsApp Message Templates" icon="logo-whatsapp">
+            <Text style={styles.toggleSub}>
+              Customize all 4 outgoing WhatsApp messages — Shipment Booked,
+              Dispatch Confirmation, Delivery Confirmation and Delivery
+              Thanks — in Gujarati, Hindi and English. Pick a default
+              language once and the app remembers it.
+            </Text>
+            <TouchableOpacity
+              testID="settings-hub-whatsapp-templates"
+              onPress={() => router.push("/settings/whatsapp-templates" as any)}
+              style={[
+                styles.saveBtn,
+                { marginTop: 12, backgroundColor: "#16A34A" },
+              ]}
+            >
+              <Ionicons name="logo-whatsapp" size={18} color="#fff" />
+              <Text style={styles.saveBtnText}>Open WhatsApp Templates</Text>
+            </TouchableOpacity>
+          </Section>
+
+          {/* Phase-12 — Courier Rules shortcut (lets users jump
+              straight to the per-courier ETA editor used by the
+              Delivery-Confirmation queue). The Editor modal lives
+              inside delivery-confirmation.tsx and auto-opens when
+              this row's button leads there. */}
+          <Section title="Courier Delivery Rules" icon="time-outline">
+            <Text style={styles.toggleSub}>
+              Set how many days each courier typically takes to deliver.
+              Parcels are auto-flagged for delivery confirmation once
+              they cross this per-courier threshold.
+            </Text>
+            <TouchableOpacity
+              testID="settings-hub-courier-rules"
+              onPress={() => router.push("/delivery-confirmation" as any)}
+              style={[
+                styles.saveBtn,
+                { marginTop: 12, backgroundColor: "#F97316" },
+              ]}
+            >
+              <Ionicons name="time-outline" size={18} color="#fff" />
+              <Text style={styles.saveBtnText}>Open Courier Rules</Text>
             </TouchableOpacity>
           </Section>
 

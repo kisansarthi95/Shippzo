@@ -6867,6 +6867,20 @@ async def me_ai_rates(
 
 # ---------------------- App setup ----------------------
 
+# Phase-12 modular: messaging (courier rules, WhatsApp templates,
+# dispatch confirmation flow). Mounted FIRST so its specific routes
+# (e.g. /shipments/dispatch-confirmation) win over api_router's
+# wildcard /shipments/{shipment_id}.
+try:
+    from routers.messaging import (
+        messaging_router as _messaging_router,
+        init as _init_messaging_router,
+    )
+    _init_messaging_router()
+    app.include_router(_messaging_router)
+except Exception as _msg_exc:
+    logger.exception(f"Failed to mount messaging router: {_msg_exc}")
+
 app.include_router(api_router)
 app.include_router(auth_router)
 
@@ -6880,18 +6894,6 @@ try:
     app.include_router(_admin_router)
 except Exception as _adm_exc:
     logger.exception(f"Failed to mount admin router: {_adm_exc}")
-
-# Phase-12 modular: messaging (courier rules, WhatsApp templates,
-# dispatch confirmation flow). Wired with the same late-binding pattern.
-try:
-    from routers.messaging import (
-        messaging_router as _messaging_router,
-        init as _init_messaging_router,
-    )
-    _init_messaging_router()
-    app.include_router(_messaging_router)
-except Exception as _msg_exc:
-    logger.exception(f"Failed to mount messaging router: {_msg_exc}")
 
 
 # --------------------------------------------------------------------
