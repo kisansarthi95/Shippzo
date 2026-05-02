@@ -29,6 +29,20 @@ const PAID_PLANS: { key: PaidPlanKey; name: string; tone: string }[] = [
 
 type Pricing = Record<PlanKey, PlanPricingEntry>;
 
+// Phase-13: Plan limit overrides (label_cap / bulk_max / daily_cap)
+// live alongside the pricing on this same screen so the admin sees
+// everything about a plan in one place — no separate screen.
+type PaidLimits = {
+  label_cap: number;
+  bulk_max: number;
+  daily_cap: number | null;
+};
+type LimitsState = Record<PaidPlanKey, PaidLimits>;
+type LimitsDefaults = Record<
+  PaidPlanKey,
+  PaidLimits & { price_inr: number; name: string }
+>;
+
 export default function AdminPricingScreen() {
   const router = useRouter();
   const { user } = useAuth();
@@ -36,6 +50,8 @@ export default function AdminPricingScreen() {
   const [saving, setSaving] = useState(false);
   const [pricing, setPricing] = useState<Pricing | null>(null);
   const [countdown, setCountdown] = useState<CountdownConfig | null>(null);
+  const [limits, setLimits] = useState<LimitsState | null>(null);
+  const [limitsDefaults, setLimitsDefaults] = useState<LimitsDefaults | null>(null);
   const [originalSnap, setOriginalSnap] = useState("");
 
   useEffect(() => {
@@ -49,16 +65,54 @@ export default function AdminPricingScreen() {
     let cancelled = false;
     (async () => {
       try {
-        const r = await api.get<{
-          plan_pricing: Pricing;
-          countdown: CountdownConfig;
-        }>("/admin/global-config");
+        // Fire both admin reads in parallel — one for pricing/countdown,
+        // one for plan limit overrides. They live in different admin
+        // documents but are edited together on this single screen.
+        const [rPricing, rLimits] = await Promise.all([
+          api.get<{
+            plan_pricing: Pricing;
+            countdown: CountdownConfig;
+          }>("/admin/global-config"),
+          api.get<{
+            defaults: Record<string, any>;
+            current: Record<string, any>;
+          }>("/admin/plan-limits"),
+        ]);
         if (cancelled) return;
-        setPricing(r.data.plan_pricing);
-        setCountdown(r.data.countdown);
+        setPricing(rPricing.data.plan_pricing);
+        setCountdown(rPricing.data.countdown);
+
+        // Flatten the limits payload into the paid-plan-only shape we use on
+        // this screen (free_trial limits are edited elsewhere, not here).
+        const nextLimits: LimitsState = {
+          silver: {
+            label_cap: rLimits.data.current.silver?.label_cap ?? 50,
+            bulk_max:  rLimits.data.current.silver?.bulk_max  ?? 0,
+            daily_cap: rLimits.data.current.silver?.daily_cap ?? null,
+          },
+          gold: {
+            label_cap: rLimits.data.current.gold?.label_cap ?? 300,
+            bulk_max:  rLimits.data.current.gold?.bulk_max  ?? 50,
+            daily_cap: rLimits.data.current.gold?.daily_cap ?? null,
+          },
+          platinum: {
+            label_cap: rLimits.data.current.platinum?.label_cap ?? 1500,
+            bulk_max:  rLimits.data.current.platinum?.bulk_max  ?? 100,
+            daily_cap: rLimits.data.current.platinum?.daily_cap ?? 100,
+          },
+        };
+        const nextDefaults: LimitsDefaults = {
+          silver:   rLimits.data.defaults.silver,
+          gold:     rLimits.data.defaults.gold,
+          platinum: rLimits.data.defaults.platinum,
+        };
+        setLimits(nextLimits);
+        setLimitsDefaults(nextDefaults);
+
         setOriginalSnap(JSON.stringify({
-          plan_pricing: r.data.plan_pricing,
-          countdown: r.data.countdown,
+          plan_pricing: rPricing.data.plan_pricing,
+          countdown: rPricing.data.countdown,
+          limits: nextLimits,
         }));
       } catch (e: any) {
         Alert.alert("Load failed", e?.response?.data?.detail || e?.message || "Try again");
@@ -76,6 +130,14 @@ export default function AdminPricingScreen() {
     });
   };
 
+  // Phase-13 helper — same shape as updatePlan but for limits.
+  const updateLimit = (key: PaidPlanKey, patch: Partial<PaidLimits>) => {
+    setLimits((prev) => {
+      if (!prev) return prev;
+      return { ...prev, [key]: { ...prev[key], ...patch } };
+    });
+  };
+
   // Auto-fill yearly_price = monthly × 12 × 0.75 (25% discount)
   const autoCalcYearly = (key: PaidPlanKey) => {
     if (!pricing) return;
@@ -86,14 +148,14 @@ export default function AdminPricingScreen() {
   };
 
   const liveSnap = useMemo(
-    () => JSON.stringify({ plan_pricing: pricing, countdown }),
-    [pricing, countdown],
+    () => JSON.stringify({ plan_pricing: pricing, countdown, limits }),
+    [pricing, countdown, limits],
   );
   const isDirty = !!originalSnap && originalSnap !== liveSnap;
 
   const save = async () => {
-    if (!pricing || !countdown) return;
-    // basic validation
+    if (!pricing || !countdown || !limits) return;
+    // basic validation — pricing
     for (const k of PAID_PLANS) {
       const p = pricing[k.key];
       if (!p || p.monthly_price < 1) {
@@ -105,12 +167,33 @@ export default function AdminPricingScreen() {
           `${k.name}: anchor price must be greater than display price (or turn strikethrough off).`);
         return;
       }
+      // Phase-13: validate limits too
+      const lim = limits[k.key];
+      if (lim.label_cap < 1) {
+        Alert.alert("Invalid limit",
+          `${k.name}: Monthly label limit must be ≥ 1.`);
+        return;
+      }
+      if (lim.bulk_max < 0) {
+        Alert.alert("Invalid limit",
+          `${k.name}: Bulk print max cannot be negative.`);
+        return;
+      }
     }
     try {
       setSaving(true);
+      // Save pricing + countdown to /admin/global-config (existing doc).
       await api.put("/admin/global-config", { plan_pricing: pricing, countdown });
+      // Save limit overrides to /admin/plan-limits (Phase-13 doc).
+      await api.put("/admin/plan-limits", {
+        plans: {
+          silver:   limits.silver,
+          gold:     limits.gold,
+          platinum: limits.platinum,
+        },
+      });
       setOriginalSnap(liveSnap);
-      Alert.alert("Saved", "Pricing & countdown updated. All users will see the new values.");
+      Alert.alert("Saved", "Pricing, limits & countdown updated. All users will see the new values.");
     } catch (e: any) {
       Alert.alert("Save failed", e?.response?.data?.detail || e?.message || "Try again");
     } finally {
@@ -130,7 +213,7 @@ export default function AdminPricingScreen() {
     ]);
   };
 
-  if (loading || !pricing || !countdown) {
+  if (loading || !pricing || !countdown || !limits || !limitsDefaults) {
     return (
       <SafeAreaView style={styles.safe}>
         <View style={styles.center}><ActivityIndicator size="large" color={colors.primary} /></View>
@@ -320,6 +403,84 @@ export default function AdminPricingScreen() {
                     })()}
                   </Text>
                 ) : null}
+              </View>
+
+              {/* Phase-13: Plan Limits (merged into this card per admin
+                  request — keeps pricing + limits co-located so one
+                  scroll manages everything about a plan). These values
+                  sync to /admin/plan-limits on Save. */}
+              <View style={styles.limitsSection}>
+                <View style={styles.limitsHeader}>
+                  <Ionicons name="options-outline" size={15} color={tone} />
+                  <Text style={[styles.limitsTitle, { color: tone }]}>
+                    Plan Limits
+                  </Text>
+                </View>
+                <View style={styles.row2}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.label}>Labels / month</Text>
+                    <TextInput
+                      keyboardType="numeric"
+                      value={String(limits[key].label_cap)}
+                      onChangeText={(v) => updateLimit(key, {
+                        label_cap: Number(v.replace(/[^0-9]/g, "")) || 0,
+                      })}
+                      style={styles.input}
+                      placeholder={String(limitsDefaults[key].label_cap)}
+                    />
+                    <Text style={styles.defaultHint}>
+                      Default: {limitsDefaults[key].label_cap}
+                    </Text>
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.label}>Bulk print max</Text>
+                    <TextInput
+                      keyboardType="numeric"
+                      value={String(limits[key].bulk_max)}
+                      onChangeText={(v) => updateLimit(key, {
+                        bulk_max: Number(v.replace(/[^0-9]/g, "")) || 0,
+                      })}
+                      style={styles.input}
+                      placeholder={String(limitsDefaults[key].bulk_max)}
+                    />
+                    <Text style={styles.defaultHint}>
+                      Default: {limitsDefaults[key].bulk_max} (0 = no bulk)
+                    </Text>
+                  </View>
+                </View>
+                <View style={{ marginTop: 10 }}>
+                  <Text style={styles.label}>Daily print limit</Text>
+                  <TextInput
+                    keyboardType="numeric"
+                    value={
+                      limits[key].daily_cap === null ||
+                      limits[key].daily_cap === undefined
+                        ? ""
+                        : String(limits[key].daily_cap)
+                    }
+                    onChangeText={(v) => {
+                      const clean = v.replace(/[^0-9]/g, "");
+                      updateLimit(key, {
+                        daily_cap: clean === "" ? null : Number(clean),
+                      });
+                    }}
+                    style={styles.input}
+                    placeholder={
+                      limitsDefaults[key].daily_cap === null ||
+                      limitsDefaults[key].daily_cap === undefined
+                        ? "— no cap —"
+                        : String(limitsDefaults[key].daily_cap)
+                    }
+                  />
+                  <Text style={styles.defaultHint}>
+                    Default:{" "}
+                    {limitsDefaults[key].daily_cap === null ||
+                    limitsDefaults[key].daily_cap === undefined
+                      ? "no daily cap"
+                      : limitsDefaults[key].daily_cap}
+                    {" "}· Leave blank = no cap
+                  </Text>
+                </View>
               </View>
             </View>
           );
@@ -522,4 +683,30 @@ const styles = StyleSheet.create({
     gap: 8, backgroundColor: colors.primary, paddingVertical: 16, borderRadius: 14,
   },
   saveTxt: { color: "#fff", fontWeight: "800", fontSize: 15 },
+
+  // Phase-13 — Plan Limits subsection (inside each plan card).
+  limitsSection: {
+    marginTop: 10,
+    paddingTop: 10,
+    borderTopWidth: 1,
+    borderTopColor: "#E2E8F0",
+  },
+  limitsHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    marginBottom: 8,
+  },
+  limitsTitle: {
+    fontSize: 12,
+    fontWeight: "900",
+    letterSpacing: 0.4,
+    textTransform: "uppercase",
+  },
+  defaultHint: {
+    fontSize: 10.5,
+    color: "#94A3B8",
+    marginTop: 4,
+    fontStyle: "italic",
+  },
 });
