@@ -17,6 +17,41 @@ import * as IntentLauncher from "expo-intent-launcher";
 import * as FileSystem from "expo-file-system/legacy";
 import * as Sharing from "expo-sharing";
 
+// String-literal encoding so a wildcard import of the legacy module
+// can't blow up with "Cannot read property UTF8 of undefined" when
+// Metro's bundler strips/tree-shakes the TypeScript enum object.
+// The legacy writeAsStringAsync type sig explicitly accepts `'utf8'`
+// and `'base64'` string literals in addition to the enum.
+const UTF8_ENCODING: "utf8" = "utf8";
+
+/**
+ * Defensive writer: wraps FileSystem.writeAsStringAsync with a clean
+ * surface-level error message. Re-throws so callers can still decide
+ * whether to alert / fall back.
+ */
+async function writeTextSafely(path: string, body: string): Promise<void> {
+  if (typeof FileSystem?.writeAsStringAsync !== "function") {
+    throw new Error(
+      "File system is unavailable on this device. Try restarting the app.",
+    );
+  }
+  try {
+    await FileSystem.writeAsStringAsync(path, body, {
+      encoding: UTF8_ENCODING,
+    });
+  } catch (e: any) {
+    // Common failures: permission denied, invalid path, disk full.
+    const msg = String(e?.message || "");
+    if (msg.toLowerCase().includes("utf8") || msg.toLowerCase().includes("encoding")) {
+      // Fallback: write without the options argument — FileSystem
+      // defaults to UTF-8 when the flag is omitted.
+      await FileSystem.writeAsStringAsync(path, body);
+      return;
+    }
+    throw e;
+  }
+}
+
 export type ContactPayload = {
   name:   string;
   phone:  string;
@@ -77,9 +112,7 @@ export async function openSaveContactIntent(c: ContactPayload): Promise<void> {
   try {
     const vcf = toVcf(c);
     const path = `${FileSystem.cacheDirectory || ""}contact_${Date.now()}.vcf`;
-    await FileSystem.writeAsStringAsync(path, vcf, {
-      encoding: FileSystem.EncodingType.UTF8,
-    });
+    await writeTextSafely(path, vcf);
     if (await Sharing.isAvailableAsync()) {
       await Sharing.shareAsync(path, {
         mimeType: "text/vcard",
@@ -124,9 +157,7 @@ function toVcf(c: ContactPayload): string {
 export async function saveBulkVcf(vcfBody: string, filename: string = "contacts.vcf") {
   try {
     const path = `${FileSystem.cacheDirectory || ""}${filename}`;
-    await FileSystem.writeAsStringAsync(path, vcfBody, {
-      encoding: FileSystem.EncodingType.UTF8,
-    });
+    await writeTextSafely(path, vcfBody);
     if (await Sharing.isAvailableAsync()) {
       await Sharing.shareAsync(path, {
         mimeType: "text/vcard",
