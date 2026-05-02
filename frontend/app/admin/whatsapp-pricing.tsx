@@ -255,9 +255,15 @@ export default function AdminWhatsAppPricingScreen() {
                     style={styles.input}
                     value={text}
                     onChangeText={(v) => setRate(planKey, v)}
-                    keyboardType="decimal-pad"
+                    // `numeric` (not decimal-pad) is the most reliable
+                    // cross-device keyboard that shows a visible "."
+                    // key on both iOS and Android 13+ — some OEM Android
+                    // skins hide the decimal key on decimal-pad.
+                    keyboardType="numeric"
+                    inputMode="decimal"
                     placeholder="0"
                     placeholderTextColor="#9CA3AF"
+                    selectTextOnFocus
                     testID={`wa-pricing-input-${planKey}`}
                   />
                   <Text style={styles.suffix}>credits per message</Text>
