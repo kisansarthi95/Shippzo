@@ -43,6 +43,11 @@ type LimitsDefaults = Record<
   PaidLimits & { price_inr: number; name: string }
 >;
 
+// Phase-17 (merge): WhatsApp manual-send pricing lives on this same
+// screen now — the previous standalone screen was removed so the admin
+// has ONE place to manage every per-plan number.
+type WaRates = Record<PaidPlanKey, number>;
+
 export default function AdminPricingScreen() {
   const router = useRouter();
   const { user } = useAuth();
@@ -52,6 +57,11 @@ export default function AdminPricingScreen() {
   const [countdown, setCountdown] = useState<CountdownConfig | null>(null);
   const [limits, setLimits] = useState<LimitsState | null>(null);
   const [limitsDefaults, setLimitsDefaults] = useState<LimitsDefaults | null>(null);
+  // WhatsApp per-plan rates + the global enable flag — same source of
+  // truth as /admin/whatsapp-pricing.
+  const [waEnabled, setWaEnabled] = useState(false);
+  const [waRates, setWaRates] = useState<WaRates | null>(null);
+  const [waRatesDefaults, setWaRatesDefaults] = useState<WaRates | null>(null);
   const [originalSnap, setOriginalSnap] = useState("");
 
   useEffect(() => {
@@ -65,10 +75,11 @@ export default function AdminPricingScreen() {
     let cancelled = false;
     (async () => {
       try {
-        // Fire both admin reads in parallel — one for pricing/countdown,
-        // one for plan limit overrides. They live in different admin
-        // documents but are edited together on this single screen.
-        const [rPricing, rLimits] = await Promise.all([
+        // Fire three admin reads in parallel — pricing/countdown,
+        // plan limit overrides, AND WhatsApp manual-message pricing.
+        // All three are edited together on this single screen so the
+        // admin has one place for every numeric knob per plan.
+        const [rPricing, rLimits, rWa] = await Promise.all([
           api.get<{
             plan_pricing: Pricing;
             countdown: CountdownConfig;
@@ -77,6 +88,10 @@ export default function AdminPricingScreen() {
             defaults: Record<string, any>;
             current: Record<string, any>;
           }>("/admin/plan-limits"),
+          api.get<{
+            defaults: { enabled: boolean; rates: Record<string, number> };
+            current:  { enabled: boolean; rates: Record<string, number> };
+          }>("/admin/whatsapp-pricing"),
         ]);
         if (cancelled) return;
         setPricing(rPricing.data.plan_pricing);
@@ -109,10 +124,26 @@ export default function AdminPricingScreen() {
         setLimits(nextLimits);
         setLimitsDefaults(nextDefaults);
 
+        // ── WhatsApp pricing flatten ──
+        const nextWaRates: WaRates = {
+          silver:   Number(rWa.data.current.rates.silver   ?? 0),
+          gold:     Number(rWa.data.current.rates.gold     ?? 0),
+          platinum: Number(rWa.data.current.rates.platinum ?? 0),
+        };
+        const nextWaDefaults: WaRates = {
+          silver:   Number(rWa.data.defaults.rates.silver   ?? 0),
+          gold:     Number(rWa.data.defaults.rates.gold     ?? 0),
+          platinum: Number(rWa.data.defaults.rates.platinum ?? 0),
+        };
+        setWaEnabled(Boolean(rWa.data.current.enabled));
+        setWaRates(nextWaRates);
+        setWaRatesDefaults(nextWaDefaults);
+
         setOriginalSnap(JSON.stringify({
           plan_pricing: rPricing.data.plan_pricing,
           countdown: rPricing.data.countdown,
           limits: nextLimits,
+          wa: { enabled: Boolean(rWa.data.current.enabled), rates: nextWaRates },
         }));
       } catch (e: any) {
         Alert.alert("Load failed", e?.response?.data?.detail || e?.message || "Try again");
