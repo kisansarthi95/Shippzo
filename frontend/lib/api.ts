@@ -765,6 +765,14 @@ export const Api = {
         text,
         skip_llm: skipLlm,
         custom_values: customValues || undefined,
+      }, {
+        // Phase-12 fix: this endpoint writes to Google Sheets BEFORE
+        // saving to Mongo (atomic guarantee). On a flaky cellular
+        // connection the Sheets API can take 15-25s on its own — the
+        // default 25 s axios timeout was firing right at the edge and
+        // surfacing as "Network Error" even when the backend was
+        // about to succeed. 60 s comfortably covers a slow round-trip.
+        timeout: 60000,
       })
       .then((r) => r.data),
 
