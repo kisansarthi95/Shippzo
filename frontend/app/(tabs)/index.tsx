@@ -1743,6 +1743,42 @@ export default function Dashboard() {
                   no breaches OR admin has muted the banner channel. */}
               <SlaActionWidget isAdmin={isAdmin} />
 
+              {/* Phase I — Admin-only quick links to power tools.
+                  Hidden for regular users so the dashboard stays
+                  uncluttered. */}
+              {isAdmin && (
+                <>
+                  <View style={styles.bulkMsgHeader}>
+                    <Text style={styles.bulkMsgTitle}>🛠 Admin Tools</Text>
+                    <Text style={styles.bulkMsgSub}>Live KPIs, SLA breaches, stage rules, sheet sync</Text>
+                  </View>
+                  <ActionPill
+                    testID="quick-admin-analytics"
+                    icon="stats-chart"
+                    label="📈 Analytics Dashboard"
+                    onPress={() => router.push("/admin/analytics" as any)}
+                    tone="violet"
+                    chevron
+                  />
+                  <ActionPill
+                    testID="quick-admin-sla-alerts"
+                    icon="alert-circle"
+                    label="🚨 SLA Alerts Console"
+                    onPress={() => router.push("/admin/sla-alerts" as any)}
+                    tone="warning"
+                    chevron
+                  />
+                  <ActionPill
+                    testID="quick-admin-stage-rules"
+                    icon="settings"
+                    label="⚙️ Stage Rules + SLA Engine"
+                    onPress={() => router.push("/admin/stage-rules" as any)}
+                    tone="neutral"
+                    chevron
+                  />
+                </>
+              )}
+
               {/* Phase F2/F3: 5-stage generic Bulk Message buttons.
                   All five drive `/bulk-message/[type]` and share the
                   same multi-select + sequential-WhatsApp flow. */}
