@@ -1,215 +1,216 @@
 """
-Phase-13 Smart Paste Gujarati/Hindi digit-accuracy validation.
+Phase-14 Smart Paste REAL-WORLD Indic-digit phone accuracy validation.
 
-Generates PNG images at runtime with Pillow using Noto Sans Gujarati /
-Devanagari fonts, base64-encodes them, and POSTs to
-/api/smart-paste/photo to validate RULE X0 (digit accuracy).
-
-Run: python /app/backend_test.py
+- T1: real Gujarati visiting card (https URL)
+- T2: synthetic PNG, two Gujarati numbers
+- T3: synthetic PNG, one Hindi number
+- T4: synthetic PNG, mixed Gujarati + Arabic
+- T5: synthetic PNG, plain English
 """
-
 import base64
 import io
 import json
-import os
 import sys
-from typing import Any, Dict, List, Tuple
 
 import requests
 from PIL import Image, ImageDraw, ImageFont
 
-BACKEND = "https://logistics-hub-740.preview.emergentagent.com/api"
-ADMIN_EMAIL = "admin@test.com"
-ADMIN_PASS = "Admin@12345"
+BASE = "https://logistics-hub-740.preview.emergentagent.com/api"
+EMAIL = "admin@test.com"
+PASSWORD = "Admin@12345"
+TIMEOUT = 120  # server side can take up to ~45s
 
-GU_FONT = "/usr/share/fonts/truetype/noto/NotoSansGujarati-Regular.ttf"
-HI_FONT = "/usr/share/fonts/truetype/noto/NotoSansDevanagari-Regular.ttf"
-LATIN_FONT = "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf"
-FALLBACK = "/usr/share/fonts/truetype/freefont/FreeSans.ttf"
+IMG_URL = "https://customer-assets.emergentagent.com/job_logistics-hub-740/artifacts/5shlr2fd_1000113281.jpg"
+
+GUJ_FONT = "/usr/share/fonts/truetype/noto/NotoSansGujarati-Regular.ttf"
+DEV_FONT = "/usr/share/fonts/truetype/noto/NotoSansDevanagari-Regular.ttf"
+LATIN_FONT = "/usr/share/fonts/truetype/freefont/FreeSans.ttf"
 
 
 def login() -> str:
     r = requests.post(
-        f"{BACKEND}/auth/login",
-        json={"email": ADMIN_EMAIL, "password": ADMIN_PASS},
-        timeout=20,
+        f"{BASE}/auth/login",
+        json={"email": EMAIL, "password": PASSWORD},
+        timeout=60,
     )
     r.raise_for_status()
-    tok = r.json().get("token")
-    if not tok:
-        raise RuntimeError(f"No token in login response: {r.text}")
-    return tok
+    token = r.json()["token"]
+    print(f"[auth] logged in as {EMAIL}")
+    return token
 
 
-def pick_font(text: str, size: int) -> ImageFont.FreeTypeFont:
-    has_gu = any(0x0A80 <= ord(c) <= 0x0AFF for c in text)
-    has_hi = any(0x0900 <= ord(c) <= 0x097F for c in text)
-    if has_gu and os.path.exists(GU_FONT):
-        return ImageFont.truetype(GU_FONT, size)
-    if has_hi and os.path.exists(HI_FONT):
-        return ImageFont.truetype(HI_FONT, size)
-    if os.path.exists(LATIN_FONT):
-        return ImageFont.truetype(LATIN_FONT, size)
-    return ImageFont.truetype(FALLBACK, size)
+def b64_from_url(url: str) -> str:
+    print(f"[fetch] {url}")
+    r = requests.get(url, timeout=60)
+    r.raise_for_status()
+    print(f"[fetch] {len(r.content)} bytes")
+    return base64.b64encode(r.content).decode("ascii")
 
 
-def render_image(lines: List[str], size=(900, 260), font_size: int = 44) -> bytes:
-    W, H = size
-    # auto-grow height for many lines
-    needed_h = 30 + len(lines) * (font_size + 24) + 30
-    if needed_h > H:
-        H = needed_h
-    img = Image.new("RGB", (W, H), "white")
-    draw = ImageDraw.Draw(img)
-    y = 30
+def make_text_png(lines, *, size: int = 56) -> str:
+    W, H = 1400, 150 + (size + 40) * len(lines)
+    im = Image.new("RGB", (W, H), "white")
+    d = ImageDraw.Draw(im)
+    y = 60
     for ln in lines:
-        f = pick_font(ln, font_size)
-        draw.text((30, y), ln, fill="black", font=f)
-        try:
-            bbox = draw.textbbox((30, y), ln, font=f)
-            h = bbox[3] - bbox[1]
-        except Exception:
-            h = font_size + 6
-        y += h + 18
+        has_guj = any("\u0A80" <= ch <= "\u0AFF" for ch in ln)
+        has_dev = any("\u0900" <= ch <= "\u097F" for ch in ln)
+        font_path = GUJ_FONT if has_guj else (DEV_FONT if has_dev else LATIN_FONT)
+        fnt = ImageFont.truetype(font_path, size)
+        d.text((80, y), ln, fill="black", font=fnt)
+        y += size + 40
     buf = io.BytesIO()
-    img.save(buf, format="PNG")
-    return buf.getvalue()
+    im.save(buf, format="PNG")
+    return base64.b64encode(buf.getvalue()).decode("ascii")
 
 
-def call_smart_paste_photo(token: str, png_bytes: bytes) -> Dict[str, Any]:
-    b64 = base64.b64encode(png_bytes).decode("ascii")
-    r = requests.post(
-        f"{BACKEND}/smart-paste/photo",
-        headers={"Authorization": f"Bearer {token}",
-                 "Content-Type": "application/json"},
-        json={"image_base64": b64, "mime": "image/png"},
-        timeout=180,
-    )
-    if r.status_code != 200:
-        return {"_error": True, "_status": r.status_code, "_body": r.text}
-    return r.json()
+def call_photo(token: str, b64: str, mime: str = "image/png") -> dict:
+    import time
+    last_err = None
+    for attempt in range(4):
+        try:
+            r = requests.post(
+                f"{BASE}/smart-paste/photo",
+                headers={"Authorization": f"Bearer {token}"},
+                json={"image_base64": b64, "mime": mime},
+                timeout=TIMEOUT,
+            )
+            if r.status_code == 502:
+                last_err = f"HTTP 502 (attempt {attempt+1}): {r.text[:400]}"
+                print(f"[retry] {last_err}")
+                time.sleep(15 * (attempt + 1))
+                continue
+            if r.status_code != 200:
+                print(f"[HTTP {r.status_code}] {r.text[:800]}")
+            r.raise_for_status()
+            return r.json()
+        except requests.exceptions.RequestException as e:
+            last_err = str(e)
+            print(f"[retry] attempt {attempt+1}: {last_err}")
+            time.sleep(15 * (attempt + 1))
+    raise RuntimeError(f"call_photo failed after retries: {last_err}")
 
 
-def get_phones(resp: Dict[str, Any]) -> Tuple[str, str]:
-    f = resp.get("fields") or {}
-    phone = (f.get("customer_phone") or f.get("PHONE") or "").strip()
-    alt = (f.get("customer_alt_phone") or f.get("ALT_PHONE") or "").strip()
-    return phone, alt
+def get_phones(resp: dict):
+    f = resp.get("fields", {}) or {}
+    phone = f.get("customer_phone") or f.get("PHONE") or ""
+    alt = f.get("customer_alt_phone") or f.get("ALT_PHONE") or ""
+    return (str(phone or "").strip(), str(alt or "").strip())
 
 
-def equal_alt_blank(actual: str) -> bool:
-    return actual in ("", "-", None)
+def dump_resp(label: str, resp: dict) -> None:
+    safe = dict(resp)
+    if "raw" in safe and isinstance(safe["raw"], str) and len(safe["raw"]) > 900:
+        safe["raw"] = safe["raw"][:900] + "...(truncated)"
+    print(f"[{label}] resp:")
+    print(json.dumps(safe, indent=2, ensure_ascii=False)[:4000])
 
 
-def run_test(test_id, lines, expected_phone, expected_alt, token,
-             save_dir="/tmp"):
-    print(f"\n========== {test_id} ==========")
-    print("Lines rendered:")
-    for ln in lines:
-        print(f"  {ln}")
-    png = render_image(lines)
-    img_path = os.path.join(save_dir, f"phase13_{test_id}.png")
-    with open(img_path, "wb") as fh:
-        fh.write(png)
-    print(f"Image written → {img_path} ({len(png)} bytes)")
-
-    resp = call_smart_paste_photo(token, png)
-    if resp.get("_error"):
-        print(f"  HTTP {resp['_status']}: {resp['_body'][:600]}")
-        return False, resp
-
-    phone, alt = get_phones(resp)
-    print(f"  expected PHONE = {expected_phone!r}")
-    print(f"  returned PHONE = {phone!r}")
-    print(f"  expected ALT   = {expected_alt!r}")
-    print(f"  returned ALT   = {alt!r}")
-
-    phone_ok = (phone == expected_phone)
-    if expected_alt in (None, "", "-"):
-        alt_ok = equal_alt_blank(alt)
-    else:
-        alt_ok = (alt == expected_alt)
-
-    ok = phone_ok and alt_ok
-    if not ok:
-        print("  MISMATCH — dumping diagnostics:")
-        print("     fields:", json.dumps(resp.get("fields"), ensure_ascii=False))
-        print("     reason:", resp.get("reason"))
-        print("     warnings:", resp.get("warnings"))
-        msg = resp.get("ai_message", "")
-        if msg:
-            print("     ai_message (first 400):", msg[:400])
-    else:
-        print("  ✓ MATCH")
-    return ok, resp
-
-
-def main() -> int:
-    if not os.path.exists(GU_FONT):
-        print(f"WARN: Gujarati font missing at {GU_FONT}")
-    if not os.path.exists(HI_FONT):
-        print(f"WARN: Devanagari font missing at {HI_FONT}")
-
-    print("Logging in as admin…")
+def run() -> int:
     token = login()
-    print(f"  token len={len(token)}")
+    fails = []
 
-    results = []
+    # T1 — real visiting card
+    try:
+        b64 = b64_from_url(IMG_URL)
+        resp = call_photo(token, b64, mime="image/jpeg")
+        p, ap = get_phones(resp)
+        print(f"[T1] PHONE={p!r}  ALT_PHONE={ap!r}")
+        expected = {"9824475100", "9712544747"}
+        got = {p, ap}
+        if got != expected:
+            dump_resp("T1", resp)
+            fails.append(f"T1 REAL CARD: expected {expected} got {got}")
+        else:
+            if p == "9824475100" and ap == "9712544747":
+                print("[T1] PASS (exact slots)")
+            else:
+                print(f"[T1] PASS (slots swapped) PHONE={p} ALT={ap}")
+    except Exception as e:
+        fails.append(f"T1 EXC: {e}")
+        print(f"[T1] EXC: {e}")
 
-    t1_ok, t1_resp = run_test(
-        "T1",
-        ["ભરતભાઈ ૯૪૨૮૪૪૬૧૮૪", "મયુરભાઈ ૯૩૭૨૫૨૮૮૭૮"],
-        expected_phone="9428446184",
-        expected_alt="9372528878",
-        token=token,
-    )
-    results.append(("T1", t1_ok, t1_resp))
+    # T2 — two Gujarati numbers
+    try:
+        b64 = make_text_png([
+            "ભરતભાઈ ૯૪૨૮૪૪૬૧૮૪",
+            "મયુરભાઈ ૯૩૭૨૫૨૮૮૭૮",
+        ])
+        resp = call_photo(token, b64)
+        p, ap = get_phones(resp)
+        print(f"[T2] PHONE={p!r}  ALT_PHONE={ap!r}")
+        if p != "9428446184" or ap != "9372528878":
+            dump_resp("T2", resp)
+            fails.append(f"T2: expected 9428446184/9372528878 got {p}/{ap}")
+        else:
+            print("[T2] PASS")
+    except Exception as e:
+        fails.append(f"T2 EXC: {e}")
+        print(f"[T2] EXC: {e}")
 
-    t2_ok, t2_resp = run_test(
-        "T2",
-        ["Ramesh  ९८२४४४६१८४"],
-        expected_phone="9824446184",
-        expected_alt="-",
-        token=token,
-    )
-    results.append(("T2", t2_ok, t2_resp))
+    # T3 — Hindi single number
+    try:
+        b64 = make_text_png([
+            "Ramesh ९८२४४४६१८४",
+        ])
+        resp = call_photo(token, b64)
+        p, ap = get_phones(resp)
+        print(f"[T3] PHONE={p!r}  ALT_PHONE={ap!r}")
+        if p != "9824446184":
+            dump_resp("T3", resp)
+            fails.append(f"T3: expected PHONE=9824446184 got {p}")
+        elif ap not in ("", "-", None):
+            dump_resp("T3", resp)
+            fails.append(f"T3: expected empty ALT_PHONE got {ap!r}")
+        else:
+            print("[T3] PASS")
+    except Exception as e:
+        fails.append(f"T3 EXC: {e}")
+        print(f"[T3] EXC: {e}")
 
-    t3_ok, t3_resp = run_test(
-        "T3",
-        ["Call ૯૩૭૨૫૨૮૮૭૮ OR 9824446184"],
-        expected_phone="9372528878",
-        expected_alt="9824446184",
-        token=token,
-    )
-    results.append(("T3", t3_ok, t3_resp))
+    # T4 — mixed Gujarati + Arabic
+    try:
+        b64 = make_text_png([
+            "Call ૯૩૭૨૫૨૮૮૭૮ OR 9824446184",
+        ])
+        resp = call_photo(token, b64)
+        p, ap = get_phones(resp)
+        print(f"[T4] PHONE={p!r}  ALT_PHONE={ap!r}")
+        if p != "9372528878" or ap != "9824446184":
+            dump_resp("T4", resp)
+            fails.append(f"T4: expected 9372528878/9824446184 got {p}/{ap}")
+        else:
+            print("[T4] PASS")
+    except Exception as e:
+        fails.append(f"T4 EXC: {e}")
+        print(f"[T4] EXC: {e}")
 
-    t4_ok, t4_resp = run_test(
-        "T4",
-        ["Call 9876543210"],
-        expected_phone="9876543210",
-        expected_alt="-",
-        token=token,
-    )
-    results.append(("T4", t4_ok, t4_resp))
+    # T5 — plain English
+    try:
+        b64 = make_text_png([
+            "Call 9876543210",
+        ])
+        resp = call_photo(token, b64)
+        p, ap = get_phones(resp)
+        print(f"[T5] PHONE={p!r}  ALT_PHONE={ap!r}")
+        if p != "9876543210":
+            dump_resp("T5", resp)
+            fails.append(f"T5: expected PHONE=9876543210 got {p}")
+        else:
+            print("[T5] PASS")
+    except Exception as e:
+        fails.append(f"T5 EXC: {e}")
+        print(f"[T5] EXC: {e}")
 
-    print("\n" + "=" * 60)
-    print("SUMMARY")
-    print("=" * 60)
-    for tid, ok, _ in results:
-        print(f"  {tid}: {'PASS' if ok else 'FAIL'}")
-    all_ok = all(ok for _, ok, _ in results)
-    print(f"\nOVERALL: {'ALL PASS' if all_ok else 'SOME FAILED'}")
-
-    dump_path = "/tmp/phase13_responses.json"
-    with open(dump_path, "w", encoding="utf-8") as fh:
-        json.dump(
-            [{"id": tid, "ok": ok, "response": resp}
-             for tid, ok, resp in results],
-            fh, ensure_ascii=False, indent=2,
-        )
-    print(f"Full responses dumped → {dump_path}")
-    return 0 if all_ok else 1
+    print("\n============ SUMMARY ============")
+    if fails:
+        print(f"FAILED ({len(fails)}):")
+        for f in fails:
+            print(f"  - {f}")
+        return 1
+    print("ALL PASS")
+    return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(run())

@@ -431,17 +431,37 @@ STEP 3 — Length check:
 
 ### VISUAL CONFUSION WARNINGS (images / handwriting)
 
-These Gujarati glyph pairs are most often misread — look carefully:
-  ૨ (2, open-top horn)    vs   ૯ (9, CLOSED loop on top)
-  ૩ (3, hook upper-right) vs   ૭ (7, straight down-hook)
-  ૪ (4, angular Δ shape)  vs   ૮ (8, fat S / question-mark shape)
-  ૧ (1, vertical + hook)  vs   ૭ (7, similar stroke but shorter)
-  ૦ (0, circle)           vs   ૯ (9, circle + tail)
+These Gujarati glyph pairs are most often misread — look carefully
+and count strokes before committing each digit:
+  ૨ (2, open-top horn)      vs  ૯ (9, CLOSED loop on top)
+  ૩ (3, hook upper-right)   vs  ૭ (7, straight down-hook)
+  ૪ (4, angular Δ shape)    vs  ૮ (8, fat S / question-mark shape)
+  ૧ (1, small vertical)     vs  ૭ (7, longer down-hook)
+  ૭ (7, hook opens DOWN)    vs  ૪ (4, closed triangle on left)
+  ૭ (7)                     vs  ૧ (1) — HIGH CONFUSION in small print
+  ૪ (4, has closed loop)    vs  ૧ (1, plain stroke, NO loop)
+  ૦ (0, circle)             vs  ૯ (9, circle + tail)
+  ૫ (5, pentagon-ish)       vs  ૬ (6, open top)
+  ૬ (6, open top)           vs  ૭ (7, down-hook)
+  ૦ (0)                     vs  ૦૦ — two zeros in a row are common
+                                      at end of numbers; keep both
 
-These Hindi glyph pairs are most often misread:
-  २ (2) vs ३ (3) vs ७ (7)    — all share a curled opening, count strokes
+These Hindi / Devanagari glyph pairs are most often misread:
+  २ (2) vs ३ (3) vs ७ (7)   — all share a curled opening, count strokes
   ४ (4)         — has a closed left loop, NOT an 8
   ५ (5) vs ६ (6) — ५ is open-bottomed, ६ has a filled top
+  ० (0) vs ९ (9) — ९ has a small tail/leg, ० is a pure circle
+  १ (1) vs ७ (7) — ७ has the full curly top, १ is a vertical stroke
+
+### ⚠️ SECOND-NUMBER RIGOR (applies when there are TWO numbers)
+When a card / image shows TWO phone numbers stacked vertically
+(main + alternate), the SECOND number is as important as the FIRST.
+Do NOT relax attention on the second line just because you already
+read the first. Re-apply the full 2-step process (transcribe →
+map → length-check) independently to the alt number. Wrong
+ALT_PHONE = package still mis-delivered. The user reported
+repeated failures where the first number was correct but the
+alternate was hallucinated — do NOT repeat this mistake.
 
 ### ABSOLUTE PROHIBITIONS (phone field only)
 
@@ -1300,7 +1320,14 @@ def _split_compound_phone(value: str) -> Tuple[str, str]:
 
 _VISION_MODEL = os.getenv("SMART_PASTE_VISION_MODEL", "gemini-2.5-flash")
 _VISION_PROVIDER = os.getenv("SMART_PASTE_VISION_PROVIDER", "gemini")
-_VISION_TIMEOUT = float(os.getenv("SMART_PASTE_VISION_TIMEOUT", "20.0"))
+_VISION_TIMEOUT = float(os.getenv("SMART_PASTE_VISION_TIMEOUT", "25.0"))
+# Dedicated model for the targeted phone-number re-verification pass.
+# Kept on "pro" for maximum Indic-digit OCR accuracy — this is the
+# safety net that catches cases where Flash misreads ૭ <-> ૧ /
+# ૪ <-> ૧ in faint / low-res visiting cards. Flash handles the main
+# schema (fast) while Pro focuses ONLY on the critical phone fields.
+_PHONE_VERIFY_MODEL = os.getenv("SMART_PASTE_PHONE_VERIFY_MODEL", "gemini-2.5-pro")
+_PHONE_VERIFY_TIMEOUT = float(os.getenv("SMART_PASTE_PHONE_VERIFY_TIMEOUT", "35.0"))
 
 # Vision-specific prompt — same 15-line schema, extra rules for image OCR.
 DEFAULT_VISION_PROMPT = (
@@ -1356,6 +1383,336 @@ DEFAULT_VISION_PROMPT = (
 )
 
 
+def _extract_phones_via_tesseract(image_base64: str) -> List[str]:
+    """Run Tesseract OCR (guj+hin+eng) on the image and extract every
+    10-digit Indian mobile number (starts with 6/7/8/9) it can find,
+    in visual reading order.
+
+    Strategy: run MULTIPLE Tesseract passes with different PSM modes
+    AND different lightweight image variants (original, autocontrast,
+    grayscale), then VOTE across them. A number that appears in the
+    majority of passes is much more trustworthy than a single-pass
+    answer — this is how we catch tesseract's occasional ૭ <-> ૪
+    confusion on faint print.
+
+    FULLY DETERMINISTIC: no LLM, no network. Returns [] on any error.
+    """
+    try:
+        import base64
+        import io
+        from collections import Counter
+
+        import pytesseract
+        from PIL import Image, ImageOps
+
+        data = base64.b64decode(image_base64)
+        base_im = Image.open(io.BytesIO(data))
+        if base_im.mode != "RGB":
+            base_im = base_im.convert("RGB")
+
+        # Build several lightweight image variants — tesseract likes
+        # clean, non-upscaled images so we deliberately DO NOT apply
+        # any upscale / unsharp / contrast boost (that tends to hurt
+        # already-crisp printed cards). Just autocontrast + grayscale.
+        variants = [("orig", base_im)]
+        try:
+            variants.append(("ac", ImageOps.autocontrast(base_im, cutoff=1)))
+        except Exception:
+            pass
+        try:
+            variants.append(("gray", ImageOps.grayscale(base_im).convert("RGB")))
+        except Exception:
+            pass
+
+        all_hits: List[str] = []
+        per_pass: List[Tuple[str, List[str]]] = []
+
+        # PSM 4 (single column) usually best on visiting cards.
+        # PSM 6 (block) is a strong fallback.
+        # PSM 11 (sparse) catches loosely-laid screenshots.
+        # PSM 3 (auto) is the generic Tesseract default.
+        psms = (4, 6, 11, 3)
+
+        for vname, im in variants:
+            for psm in psms:
+                try:
+                    txt = pytesseract.image_to_string(
+                        im,
+                        lang="guj+hin+eng",
+                        config=f"--psm {psm}",
+                    )
+                except Exception:
+                    continue
+                if not txt:
+                    continue
+                norm = _digits_to_en(txt)
+                # Drop common separators inside runs so "98245 44417" and
+                # "98245-44417" become one 10-digit run.
+                compact = re.sub(r"[\s\-\.\(\)]+", "", norm)
+                hits = re.findall(r"(?<!\d)([6-9]\d{9})(?!\d)", compact)
+                per_pass.append((f"{vname}/psm{psm}", hits))
+                all_hits.extend(hits)
+
+        if not all_hits:
+            return []
+
+        # Vote: pick the most commonly seen number(s). Maintain first-
+        # seen order among ties so the main number on the card (typ-
+        # ically top/left) comes before the alt.
+        counts = Counter(all_hits)
+        max_count = max(counts.values())
+        # Build preserved-order unique list weighted by count.
+        ordered: List[str] = []
+        seen: set = set()
+        for n in all_hits:
+            if n not in seen:
+                ordered.append(n)
+                seen.add(n)
+
+        # Keep only numbers that appeared at least twice (anti-noise)
+        # if we have enough voters; otherwise keep all.
+        strong = [n for n in ordered if counts[n] >= 2]
+        chosen = strong if len(strong) >= 1 else ordered
+
+        _LOG.info(
+            "Smart-paste phone tesseract: per_pass=%r votes=%r chosen=%r",
+            [(name, hits) for name, hits in per_pass],
+            dict(counts),
+            chosen[:5],
+        )
+        return chosen[:5]
+    except Exception as e:
+        _LOG.warning("Tesseract phone extraction failed: %s", e)
+        return []
+
+
+
+
+
+
+# ---- Image preprocessing + phone re-verification helpers ---------------
+
+def _preprocess_image_for_vision(image_base64: str) -> str:
+    try:
+        import base64
+        import io
+        from PIL import Image, ImageFilter, ImageOps, ImageEnhance
+
+        data = base64.b64decode(image_base64)
+        im = Image.open(io.BytesIO(data))
+        if im.mode != "RGB":
+            im = im.convert("RGB")
+
+        w, h = im.size
+        short_side = min(w, h)
+        TARGET_SHORT = 1400
+        if short_side < TARGET_SHORT:
+            scale = TARGET_SHORT / float(short_side)
+            new_w = int(round(w * scale))
+            new_h = int(round(h * scale))
+            im = im.resize((new_w, new_h), Image.LANCZOS)
+
+        try:
+            im = ImageOps.autocontrast(im, cutoff=1)
+        except Exception:
+            pass
+
+        try:
+            im = im.filter(ImageFilter.UnsharpMask(
+                radius=1.5, percent=150, threshold=3,
+            ))
+        except Exception:
+            pass
+
+        try:
+            im = ImageEnhance.Contrast(im).enhance(1.15)
+        except Exception:
+            pass
+
+        buf = io.BytesIO()
+        im.save(buf, format="PNG", optimize=True)
+        enhanced = base64.b64encode(buf.getvalue()).decode("ascii")
+        _LOG.info(
+            "Smart-paste photo: image preprocessed "
+            "(in=%dB -> out=%dB, size=%dx%d)",
+            len(data), len(buf.getvalue()), im.size[0], im.size[1],
+        )
+        return enhanced
+    except Exception as e:
+        _LOG.warning("Image preprocessing failed, using original: %s", e)
+        return image_base64
+
+
+# Dedicated prompt for the focused phone-number re-verification pass.
+# Gemini outputs BOTH the raw native-script transcription AND the
+# final Arabic mapping; server then deterministically re-translates
+# the native script via str.maketrans — so if the model mistakes the
+# VISUAL-TO-NUMERIC mapping we still recover the right number from
+# the raw transcription (transcription is an easier task than mapping).
+_PHONE_VERIFY_PROMPT = """\
+You are an OCR expert specialising in Indian mobile phone numbers
+written in Arabic, Gujarati, or Hindi (Devanagari) digits.
+
+INPUT: an image containing one or more phone numbers. Numbers may
+be handwritten, printed on a visiting card, or part of a WhatsApp
+message. They may be in:
+  - Arabic digits:   0 1 2 3 4 5 6 7 8 9
+  - Gujarati digits: ૦ ૧ ૨ ૩ ૪ ૫ ૬ ૭ ૮ ૯   (map to 0-9 IN ORDER)
+  - Hindi digits:    ० १ २ ३ ४ ५ ६ ७ ८ ९   (map to 0-9 IN ORDER)
+
+TASK: extract EVERY mobile number visible in the image (10 digits
+each, Indian mobile starts with 6/7/8/9). For each number output
+BOTH:
+  1. The EXACT native-script transcription, digit-by-digit, with
+     single spaces between digits (so server can parse).
+  2. The final 10-digit Arabic representation.
+
+VISUAL CONFUSION WARNINGS — look carefully before committing:
+  Gujarati:
+    2<->9   3<->7   4<->8   4<->1   7<->1   7<->4   0<->9   5<->6
+    (i.e. in script: two vs nine, three vs seven, four vs eight,
+    four vs one, seven vs one, seven vs four, zero vs nine, five
+    vs six)
+  Hindi / Devanagari:
+    2<->3<->7   1<->7   0<->9   5<->6
+
+STRIKETHROUGH / CROSSED-OUT numbers MUST BE SKIPPED (if a horizontal
+pen/marker line crosses the digits) — do NOT skip a number that
+merely has an UNDERLINE below it (underline = emphasis, not cancel).
+
+If a digit is too blurry or partially obscured to be certain, mark
+the whole number invalid with status "unclear".
+
+OUTPUT FORMAT — ONE line per number, in visual reading order
+(top-to-bottom, left-to-right). NO other text, NO markdown, NO
+explanation.
+
+Example (two Gujarati numbers on a card):
+  PHONE_RAW: 9 8 2 4 4 7 5 1 0 0 | ARABIC: 9824475100 | STATUS: ok
+  PHONE_RAW: 9 7 1 2 5 4 4 7 4 7 | ARABIC: 9712544747 | STATUS: ok
+(but when Gujarati, use the ACTUAL Gujarati glyphs ૦-૯ in PHONE_RAW,
+ e.g. PHONE_RAW: ૯ ૭ ૧ ૨ ૫ ૪ ૪ ૭ ૪ ૭ | ARABIC: 9712544747 | STATUS: ok)
+
+Example (faint number):
+  PHONE_RAW: ? ? ? ? ? ? ? ? ? ? | ARABIC: - | STATUS: unclear
+
+ABSOLUTE RULES:
+  - Never hallucinate a missing digit. If unsure, STATUS=unclear and
+    ARABIC=-.
+  - Never auto-correct the number to look "more familiar".
+  - Transcribe each digit INDEPENDENTLY; do NOT compare to common
+    Indian mobile prefixes to "guess" a digit.
+  - Final ARABIC must be exactly 10 digits (or "-" for unclear).
+  - Include ALL phone numbers you see, even if more than 2.
+"""
+
+
+# Regex to parse one line of the phone-verify response.
+_PHONE_VERIFY_LINE_RE = re.compile(
+    r"PHONE_RAW\s*:\s*(?P<raw>[^|]+?)\s*\|\s*"
+    r"ARABIC\s*:\s*(?P<ar>[0-9\-]+)\s*\|\s*"
+    r"STATUS\s*:\s*(?P<st>\w+)",
+    flags=re.IGNORECASE,
+)
+
+
+async def _reverify_phones_via_vision(
+    *, image_base64: str, mime: str,
+) -> List[Dict[str, str]]:
+    """Run a focused second Gemini Vision call ONLY for phone numbers.
+
+    Returns an ordered list (top-to-bottom in the image):
+      [{"raw_native": "<with spaces>", "raw_compact": "<no spaces>",
+        "arabic_from_model": "9824475100",
+        "arabic_deterministic": "9824475100", "status": "ok"},
+       ...]
+    """
+    if not image_base64 or not _LLM_KEY:
+        return []
+    try:
+        from emergentintegrations.llm.chat import (
+            LlmChat, UserMessage, ImageContent,
+        )
+        chat = (
+            LlmChat(
+                api_key=_LLM_KEY,
+                session_id=f"smart-paste-phone-verify-"
+                           f"{abs(hash(image_base64[:200]))}",
+                system_message=_PHONE_VERIFY_PROMPT,
+            )
+            .with_model(_VISION_PROVIDER, _PHONE_VERIFY_MODEL)
+        )
+        msg = UserMessage(
+            text=(
+                "Extract every mobile number in this image using the "
+                "strict output format above. Output only the phone "
+                "lines — no other text."
+            ),
+            file_contents=[ImageContent(image_base64=image_base64)],
+        )
+        raw = await asyncio.wait_for(
+            chat.send_message(msg), timeout=_PHONE_VERIFY_TIMEOUT,
+        )
+    except Exception as e:
+        _LOG.warning("Smart-paste phone re-verify failed: %s", e)
+        return []
+
+    out: List[Dict[str, str]] = []
+    for m in _PHONE_VERIFY_LINE_RE.finditer(raw or ""):
+        raw_native = m.group("raw").strip()
+        ar_from_model = (m.group("ar") or "").strip()
+        status = (m.group("st") or "").strip().lower()
+
+        # Compact form: drop all whitespace.
+        raw_compact = re.sub(r"\s+", "", raw_native)
+        # Deterministic translation (the safety net):
+        det = _digits_to_en(raw_compact)
+        det_digits = re.sub(r"\D", "", det)
+
+        out.append({
+            "raw_native": raw_native,
+            "raw_compact": raw_compact,
+            "arabic_from_model": ar_from_model,
+            "arabic_deterministic": det_digits,
+            "status": status,
+        })
+    _LOG.info(
+        "Smart-paste phone re-verify: parsed %d number(s); raw=%r",
+        len(out), (raw or "")[:300],
+    )
+    return out
+
+
+def _pick_best_phone(verify_entry: Dict[str, str]) -> str:
+    """Choose the most trustworthy 10-digit number from a single
+    phone-verify entry.
+
+    Priority:
+      1. Deterministic translation of native script (if valid 10-digit
+         Indian mobile: starts with 6/7/8/9). This is the safest —
+         pure str.translate, no LLM inference at this step.
+      2. Model's own Arabic output (if valid 10-digit Indian mobile).
+      3. Empty string (no reliable number).
+    """
+    status = (verify_entry.get("status") or "").lower()
+    if status not in {"ok", ""}:
+        return ""
+
+    det = verify_entry.get("arabic_deterministic") or ""
+    model_ar = verify_entry.get("arabic_from_model") or ""
+
+    def _is_valid_indian_mobile(s: str) -> bool:
+        return bool(re.fullmatch(r"[6-9]\d{9}", s or ""))
+
+    if _is_valid_indian_mobile(det):
+        return det
+    if _is_valid_indian_mobile(model_ar):
+        return model_ar
+    return ""
+
+
+
+
 async def parse_image_with_ai(
     *,
     image_base64: str,
@@ -1384,6 +1741,19 @@ async def parse_image_with_ai(
     if mime not in {"image/jpeg", "image/jpg", "image/png", "image/webp"}:
         # Coerce odd MIME types onto JPEG (the most common camera output).
         mime = "image/jpeg"
+
+    # Phase-14: keep a pristine copy of the ORIGINAL image for Tesseract.
+    # Tesseract's Gujarati / Hindi models are tuned for natural camera
+    # captures — aggressive preprocessing (upscale + unsharp) can hurt
+    # accuracy on already-crisp printed cards.
+    original_image_b64 = image_base64
+
+    # Deterministic image enhancement BEFORE Gemini call only.
+    # Boosts contrast + sharpness + upscales small images so faint
+    # Indic-script digits print clearer. Zero LLM cost.
+    image_base64 = _preprocess_image_for_vision(image_base64)
+    # After preprocessing we always output PNG; Gemini handles PNG fine.
+    mime = "image/png"
 
     system = DEFAULT_VISION_PROMPT
     if custom_instructions.strip():
@@ -1438,6 +1808,66 @@ async def parse_image_with_ai(
     if complexity != "complex":
         complexity = "complex"
         reason = (reason or "vision call") + " (photo OCR billed as complex)"
+
+    # ── Phase-14: Phone re-verification (Indic-digit accuracy safety net)
+    # PRIMARY: Tesseract OCR with Gujarati + Hindi language packs —
+    # deterministic, fast, free, and trained specifically on Indic
+    # scripts. Runs on the ORIGINAL (pristine, un-preprocessed) image
+    # because tesseract's trained models already handle typical
+    # camera noise better than aggressive sharpening / upscaling.
+    # FALLBACK: focused Gemini 2.5 Pro call if Tesseract finds nothing
+    # (e.g. unusual fonts / stylised handwriting where Tesseract
+    # struggles but a vision LLM still recognises the digits).
+    best_nums: List[str] = []
+
+    try:
+        tess_nums = _extract_phones_via_tesseract(original_image_b64)
+    except Exception as e:
+        _LOG.warning("Tesseract phone wrapper failed: %s", e)
+        tess_nums = []
+    for n in tess_nums:
+        if n not in best_nums:
+            best_nums.append(n)
+        if len(best_nums) >= 2:
+            break
+
+    if len(best_nums) < 2:
+        try:
+            phone_verify = await _reverify_phones_via_vision(
+                image_base64=image_base64, mime=mime,
+            )
+        except Exception as e:
+            _LOG.warning("Phone re-verify wrapper failed: %s", e)
+            phone_verify = []
+        for entry in phone_verify:
+            n = _pick_best_phone(entry)
+            if n and n not in best_nums:
+                best_nums.append(n)
+            if len(best_nums) >= 2:
+                break
+
+    if best_nums:
+        old_p = (fields.get("PHONE") or "").strip()
+        old_ap = (fields.get("ALT_PHONE") or "").strip()
+        if len(best_nums) >= 1 and best_nums[0] and best_nums[0] != old_p:
+            _LOG.info(
+                "Smart-paste photo: PHONE overridden by phone-verify "
+                "(%r -> %r)", old_p, best_nums[0],
+            )
+            fields["PHONE"] = best_nums[0]
+            if "PHONE" in missing:
+                missing.remove("PHONE")
+            reason = (reason or "vision call") + " + phone verify"
+        if len(best_nums) >= 2 and best_nums[1] and best_nums[1] != old_ap:
+            _LOG.info(
+                "Smart-paste photo: ALT_PHONE overridden by phone-verify "
+                "(%r -> %r)", old_ap, best_nums[1],
+            )
+            fields["ALT_PHONE"] = best_nums[1]
+            if "ALT_PHONE" in missing:
+                missing.remove("ALT_PHONE")
+            if "phone verify" not in (reason or ""):
+                reason = (reason or "vision call") + " + phone verify"
 
     # ── Address-recovery fallback (Phase-5d patch) ───────────────────
     # Gemini sometimes returns ADDRESS_1 = "-" even when there's a clearly

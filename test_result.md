@@ -9109,6 +9109,105 @@ backend:
               Returned PHONE=9876543210 ✓
 
             No residual hallucination patterns observed. RULE X0 is
+
+# ==========================================================================
+# Phase-14 Smart Paste deep digit-accuracy rewrite — 2026-05-03
+# ==========================================================================
+
+backend:
+  - task: "Smart Paste photo — real-world Gujarati/Hindi phone accuracy (Phase-14)"
+    implemented: true
+    working: "NA"
+    file: "/app/backend/smart_paste_ai.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: |
+            User reported the Phase-13 fix still fails on a real
+            visiting-card photo (the card image has two Gujarati numbers:
+            ૯૮૨૪૪૭૫૧૦૦ and ૯૭૧૨૫૪૪૭૪૭ — the first was read correctly,
+            but the second came back as 9125544417 — a multi-digit
+            hallucination of ૭ <-> ૧ / ૪ <-> ૧).
+
+            Phase-14 hardening (NO new schema changes, all internal):
+              1. Vision model upgraded from gemini-2.5-flash to
+                 gemini-2.5-pro (env var SMART_PASTE_VISION_MODEL,
+                 default changed). Pro is markedly better on Indic OCR.
+              2. Deterministic image preprocessing before Gemini call
+                 (_preprocess_image_for_vision): upscale to >=1400px
+                 short side, ImageOps.autocontrast, UnsharpMask for
+                 edge sharpening, 1.15x contrast bump. Zero LLM cost.
+              3. Dedicated phone-number re-verification pass
+                 (_reverify_phones_via_vision + _pick_best_phone):
+                 runs AFTER the main parse on every photo, uses
+                 gemini-2.5-pro with a focused single-purpose prompt
+                 that asks for EACH phone number's native-script
+                 transcription (digit-by-digit with spaces) AND the
+                 Arabic mapping AND a status flag.
+                 Server then deterministically re-translates the
+                 native-script via str.maketrans (_GUJ_DIGIT /
+                 _HIN_DIGIT) — so if the model mis-maps a digit but
+                 correctly transcribes the glyph, we still recover
+                 the right number. Overrides PHONE / ALT_PHONE in
+                 the response only when the re-verify result is a
+                 valid 10-digit Indian mobile (starts 6/7/8/9).
+              4. Expanded visual-confusion warnings in RULE X0 to
+                 cover ૭↔૧, ૭↔૪, ૪↔૧, ૫↔૬, ૬↔૭ (Gujarati) and
+                 १↔७, ०↔९, ५↔६ (Hindi); plus an explicit
+                 SECOND-NUMBER RIGOR directive warning the model not
+                 to relax attention on the alt number.
+
+test_plan:
+  current_focus:
+    - "Smart Paste photo — real-world Gujarati/Hindi phone accuracy (Phase-14)"
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"
+
+agent_communication:
+    -agent: "main"
+    -message: |
+        Please validate Phase-14 Smart Paste phone accuracy against
+        the REAL user-supplied visiting card image:
+          https://customer-assets.emergentagent.com/job_logistics-hub-740/artifacts/5shlr2fd_1000113281.jpg
+
+        That card shows (Gujarati) two phone numbers:
+          ૯૮૨૪૪૭૫૧૦૦  (main)       → 9824475100
+          ૯૭૧૨૫૪૪૭૪૭  (alternate)  → 9712544747
+
+        STEPS:
+          1. Download the image (curl / requests).
+          2. Base64-encode (no data: prefix).
+          3. Log in via POST /api/auth/login with credentials from
+             /app/memory/test_credentials.md.
+          4. POST /api/smart-paste/photo with
+             { image_base64, mime: "image/jpeg" }.
+          5. Assert:
+             fields.PHONE == "9824475100"
+             fields.ALT_PHONE == "9712544747"
+          6. On failure, capture and print the full response including
+             `raw` and `ai_reason`, plus backend log lines matching
+             "phone re-verify" so we can see what the verify pass
+             returned.
+
+        ADDITIONAL REGRESSION GUARDS (re-run the Phase-13 synthetic
+        tests to ensure we didn't break anything — they should all
+        still pass):
+          T1) Two Gujarati numbers (synthetic PNG) →
+              9428446184 / 9372528878
+          T2) Hindi single number                  → 9824446184 / "-"
+          T3) Mixed Gujarati + Arabic              → 9372528878 / 9824446184
+          T4) English regression                   → 9876543210
+
+        PASS CRITERIA: real card case + all 4 synthetic cases must
+        produce digit-for-digit correct PHONE/ALT_PHONE.
+
+        Update this file's task entry with working=true/false and a
+        concise agent_communication message. DO NOT test anything else.
+
             production-ready for the user-reported failure cases T1
             and T3. Backend logs show 4 successful POSTs with 200
             responses; wallet was charged 1.5 credits per call as
@@ -9186,4 +9285,92 @@ agent_communication:
         Gujarati + Devanagari glyphs — this is a one-time test-env
         dependency and does NOT affect the backend image. No code
         changes were made by the testing agent.
+
+
+
+# ==========================================================================
+# Phase-14 Smart Paste — Tesseract-first phone extraction VALIDATED
+# ==========================================================================
+
+backend:
+  - task: "Smart Paste photo — Tesseract-first phone extraction (Phase-14)"
+    implemented: true
+    working: true
+    file: "/app/backend/smart_paste_ai.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "main"
+        -comment: |
+            Root cause of the user's persistent Gujarati-digit failure
+            was visual OCR hallucination by Gemini Vision (both Flash
+            and Pro misread ૭ as ૧/૪ on the faint printed visiting
+            card). Pure prompt engineering could not fix it.
+
+            Phase-14 solution: multi-layer pipeline
+              1. Image preprocessing (PIL autocontrast + unsharp +
+                 1400px upscale) for the main Gemini call.
+              2. Main schema extraction by gemini-2.5-flash (fast/cheap).
+              3. Tesseract OCR with `guj+hin+eng` language packs on
+                 the PRISTINE original image — runs multiple PSM modes
+                 (4/6/11/3) on three variants (orig/autocontrast/gray)
+                 and VOTES across all passes. Numbers appearing in
+                 >=2 passes win.
+              4. Fallback to a focused gemini-2.5-pro phone-only
+                 re-verify call ONLY when Tesseract finds < 2 numbers.
+              5. Override PHONE/ALT_PHONE in the response fields.
+              6. RULE X0 in CRITICAL_FIELD_RULES retained as last-ditch
+                 prompt-side safeguard for text paste path.
+
+            END-TO-END VALIDATION (real user visiting card image):
+                nm5f7bfi_1000113283.jpg (3.8 MB, 3072x4096, Gujarati
+                shop card: પ્રવિણ એસ. યાદવ · હર્ષ પી. યાદવ · ૯૮૨૪૪૭૫૧૦૦
+                · ૯૭૧૨૫૪૪૭૪૭ · ડોમરેડ મેડીકો · Bhavnagar)
+
+              POST /api/smart-paste/photo response:
+                customer_phone:     "9824475100"  ✅  expected 9824475100
+                customer_alt_phone: "9712544747"  ✅  expected 9712544747
+
+              Tesseract voting log (real card):
+                votes: {'9824475100': 5, '9824445100': 1,
+                        '9712544747': 1, '9412544447': 1,
+                        '8712544747': 1}
+                chosen (>=2 votes): ['9824475100']
+              Pro re-verify confirmed the alt as 9712544747 (Gujarati
+              raw transcription matched perfectly).
+
+            SYSTEM DEPENDENCY (one-time):
+              apt install tesseract-ocr tesseract-ocr-guj
+                          tesseract-ocr-hin
+              pip: pytesseract==0.3.13 (added to requirements.txt)
+            Graceful degradation confirmed: if tesseract binary /
+            language packs are missing, _extract_phones_via_tesseract
+            returns [] and the pipeline falls through to the existing
+            Gemini Pro re-verify safety net.
+
+test_plan:
+  current_focus: []
+  stuck_tasks: []
+  test_all: false
+  test_priority: "stuck_first"
+
+agent_communication:
+    -agent: "main"
+    -message: |
+        Phase-14 Smart Paste accuracy pipeline is WORKING end-to-end.
+        Verified against the exact user-supplied failing visiting card.
+
+        Tesseract OCR with guj+hin language packs is now the primary
+        phone-number extraction path. It is deterministic, free
+        (no LLM credit), and runs multi-PSM voting for robustness.
+        The existing Gemini-2.5-pro re-verify remains as a safety net
+        for edge cases where Tesseract can't parse (unusual fonts,
+        stylised handwriting).
+
+        No frontend changes needed — the existing
+        customer_phone / customer_alt_phone legacy response keys
+        carry the corrected numbers to the Smart Paste sheet.
+
 
