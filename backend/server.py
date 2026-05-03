@@ -7660,7 +7660,7 @@ from starlette.responses import JSONResponse
 from auth import decode_token as _decode_token
 
 # Endpoints that are intentionally reachable without a token.
-_AUTH_EXEMPT_PREFIXES = ("/api/auth/",)
+_AUTH_EXEMPT_PREFIXES = ("/api/auth/", "/api/legal/")
 # Admin-only endpoints. For Phase-1a we keep this small; Phase-1b will
 # expand as we harden multi-tenancy.
 _ADMIN_ONLY_PATHS: set = set()
@@ -8358,6 +8358,14 @@ async def admin_analytics_overview(
 # included earlier so we can't add new routes to it).
 app.include_router(sheet_sync_router)
 app.include_router(analytics_router)
+
+# Phase J — Legal pages (Privacy, Terms, Refund) hosted directly on
+# the backend so they have a stable public URL for Play Store review.
+try:
+    from legal_pages import legal_router as _legal_router
+    app.include_router(_legal_router)
+except Exception:
+    logger.exception("Failed to mount legal_pages router (non-fatal)")
 
 
 @app.on_event("shutdown")

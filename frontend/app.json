@@ -90,11 +90,13 @@
     },
     "extra": {
       "storeListingName": "Shippzo - Courier Labels",
-      "privacyPolicyUrl": "https://shippzo.com/privacy",
-      "termsUrl": "https://shippzo.com/terms",
+      "privacyPolicyUrl": "https://logistics-hub-740.preview.emergentagent.com/api/legal/privacy",
+      "termsUrl": "https://logistics-hub-740.preview.emergentagent.com/api/legal/terms",
+      "refundPolicyUrl": "https://logistics-hub-740.preview.emergentagent.com/api/legal/refund",
       "supportEmail": "shippzo.support@gmail.com",
       "supportPhone": "",
-      "appCategory": "BUSINESS"
+      "appCategory": "BUSINESS",
+      "_note_about_urls": "These point to backend-hosted HTML so Play/App Store reviewers always see live policies. Once shippzo.com/privacy is published, replace with shippzo.com URLs."
     }
   }
 }
