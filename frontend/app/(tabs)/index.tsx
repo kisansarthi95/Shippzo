@@ -885,7 +885,7 @@ export default function Dashboard() {
                   </Text>
                   {photoUploading && photoStage === "reading" && (
                     <Text style={styles.entryBusySub}>
-                      Powered by Gemini Flash
+                      Powered by Shippzo · Smart Shipping
                     </Text>
                   )}
                 </View>

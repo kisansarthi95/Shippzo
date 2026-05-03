@@ -338,19 +338,43 @@ from ADDRESS_1.
   * "Near / Opp / Behind / Landmark / etc." stay INSIDE ADDRESS_1,
     in their original position separated by ", ".
 
-**Rule 14 — NAME: shop / business name is acceptable as customer name:**
+**Rule 14 — NAME: combine PERSON + SHOP name when both are visible:**
   * Prefer a person's name when present.
+  * If BOTH a person name AND a shop/business/company name are visible
+    in the input, OUTPUT the combined form:
+        "<Person Name> - <Shop Name>"
+    The hyphen-separated form lets the operator instantly tell who at
+    which shop placed the order. Examples:
+      Person="Bharatbhai", Shop="Tulsi Sports"
+        → NAME: Bharatbhai - Tulsi Sports
+      Person="Asari Nikunj", Shop="Asari Industries"
+        → NAME: Asari Nikunj - Asari Industries
+      Person="Dr. Kagathara", Shop="Kagathara Clinic"
+        → NAME: Dr. Kagathara - Kagathara Clinic
   * If ONLY a shop / business / company name is visible (no
     personal name anywhere in the input), put the SHOP NAME into
     NAME. NEVER leave NAME blank when a shop/business name is
-    clearly identifiable. Examples that should populate NAME:
+    clearly identifiable. Examples:
       "GREY GENTS"           → NAME: GREY GENTS
       "Mahek Creations"      → NAME: Mahek Creations
       "Balaji Developers"    → NAME: Balaji Developers
       "Iscon Balaji M/s"     → NAME: Iscon Balaji
-  * If both person + shop are visible, person → NAME and shop name
-    can be appended to ADDRESS_1 (e.g. "M/s Mahek Creations,
-    Shop 12, …").
+  * If ONLY a person name is visible (no shop/business mentioned),
+    use just the person name in NAME (no hyphen, no shop suffix).
+  * Trim and de-duplicate: do NOT output things like
+    "Bharatbhai - Bharatbhai Trading" — if the person name is a
+    near-substring of the shop name, prefer just the SHOP NAME.
+
+**Rule 15 — ALT_PHONE: capture every additional phone number:**
+  * If TWO OR MORE phone numbers are visible (e.g. "Bharatbhai
+    9824446184 / Mayurbhai 9372528878"), the FIRST number goes into
+    PHONE and the SECOND number goes into ALT_PHONE.
+  * If three or more are present, prefer the order they appear; the
+    first → PHONE, second → ALT_PHONE, ignore the rest.
+  * Pure-mobile-only outputs (e.g. WhatsApp screenshots showing both
+    parties' numbers) should still produce ALT_PHONE when a second
+    distinct 10-digit number is found.
+  * NEVER duplicate the same number into both PHONE and ALT_PHONE.
 
 After the 15-line block, on a NEW line, output one JSON object describing
 the address complexity:
