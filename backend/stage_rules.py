@@ -144,6 +144,22 @@ DEFAULT_STAGE_RULES_DOC: Dict[str, Any] = {
     "alert_admin_number":  "",   # single admin number
     "alert_app_user_ids":  [],   # uuid list for in-app push notifications
     "global_enabled":      True, # master kill-switch
+
+    # ── How / where alerts are surfaced inside the app ───────────────
+    # All three channels are independent toggles; turn off any you
+    # don't want. "list" = the dedicated /admin/sla-alerts list,
+    # "banner" = the dashboard "Action Required" widget,
+    # "push" = expo/FCM push notification (when wired in Phase D).
+    "display_channels": {
+        "list":   True,
+        "banner": True,
+        "push":   False,
+    },
+    # How often the background scanner runs. Min 15min, max 240.
+    "scan_interval_minutes": 60,
+    # Default per-stage cooldown applied when a stage's own cooldown
+    # is missing. Lets the admin tune anti-spam centrally.
+    "default_cooldown_hours": 24,
 }
 
 
@@ -175,6 +191,9 @@ class StageRulesPayload(BaseModel):
     alert_admin_number: Optional[str] = None
     alert_app_user_ids: Optional[List[str]] = None
     global_enabled: Optional[bool] = None
+    display_channels: Optional[Dict[str, bool]] = None
+    scan_interval_minutes: Optional[int] = None
+    default_cooldown_hours: Optional[int] = None
 
 
 def merge_with_defaults(saved: Dict[str, Any]) -> Dict[str, Any]:
@@ -209,6 +228,40 @@ def merge_with_defaults(saved: Dict[str, Any]) -> Dict[str, Any]:
     out["global_enabled"] = bool(
         (saved or {}).get("global_enabled", True),
     )
+
+    # Display channels — admin chooses which UI surfaces show alerts.
+    saved_dc = (saved or {}).get("display_channels") or {}
+    default_dc = DEFAULT_STAGE_RULES_DOC["display_channels"]
+    out["display_channels"] = {
+        "list":   bool(saved_dc.get("list",   default_dc["list"])),
+        "banner": bool(saved_dc.get("banner", default_dc["banner"])),
+        "push":   bool(saved_dc.get("push",   default_dc["push"])),
+    }
+
+    # Scan interval — clamp into [15, 240] minutes.
+    try:
+        scan_int = int(
+            (saved or {}).get(
+                "scan_interval_minutes",
+                DEFAULT_STAGE_RULES_DOC["scan_interval_minutes"],
+            )
+        )
+    except (TypeError, ValueError):
+        scan_int = DEFAULT_STAGE_RULES_DOC["scan_interval_minutes"]
+    out["scan_interval_minutes"] = max(15, min(240, scan_int))
+
+    # Default cooldown — sane bounds [1, 168] hours.
+    try:
+        dch = int(
+            (saved or {}).get(
+                "default_cooldown_hours",
+                DEFAULT_STAGE_RULES_DOC["default_cooldown_hours"],
+            )
+        )
+    except (TypeError, ValueError):
+        dch = DEFAULT_STAGE_RULES_DOC["default_cooldown_hours"]
+    out["default_cooldown_hours"] = max(1, min(168, dch))
+
     return out
 
 

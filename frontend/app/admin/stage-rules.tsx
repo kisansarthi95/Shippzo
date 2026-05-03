@@ -47,6 +47,15 @@ export default function StageRulesScreen() {
   const [drafts, setDrafts] = useState<Record<string, any>>({});
   const [adminNumber, setAdminNumber] = useState("");
   const [teamNumbersText, setTeamNumbersText] = useState("");
+  // Engine-level settings (Phase G3)
+  const [globalEnabled, setGlobalEnabled] = useState(true);
+  const [scanInterval, setScanInterval] = useState(60);
+  const [defaultCooldown, setDefaultCooldown] = useState(24);
+  const [chList, setChList] = useState(true);
+  const [chBanner, setChBanner] = useState(true);
+  const [chPush, setChPush] = useState(false);
+  const [running, setRunning] = useState(false);
+  const [lastRun, setLastRun] = useState<any>(null);
 
   const load = useCallback(async () => {
     try {
@@ -57,6 +66,17 @@ export default function StageRulesScreen() {
       const cur = d.current || {};
       setAdminNumber(String(cur.alert_admin_number || ""));
       setTeamNumbersText(((cur.alert_team_numbers || []) as string[]).join(", "));
+      setGlobalEnabled(cur.global_enabled !== false);
+      setScanInterval(Number(cur.scan_interval_minutes) || 60);
+      setDefaultCooldown(Number(cur.default_cooldown_hours) || 24);
+      const dc = cur.display_channels || {};
+      setChList(dc.list !== false);
+      setChBanner(dc.banner !== false);
+      setChPush(!!dc.push);
+      try {
+        const sum = await Api.adminSlaSummary();
+        setLastRun(sum.last_run);
+      } catch { /* non-fatal */ }
     } catch (e: any) {
       Alert.alert("Error", e?.response?.data?.detail || e?.message || "Failed to load");
     } finally {
@@ -75,7 +95,13 @@ export default function StageRulesScreen() {
 
   const dirty = Object.keys(drafts).length > 0
     || adminNumber !== String(data?.current?.alert_admin_number || "")
-    || teamNumbersText !== ((data?.current?.alert_team_numbers || []) as string[]).join(", ");
+    || teamNumbersText !== ((data?.current?.alert_team_numbers || []) as string[]).join(", ")
+    || globalEnabled !== (data?.current?.global_enabled !== false)
+    || scanInterval !== (Number(data?.current?.scan_interval_minutes) || 60)
+    || defaultCooldown !== (Number(data?.current?.default_cooldown_hours) || 24)
+    || chList !== ((data?.current?.display_channels?.list) !== false)
+    || chBanner !== ((data?.current?.display_channels?.banner) !== false)
+    || chPush !== !!(data?.current?.display_channels?.push);
 
   const save = async () => {
     setSaving(true);
@@ -85,6 +111,10 @@ export default function StageRulesScreen() {
         stages: drafts,
         alert_admin_number: adminNumber.trim(),
         alert_team_numbers: teamList,
+        global_enabled: globalEnabled,
+        scan_interval_minutes: scanInterval,
+        default_cooldown_hours: defaultCooldown,
+        display_channels: { list: chList, banner: chBanner, push: chPush },
       });
       Alert.alert("Saved", "Stage rules updated.");
       load();
@@ -92,6 +122,26 @@ export default function StageRulesScreen() {
       Alert.alert("Save failed", e?.response?.data?.detail || e?.message || "Error");
     } finally {
       setSaving(false);
+    }
+  };
+
+  const runScanNow = async () => {
+    setRunning(true);
+    try {
+      const res = await Api.adminSlaRunNow();
+      if (res.ok) {
+        setLastRun(res.stats);
+        Alert.alert(
+          "Scan complete",
+          `Users scanned: ${res.stats?.users_scanned || 0}\nNew alerts: ${res.stats?.alerts_raised || 0}`,
+        );
+      } else {
+        Alert.alert("Already running", res.message || "Try again in a moment.");
+      }
+    } catch (e: any) {
+      Alert.alert("Scan failed", e?.response?.data?.detail || e?.message || "Error");
+    } finally {
+      setRunning(false);
     }
   };
 
@@ -344,6 +394,125 @@ export default function StageRulesScreen() {
             );
           })}
 
+          {/* Engine Settings (Phase G3) */}
+          <View style={styles.engineBlock}>
+            <View style={styles.engineHeader}>
+              <Text style={styles.recipTitle}>⚙️ SLA Engine Settings</Text>
+              <Switch
+                value={globalEnabled}
+                onValueChange={setGlobalEnabled}
+                trackColor={{ false: "#D1D5DB", true: "#10B981" }}
+                thumbColor="#fff"
+              />
+            </View>
+            <Text style={styles.recipHint}>
+              Master switch for the breach scanner. Turn off to silence all
+              SLA alerts without touching individual stage configs.
+            </Text>
+
+            <Text style={styles.fieldLabel}>⏱️ Scan interval — how often the scanner runs</Text>
+            <View style={styles.slaRow}>
+              {[15, 30, 60, 120, 240].map((n) => {
+                const active = scanInterval === n;
+                return (
+                  <TouchableOpacity
+                    key={n}
+                    style={[styles.slaChip, active && { backgroundColor: "#1F4FBF", borderColor: "#1F4FBF" }]}
+                    onPress={() => setScanInterval(n)}
+                  >
+                    <Text style={[styles.slaChipText, active && { color: "#fff" }]}>
+                      {n < 60 ? `${n}m` : `${n / 60}h`}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+
+            <Text style={styles.fieldLabel}>🛌 Default cooldown — gap before re-alerting on the same shipment</Text>
+            <View style={styles.slaRow}>
+              {[6, 12, 24, 48, 72, 168].map((n) => {
+                const active = defaultCooldown === n;
+                return (
+                  <TouchableOpacity
+                    key={n}
+                    style={[styles.slaChip, active && { backgroundColor: "#B45309", borderColor: "#B45309" }]}
+                    onPress={() => setDefaultCooldown(n)}
+                  >
+                    <Text style={[styles.slaChipText, active && { color: "#fff" }]}>
+                      {n < 24 ? `${n}h` : `${n / 24}d`}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+
+            <Text style={styles.fieldLabel}>📍 Where to show alerts (display channels)</Text>
+            <View style={styles.kvRow}>
+              <Text style={styles.kvLabel}>📋 Alerts list page</Text>
+              <Switch
+                value={chList}
+                onValueChange={setChList}
+                trackColor={{ false: "#D1D5DB", true: "#1F4FBF" }}
+                thumbColor="#fff"
+              />
+            </View>
+            <View style={styles.kvRow}>
+              <Text style={styles.kvLabel}>🚨 Dashboard banner</Text>
+              <Switch
+                value={chBanner}
+                onValueChange={setChBanner}
+                trackColor={{ false: "#D1D5DB", true: "#DC2626" }}
+                thumbColor="#fff"
+              />
+            </View>
+            <View style={styles.kvRow}>
+              <Text style={styles.kvLabel}>🔔 Push notification</Text>
+              <Switch
+                value={chPush}
+                onValueChange={setChPush}
+                trackColor={{ false: "#D1D5DB", true: "#10B981" }}
+                thumbColor="#fff"
+              />
+            </View>
+            <Text style={[styles.recipHint, { marginTop: 4 }]}>
+              Push requires Expo notifications to be wired (Phase D).
+              List + banner work today.
+            </Text>
+
+            <View style={styles.dividerSm} />
+            <View style={styles.runRow}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.fieldLabel}>🔄 Last scan</Text>
+                <Text style={styles.runMeta}>
+                  {lastRun?.ran_at
+                    ? `${new Date(lastRun.ran_at).toLocaleString()} · ${lastRun.alerts_raised || 0} new`
+                    : "Not run yet"}
+                </Text>
+              </View>
+              <TouchableOpacity
+                style={[styles.runBtn, running && { opacity: 0.6 }]}
+                onPress={runScanNow}
+                disabled={running}
+              >
+                {running ? (
+                  <ActivityIndicator color="#fff" />
+                ) : (
+                  <>
+                    <Ionicons name="play" size={14} color="#fff" />
+                    <Text style={styles.runBtnText}>Run scan now</Text>
+                  </>
+                )}
+              </TouchableOpacity>
+            </View>
+            <TouchableOpacity
+              style={styles.viewAlertsBtn}
+              onPress={() => router.push("/admin/sla-alerts" as any)}
+            >
+              <Ionicons name="alert-circle" size={14} color="#DC2626" />
+              <Text style={styles.viewAlertsText}>View open SLA alerts →</Text>
+            </TouchableOpacity>
+          </View>
+
           {/* Recipient master list (admin global) */}
           <View style={styles.recipBlock}>
             <Text style={styles.recipTitle}>📞 Alert Recipients (global)</Text>
@@ -496,4 +665,29 @@ const styles = StyleSheet.create({
     paddingVertical: 14, backgroundColor: "#10B981", borderRadius: 12,
   },
   saveBtnText: { color: "#fff", fontWeight: "800", fontSize: 14 },
+
+  engineBlock: {
+    backgroundColor: "#fff", borderRadius: 12, padding: 14,
+    borderWidth: 1, borderColor: "#E5E7EB",
+    marginTop: 14,
+  },
+  engineHeader: {
+    flexDirection: "row", alignItems: "center", justifyContent: "space-between",
+  },
+  runRow: { flexDirection: "row", alignItems: "center", gap: 12, marginTop: 4 },
+  runMeta: { fontSize: 11.5, color: "#6B7280", marginTop: 2 },
+  runBtn: {
+    flexDirection: "row", alignItems: "center", gap: 5,
+    paddingVertical: 9, paddingHorizontal: 14,
+    backgroundColor: "#1F4FBF", borderRadius: 999,
+  },
+  runBtnText: { color: "#fff", fontWeight: "800", fontSize: 12 },
+  viewAlertsBtn: {
+    flexDirection: "row", alignItems: "center", gap: 5,
+    marginTop: 12, paddingVertical: 10, paddingHorizontal: 12,
+    backgroundColor: "#FEF2F2", borderRadius: 8,
+    borderWidth: 1, borderColor: "#FECACA",
+    justifyContent: "center",
+  },
+  viewAlertsText: { color: "#DC2626", fontWeight: "800", fontSize: 12 },
 });

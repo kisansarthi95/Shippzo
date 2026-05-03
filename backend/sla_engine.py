@@ -21,6 +21,7 @@ Key tables:
 from __future__ import annotations
 
 import logging
+import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -200,6 +201,7 @@ async def scan_user_shipments(
         recips = _resolve_recipients(rules, recipients_keys)
 
         alerts.append({
+            "id":           str(uuid.uuid4()),
             "user_id":      user_id,
             "shipment_id":  s["id"],
             "stage":        stage,

@@ -923,6 +923,36 @@ export const Api = {
         is_admin: boolean;
       }>("/me/stage-rules")
       .then((r) => r.data),
+
+  // ───────────────────────────────────────────────────────────────────
+  // Phase-G3: SLA Engine — alerts, scan trigger, summary
+  // ───────────────────────────────────────────────────────────────────
+  adminSlaRunNow: () =>
+    api.post<{ ok: boolean; stats: any; message?: string }>(
+      "/admin/sla/run-now",
+    ).then((r) => r.data),
+  adminSlaAlerts: (params: {
+    stage?: string;
+    dismissed?: boolean;
+    user_id?: string;
+    limit?: number;
+  } = {}) =>
+    api.get<{ alerts: any[]; stats: any }>(
+      "/admin/sla/alerts", { params },
+    ).then((r) => r.data),
+  adminSlaSummary: () =>
+    api.get<{ by_stage: Record<string, number>; total_open: number; total_all: number; last_run: any }>(
+      "/admin/sla/summary",
+    ).then((r) => r.data),
+  adminSlaDismiss: (alertId: string) =>
+    api.post(`/admin/sla/alerts/${encodeURIComponent(alertId)}/dismiss`)
+      .then((r) => r.data),
+  adminSlaDismissBulk: (payload: { ids?: string[]; stage?: string }) =>
+    api.post("/admin/sla/alerts/dismiss-bulk", payload).then((r) => r.data),
+  meSlaAlerts: (params: { stage?: string; dismissed?: boolean; limit?: number } = {}) =>
+    api.get<{ alerts: any[]; channels: any; muted: boolean }>(
+      "/me/sla/alerts", { params },
+    ).then((r) => r.data),
   /**
    * Lookup an existing shipment by tracking_id. Returns null when no
    * match (HTTP 404) instead of throwing, so callers don't have to

@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, BackgroundTasks
+from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, BackgroundTasks, Body
 from fastapi.responses import PlainTextResponse
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
@@ -6145,6 +6145,32 @@ async def admin_put_stage_rules(
     if payload.global_enabled is not None:
         current["global_enabled"] = bool(payload.global_enabled)
 
+    # Display channels — partial update; missing keys keep existing.
+    if payload.display_channels is not None:
+        current["display_channels"] = {
+            **(current.get("display_channels") or {}),
+            **{k: bool(v) for k, v in payload.display_channels.items()
+               if k in ("list", "banner", "push")},
+        }
+
+    # Scan interval — clamp [15, 240] minutes.
+    if payload.scan_interval_minutes is not None:
+        try:
+            current["scan_interval_minutes"] = max(
+                15, min(240, int(payload.scan_interval_minutes)),
+            )
+        except (TypeError, ValueError):
+            pass
+
+    # Default cooldown — clamp [1, 168] hours.
+    if payload.default_cooldown_hours is not None:
+        try:
+            current["default_cooldown_hours"] = max(
+                1, min(168, int(payload.default_cooldown_hours)),
+            )
+        except (TypeError, ValueError):
+            pass
+
     await db.admin_config.update_one(
         {"_id": "default"},
         {"$set": {"stage_rules": current}},
@@ -6174,6 +6200,188 @@ async def me_get_stage_rules(
         "stage_to_template":  STAGE_TO_TEMPLATE,
         "rules":              rules,
         "is_admin":           is_admin,
+    }
+
+
+# ──────────────────────────────────────────────────────────────────
+# SLA Engine — Phase G3
+# ──────────────────────────────────────────────────────────────────
+# Background scanner runs every `scan_interval_minutes` (admin config).
+# Writes one doc to `sla_alerts` per (shipment, stage) breach with
+# cooldown + escalation applied. Endpoints below let the admin view,
+# dismiss, and manually trigger the scan.
+
+import sla_engine as _sla_engine  # noqa: E402
+
+# Latest scan stats are kept in-memory (single-process backend).
+_SLA_LAST_RUN: Dict[str, Any] = {
+    "ran_at":        None,
+    "alerts_raised": 0,
+    "users_scanned": 0,
+    "next_run_at":   None,
+    "running":       False,
+}
+
+
+def _alert_to_public(doc: Dict[str, Any]) -> Dict[str, Any]:
+    """Strip Mongo internals & PII for non-admin callers."""
+    out = {k: v for k, v in doc.items() if k != "_id"}
+    if "id" not in out and "_id" in doc:
+        out["id"] = str(doc["_id"])
+    return out
+
+
+@api_router.post("/admin/sla/run-now")
+async def admin_sla_run_now(
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    """Trigger an SLA scan immediately. Returns the freshly-raised count."""
+    _require_admin(current_user)
+    if _SLA_LAST_RUN.get("running"):
+        return {
+            "ok":      False,
+            "message": "A scan is already in progress.",
+            "stats":   _SLA_LAST_RUN,
+        }
+    try:
+        _SLA_LAST_RUN["running"] = True
+        stats = await _sla_engine.scan_all_users(db)
+        _SLA_LAST_RUN.update({
+            "ran_at":        stats.get("ran_at"),
+            "alerts_raised": int(stats.get("alerts_raised") or 0),
+            "users_scanned": int(stats.get("users_scanned") or 0),
+        })
+        return {"ok": True, "stats": _SLA_LAST_RUN}
+    finally:
+        _SLA_LAST_RUN["running"] = False
+
+
+@api_router.get("/admin/sla/alerts")
+async def admin_sla_alerts(
+    stage: Optional[str] = None,
+    dismissed: Optional[bool] = None,
+    user_id: Optional[str] = None,
+    limit: int = 100,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    """Recent SLA alerts across ALL users (admin view)."""
+    _require_admin(current_user)
+    q: Dict[str, Any] = {}
+    if stage:
+        q["stage"] = stage
+    if dismissed is not None:
+        q["dismissed"] = bool(dismissed)
+    if user_id:
+        q["user_id"] = user_id
+    cursor = (
+        db.sla_alerts.find(q, {"_id": 0})
+        .sort("raised_at", -1)
+        .limit(max(1, min(500, int(limit or 100))))
+    )
+    rows = await cursor.to_list(length=500)
+    return {
+        "alerts": [_alert_to_public(r) for r in rows],
+        "stats":  _SLA_LAST_RUN,
+    }
+
+
+@api_router.post("/admin/sla/alerts/{alert_id}/dismiss")
+async def admin_sla_dismiss(
+    alert_id: str,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    """Mark a single alert as resolved/dismissed."""
+    _require_admin(current_user)
+    res = await db.sla_alerts.update_one(
+        {"$or": [{"id": alert_id}, {"shipment_id": alert_id}]},
+        {"$set": {
+            "dismissed":      True,
+            "dismissed_at":   utcnow_iso(),
+            "dismissed_by":   current_user.get("email") or current_user.get("id"),
+        }},
+    )
+    return {"ok": True, "matched": res.matched_count, "modified": res.modified_count}
+
+
+@api_router.post("/admin/sla/alerts/dismiss-bulk")
+async def admin_sla_dismiss_bulk(
+    payload: Dict[str, Any] = Body(...),
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    """Dismiss many alerts at once. Body: {"ids":[...]} or {"stage":"..."}."""
+    _require_admin(current_user)
+    q: Dict[str, Any] = {}
+    ids = payload.get("ids") or []
+    if ids:
+        q["id"] = {"$in": [str(i) for i in ids]}
+    elif payload.get("stage"):
+        q["stage"] = str(payload["stage"])
+        q["dismissed"] = False
+    else:
+        raise HTTPException(status_code=400, detail="ids[] or stage required")
+    res = await db.sla_alerts.update_many(
+        q,
+        {"$set": {
+            "dismissed":      True,
+            "dismissed_at":   utcnow_iso(),
+            "dismissed_by":   current_user.get("email") or current_user.get("id"),
+        }},
+    )
+    return {"ok": True, "modified": res.modified_count}
+
+
+@api_router.get("/me/sla/alerts")
+async def me_sla_alerts(
+    stage: Optional[str] = None,
+    dismissed: Optional[bool] = False,
+    limit: int = 100,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    """Alerts for the CURRENT user — used by the dashboard 'Action
+    Required' banner widget. Honours `display_channels.banner` toggle:
+    when admin has disabled the banner channel, returns empty list
+    so the widget self-hides."""
+    rules = await _load_stage_rules()
+    if not (rules.get("display_channels") or {}).get("banner", True):
+        return {"alerts": [], "channels": rules.get("display_channels"), "muted": True}
+    q: Dict[str, Any] = {"user_id": current_user["id"]}
+    if stage:
+        q["stage"] = stage
+    if dismissed is not None:
+        q["dismissed"] = bool(dismissed)
+    cursor = (
+        db.sla_alerts.find(q, {"_id": 0})
+        .sort("raised_at", -1)
+        .limit(max(1, min(500, int(limit or 100))))
+    )
+    rows = await cursor.to_list(length=500)
+    return {
+        "alerts":   [_alert_to_public(r) for r in rows],
+        "channels": rules.get("display_channels"),
+        "muted":    False,
+    }
+
+
+@api_router.get("/admin/sla/summary")
+async def admin_sla_summary(
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    """Per-stage breach counts + last-scan stats for the admin dashboard."""
+    _require_admin(current_user)
+    pipeline = [
+        {"$match": {"dismissed": False}},
+        {"$group": {"_id": "$stage", "count": {"$sum": 1}}},
+    ]
+    by_stage: Dict[str, int] = {}
+    async for row in db.sla_alerts.aggregate(pipeline):
+        by_stage[row["_id"]] = int(row["count"])
+    total_open = sum(by_stage.values())
+    total_alerts = await db.sla_alerts.count_documents({})
+    return {
+        "by_stage":     by_stage,
+        "total_open":   total_open,
+        "total_all":    total_alerts,
+        "last_run":     _SLA_LAST_RUN,
     }
 
 
@@ -7309,6 +7517,13 @@ async def on_startup():
         _asyncio.create_task(_master_backup_retry_worker())
     except Exception:
         logger.exception("Failed to start master backup retry worker (non-fatal)")
+    # SLA Engine — Phase G3. Runs every `scan_interval_minutes`
+    # configured in admin/stage-rules. Defaults to 60min.
+    try:
+        import asyncio as _asyncio
+        _asyncio.create_task(_sla_scan_worker())
+    except Exception:
+        logger.exception("Failed to start SLA scan worker (non-fatal)")
     logger.info("Courier Label Manager API started; defaults seeded.")
 
 
@@ -7400,6 +7615,56 @@ async def _master_backup_retry_worker() -> None:
             return
         except Exception:
             logger.exception("Master backup retry worker iteration failed")
+
+
+async def _sla_scan_worker() -> None:
+    """Background loop that runs the SLA breach scanner every
+    `scan_interval_minutes` (admin config). Sleeps the configured
+    interval, then calls `sla_engine.scan_all_users(db)` and updates
+    the in-memory `_SLA_LAST_RUN` cache. Always defers the very first
+    scan by 60s after server boot to let DB warm up.
+    """
+    import asyncio as _asyncio
+    await _asyncio.sleep(60.0)   # boot grace period
+    while True:
+        try:
+            rules = await _load_stage_rules()
+            interval_min = max(15, min(240, int(
+                rules.get("scan_interval_minutes") or 60
+            )))
+            if not rules.get("global_enabled", True):
+                # Admin globally disabled SLAs — sleep & re-check.
+                _SLA_LAST_RUN["next_run_at"] = (
+                    datetime.now(timezone.utc)
+                    + timedelta(minutes=interval_min)
+                ).isoformat()
+                await _asyncio.sleep(interval_min * 60.0)
+                continue
+            _SLA_LAST_RUN["running"] = True
+            try:
+                stats = await _sla_engine.scan_all_users(db)
+                _SLA_LAST_RUN.update({
+                    "ran_at":        stats.get("ran_at"),
+                    "alerts_raised": int(stats.get("alerts_raised") or 0),
+                    "users_scanned": int(stats.get("users_scanned") or 0),
+                })
+                logger.info(
+                    "SLA worker: scanned=%s raised=%s",
+                    stats.get("users_scanned"), stats.get("alerts_raised"),
+                )
+            finally:
+                _SLA_LAST_RUN["running"] = False
+            _SLA_LAST_RUN["next_run_at"] = (
+                datetime.now(timezone.utc)
+                + timedelta(minutes=interval_min)
+            ).isoformat()
+            await _asyncio.sleep(interval_min * 60.0)
+        except _asyncio.CancelledError:
+            return
+        except Exception:
+            logger.exception("SLA scan worker iteration failed")
+            # Back off 5 min on errors instead of busy-looping.
+            await _asyncio.sleep(300.0)
 
 
 @app.on_event("shutdown")

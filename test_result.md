@@ -9539,3 +9539,35 @@ agent_communication:
         proceed.
 
 
+
+    -agent: "main"
+    -message: |
+        Phase G3 — SLA Breach Engine + Alert Dispatch IMPLEMENTED.
+
+        BACKEND VALIDATED (smoke test /tmp/test_sla_engine.py):
+          - sla_engine.py scans every shipment, applies per-stage SLA,
+            cooldown (default 24h, configurable), escalation levels ✅
+          - Admin /admin/sla/run-now triggers immediate scan ✅
+          - First scan raised 88 alerts across 7 users (real demo data) ✅
+          - Second scan raised 0 (cooldown prevents duplicates) ✅
+          - /admin/sla/summary returns by-stage breach counts ✅
+          - /admin/sla/alerts list with stage/dismissed/user filters ✅
+          - Single + bulk dismiss endpoints ✅
+          - /me/sla/alerts respects display_channels.banner toggle
+            (muted=true when admin disables banner) ✅
+          - Background _sla_scan_worker boots on startup, sleeps 60s,
+            then runs every scan_interval_minutes (default 60, clamped
+            15–240) ✅
+
+        NEW ADMIN CONFIG (under stage_rules):
+          - display_channels {list, banner, push}
+          - scan_interval_minutes (15–240)
+          - default_cooldown_hours (1–168)
+
+        NEW DB COLLECTION: `sla_alerts` — { id, user_id, shipment_id,
+          stage, level (escalation tier), priority, channel, recipients,
+          phones, push_ids, days_overdue, sla_days, raised_at, dismissed,
+          dismissed_at, dismissed_by, shipment {…snapshot…} }
+
+        NEXT: build Phase G5 dashboard "Action Required" widget
+        (frontend) and Phase G4 customer-message auto-trigger cron.
