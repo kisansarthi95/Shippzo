@@ -899,6 +899,30 @@ export const Api = {
         languages: string[];
       }>("/me/whatsapp-template-variants")
       .then((r) => r.data),
+
+  // ───────────────────────────────────────────────────────────────────
+  // Phase-G1/G2: Stage Rules — unified SLA + alert + template config
+  // ───────────────────────────────────────────────────────────────────
+  adminGetStageRules: () =>
+    api
+      .get<{
+        current: any;
+        defaults: any;
+        stages: string[];
+        stage_to_template: Record<string, string | null>;
+      }>("/admin/stage-rules")
+      .then((r) => r.data),
+  adminPutStageRules: (payload: any) =>
+    api.put("/admin/stage-rules", payload).then((r) => r.data),
+  meGetStageRules: () =>
+    api
+      .get<{
+        stages: string[];
+        stage_to_template: Record<string, string | null>;
+        rules: any;
+        is_admin: boolean;
+      }>("/me/stage-rules")
+      .then((r) => r.data),
   /**
    * Lookup an existing shipment by tracking_id. Returns null when no
    * match (HTTP 404) instead of throwing, so callers don't have to

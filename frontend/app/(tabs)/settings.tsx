@@ -917,6 +917,21 @@ export default function SettingsScreen() {
                       <Ionicons name="chevron-forward" size={22} color="#9CA3AF" />
                     </TouchableOpacity>
                     <TouchableOpacity
+                      testID="settings-hub-admin-stage-rules"
+                      style={styles.hubRow}
+                      onPress={() => router.push("/admin/stage-rules" as any)}
+                      activeOpacity={0.6}
+                    >
+                      <View style={[styles.hubIconWrap, { backgroundColor: "#FEE2E2" }]}>
+                        <Ionicons name="time-outline" size={22} color="#DC2626" />
+                      </View>
+                      <Text style={styles.hubTitle}>Stage Rules</Text>
+                      <View style={styles.adminPill}>
+                        <Text style={styles.adminPillTxt}>ADMIN</Text>
+                      </View>
+                      <Ionicons name="chevron-forward" size={22} color="#9CA3AF" />
+                    </TouchableOpacity>
+                    <TouchableOpacity
                       testID="settings-hub-admin-wa-templates"
                       style={styles.hubRow}
                       onPress={() => router.push("/admin/whatsapp-templates" as any)}
