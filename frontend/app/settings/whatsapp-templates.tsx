@@ -55,6 +55,12 @@ const TYPE_META: Record<string, { label: string; sub: string; icon: any; tone: s
     icon: "checkmark-circle-outline",
     tone: "#1F9D55",
   },
+  feedback_request: {
+    label: "Feedback Request",
+    sub: "Asks the customer for a rating / review (1–5 ★)",
+    icon: "star-outline",
+    tone: "#1E40AF",
+  },
 };
 
 const LANG_META: Record<string, { label: string; emoji: string }> = {

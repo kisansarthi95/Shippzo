@@ -52,6 +52,7 @@ TEMPLATE_TYPES = [
     "dispatch_confirmation",  # When parcel flips to Shipped (sent successfully).
     "delivery_confirmation",  # X days later — "did you receive?".
     "delivery_done",          # After customer confirms received (thanks msg).
+    "feedback_request",       # After Feedback stage — asks for a review/rating.
 ]
 
 # Bundled defaults. {var} placeholders are substituted client-side at send time.
@@ -123,6 +124,25 @@ DEFAULT_TEMPLATES: Dict[str, Dict[str, str]] = {
         "en": (
             "Thank you for confirming receipt of order #{order_id} 🙏\n"
             "Looking forward to serving you again!"
+        ),
+    },
+    "feedback_request": {
+        "gu": (
+            "નમસ્તે {customer_name} 🌟\n"
+            "તમારા ઓર્ડર #{order_id} અંગે તમારો અનુભવ શેર કરશો?\n"
+            "1 થી 5 ★ માંથી rating આપો — તમારા feedback થી અમે વધુ સારી "
+            "service આપી શકીશું. આભાર! 🙏"
+        ),
+        "hi": (
+            "नमस्ते {customer_name} 🌟\n"
+            "क्या आप अपने ऑर्डर #{order_id} का अनुभव साझा करेंगे?\n"
+            "1 से 5 ★ में से रेटिंग दें — आपके feedback से हम बेहतर सेवा दे सकते हैं। "
+            "धन्यवाद! 🙏"
+        ),
+        "en": (
+            "Hi {customer_name} 🌟\n"
+            "How was your experience with order #{order_id}?\n"
+            "Rate us 1 to 5 ★ — your feedback helps us improve. Thank you! 🙏"
         ),
     },
 }

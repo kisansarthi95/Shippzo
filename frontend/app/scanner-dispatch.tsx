@@ -248,15 +248,24 @@ export default function ScannerDispatch() {
 
         if (res.outcome === "moved") {
           setMovedCount((n) => n + 1);
-          showToast(
-            `${code} moved to ${mode === "ship" ? "Shipped" : "Dispatch"} successfully`,
-            "moved",
-          );
+          const destLabel = mode === "ship" ? "Shipped" : "Ready to Ship";
+          // Phase-12: scanner returned `hint: "skipped_processing"` when
+          // the source was Pending (not Processing). Surface a clean
+          // toast explaining the recommended flow without blocking
+          // progress — the shipment was still moved successfully.
+          if ((res as any).hint === "skipped_processing") {
+            showToast(
+              `${code} → ${destLabel} (tip: mark Processing first next time)`,
+              "already",
+            );
+          } else {
+            showToast(`${code} moved to ${destLabel} successfully`, "moved");
+          }
           try { Vibration.vibrate(30); } catch {/* ignore */}
         } else if (res.outcome === "already") {
           setAlreadyCount((n) => n + 1);
           showToast(
-            `${code} already ${mode === "ship" ? "Shipped" : "in Dispatch"}`,
+            `${code} already ${mode === "ship" ? "Shipped" : "in Ready to Ship"}`,
             "already",
           );
         } else {

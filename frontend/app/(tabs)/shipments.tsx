@@ -1043,6 +1043,82 @@ export default function Shipments() {
                 </Text>
               </TouchableOpacity>
             </View>
+
+            {/* Phase-12: Mark as Processing card — bulk flip selected
+                rows from Pending → Processing. Pulses when the active
+                tab is "Pending" to nudge the operator toward the new
+                2-scan flow (Processing → Ready → Shipped). Rows with
+                any other status are skipped server-side so it's safe
+                to click anytime. */}
+            <View style={{ alignItems: "center" }}>
+              <View style={{ height: 14 }} />
+              <TouchableOpacity
+                testID="bulk-mark-processing"
+                onPress={async () => {
+                  if (selectedIds.size === 0) {
+                    Alert.alert(
+                      "Select shipments",
+                      "Tick the parcels to move to Processing.",
+                    );
+                    return;
+                  }
+                  try {
+                    const res = await Api.bulkMarkProcessing(
+                      Array.from(selectedIds),
+                    );
+                    Alert.alert(
+                      "Mark as Processing",
+                      `${res.updated} moved to Processing.` +
+                        (res.skipped
+                          ? `\n${res.skipped} skipped (already past Pending).`
+                          : "") +
+                        (res.not_found
+                          ? `\n${res.not_found} not found.`
+                          : ""),
+                    );
+                    clearSelection();
+                    fetchShipments();
+                  } catch (e: any) {
+                    Alert.alert(
+                      "Error",
+                      e?.response?.data?.detail ||
+                        e?.message ||
+                        "Could not update",
+                    );
+                  }
+                }}
+                style={[
+                  styles.bulkLayoutCard,
+                  {
+                    borderColor: status === "Pending" ? "#F97316" : "#FCD34D",
+                    backgroundColor:
+                      status === "Pending" ? "#FFEDD5" : "#FEF3C7",
+                  },
+                ]}
+              >
+                <Ionicons
+                  name="cube-outline"
+                  size={20}
+                  color={status === "Pending" ? "#C2410C" : "#92400E"}
+                />
+                <Text
+                  style={[
+                    styles.bulkLayoutTopText,
+                    { color: status === "Pending" ? "#C2410C" : "#92400E" },
+                  ]}
+                >
+                  Mark
+                </Text>
+                <Text
+                  style={[
+                    styles.bulkLayoutSubText,
+                    { color: status === "Pending" ? "#C2410C" : "#92400E" },
+                  ]}
+                >
+                  Processing
+                </Text>
+              </TouchableOpacity>
+            </View>
           </ScrollView>
         </View>
       )}

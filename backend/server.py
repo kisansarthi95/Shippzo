@@ -2439,9 +2439,38 @@ async def bulk_fetch(
     payload: Dict[str, List[str]],
     current_user: Dict[str, Any] = Depends(get_current_user),
 ):
+    """Fetch N shipments by id for bulk label rendering.
+
+    Phase-12 side-effect: any Pending rows in the requested batch are
+    auto-flipped to Processing here. Rationale: calling bulk-fetch is
+    the client's signal that it is about to render labels — per the
+    new warehouse flow, "Label created" == status = Processing. This
+    gives operators one less manual step while remaining idempotent:
+    rows already past Pending are untouched.
+    """
     ids = payload.get("ids", [])
     if not ids:
         return []
+    # Auto-flip Pending → Processing on label print. Do it before the
+    # final read so the returned shipments already carry the new status.
+    try:
+        await db.shipments.update_many(
+            {
+                "user_id": current_user["id"],
+                "id": {"$in": ids},
+                "status": "Pending",
+            },
+            {"$set": {
+                "status": "Processing",
+                "processing_started_at": utcnow_iso(),
+            }},
+        )
+    except Exception:
+        # Never let a side-effect hiccup break the main bulk-fetch
+        # response (e.g. if the update_many times out, still return
+        # the rows so the printer flow keeps working).
+        logger.exception("bulk-fetch auto-Processing flip failed")
+
     docs = await db.shipments.find(
         {"user_id": current_user["id"], "id": {"$in": ids}},
         {"_id": 0},
