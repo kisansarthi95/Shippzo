@@ -8907,3 +8907,118 @@ agent_communication:
           (added to Pydantic model so they survive serialization)
 
         Frontend testing not yet requested — pending user verification.
+
+---
+
+## Backend Test Run: Phase-12 Step-2 Scanner Flow + Mark-Processing (2026-05-03)
+
+backend:
+  - task: "POST /api/shipments/bulk-mark-processing (NEW)"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "testing"
+        -comment: |
+            Verified via /app/backend_test.py against
+            https://logistics-hub-740.preview.emergentagent.com/api
+            (admin@test.com login).
+
+            All 4 review-request cases PASS:
+            1a. Empty list → exactly
+                {"updated":0,"skipped":0,"not_found":0,
+                 "updated_ids":[],"skipped_ids":[],"not_found_ids":[]} ✅
+            1b. 2 valid Pending IDs → updated=2, skipped=0, not_found=0,
+                updated_ids exactly matches input. Subsequent GET
+                confirms status flipped to "Processing". ✅
+                processing_started_at is PERSISTED in MongoDB
+                (verified via direct DB query — value
+                "2026-05-03T03:18:00.091290+00:00"). ⚠️ MINOR: the
+                Shipment Pydantic response_model in server.py (line
+                ~869) does NOT declare processing_started_at, so it
+                is stripped from GET /api/shipments/{id} responses.
+                Data integrity is correct; only the API surface omits
+                it. If the frontend needs to read it, add
+                `processing_started_at: Optional[str] = None` to the
+                Shipment model — non-blocking.
+            1c. Mix 1 Pending + 1 Shipped → updated=1, skipped=1,
+                not_found=0; updated_ids=[<pending_id>],
+                skipped_ids=[<shipped_id>] correct buckets. ✅
+            1d. Bad/non-existent id → not_found=1,
+                not_found_ids=[<bad_id>]. ✅
+
+  - task: "POST /api/shipments/scan-dispatch (UPDATED)"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "testing"
+        -comment: |
+            All 5 review-request cases PASS:
+            2a. Processing→Dispatch: outcome="moved", reason="ok",
+                shipment.status="Dispatch", NO `hint` key. ✅
+            2b. Pending→Dispatch:    outcome="moved",
+                hint="skipped_processing". ✅
+            2c. Already-Dispatched: outcome="already",
+                reason="already_ready_to_ship". ✅
+            2d. Shipped→Dispatch: outcome="failed",
+                reason="wrong_status:Shipped",
+                message="Cannot move to Ready to Ship — status is Shipped". ✅
+            2e. Unknown tracking_id: outcome="failed",
+                reason="not_found". ✅
+
+  - task: "POST /api/shipments/scan-ship (UPDATED)"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "testing"
+        -comment: |
+            All 3 review-request cases PASS:
+            3a. Dispatch→Shipped: outcome="moved", reason="ok",
+                shipment.status="Shipped". ✅
+            3b. Pending→Ship: outcome="failed",
+                reason="wrong_status:Pending", message contains
+                "scan to Ready to Ship first" — exact text:
+                "Cannot ship — status is Pending (scan to Ready to Ship first)". ✅
+            3c. Already-Shipped→Ship: outcome="already",
+                reason="already_shipped". ✅
+
+agent_communication:
+    -agent: "testing"
+    -message: |
+        Phase-12 Step-2 scanner flow + bulk-mark-processing — ALL 3
+        endpoints PASS. 29/30 individual assertions pass via
+        /app/backend_test.py.
+
+        Single sub-assertion deviation (NOT a backend bug):
+        bulk-mark-processing DOES persist processing_started_at into
+        MongoDB correctly (verified via direct Mongo query). However,
+        the Shipment Pydantic response_model declared in
+        /app/backend/server.py around line 869 does not include the
+        new processing_started_at field, so the GET /api/shipments/{id}
+        endpoint strips it from the response. This is purely a
+        response-surfacing gap. Data integrity is intact.
+
+        If the frontend needs to read processing_started_at, add the
+        field to the Shipment model:
+            processing_started_at: Optional[str] = None
+        — non-blocking, takes one line.
+
+        Cleanup: all 6 test shipments created during the run were
+        deleted at the end of the test. No test artefacts remain.
+        No regressions to other endpoints (test scope was strictly
+        limited to the 3 endpoints in the review request).
+

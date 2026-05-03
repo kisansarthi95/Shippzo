@@ -1960,6 +1960,22 @@ async def scan_to_dispatch(
     payload: ScanDispatchRequest,
     current_user: Dict[str, Any] = Depends(get_current_user),
 ):
+    """First scan in the new 4-stage warehouse flow:
+       PENDING → PROCESSING → READY_TO_SHIP (a.k.a. "Dispatch") → SHIPPED.
+
+    Source statuses accepted:
+      • "Processing"  — primary path (post-label-print)
+      • "Pending"     — legacy compat fallback (warn-only) so historic
+                        rows that never went through Processing can
+                        still be scanned. The response carries a
+                        `hint: "skipped_processing"` flag so the UI
+                        can nudge operators to flip Pending →
+                        Processing first next time.
+
+    Target status remains "Dispatch" in Mongo for back-compat with the
+    Two-Way Sheet sync formatter; the UI maps it to the "Ready to Ship"
+    label via STATUS_META in shipments.tsx.
+    """
     tid = (payload.tracking_id or "").strip()
     if not tid:
         return {
@@ -1980,29 +1996,32 @@ async def scan_to_dispatch(
             "shipment": None,
         }
     status = str(doc.get("status") or "").strip()
-    if status == "Dispatch":
+    if status in ("Dispatch", "Dispatched", "Ready to Ship", "ReadyToShip"):
         return {
             "outcome": "already",
-            "reason": "already_dispatch",
-            "message": "Already in Dispatch",
+            "reason": "already_ready_to_ship",
+            "message": "Already in Ready to Ship",
             "shipment": doc,
         }
-    if status != "Pending":
+    # Reject anything past Ready-to-Ship (Shipped / Delivered / Feedback)
+    # and anything that doesn't make sense for an inbound scan
+    # (Cancelled / Returned / Cancel by buyer / Modified).
+    if status not in ("Pending", "Processing"):
         return {
             "outcome": "failed",
             "reason": f"wrong_status:{status or 'unknown'}",
             "message": (
-                f"Cannot dispatch — status is {status or 'unknown'}"
+                f"Cannot move to Ready to Ship — status is "
+                f"{status or 'unknown'}"
             ),
             "shipment": doc,
         }
-    # Pending → Dispatch. Use atomic conditional update so a race between
-    # two scanners can't double-flip state.
+    # Atomic conditional update so a parallel scan can't double-flip state.
     res = await db.shipments.update_one(
         {
             "user_id": current_user["id"],
             "tracking_id": tid,
-            "status": "Pending",
+            "status": {"$in": ["Pending", "Processing"]},
         },
         {"$set": {"status": "Dispatch", "dispatched_at": utcnow_iso()}},
     )
@@ -2014,20 +2033,26 @@ async def scan_to_dispatch(
         )
         return {
             "outcome": "already",
-            "reason": "race_already_dispatch",
-            "message": "Already in Dispatch",
+            "reason": "race_already_ready_to_ship",
+            "message": "Already in Ready to Ship",
             "shipment": cur,
         }
     new_doc = await db.shipments.find_one(
         {"user_id": current_user["id"], "tracking_id": tid},
         {"_id": 0},
     )
-    return {
+    payload_out: Dict[str, Any] = {
         "outcome": "moved",
         "reason": "ok",
-        "message": f"{tid} moved to Dispatch",
+        "message": f"{tid} moved to Ready to Ship",
         "shipment": new_doc,
     }
+    # Surface a soft hint when the operator skipped Processing — the
+    # mobile scanner uses this to drop a "Tip: mark as Processing
+    # first next time" toast without blocking the flow.
+    if status == "Pending":
+        payload_out["hint"] = "skipped_processing"
+    return payload_out
 
 
 # ---------------------------------------------------------------------------
@@ -2067,16 +2092,17 @@ async def scan_to_shipped(
             "message": "Already Shipped",
             "shipment": doc,
         }
-    # Only the legal transition Dispatch → Shipped is allowed. Everything
-    # else (Pending, Delivered, Cancelled, …) falls through as failed so
+    # Only the legal transition Ready-to-Ship → Shipped is allowed
+    # (DB value: "Dispatch" / "Dispatched"). Everything else (Pending,
+    # Processing, Delivered, Cancelled, …) falls through as failed so
     # the warehouse operator sees a clear red badge.
-    if status not in ("Dispatch", "Dispatched"):
+    if status not in ("Dispatch", "Dispatched", "Ready to Ship", "ReadyToShip"):
         return {
             "outcome": "failed",
             "reason": f"wrong_status:{status or 'unknown'}",
             "message": (
                 f"Cannot ship — status is {status or 'unknown'} "
-                "(scan to Dispatch first)"
+                "(scan to Ready to Ship first)"
             ),
             "shipment": doc,
         }
@@ -2084,7 +2110,7 @@ async def scan_to_shipped(
         {
             "user_id": current_user["id"],
             "tracking_id": tid,
-            "status": {"$in": ["Dispatch", "Dispatched"]},
+            "status": {"$in": ["Dispatch", "Dispatched", "Ready to Ship", "ReadyToShip"]},
         },
         {"$set": {"status": "Shipped", "shipped_at": utcnow_iso()}},
     )
@@ -2108,6 +2134,78 @@ async def scan_to_shipped(
         "reason": "ok",
         "message": f"{tid} moved to Shipped",
         "shipment": new_doc,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Phase-12: Manually flip Pending shipments to Processing.
+# Designed for the warehouse "I'm starting to pack this batch" action.
+# Bulk-friendly so the operator can multi-select on the Shipments tab and
+# move 50 rows in a single round-trip.
+# ---------------------------------------------------------------------------
+class BulkMarkProcessingRequest(BaseModel):
+    shipment_ids: List[str] = Field(default_factory=list)
+
+
+@api_router.post("/shipments/bulk-mark-processing")
+async def bulk_mark_processing(
+    payload: BulkMarkProcessingRequest,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    """Move N shipments from Pending → Processing in one shot.
+
+    Skips rows whose status is anything other than "Pending" so the
+    operator never has to worry about the request undoing later
+    progress (e.g. accidentally pulling a Shipped row back to
+    Processing). Returns per-bucket counts so the UI can confirm:
+
+        {
+          "updated":    7,    # actually flipped
+          "skipped":    2,    # already past Pending
+          "not_found":  1,    # bad id
+          "updated_ids":   [...],
+          "skipped_ids":   [...],
+          "not_found_ids": [...]
+        }
+    """
+    ids = [i for i in (payload.shipment_ids or []) if i]
+    if not ids:
+        return {
+            "updated": 0, "skipped": 0, "not_found": 0,
+            "updated_ids": [], "skipped_ids": [], "not_found_ids": [],
+        }
+    rows = await db.shipments.find(
+        {"user_id": current_user["id"], "id": {"$in": ids}},
+        {"_id": 0, "id": 1, "status": 1},
+    ).to_list(len(ids))
+    found_ids = {r["id"] for r in rows}
+    not_found_ids = [i for i in ids if i not in found_ids]
+    updated_ids: List[str] = []
+    skipped_ids: List[str] = []
+    for r in rows:
+        if str(r.get("status") or "").strip() == "Pending":
+            updated_ids.append(r["id"])
+        else:
+            skipped_ids.append(r["id"])
+    if updated_ids:
+        await db.shipments.update_many(
+            {
+                "user_id": current_user["id"],
+                "id": {"$in": updated_ids},
+                "status": "Pending",
+            },
+            {"$set": {
+                "status": "Processing",
+                "processing_started_at": utcnow_iso(),
+            }},
+        )
+    return {
+        "updated":       len(updated_ids),
+        "skipped":       len(skipped_ids),
+        "not_found":     len(not_found_ids),
+        "updated_ids":   updated_ids,
+        "skipped_ids":   skipped_ids,
+        "not_found_ids": not_found_ids,
     }
 
 

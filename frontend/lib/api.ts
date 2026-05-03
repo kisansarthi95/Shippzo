@@ -712,6 +712,20 @@ export const Api = {
       )
       .then((r) => r.data),
 
+  /** Phase-12: Bulk Pending → Processing flip (warehouse "I'm starting
+   *  to pack this batch" action). Skips rows already past Pending. */
+  bulkMarkProcessing: (shipment_ids: string[]) =>
+    api
+      .post<{
+        updated: number;
+        skipped: number;
+        not_found: number;
+        updated_ids: string[];
+        skipped_ids: string[];
+        not_found_ids: string[];
+      }>("/shipments/bulk-mark-processing", { shipment_ids })
+      .then((r) => r.data),
+
   /** Phase-12: Dispatch Confirmation (post-Shipped notification) */
   dispatchConfList: () =>
     api

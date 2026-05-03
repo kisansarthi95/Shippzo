@@ -1,478 +1,256 @@
 """
-Phase-12 Messaging Backend Tests
-=================================
-Tests ONLY the new endpoints in /app/backend/routers/messaging.py
+Phase-12 Step-2 Backend Tests — Scanner Flow + Mark-Processing
+Tests:
+  1. POST /api/shipments/bulk-mark-processing  (NEW)
+  2. POST /api/shipments/scan-dispatch         (UPDATED)
+  3. POST /api/shipments/scan-ship             (UPDATED)
+
+Auth: admin@test.com / Admin@12345
 """
-from __future__ import annotations
-
+import os
 import sys
-from typing import Any, Dict, Optional, List
-
+import json
+import uuid
 import requests
 
-BASE_URL = "https://logistics-hub-740.preview.emergentagent.com/api"
+BASE = "https://logistics-hub-740.preview.emergentagent.com/api"
+EMAIL = "admin@test.com"
+PASSWORD = "Admin@12345"
 
-ADMIN_EMAIL = "admin@test.com"
-ADMIN_PASSWORD = "Admin@12345"
-USER_EMAIL = "user2@test.com"
-USER_PASSWORD = "User@12345"
+results = []
+def log(name, ok, detail=""):
+    results.append((name, ok, detail))
+    sym = "PASS" if ok else "FAIL"
+    print(f"[{sym}] {name}" + (f"  -- {detail}" if detail else ""))
 
+# ── login ───────────────────────────────────────────────────────────
+print(f"== Logging in as {EMAIL} ==")
+r = requests.post(f"{BASE}/auth/login", json={"email": EMAIL, "password": PASSWORD}, timeout=15)
+if r.status_code != 200:
+    print(f"LOGIN FAILED: {r.status_code} {r.text}")
+    sys.exit(1)
+token = r.json()["token"]
+H = {"Authorization": f"Bearer {token}"}
+print("Logged in OK\n")
 
-passes = 0
-failures = 0
-fail_msgs: List[str] = []
+# ── Helper: get an existing courier id (we won't create one) ────────
+r = requests.get(f"{BASE}/couriers", headers=H, timeout=15)
+courier_id = None
+courier_name = ""
+if r.status_code == 200 and r.json():
+    courier_id = r.json()[0]["id"]
+    courier_name = r.json()[0]["name"]
+    print(f"Using courier: {courier_name} ({courier_id})")
+else:
+    print("WARN: No couriers found; will create shipment without courier_id")
 
-
-def t(label: str, cond: bool, extra: str = ""):
-    global passes, failures
-    if cond:
-        passes += 1
-        print(f"  PASS: {label}")
-    else:
-        failures += 1
-        msg = f"  FAIL: {label}" + (f" — {extra}" if extra else "")
-        fail_msgs.append(msg)
-        print(msg)
-
-
-def login(email: str, password: str) -> Optional[str]:
-    r = requests.post(
-        f"{BASE_URL}/auth/login",
-        json={"email": email, "password": password},
-        timeout=20,
-    )
-    if r.status_code != 200:
-        print(f"!! login failed for {email}: {r.status_code} {r.text[:300]}")
-        return None
-    return r.json().get("token")
-
-
-def auth_h(token: str) -> Dict[str, str]:
-    return {"Authorization": f"Bearer {token}"}
-
-
-def section(title: str):
-    print(f"\n=== {title} ===")
-
-
-def test_courier_rules_admin(admin_tok: str, user_tok: str):
-    section("1. Courier Rules — Admin")
-
-    r = requests.get(f"{BASE_URL}/admin/courier-rules", headers=auth_h(admin_tok), timeout=20)
-    t("GET /admin/courier-rules → 200 (admin)", r.status_code == 200, f"got {r.status_code} {r.text[:200]}")
-    if r.status_code == 200:
-        data = r.json()
-        t("response has 'rules' dict", isinstance(data.get("rules"), dict))
-        t("response has 'default_eta_days' int", isinstance(data.get("default_eta_days"), int))
-
-    payload = {"rules": {
-        "Demo Courier": {"delivery_eta_days": 5},
-        "Indian Post": {"delivery_eta_days": 8},
-        "Quick Delivery": {"delivery_eta_days": 1},
-    }}
-    r = requests.put(f"{BASE_URL}/admin/courier-rules", json=payload, headers=auth_h(admin_tok), timeout=20)
-    t("PUT /admin/courier-rules → 200", r.status_code == 200, f"got {r.status_code} {r.text[:200]}")
-    if r.status_code == 200:
-        rules = r.json().get("rules", {})
-        t("PUT echoed Demo Courier eta=5", rules.get("Demo Courier", {}).get("delivery_eta_days") == 5)
-        t("PUT echoed Indian Post eta=8", rules.get("Indian Post", {}).get("delivery_eta_days") == 8)
-        t("PUT echoed Quick Delivery eta=1", rules.get("Quick Delivery", {}).get("delivery_eta_days") == 1)
-
-    r = requests.get(f"{BASE_URL}/admin/courier-rules", headers=auth_h(admin_tok), timeout=20)
-    if r.status_code == 200:
-        rules = r.json().get("rules", {})
-        t("Persisted: Demo Courier eta=5", rules.get("Demo Courier", {}).get("delivery_eta_days") == 5)
-        t("Persisted: Indian Post eta=8", rules.get("Indian Post", {}).get("delivery_eta_days") == 8)
-
-    r = requests.get(f"{BASE_URL}/admin/courier-rules", headers=auth_h(user_tok), timeout=20)
-    t("Non-admin GET /admin/courier-rules → 403", r.status_code == 403, f"got {r.status_code}")
-
-    r = requests.put(
-        f"{BASE_URL}/admin/courier-rules",
-        json={"rules": {"X": {"delivery_eta_days": 1}}},
-        headers=auth_h(user_tok), timeout=20,
-    )
-    t("Non-admin PUT /admin/courier-rules → 403", r.status_code == 403, f"got {r.status_code}")
-
-
-def test_courier_rules_user(user_tok: str):
-    section("2. Courier Rules — User")
-
-    r = requests.get(f"{BASE_URL}/me/courier-rules", headers=auth_h(user_tok), timeout=20)
-    t("GET /me/courier-rules → 200", r.status_code == 200, f"got {r.status_code}")
-    if r.status_code != 200:
-        return
-    data = r.json()
-    t("has admin_rules", isinstance(data.get("admin_rules"), dict))
-    t("has user_rules", isinstance(data.get("user_rules"), dict))
-    t("has courier_names list", isinstance(data.get("courier_names"), list))
-    t("has default_eta_days", isinstance(data.get("default_eta_days"), int))
-    admin_rules = data.get("admin_rules", {})
-    t("admin layer shows Demo Courier=5", admin_rules.get("Demo Courier", {}).get("delivery_eta_days") == 5)
-
-    r = requests.put(
-        f"{BASE_URL}/me/courier-rules",
-        json={"rules": {"Demo Courier": {"delivery_eta_days": 3}}},
-        headers=auth_h(user_tok), timeout=20,
-    )
-    t("PUT /me/courier-rules override → 200", r.status_code == 200, f"got {r.status_code} {r.text[:200]}")
-    if r.status_code == 200:
-        u = r.json().get("user_rules", {})
-        t("user override Demo Courier=3 echoed", u.get("Demo Courier", {}).get("delivery_eta_days") == 3)
-
-    r = requests.get(f"{BASE_URL}/me/courier-rules", headers=auth_h(user_tok), timeout=20)
-    if r.status_code == 200:
-        u = r.json().get("user_rules", {})
-        t("Persisted user override Demo Courier=3", u.get("Demo Courier", {}).get("delivery_eta_days") == 3)
-
-    bad_payload = {"rules": {
-        "BadNeg": {"delivery_eta_days": -5},
-        "BadHigh": {"delivery_eta_days": 100},
-        "BadStr": {"delivery_eta_days": "foo"},
-        "BadMissing": {},
-        "GoodKeep": {"delivery_eta_days": 4},
-    }}
-    r = requests.put(
-        f"{BASE_URL}/me/courier-rules", json=bad_payload, headers=auth_h(user_tok), timeout=20
-    )
-    t("PUT invalid values → 200 (silently dropped)", r.status_code == 200, f"got {r.status_code} {r.text[:200]}")
-    if r.status_code == 200:
-        u = r.json().get("user_rules", {})
-        t("BadNeg dropped", "BadNeg" not in u)
-        t("BadHigh (>60) dropped", "BadHigh" not in u)
-        t("BadStr dropped", "BadStr" not in u)
-        t("BadMissing dropped", "BadMissing" not in u)
-        t("GoodKeep retained=4", u.get("GoodKeep", {}).get("delivery_eta_days") == 4)
-
-    requests.put(
-        f"{BASE_URL}/me/courier-rules",
-        json={"rules": {"Demo Courier": {"delivery_eta_days": 3}}},
-        headers=auth_h(user_tok), timeout=20,
-    )
-
-
-def test_whatsapp_templates_admin(admin_tok: str, user_tok: str):
-    section("3. WhatsApp Templates — Admin")
-
-    expected_types = {"shipment_sent", "dispatch_confirmation", "delivery_confirmation", "delivery_done"}
-    expected_langs = {"gu", "hi", "en"}
-
-    r = requests.get(f"{BASE_URL}/admin/whatsapp-templates", headers=auth_h(admin_tok), timeout=20)
-    t("GET /admin/whatsapp-templates → 200 (admin)", r.status_code == 200, f"got {r.status_code}")
-    if r.status_code == 200:
-        data = r.json()
-        t("has templates", isinstance(data.get("templates"), dict))
-        t("has saved_overrides", isinstance(data.get("saved_overrides"), dict))
-        t("has defaults", isinstance(data.get("defaults"), dict))
-        t("types == expected", set(data.get("types") or []) == expected_types, f"got {data.get('types')}")
-        t("languages == expected", set(data.get("languages") or []) == expected_langs, f"got {data.get('languages')}")
-        merged = data.get("templates", {})
-        for tp in expected_types:
-            t(f"merged has type {tp}", tp in merged)
-            for lang in expected_langs:
-                if tp in merged:
-                    val = merged[tp].get(lang)
-                    t(f"merged[{tp}][{lang}] non-empty str", isinstance(val, str) and len(val) > 0)
-
-    r = requests.get(f"{BASE_URL}/admin/whatsapp-templates", headers=auth_h(user_tok), timeout=20)
-    t("Non-admin GET /admin/whatsapp-templates → 403", r.status_code == 403, f"got {r.status_code}")
-
-    payload = {"templates": {"shipment_sent": {
-        "gu": "Custom Gujarati admin template",
-        "en": "Custom English admin template",
-    }}}
-    r = requests.put(
-        f"{BASE_URL}/admin/whatsapp-templates", json=payload, headers=auth_h(admin_tok), timeout=20
-    )
-    t("PUT /admin/whatsapp-templates → 200", r.status_code == 200, f"got {r.status_code} {r.text[:200]}")
-    if r.status_code == 200:
-        data = r.json()
-        saved = data.get("saved_overrides", {})
-        t("admin override gu saved", saved.get("shipment_sent", {}).get("gu") == "Custom Gujarati admin template")
-        t("admin override en saved", saved.get("shipment_sent", {}).get("en") == "Custom English admin template")
-        t("admin override hi NOT in saved (partial)", "hi" not in saved.get("shipment_sent", {}))
-        merged = data.get("templates", {})
-        defaults = data.get("defaults", {})
-        t("merged[shipment_sent][hi] == bundled default",
-          merged.get("shipment_sent", {}).get("hi") == defaults.get("shipment_sent", {}).get("hi"))
-        t("merged[shipment_sent][gu] == new override",
-          merged.get("shipment_sent", {}).get("gu") == "Custom Gujarati admin template")
-        t("merged[delivery_confirmation][gu] == bundled default",
-          merged.get("delivery_confirmation", {}).get("gu") == defaults.get("delivery_confirmation", {}).get("gu"))
-
-
-def test_whatsapp_templates_user(user_tok: str):
-    section("4. WhatsApp Templates — User")
-
-    r = requests.get(f"{BASE_URL}/me/whatsapp-templates", headers=auth_h(user_tok), timeout=20)
-    t("GET /me/whatsapp-templates → 200", r.status_code == 200, f"got {r.status_code}")
-    if r.status_code != 200:
-        return
-    data = r.json()
-    t("has admin_templates", isinstance(data.get("admin_templates"), dict))
-    t("has user_templates", isinstance(data.get("user_templates"), dict))
-    t("has default_language", isinstance(data.get("default_language"), str))
-    t("has types", isinstance(data.get("types"), list))
-    t("has languages", isinstance(data.get("languages"), list))
-    t("has defaults", isinstance(data.get("defaults"), dict))
-    at = data.get("admin_templates", {})
-    t("user sees admin's shipment_sent.gu override",
-      at.get("shipment_sent", {}).get("gu") == "Custom Gujarati admin template")
-
-    custom_gu = "મારો કસ્ટમ ગુજરાતી મેસેજ"
+# ── Setup: create 4 Pending test shipments ──────────────────────────
+suffix = uuid.uuid4().hex[:6].upper()
+created_shipments = []
+print(f"\n== Setup: Creating 4 test shipments (suffix {suffix}) ==")
+for i in range(4):
     payload = {
-        "templates": {"delivery_confirmation": {"gu": custom_gu}},
-        "default_language": "hi",
+        "tracking_id": f"TST{suffix}{i:02d}",
+        "courier_id": courier_id,
+        "courier_name": courier_name,
+        "customer_name": f"Test Customer {i+1}",
+        "customer_phone": f"99999{suffix[:5]}",
+        "address_line1": "12 Test Lane",
+        "city": "Ahmedabad",
+        "state": "Gujarat",
+        "pincode": "380001",
+        "amount": 100.0 + i,
+        "payment_mode": "Prepaid",
     }
-    r = requests.put(
-        f"{BASE_URL}/me/whatsapp-templates", json=payload, headers=auth_h(user_tok), timeout=20
-    )
-    t("PUT /me/whatsapp-templates → 200", r.status_code == 200, f"got {r.status_code} {r.text[:200]}")
-    if r.status_code == 200:
-        d = r.json()
-        ut = d.get("user_templates", {})
-        t("user override delivery_confirmation.gu saved",
-          ut.get("delivery_confirmation", {}).get("gu") == custom_gu)
-        t("default_language now 'hi'", d.get("default_language") == "hi")
-
-    r = requests.get(f"{BASE_URL}/me/whatsapp-templates", headers=auth_h(user_tok), timeout=20)
-    if r.status_code == 200:
-        d = r.json()
-        ut = d.get("user_templates", {})
-        t("Persisted user override delivery_confirmation.gu",
-          ut.get("delivery_confirmation", {}).get("gu") == custom_gu)
-        t("Persisted default_language=hi", d.get("default_language") == "hi")
-
-    r = requests.get(
-        f"{BASE_URL}/me/resolve-template",
-        params={"ttype": "delivery_confirmation", "lang": "gu"},
-        headers=auth_h(user_tok), timeout=20,
-    )
-    t("GET /me/resolve-template gu → 200", r.status_code == 200, f"got {r.status_code} {r.text[:200]}")
-    if r.status_code == 200:
-        d = r.json()
-        t("resolve gu returns user override", d.get("template") == custom_gu)
-        t("resolve gu source=user", d.get("source") == "user")
-        t("resolve gu language=gu", d.get("language") == "gu")
-
-    r = requests.get(
-        f"{BASE_URL}/me/resolve-template",
-        params={"ttype": "delivery_confirmation", "lang": "en"},
-        headers=auth_h(user_tok), timeout=20,
-    )
-    t("GET /me/resolve-template en → 200", r.status_code == 200, f"got {r.status_code}")
-    if r.status_code == 200:
-        d = r.json()
-        t("resolve en source != user (admin/bundled)",
-          d.get("source") in ("admin", "bundled"), f"got source={d.get('source')}")
-        t("resolve en template non-empty",
-          isinstance(d.get("template"), str) and len(d.get("template", "")) > 0)
-        t("resolve en language=en", d.get("language") == "en")
-
-    r = requests.get(
-        f"{BASE_URL}/me/resolve-template",
-        params={"ttype": "invalid_type"},
-        headers=auth_h(user_tok), timeout=20,
-    )
-    t("GET /me/resolve-template invalid_type → 400", r.status_code == 400, f"got {r.status_code}")
-
-
-def _ensure_shipped_shipments(user_tok: str, n_needed: int = 2) -> List[str]:
-    r = requests.get(
-        f"{BASE_URL}/shipments/dispatch-confirmation",
-        headers=auth_h(user_tok), timeout=20,
-    )
-    if r.status_code == 200:
-        rows = r.json().get("shipments", [])
-        ids = [r0["id"] for r0 in rows if r0.get("id")]
-        if len(ids) >= n_needed:
-            return ids[:n_needed]
-
-    r = requests.get(f"{BASE_URL}/shipments", headers=auth_h(user_tok), timeout=20)
+    r = requests.post(f"{BASE}/shipments", headers=H, json=payload, timeout=15)
     if r.status_code != 200:
-        return []
-    body = r.json()
-    all_ships = body if isinstance(body, list) else body.get("shipments", [])
-    candidates = [s for s in all_ships
-                  if s.get("status") not in ("Shipped", "Returned", "Cancelled", "Delivered")]
-    chosen_ids: List[str] = []
-    for s in candidates:
-        if len(chosen_ids) >= n_needed:
-            break
-        sid = s.get("id")
-        rr = requests.put(
-            f"{BASE_URL}/shipments/{sid}",
-            json={"status": "Shipped"},
-            headers=auth_h(user_tok), timeout=20,
-        )
-        if rr.status_code == 200:
-            chosen_ids.append(sid)
-    return chosen_ids
-
-
-def test_dispatch_confirmation(user_tok: str):
-    section("5. Dispatch Confirmation")
-
-    r = requests.get(
-        f"{BASE_URL}/shipments/dispatch-confirmation",
-        headers=auth_h(user_tok), timeout=20,
-    )
-    t("GET /shipments/dispatch-confirmation → 200", r.status_code == 200, f"got {r.status_code} {r.text[:200]}")
-    if r.status_code != 200:
-        return
-    data = r.json()
-    t("has shipments list", isinstance(data.get("shipments"), list))
-    t("has counts dict", isinstance(data.get("counts"), dict))
-    if isinstance(data.get("counts"), dict):
-        c = data["counts"]
-        t("counts has list/sent/pending keys",
-          all(k in c for k in ("list", "sent", "pending")))
-        t("counts.list == len(shipments)", c.get("list") == len(data.get("shipments") or []))
-    if data.get("shipments"):
-        all_shipped = all(s.get("status") == "Shipped" for s in data["shipments"])
-        t("all returned shipments have status=Shipped", all_shipped)
-
-    shipped_ids = _ensure_shipped_shipments(user_tok, 2)
-    if not shipped_ids:
-        t("at least 1 Shipped shipment available", False, "none found/created")
-        return
-    print(f"  Using shipped IDs: {shipped_ids}")
-
-    requests.post(
-        f"{BASE_URL}/shipments/dispatch-confirmation/reset",
-        json={"shipment_ids": shipped_ids},
-        headers=auth_h(user_tok), timeout=20,
-    )
-
-    r = requests.post(
-        f"{BASE_URL}/shipments/dispatch-confirmation/mark-sent",
-        json={"shipment_ids": shipped_ids},
-        headers=auth_h(user_tok), timeout=20,
-    )
-    t("POST mark-sent → 200", r.status_code == 200, f"got {r.status_code} {r.text[:200]}")
-    if r.status_code == 200:
-        d = r.json()
-        t("response keys updated/skipped/updated_ids/skipped_ids",
-          all(k in d for k in ("updated", "skipped", "updated_ids", "skipped_ids")))
-        t("first call: updated == len(ids)", d.get("updated") == len(shipped_ids), f"got {d.get('updated')}")
-        t("first call: skipped == 0", d.get("skipped") == 0, f"got {d.get('skipped')}")
-        t("first call: updated_ids matches input",
-          set(d.get("updated_ids") or []) == set(shipped_ids))
-
-    r = requests.post(
-        f"{BASE_URL}/shipments/dispatch-confirmation/mark-sent",
-        json={"shipment_ids": shipped_ids},
-        headers=auth_h(user_tok), timeout=20,
-    )
-    t("POST mark-sent (repeat same-day) → 200", r.status_code == 200, f"got {r.status_code}")
-    if r.status_code == 200:
-        d = r.json()
-        t("repeat call: updated == 0", d.get("updated") == 0, f"got {d.get('updated')}")
-        t("repeat call: skipped == len(ids)", d.get("skipped") == len(shipped_ids), f"got {d.get('skipped')}")
-        t("repeat call: skipped_ids matches input",
-          set(d.get("skipped_ids") or []) == set(shipped_ids))
-
-    r = requests.get(
-        f"{BASE_URL}/shipments/dispatch-confirmation",
-        headers=auth_h(user_tok), timeout=20,
-    )
-    if r.status_code == 200:
-        c = r.json().get("counts", {})
-        t("counts.sent >= len(marked)",
-          (c.get("sent") or 0) >= len(shipped_ids), f"got sent={c.get('sent')}")
-
-    r = requests.post(
-        f"{BASE_URL}/shipments/dispatch-confirmation/reset",
-        json={"shipment_ids": shipped_ids},
-        headers=auth_h(user_tok), timeout=20,
-    )
-    t("POST dispatch-confirmation/reset → 200", r.status_code == 200, f"got {r.status_code} {r.text[:200]}")
-    if r.status_code == 200:
-        d = r.json()
-        t("reset response has 'updated' key", "updated" in d)
-        t("reset.updated == len(ids)", d.get("updated") == len(shipped_ids), f"got {d.get('updated')}")
-
-    r = requests.get(
-        f"{BASE_URL}/shipments/dispatch-confirmation",
-        headers=auth_h(user_tok), timeout=20,
-    )
-    if r.status_code == 200:
-        rows = {s.get("id"): s for s in r.json().get("shipments", [])}
-        all_pending = all(
-            (rows.get(sid, {}).get("dispatch_msg_status") or "pending") == "pending"
-            for sid in shipped_ids
-        )
-        t("after reset: marked shipments back to pending status", all_pending)
-
-
-def test_delivery_confirmation_v2(user_tok: str):
-    section("6. Delivery Confirmation v2")
-
-    r = requests.get(
-        f"{BASE_URL}/shipments/delivery-confirmation-v2",
-        headers=auth_h(user_tok), timeout=20,
-    )
-    t("GET /shipments/delivery-confirmation-v2 → 200", r.status_code == 200, f"got {r.status_code} {r.text[:200]}")
-    if r.status_code != 200:
-        return
-    d = r.json()
-    t("has shipments list", isinstance(d.get("shipments"), list))
-    t("has counts dict", isinstance(d.get("counts"), dict))
-    t("has eta_min int", isinstance(d.get("eta_min"), int))
-    t("has eta_max int", isinstance(d.get("eta_max"), int))
-    t("has threshold_override key", "threshold_override" in d)
-    t("threshold_override is None by default", d.get("threshold_override") is None)
-    if d.get("shipments"):
-        all_eta = all("courier_eta_days" in s for s in d["shipments"])
-        t("each shipment has courier_eta_days", all_eta)
-
-    r = requests.get(
-        f"{BASE_URL}/shipments/delivery-confirmation-v2",
-        params={"threshold_days": 0},
-        headers=auth_h(user_tok), timeout=20,
-    )
-    t("GET threshold_days=0 → 200", r.status_code == 200, f"got {r.status_code}")
-    if r.status_code == 200:
-        d2 = r.json()
-        t("threshold_override == 0", d2.get("threshold_override") == 0)
-        t("threshold=0 list ≥ default list",
-          len(d2.get("shipments", [])) >= len(d.get("shipments", [])),
-          f"got threshold=0:{len(d2.get('shipments', []))} default:{len(d.get('shipments', []))}")
-        if d2.get("shipments"):
-            all_eta_v2 = all("courier_eta_days" in s for s in d2["shipments"])
-            t("threshold=0: each shipment has courier_eta_days", all_eta_v2)
-
-
-def main():
-    print(f"Backend URL: {BASE_URL}")
-
-    print("\n--- Authenticating ---")
-    admin_tok = login(ADMIN_EMAIL, ADMIN_PASSWORD)
-    user_tok = login(USER_EMAIL, USER_PASSWORD)
-    if not admin_tok:
-        print("FATAL: admin login failed; aborting")
+        print(f"  Failed to create shipment {i}: {r.status_code} {r.text[:200]}")
         sys.exit(1)
-    if not user_tok:
-        print("FATAL: user login failed; aborting")
-        sys.exit(1)
-    print(f"  admin token: {admin_tok[:20]}...")
-    print(f"  user token:  {user_tok[:20]}...")
+    s = r.json()
+    created_shipments.append(s)
+    print(f"  Created id={s['id'][:8]} tracking={s['tracking_id']} status={s['status']}")
 
-    test_courier_rules_admin(admin_tok, user_tok)
-    test_courier_rules_user(user_tok)
-    test_whatsapp_templates_admin(admin_tok, user_tok)
-    test_whatsapp_templates_user(user_tok)
-    test_dispatch_confirmation(user_tok)
-    test_delivery_confirmation_v2(user_tok)
+# Sanity: all should be Pending
+for s in created_shipments:
+    log(f"setup status==Pending for {s['tracking_id']}", s["status"] == "Pending", f"got {s['status']}")
 
-    print("\n" + "=" * 60)
-    print(f"RESULT: {passes} passed, {failures} failed (total {passes + failures})")
-    if failures:
-        print("\nFailures:")
-        for m in fail_msgs:
-            print(m)
-        sys.exit(1)
+# Shorthand
+S0, S1, S2, S3 = created_shipments  # all Pending
 
+# ════════════════════════════════════════════════════════════════════
+# 1. POST /api/shipments/bulk-mark-processing  (NEW)
+# ════════════════════════════════════════════════════════════════════
+print("\n══ TEST GROUP 1: bulk-mark-processing ══")
 
-if __name__ == "__main__":
-    main()
+# 1a. Empty list
+r = requests.post(f"{BASE}/shipments/bulk-mark-processing", headers=H, json={"shipment_ids": []}, timeout=15)
+ok = r.status_code == 200 and r.json() == {
+    "updated": 0, "skipped": 0, "not_found": 0,
+    "updated_ids": [], "skipped_ids": [], "not_found_ids": []
+}
+log("1a empty list returns zeros", ok, f"status={r.status_code} body={r.text[:200]}")
+
+# 1b. 2 valid Pending IDs (S0, S1)
+ids = [S0["id"], S1["id"]]
+r = requests.post(f"{BASE}/shipments/bulk-mark-processing", headers=H, json={"shipment_ids": ids}, timeout=15)
+body = r.json() if r.status_code == 200 else {}
+ok = r.status_code == 200 and body.get("updated") == 2 and body.get("skipped") == 0 and body.get("not_found") == 0
+log("1b 2 Pending → updated=2,skipped=0,not_found=0", ok, json.dumps(body))
+ok = set(body.get("updated_ids", [])) == set(ids)
+log("1b updated_ids match input", ok, f"got={body.get('updated_ids')}")
+
+# Verify S0 status == Processing AND processing_started_at is set
+r = requests.get(f"{BASE}/shipments/{S0['id']}", headers=H, timeout=15)
+sd = r.json() if r.status_code == 200 else {}
+ok = sd.get("status") == "Processing"
+log("1b S0 status==Processing after bulk", ok, f"got status={sd.get('status')}")
+ok = bool(sd.get("processing_started_at"))
+log("1b S0 processing_started_at set", ok, f"got={sd.get('processing_started_at')}")
+
+# 1c. Mix: 1 Pending (S2) + 1 Shipped (we'll set S3 to Shipped via PUT)
+r = requests.put(f"{BASE}/shipments/{S3['id']}", headers=H, json={"status": "Shipped"}, timeout=15)
+log("1c setup PUT S3→Shipped", r.status_code == 200, f"status={r.status_code}")
+
+ids = [S2["id"], S3["id"]]
+r = requests.post(f"{BASE}/shipments/bulk-mark-processing", headers=H, json={"shipment_ids": ids}, timeout=15)
+body = r.json() if r.status_code == 200 else {}
+ok = r.status_code == 200 and body.get("updated") == 1 and body.get("skipped") == 1 and body.get("not_found") == 0
+log("1c 1Pending+1Shipped → updated=1,skipped=1", ok, json.dumps(body))
+ok = body.get("updated_ids") == [S2["id"]] and body.get("skipped_ids") == [S3["id"]]
+log("1c id buckets correct", ok, f"updated={body.get('updated_ids')} skipped={body.get('skipped_ids')}")
+
+# 1d. Bad id
+bad_id = "non-existent-id-" + uuid.uuid4().hex[:8]
+r = requests.post(f"{BASE}/shipments/bulk-mark-processing", headers=H, json={"shipment_ids": [bad_id]}, timeout=15)
+body = r.json() if r.status_code == 200 else {}
+ok = r.status_code == 200 and body.get("updated") == 0 and body.get("skipped") == 0 and body.get("not_found") == 1
+log("1d bad id → not_found=1", ok, json.dumps(body))
+ok = body.get("not_found_ids") == [bad_id]
+log("1d not_found_ids correct", ok, f"got={body.get('not_found_ids')}")
+
+# State after this group:
+#   S0=Processing, S1=Processing, S2=Processing, S3=Shipped
+
+# ════════════════════════════════════════════════════════════════════
+# 2. POST /api/shipments/scan-dispatch  (UPDATED)
+# ════════════════════════════════════════════════════════════════════
+print("\n══ TEST GROUP 2: scan-dispatch ══")
+
+# 2a. Scan a Processing shipment → outcome:moved, no hint
+# Use S0 (Processing)
+r = requests.post(f"{BASE}/shipments/scan-dispatch", headers=H, json={"tracking_id": S0["tracking_id"]}, timeout=15)
+body = r.json() if r.status_code == 200 else {}
+ok = r.status_code == 200 and body.get("outcome") == "moved"
+log("2a Processing→Dispatch outcome=moved", ok, json.dumps({"outcome": body.get("outcome"), "reason": body.get("reason")}))
+ok = "hint" not in body
+log("2a Processing→Dispatch NO hint", ok, f"hint={body.get('hint')}")
+ok = (body.get("shipment") or {}).get("status") in ("Dispatch", "Dispatched", "Ready to Ship", "ReadyToShip")
+log("2a shipment.status now Dispatch", ok, f"status={(body.get('shipment') or {}).get('status')}")
+
+# 2b. Scan a Pending shipment → outcome:moved, hint=skipped_processing
+# We need a fresh Pending shipment. Create one more.
+r = requests.post(f"{BASE}/shipments", headers=H, json={
+    "tracking_id": f"TST{suffix}P1",
+    "courier_id": courier_id,
+    "courier_name": courier_name,
+    "customer_name": "Pending Skip Test",
+    "customer_phone": "9000000001",
+    "address_line1": "1 Pending St",
+    "city": "Ahmedabad", "state": "Gujarat", "pincode": "380001",
+    "amount": 50.0, "payment_mode": "Prepaid",
+}, timeout=15)
+SP = r.json()
+log("2b setup created Pending shipment", r.status_code == 200 and SP.get("status") == "Pending", f"status={SP.get('status')}")
+
+r = requests.post(f"{BASE}/shipments/scan-dispatch", headers=H, json={"tracking_id": SP["tracking_id"]}, timeout=15)
+body = r.json() if r.status_code == 200 else {}
+ok = r.status_code == 200 and body.get("outcome") == "moved"
+log("2b Pending→Dispatch outcome=moved", ok, json.dumps({"outcome": body.get("outcome")}))
+ok = body.get("hint") == "skipped_processing"
+log("2b Pending→Dispatch hint=skipped_processing", ok, f"hint={body.get('hint')}")
+
+# 2c. Scan an already-Dispatched shipment → outcome:already
+# S0 is now Dispatch; rescan it.
+r = requests.post(f"{BASE}/shipments/scan-dispatch", headers=H, json={"tracking_id": S0["tracking_id"]}, timeout=15)
+body = r.json() if r.status_code == 200 else {}
+ok = r.status_code == 200 and body.get("outcome") == "already"
+log("2c Dispatch→Dispatch outcome=already", ok, f"outcome={body.get('outcome')} reason={body.get('reason')}")
+
+# 2d. Scan a Shipped shipment → outcome:failed, reason starts with "wrong_status"
+# S3 is Shipped
+r = requests.post(f"{BASE}/shipments/scan-dispatch", headers=H, json={"tracking_id": S3["tracking_id"]}, timeout=15)
+body = r.json() if r.status_code == 200 else {}
+ok = r.status_code == 200 and body.get("outcome") == "failed"
+log("2d Shipped→Dispatch outcome=failed", ok, f"outcome={body.get('outcome')} reason={body.get('reason')}")
+ok = isinstance(body.get("reason"), str) and body.get("reason", "").startswith("wrong_status")
+log("2d Shipped→Dispatch reason starts with wrong_status", ok, f"reason={body.get('reason')}")
+
+# 2e. Unknown tracking_id → outcome:failed, reason=not_found
+r = requests.post(f"{BASE}/shipments/scan-dispatch", headers=H, json={"tracking_id": "NOPENOPENOPE-XYZ-12345"}, timeout=15)
+body = r.json() if r.status_code == 200 else {}
+ok = r.status_code == 200 and body.get("outcome") == "failed" and body.get("reason") == "not_found"
+log("2e unknown tid → failed+not_found", ok, f"outcome={body.get('outcome')} reason={body.get('reason')}")
+
+# ════════════════════════════════════════════════════════════════════
+# 3. POST /api/shipments/scan-ship  (UPDATED)
+# ════════════════════════════════════════════════════════════════════
+print("\n══ TEST GROUP 3: scan-ship ══")
+
+# 3a. Scan a Dispatch shipment → outcome:moved
+# S0 is now in Dispatch. Use it.
+r = requests.post(f"{BASE}/shipments/scan-ship", headers=H, json={"tracking_id": S0["tracking_id"]}, timeout=15)
+body = r.json() if r.status_code == 200 else {}
+ok = r.status_code == 200 and body.get("outcome") == "moved"
+log("3a Dispatch→Shipped outcome=moved", ok, f"outcome={body.get('outcome')} reason={body.get('reason')}")
+ok = (body.get("shipment") or {}).get("status") == "Shipped"
+log("3a S0 now Shipped", ok, f"status={(body.get('shipment') or {}).get('status')}")
+
+# 3b. Scan a Pending shipment → outcome:failed, message contains "scan to Ready to Ship first"
+# S1 is in Processing — need a Pending one. Create another.
+r = requests.post(f"{BASE}/shipments", headers=H, json={
+    "tracking_id": f"TST{suffix}P2",
+    "courier_id": courier_id, "courier_name": courier_name,
+    "customer_name": "Pending Ship Test",
+    "customer_phone": "9000000002",
+    "address_line1": "2 Pending St",
+    "city": "Ahmedabad", "state": "Gujarat", "pincode": "380001",
+    "amount": 75.0, "payment_mode": "Prepaid",
+}, timeout=15)
+SP2 = r.json()
+log("3b setup Pending shipment", r.status_code == 200 and SP2.get("status") == "Pending", f"status={SP2.get('status')}")
+
+r = requests.post(f"{BASE}/shipments/scan-ship", headers=H, json={"tracking_id": SP2["tracking_id"]}, timeout=15)
+body = r.json() if r.status_code == 200 else {}
+ok = r.status_code == 200 and body.get("outcome") == "failed"
+log("3b Pending→Ship outcome=failed", ok, f"outcome={body.get('outcome')} reason={body.get('reason')}")
+ok = "scan to Ready to Ship first" in (body.get("message") or "")
+log("3b message contains 'scan to Ready to Ship first'", ok, f"msg={body.get('message')}")
+
+# 3c. Scan an already-Shipped → outcome:already
+r = requests.post(f"{BASE}/shipments/scan-ship", headers=H, json={"tracking_id": S0["tracking_id"]}, timeout=15)
+body = r.json() if r.status_code == 200 else {}
+ok = r.status_code == 200 and body.get("outcome") == "already"
+log("3c Shipped→Ship outcome=already", ok, f"outcome={body.get('outcome')} reason={body.get('reason')}")
+
+# ── Cleanup ─────────────────────────────────────────────────────────
+print("\n══ Cleanup ══")
+cleanup_ids = [s["id"] for s in created_shipments] + [SP["id"], SP2["id"]]
+for sid in cleanup_ids:
+    try:
+        rr = requests.delete(f"{BASE}/shipments/{sid}", headers=H, timeout=15)
+        print(f"  DELETE {sid[:8]} → {rr.status_code}")
+    except Exception as e:
+        print(f"  DELETE {sid[:8]} failed: {e}")
+
+# ── Summary ─────────────────────────────────────────────────────────
+print("\n" + "═" * 60)
+passed = sum(1 for _, ok, _ in results if ok)
+total = len(results)
+print(f"RESULT: {passed}/{total} passed")
+fails = [(n, d) for n, ok, d in results if not ok]
+if fails:
+    print("\nFAILURES:")
+    for n, d in fails:
+        print(f"  - {n}: {d}")
+    sys.exit(1)
+print("ALL PASS")
