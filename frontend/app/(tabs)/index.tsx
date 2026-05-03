@@ -26,9 +26,11 @@ import { Api, Shipment } from "../../lib/api";
 import { colors } from "../../lib/theme";
 import UsageMeter from "../../components/UsageMeter";
 import HomeAlerts from "../../components/HomeAlerts";
+import SlaActionWidget from "../../components/SlaActionWidget";
 import BrandHeaderAnimator from "../../components/BrandHeaderAnimator";
 import SmartCycleButton from "../../components/SmartCycleButton";
 import { useFeatureFlag } from "../../lib/feature_flags";
+import { useAuth } from "../../lib/auth";
 
 type Stats = {
   total: number;
@@ -43,6 +45,8 @@ type Stats = {
 
 export default function Dashboard() {
   const router = useRouter();
+  const { user } = useAuth();
+  const isAdmin = !!user?.is_admin;
   const { width: screenWidth, height: screenHeight } = useWindowDimensions();
   // 3-column stat grid: 16px horizontal padding + 10px × 2 gaps
   const cardW = Math.floor((screenWidth - 32 - 20) / 3);
@@ -1735,6 +1739,10 @@ export default function Dashboard() {
                 </View>
                 <Ionicons name="chevron-forward" size={20} color="#6B5BFF" />
               </TouchableOpacity>
+              {/* Phase G5 — Action Required widget. Self-hides when
+                  no breaches OR admin has muted the banner channel. */}
+              <SlaActionWidget isAdmin={isAdmin} />
+
               {/* Phase F2/F3: 5-stage generic Bulk Message buttons.
                   All five drive `/bulk-message/[type]` and share the
                   same multi-select + sequential-WhatsApp flow. */}

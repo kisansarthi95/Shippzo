@@ -1601,8 +1601,53 @@ async def sheets_orders(
         csv_text = await fetch_sheet_csv(cfg.sheet_id, cfg.gid or "0")
         data = parse_csv_rows(csv_text)
 
-    # Detect header changes
-    headers_changed = data["headers"] != cfg.headers
+    # Detect header changes — but be smart about it. The legacy logic
+    # naïvely compared `data["headers"] != cfg.headers` which fired
+    # `headers_changed=True` forever once the user added a new column
+    # (because cfg.headers was set on first-connect and never updated).
+    #
+    # New logic:
+    #   • cfg.headers empty → first read; persist + return False.
+    #   • Old headers ⊆ new headers (purely additive) → silently
+    #     update cfg.headers + return False (existing column_mapping
+    #     keeps working).
+    #   • A previously-mapped column was removed/renamed → return
+    #     True so the UI can prompt the user to remap.
+    headers_changed = False
+    fresh_headers = list(data.get("headers") or [])
+    saved_headers = list(cfg.headers or [])
+    if fresh_headers and fresh_headers != saved_headers:
+        if not saved_headers:
+            # First-ever read after connect — just persist.
+            try:
+                await db.settings.update_one(
+                    {"user_id": current_user["id"]},
+                    {"$set": {"sheet.headers": fresh_headers}},
+                )
+            except Exception:
+                logger.exception("failed to bootstrap sheet.headers")
+        else:
+            # Determine if any *currently mapped* column was lost.
+            mapped_cols = {
+                (cfg.column_mapping or {}).get(k) for k in (cfg.column_mapping or {})
+            }
+            mapped_cols.discard("")
+            mapped_cols.discard(None)
+            lost = [c for c in mapped_cols if c not in fresh_headers]
+            if lost:
+                # Real schema change — keep the warning ON so the UI
+                # can prompt remap. Don't auto-update `cfg.headers`
+                # so the user sees the original mapping context.
+                headers_changed = True
+            else:
+                # Purely additive change → silently sync.
+                try:
+                    await db.settings.update_one(
+                        {"user_id": current_user["id"]},
+                        {"$set": {"sheet.headers": fresh_headers}},
+                    )
+                except Exception:
+                    logger.exception("failed to refresh sheet.headers (additive)")
 
     mapping = cfg.column_mapping or {}
 

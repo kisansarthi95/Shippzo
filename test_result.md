@@ -9697,3 +9697,31 @@ agent_communication:
         LEGACY screens (/dispatch-confirmation, /delivery-confirmation)
         remain on disk but no longer linked from dashboard. Phase F4
         will remove them in a follow-up.
+
+    -agent: "main"
+    -message: |
+        TWO MORE PHASES SHIPPED:
+
+        1) Master Sheet "headers changed" warning loop fix (server.py
+           /sheets/orders endpoint, lines ~1604–1650). New logic:
+           • cfg.headers empty → first read; persist + return False ✓
+           • Old ⊆ new (additive) → silent sync, return False ✓
+           • A previously-mapped column lost → still True (real change) ✓
+           Tested by re-hitting the endpoint twice; warning no longer
+           fires after the first sync.
+
+        2) Phase G5 — Dashboard "Action Required" widget shipped.
+           File: /app/frontend/components/SlaActionWidget.tsx
+           - Reads /api/me/sla/alerts (banner-mute aware → self-hides
+             when admin disabled banner channel).
+           - Visible verification on web: widget shows 46 open alerts,
+             per-stage chips (Pending·40, Delivered·4, Shipped·1,
+             Processing·1), top-3 rows with priority + escalation
+             level + days-overdue, "View all 46 alerts →" footer.
+           - Admin taps footer → /admin/sla-alerts console.
+           - Regular users tap footer → /shipments tab filtered to
+             the most-common breach stage.
+
+        REMAINING BACKLOG: Phase F4 (legacy dispatch/delivery
+        confirmation cleanup), Push notifications wiring, Google
+        Sheet auto-sync, Play Store readiness, Admin Analytics.
