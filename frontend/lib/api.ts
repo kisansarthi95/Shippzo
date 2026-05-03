@@ -591,6 +591,32 @@ export const Api = {
     api.put<NotificationPrefs>("/me/notification-prefs", prefs).then((r) => r.data),
 
   // ───────────────────────────────────────────────────────────────────
+  // Phase H — User personal-sheet auto-sync
+  // ───────────────────────────────────────────────────────────────────
+  meSheetSyncStatus: () =>
+    api.get<{
+      connected: boolean;
+      sheet_id: string;
+      sheet_url: string;
+      auto_sync_create: boolean;
+      auto_sync_status: boolean;
+      auto_sync_delete: boolean;
+      shipment_counts: { ok: number; pending: number; skipped: number; error: number; never: number };
+      queue_pending: number;
+      total_shipments: number;
+    }>("/me/sheet-sync/status").then((r) => r.data),
+  meSheetSyncToggles: (payload: { auto_sync_create?: boolean; auto_sync_status?: boolean; auto_sync_delete?: boolean }) =>
+    api.put("/me/sheet-sync/toggles", payload).then((r) => r.data),
+  meSheetSyncRunNow: () =>
+    api.post<{
+      drained: { drained: number; failed: number; examined: number };
+      backfilled: number;
+      errored: number;
+    }>("/me/sheet-sync/run-now").then((r) => r.data),
+  meSheetSyncShipment: (shipment_id: string) =>
+    api.post(`/me/sheet-sync/shipment/${encodeURIComponent(shipment_id)}`).then((r) => r.data),
+
+  // ───────────────────────────────────────────────────────────────────
   // Phase G6 — Expo push token registry & test
   // ───────────────────────────────────────────────────────────────────
   registerPushToken: (payload: { token: string; platform?: string; device_id?: string }) =>

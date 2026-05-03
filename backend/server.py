@@ -715,6 +715,12 @@ class SheetConfig(BaseModel):
     headers: List[str] = Field(default_factory=list)
     column_mapping: Dict[str, str] = Field(default_factory=dict)
     auto_refresh_minutes: int = 0   # 0 = disabled
+    # Phase H — auto-sync toggles. When ON, every create / status
+    # change / delete in the app fires a best-effort write to the
+    # user's PERSONAL sheet (separate from the central Master Sheet).
+    auto_sync_create: bool = True   # write new rows on POST /shipments
+    auto_sync_status: bool = True   # update the row when status changes
+    auto_sync_delete: bool = True   # tombstone the row when a shipment is removed
 
 
 class BrandConfig(BaseModel):
@@ -2985,6 +2991,16 @@ async def create_shipment(
 
     await db.shipments.insert_one(doc)
 
+    # ---- Phase H: User personal-sheet auto-sync (best-effort) ----
+    # Mirrors the new shipment to the user's own Google Sheet (separate
+    # from the central Master Sheet). Honours per-user
+    # settings.sheet.auto_sync_create flag and never blocks the response.
+    try:
+        import user_sheet_sync as _uss
+        await _uss.sync_create(db, current_user, doc)
+    except Exception:
+        logger.exception("user-sheet auto-sync (create) failed (non-fatal)")
+
     # ---- Best-effort: write custom-field values to user's personal sheet ----
     # Custom fields (Salesperson, Reference No, etc.) live in user-defined
     # columns of the user's OWN Google Sheet. Master Sheet only stores the
@@ -3059,6 +3075,25 @@ async def update_shipment(
         except Exception:
             logger.exception("Sheet status sync failed (non-fatal)")
 
+    # ---- Phase H: User personal-sheet status auto-sync (best-effort) ----
+    # Independent of the Master Sheet sync above. Triggers on ANY status
+    # transition when the user has connected a sheet AND the
+    # auto_sync_status toggle is on.
+    if (
+        new_status is not None
+        and prev_doc is not None
+        and (prev_doc.get("status") or "") != new_status
+    ):
+        try:
+            import user_sheet_sync as _uss
+            tracking = prev_doc.get("tracking_id") or res.get("tracking_id") or ""
+            await _uss.sync_status_change(
+                db, current_user, res, new_status,
+                extra_notice=f"Tracking: {tracking}" if tracking else None,
+            )
+        except Exception:
+            logger.exception("user-sheet status auto-sync failed (non-fatal)")
+
     return Shipment(**strip_id(res))
 
 
@@ -3106,6 +3141,15 @@ async def delete_shipment(
     res = await db.shipments.delete_one(
         {"id": shipment_id, "user_id": current_user["id"]}
     )
+    # Phase H: best-effort tombstone on the user's personal sheet too.
+    try:
+        import user_sheet_sync as _uss
+        await _uss.sync_delete(
+            db, current_user, doc,
+            reason=f"shipment {doc.get('tracking_id') or doc.get('id')} removed",
+        )
+    except Exception:
+        logger.exception("user-sheet auto-sync (delete) failed (non-fatal)")
     if res.deleted_count == 0:
         # Race condition — someone else deleted. Still return 404.
         raise HTTPException(status_code=404, detail="Shipment not found")
@@ -7694,6 +7738,13 @@ async def on_startup():
         _asyncio.create_task(_morning_reminder_worker())
     except Exception:
         logger.exception("Failed to start morning reminder worker (non-fatal)")
+    # Phase H — User personal-sheet sync retry worker. Drains the
+    # `user_sheet_sync_pending` collection every 90s.
+    try:
+        import asyncio as _asyncio
+        _asyncio.create_task(_user_sheet_drain_worker())
+    except Exception:
+        logger.exception("Failed to start user-sheet drain worker (non-fatal)")
     logger.info("Courier Label Manager API started; defaults seeded.")
 
 
@@ -7837,6 +7888,34 @@ async def _sla_scan_worker() -> None:
             await _asyncio.sleep(300.0)
 
 
+async def _user_sheet_drain_worker() -> None:
+    """Phase H — periodic retry of failed user-sheet sync ops.
+    Drains up to 5 docs every 90s. Stops examining a doc after 10
+    failed attempts (queue self-cleans)."""
+    import asyncio as _asyncio
+    import user_sheet_sync as _uss
+    await _asyncio.sleep(90.0)   # boot grace
+    while True:
+        try:
+            res = await _uss.drain_pending_queue(db, batch=5)
+            if res.get("examined"):
+                logger.info(
+                    "user-sheet drain: examined=%s drained=%s failed=%s",
+                    res["examined"], res.get("drained"), res.get("failed"),
+                )
+        except _asyncio.CancelledError:
+            return
+        except Exception:
+            logger.exception("user-sheet drain iteration failed")
+        await _asyncio.sleep(90.0)
+
+
+
+
+@app.on_event("shutdown")
+async def shutdown_db_client():
+    client.close()
+
 async def _morning_reminder_worker() -> None:
     """Phase G6 — Morning reminder push (8am IST daily).
     Walks every active user, computes their pending bulk-message
@@ -7907,6 +7986,151 @@ async def _morning_reminder_worker() -> None:
         except Exception:
             logger.exception("Morning reminder iteration failed")
             await _asyncio.sleep(900.0)
+
+
+# ──────────────────────────────────────────────────────────────────
+# Phase H — User personal-sheet sync admin/utility endpoints
+# ──────────────────────────────────────────────────────────────────
+
+# These endpoints are added AFTER the original `app.include_router(api_router)`
+# call earlier in the file, so we attach them to a fresh sub-router and
+# include it directly on the app (single explicit include below).
+sheet_sync_router = APIRouter(prefix="/api", tags=["sheet-sync"])
+
+
+@sheet_sync_router.get("/me/sheet-sync/status")
+async def me_sheet_sync_status(
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    """Aggregate counters showing the health of the user's personal
+    sheet sync. Used by Settings and the Sheet Sync banner."""
+    settings_doc = await db.settings.find_one(
+        {"user_id": current_user["id"]}, {"_id": 0, "sheet": 1},
+    ) or {}
+    cfg = (settings_doc.get("sheet") or {})
+    sheet_id = (cfg.get("sheet_id") or "").strip()
+
+    pipeline = [
+        {"$match": {"user_id": current_user["id"]}},
+        {"$group": {
+            "_id": "$user_sheet_sync_status",
+            "count": {"$sum": 1},
+        }},
+    ]
+    counts = {"ok": 0, "pending": 0, "skipped": 0, "error": 0, "never": 0}
+    total = 0
+    async for row in db.shipments.aggregate(pipeline):
+        key = row["_id"] if row["_id"] in counts else "never"
+        counts[key] = counts.get(key, 0) + int(row["count"])
+        total += int(row["count"])
+    # Anything without the field at all → "never".
+    explicit_total = sum(counts[k] for k in ("ok", "pending", "skipped", "error"))
+    counts["never"] = max(0, total - explicit_total)
+
+    queue_pending = await db.user_sheet_sync_pending.count_documents(
+        {"user_id": current_user["id"]},
+    )
+
+    return {
+        "connected":          bool(sheet_id),
+        "sheet_id":           sheet_id,
+        "sheet_url":          cfg.get("url") or "",
+        "auto_sync_create":   bool(cfg.get("auto_sync_create", True)),
+        "auto_sync_status":   bool(cfg.get("auto_sync_status", True)),
+        "auto_sync_delete":   bool(cfg.get("auto_sync_delete", True)),
+        "shipment_counts":    counts,
+        "queue_pending":      int(queue_pending),
+        "total_shipments":    total,
+    }
+
+
+@sheet_sync_router.put("/me/sheet-sync/toggles")
+async def me_sheet_sync_toggles(
+    payload: Dict[str, Any] = Body(...),
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    """Update auto_sync_{create,status,delete} flags."""
+    update: Dict[str, Any] = {}
+    for k in ("auto_sync_create", "auto_sync_status", "auto_sync_delete"):
+        if k in payload:
+            update[f"sheet.{k}"] = bool(payload[k])
+    if not update:
+        raise HTTPException(status_code=400, detail="No supported toggles in body")
+    await db.settings.update_one(
+        {"user_id": current_user["id"]},
+        {"$set": update},
+        upsert=True,
+    )
+    return await me_sheet_sync_status(current_user)  # type: ignore[arg-type]
+
+
+@sheet_sync_router.post("/me/sheet-sync/run-now")
+async def me_sheet_sync_run_now(
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    """Drain the user's pending sync queue immediately + retry every
+    shipment whose sync_status is 'error'. Returns a small summary.
+    Capped at 20 ops to stay under Google Sheets per-minute quota."""
+    import asyncio as _asyncio
+    import user_sheet_sync as _uss
+    drained = await _uss.drain_pending_queue(db, batch=10)
+
+    # Also kick a backfill for shipments that have never been synced.
+    cursor = db.shipments.find(
+        {
+            "user_id": current_user["id"],
+            "$or": [
+                {"user_sheet_sync_status": {"$exists": False}},
+                {"user_sheet_sync_status": "error"},
+            ],
+        },
+        {"_id": 0},
+    ).limit(20)
+    backfilled, errored = 0, 0
+    async for ship in cursor:
+        try:
+            res = await _uss.sync_create(db, current_user, ship)
+            if res.get("ok"):
+                backfilled += 1
+            else:
+                errored += 1
+            # Stay under the 60 reads/min Google Sheets quota.
+            await _asyncio.sleep(1.2)
+        except Exception:
+            errored += 1
+    return {
+        "drained":    drained,
+        "backfilled": backfilled,
+        "errored":    errored,
+        "note":       "Capped at 20 ops/call to respect Google Sheets quota — re-run if more pending.",
+    }
+
+
+@sheet_sync_router.post("/me/sheet-sync/shipment/{shipment_id}")
+async def me_sheet_sync_one(
+    shipment_id: str,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    """Manually re-sync a single shipment (useful from the shipment
+    detail screen when an admin sees a stale row)."""
+    import user_sheet_sync as _uss
+    ship = await db.shipments.find_one(
+        {"id": shipment_id, "user_id": current_user["id"]}, {"_id": 0},
+    )
+    if not ship:
+        raise HTTPException(status_code=404, detail="Shipment not found")
+    if ship.get("user_sheet_row_num"):
+        return await _uss.sync_status_change(
+            db, current_user, ship, ship.get("status") or "Pending",
+        )
+    return await _uss.sync_create(db, current_user, ship)
+
+
+
+
+# Register the Phase-H sub-router on the app (api_router was already
+# included earlier so we can't add new routes to it).
+app.include_router(sheet_sync_router)
 
 
 @app.on_event("shutdown")

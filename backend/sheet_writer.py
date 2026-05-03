@@ -1070,3 +1070,102 @@ def update_row_status(
         "notice_cell": notice_a1 if extra_notice else None,
         "status_written": str(status),
     }
+
+
+
+# ──────────────────────────────────────────────────────────────────
+# Phase H — User personal-sheet sync helpers
+# ──────────────────────────────────────────────────────────────────
+
+def update_user_sheet_row_status(
+    sheet_id: str,
+    tab_name_or_gid: str,
+    row_num: int,
+    status: str,
+    extra_notice: Optional[str] = None,
+    *,
+    append_to_notice: bool = True,
+) -> Dict[str, Any]:
+    """Phase-H twin of `update_row_status` that writes back to the
+    USER's own personal Google Sheet (not the central Master Sheet).
+    Used by the Two-Way Status Sync wired in /api/shipments PUT.
+
+    The user sheet is assumed to follow the same 19-column COLUMNS
+    layout that `append_order_row_to_user_sheet` writes. If the user
+    has a custom layout, we silently no-op (no destructive writes
+    against unknown columns).
+    """
+    if not sheet_id:
+        return {"ok": False, "skipped": True, "reason": "no sheet_id"}
+    if not isinstance(row_num, int) or row_num < 2:
+        raise ValueError(f"Invalid row_num for user-sheet status update: {row_num!r}")
+
+    ws = _open_user_sheet(sheet_id, tab_name_or_gid or "0")
+
+    # Validate the layout by checking the header row matches COLUMNS.
+    try:
+        header_row = [str(c or "").strip().lower().replace(" ", "_")
+                      for c in (ws.row_values(1) or [])]
+    except Exception:
+        header_row = []
+    expected = [c.lower() for c in COLUMNS]
+    if not header_row or header_row[:len(expected)] != expected:
+        return {
+            "ok": False,
+            "skipped": True,
+            "reason": "user_sheet_layout_mismatch",
+            "expected_first_cols": expected[:6],
+            "actual_first_cols": header_row[:6],
+        }
+
+    try:
+        status_col = COLUMNS.index("status") + 1
+        notice_col = COLUMNS.index("notice") + 1
+    except ValueError as e:
+        raise RuntimeError(f"COLUMNS layout missing status/notice: {e}")
+
+    status_a1 = f"{_col_letter(status_col)}{row_num}"
+    notice_a1 = f"{_col_letter(notice_col)}{row_num}"
+
+    writes: List[Dict[str, Any]] = [
+        {"range": status_a1, "values": [[str(status)]]},
+    ]
+    if extra_notice:
+        ts = datetime.now(timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M:%S")
+        suffix = f"[{ts}] {status}: {extra_notice}"
+        if append_to_notice:
+            try:
+                existing = ws.cell(row_num, notice_col).value or ""
+            except Exception:
+                existing = ""
+            new_notice = f"{existing}\n{suffix}" if existing.strip() else suffix
+        else:
+            new_notice = suffix
+        writes.append({"range": notice_a1, "values": [[new_notice]]})
+
+    ws.batch_update(writes, value_input_option="USER_ENTERED")
+    return {
+        "ok":             True,
+        "row":            row_num,
+        "tab":            ws.title,
+        "status_cell":    status_a1,
+        "status_written": str(status),
+    }
+
+
+def mark_user_sheet_row_deleted(
+    sheet_id: str,
+    tab_name_or_gid: str,
+    row_num: int,
+    reason: str = "",
+) -> Dict[str, Any]:
+    """Tombstone a row on the user's personal sheet (Status='DELETED' +
+    Notice append). Mirrors the central `mark_row_deleted` helper."""
+    return update_user_sheet_row_status(
+        sheet_id=sheet_id,
+        tab_name_or_gid=tab_name_or_gid,
+        row_num=row_num,
+        status="DELETED",
+        extra_notice=reason or "removed from app",
+        append_to_notice=True,
+    )

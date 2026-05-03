@@ -1981,6 +1981,27 @@ export default function SettingsScreen() {
             </TouchableOpacity>
           </Section>
 
+          {/* Phase H — Google Sheet auto-sync shortcut. */}
+          <Section title="📊 Google Sheet Auto-Sync" icon="cloud-upload-outline">
+            <Text style={styles.toggleSub}>
+              Mirror every shipment lifecycle event (create, status
+              change, delete) to your Google Sheet automatically. Toggle
+              the three triggers on/off, see how many rows are synced,
+              and run a manual sync for stragglers.
+            </Text>
+            <TouchableOpacity
+              testID="settings-hub-sheet-sync"
+              onPress={() => router.push("/sheet-sync" as any)}
+              style={[
+                styles.saveBtn,
+                { marginTop: 12, backgroundColor: "#10B981" },
+              ]}
+            >
+              <Ionicons name="cloud-upload-outline" size={18} color="#fff" />
+              <Text style={styles.saveBtnText}>Open Sheet Sync</Text>
+            </TouchableOpacity>
+          </Section>
+
 
           {/* Column picker modal */}
           <Modal

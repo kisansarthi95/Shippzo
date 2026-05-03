@@ -9813,3 +9813,63 @@ agent_communication:
         REMAINING BACKLOG: Google Sheet auto-sync, Play Store readiness
         (app.json package + permissions audit), Admin Analytics,
         server.py refactor.
+
+    -agent: "main"
+    -message: |
+        Phase H — Google Sheet Auto-Sync wiring SHIPPED.
+
+        BACKEND:
+          - sheet_writer.py: NEW helpers
+              update_user_sheet_row_status() — writes status+notice to
+              user's personal sheet (validates layout against COLUMNS
+              before destructive ops).
+              mark_user_sheet_row_deleted() — tombstone helper.
+          - NEW user_sheet_sync.py module: best-effort orchestrator
+              sync_create() → append row on POST /shipments
+              sync_status_change() → update row on status transition
+              sync_delete() → tombstone row on shipment removal
+              drain_pending_queue() → retry queued failures
+            All ops stamp shipment with user_sheet_sync_status (ok |
+            pending | skipped | error) + user_sheet_synced_at.
+            Failures auto-enqueue in user_sheet_sync_pending; gives up
+            after 10 attempts.
+          - SheetConfig schema gained 3 toggles:
+              auto_sync_create, auto_sync_status, auto_sync_delete (all default ON)
+          - Background _user_sheet_drain_worker boots on startup,
+            drains 5 queued ops every 90s.
+          - 4 NEW endpoints (sheet_sync_router):
+              GET  /api/me/sheet-sync/status  — counts + queue + toggles
+              PUT  /api/me/sheet-sync/toggles
+              POST /api/me/sheet-sync/run-now (capped 20 ops/call to
+                   stay under Google's 60-reads/min quota)
+              POST /api/me/sheet-sync/shipment/{id} — manual single-row sync
+          - Hooks wired into:
+              POST /shipments (create)  → sync_create  ✓
+              PUT  /shipments/{id}      → sync_status_change on status flip ✓
+              DELETE /shipments/{id}    → sync_delete tombstone ✓
+
+        FRONTEND:
+          - NEW /app/frontend/app/sheet-sync.tsx — health card with
+            progress bar (synced %, queued count), 4-stat grid
+            (synced/errored/never/skipped), Sync-now + Open-sheet
+            action row, three colour-coded toggles (create=green,
+            status=blue, delete=red), warning banner when failures > 0.
+          - Settings hub gained "📊 Google Sheet Auto-Sync" link.
+          - 5 new Api.* helpers: meSheetSyncStatus, meSheetSyncToggles,
+            meSheetSyncRunNow, meSheetSyncShipment.
+
+        VALIDATED:
+          - /tmp/test_sheet_sync_h.py: 6/6 backend asserts pass ✓
+            On real connected sheet:
+              run-now backfilled 14 of 51 shipments in first call,
+              re-run will continue (quota-aware capping).
+              Toggles persist round-trip ✓
+          - Playwright /sheet-sync UI verified:
+              19/51 synced (37%) progress bar ✓
+              4-stat grid renders correctly ✓
+              "64 sync(s) need attention" warning banner ✓
+              All 3 auto-sync toggles ON by default ✓
+              Sync-now + Open-sheet buttons present ✓
+
+        REMAINING BACKLOG: Play Store readiness, Admin Analytics,
+        server.py refactor.
