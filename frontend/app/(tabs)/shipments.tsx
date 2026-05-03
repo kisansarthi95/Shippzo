@@ -851,7 +851,7 @@ export default function Shipments() {
                   isShipMode && { color: "#4B3FCF" },
                 ]}
               >
-                {isShipMode ? "Scan to Shipped" : "Scan to Dispatch"}
+                {isShipMode ? "Scan to Shipped" : "Scan & Ready to Ship"}
               </Text>
               <Text
                 style={[
@@ -861,8 +861,8 @@ export default function Shipments() {
                 numberOfLines={2}
               >
                 {isShipMode
-                  ? "Scan dispatch parcels and move to Shipped"
-                  : "Scan pending parcels and move to Dispatch"}
+                  ? "Scan ready-to-ship parcels and move to Shipped"
+                  : "Scan pending parcels and move to Ready to Ship"}
               </Text>
             </View>
             <View
@@ -1538,6 +1538,8 @@ function StatusChip({
   onPress?: () => void;
 }) {
   // Walk STATUS_META to find a match (exact value OR one of its aliases).
+  // Phase-12: prefer meta.label so legacy DB rows tagged "Dispatch" still
+  // render as the user-facing "READY TO SHIP" badge.
   let bg = colors.warningBg;
   let fg = colors.warningText;
   let label = status || "Pending";
@@ -1545,6 +1547,7 @@ function StatusChip({
     if (meta.value === status || (meta.aliases && meta.aliases.includes(status))) {
       bg = meta.bg;
       fg = meta.fg;
+      label = meta.label || meta.value;
       break;
     }
   }

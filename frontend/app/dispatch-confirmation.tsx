@@ -257,7 +257,7 @@ export default function DispatchConfirmation() {
     <SafeAreaView style={{ flex: 1, backgroundColor: "#F7F7F9" }}>
       <Stack.Screen
         options={{
-          title: "Dispatch Confirmation",
+          title: "Ready to Ship Confirmation",
           headerBackTitle: "Back",
         }}
       />

@@ -1682,15 +1682,59 @@ export default function Dashboard() {
                 tone="neutral"
                 chevron
               />
-              {/* Phase-12: Post-print workflow pills.
-                  Note: "Need Dispatch" was removed as it duplicated the
-                  Pending Shipments pill above (same status filter, same
-                  count). Dispatch + Delivery Confirmation route to the
-                  dedicated post-shipping notification screens. */}
+              {/* Phase-12: Two-up scanner shortcuts. Sits between the
+                  general "Print All" entry and the post-shipping
+                  notification pills so the warehouse operator's most
+                  common actions (scan in / scan out) are 1 tap away
+                  from the home screen instead of buried inside the
+                  Shipments tab. */}
+              <View style={styles.scanGrid}>
+                <TouchableOpacity
+                  testID="quick-scan-ready"
+                  style={[styles.scanBox, styles.scanBoxReady]}
+                  onPress={() =>
+                    router.push({
+                      pathname: "/scanner-dispatch",
+                      params: { mode: "dispatch" },
+                    } as any)
+                  }
+                  activeOpacity={0.85}
+                >
+                  <View style={styles.scanBoxIcon}>
+                    <Ionicons name="barcode-outline" size={28} color="#8B5E34" />
+                  </View>
+                  <Text style={styles.scanBoxTitle}>Scan & Ready to Ship</Text>
+                  <Text style={styles.scanBoxSub}>
+                    Pending → Ready to Ship
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  testID="quick-scan-shipped"
+                  style={[styles.scanBox, styles.scanBoxShipped]}
+                  onPress={() =>
+                    router.push({
+                      pathname: "/scanner-dispatch",
+                      params: { mode: "ship" },
+                    } as any)
+                  }
+                  activeOpacity={0.85}
+                >
+                  <View style={[styles.scanBoxIcon, { backgroundColor: "#E0DAFF" }]}>
+                    <Ionicons name="rocket-outline" size={26} color="#4B3FCF" />
+                  </View>
+                  <Text style={[styles.scanBoxTitle, { color: "#4B3FCF" }]}>
+                    Scan & Mark as Shipped
+                  </Text>
+                  <Text style={[styles.scanBoxSub, { color: "#6B5BFF" }]}>
+                    Ready to Ship → Shipped
+                  </Text>
+                </TouchableOpacity>
+              </View>
+              {/* Phase-12: Post-print workflow pills. */}
               <ActionPill
                 testID="quick-dispatch-confirmation"
                 icon="rocket-outline"
-                label="Dispatch Confirmation"
+                label="Ready to Ship Confirmation"
                 onPress={() => router.push("/dispatch-confirmation" as any)}
                 tone="violet"
                 chevron
@@ -1892,6 +1936,48 @@ function StatusChip({ status }: { status: string }) {
 
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: colors.background },
+  // ───── Phase-12: Scanner shortcut grid (2 boxes side-by-side) ─────
+  scanGrid: {
+    flexDirection: "row",
+    gap: 10,
+    marginTop: 4,
+    marginBottom: 4,
+  },
+  scanBox: {
+    flex: 1,
+    height: 116,
+    padding: 14,
+    borderRadius: 14,
+    borderWidth: 1,
+    justifyContent: "space-between",
+  },
+  // Box 1 — cream palette (matches "Ready to Ship" status colour).
+  scanBoxReady: {
+    backgroundColor: "#FBF1E2",
+    borderColor: "#E6C9A8",
+  },
+  // Box 2 — lavender palette (matches "Shipped" status colour).
+  scanBoxShipped: {
+    backgroundColor: "#F0EBFF",
+    borderColor: "#C8BCFF",
+  },
+  scanBoxIcon: {
+    width: 44, height: 44, borderRadius: 12,
+    backgroundColor: "#F4E3CF",
+    alignItems: "center", justifyContent: "center",
+  },
+  scanBoxTitle: {
+    fontSize: 14,
+    fontWeight: "800",
+    color: "#8B5E34",
+    lineHeight: 18,
+  },
+  scanBoxSub: {
+    fontSize: 11,
+    fontWeight: "600",
+    color: "#A87842",
+    marginTop: 2,
+  },
   header: {
     paddingHorizontal: 20,
     paddingTop: 10,

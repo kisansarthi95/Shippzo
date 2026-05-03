@@ -38,7 +38,7 @@ const TYPE_META: Record<string, { label: string; sub: string; icon: any; tone: s
     tone: "#6B5BFF",
   },
   dispatch_confirmation: {
-    label: "Dispatch Confirmation",
+    label: "Ready to Ship Confirmation",
     sub: "Sent when the parcel leaves your store (Shipped status)",
     icon: "rocket-outline",
     tone: "#1F4FBF",
