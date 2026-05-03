@@ -37,6 +37,7 @@ import {
   openWhatsAppShare,
   requestWhatsAppSend,
 } from "../lib/whatsappGuard";
+import { fillFromShipment } from "../lib/templateVariables";
 import DailyLimitBanner from "../components/DailyLimitBanner";
 
 type DStatus = "pending" | "sent";
@@ -131,14 +132,12 @@ export default function DispatchConfirmation() {
 
   // Substitute {var} placeholders with shipment fields.
   const fillTemplate = (template: string, s: DShipment): string => {
-    const vars: Record<string, string> = {
-      customer_name: String(s.customer_name || ""),
-      order_id: String(s.order_id || s.tracking_id || ""),
-      tracking_id: String(s.tracking_id || ""),
-      courier: String(s.courier_name || ""),
-      eta_days: String((s as any).courier_eta_days || ""),
-    };
-    return template.replace(/\{(\w+)\}/g, (_m, k) => vars[k] ?? "");
+    // Phase-15 E: shipment-level variables resolved on the client.
+    // User-invariant ones ({shop_name}, {shop_phone}, {helpline},
+    // {google_review_url}, {website_url}) are already substituted
+    // by the server in /me/resolve-template before the body reaches
+    // us, so we just pass the shipment through.
+    return fillFromShipment(template, s);
   };
 
   // Get the resolved template for a given language (cached).

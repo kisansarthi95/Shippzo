@@ -115,6 +115,10 @@ export default function WhatsAppTemplatesSettings() {
   // variable substitutes to "" (template still readable).
   const [googleReviewUrl, setGoogleReviewUrl] = useState("");
   const [websiteUrl, setWebsiteUrl] = useState("");
+  // Phase-15 E: shop / helpline phone numbers — auto-injected into
+  // {shop_phone} and {helpline} placeholders at send time.
+  const [shopPhone, setShopPhone] = useState("");
+  const [helpline, setHelpline] = useState("");
 
   // Phase-15: AI generator modal + saved variants per template type.
   // savedVariants[ttype] = { gu: [v1,v2,v3], hi: [...], en: [...] }
@@ -141,6 +145,8 @@ export default function WhatsAppTemplatesSettings() {
       setDefaultLang(d.default_language || "gu");
       setGoogleReviewUrl(d.business_links?.google_review_url || "");
       setWebsiteUrl(d.business_links?.website_url || "");
+      setShopPhone(((d as any).shop_phone || "") as string);
+      setHelpline(((d as any).helpline || "") as string);
     } catch (e: any) {
       Alert.alert("Error", e?.response?.data?.detail || e?.message || "Failed");
     } finally {
@@ -184,10 +190,18 @@ export default function WhatsAppTemplatesSettings() {
   const handleSave = async () => {
     setSaving(true);
     try {
-      await Api.meSaveWhatsAppTemplates(edits, defaultLang, {
-        google_review_url: googleReviewUrl.trim(),
-        website_url: websiteUrl.trim(),
-      });
+      await Api.meSaveWhatsAppTemplates(
+        edits,
+        defaultLang,
+        {
+          google_review_url: googleReviewUrl.trim(),
+          website_url: websiteUrl.trim(),
+        },
+        {
+          shop_phone: shopPhone.trim(),
+          helpline:   helpline.trim(),
+        },
+      );
       Alert.alert("Saved", "Your WhatsApp templates are updated.");
       load();
     } catch (e: any) {
@@ -287,6 +301,32 @@ export default function WhatsAppTemplatesSettings() {
                   onChangeText={setWebsiteUrl}
                   autoCapitalize="none"
                   keyboardType="url"
+                />
+                {/* Phase-15 E: shop / helpline phone numbers — auto-fill
+                    {shop_phone} and {helpline} placeholders. */}
+                <Text style={[styles.bizLinkLabel, { marginTop: 14 }]}>
+                  📞 Shop Phone (used as {"{shop_phone}"})
+                </Text>
+                <TextInput
+                  style={styles.bizLinkInput}
+                  placeholder="9xxxxxxxxx"
+                  placeholderTextColor="#9CA3AF"
+                  value={shopPhone}
+                  onChangeText={setShopPhone}
+                  keyboardType="phone-pad"
+                  maxLength={15}
+                />
+                <Text style={[styles.bizLinkLabel, { marginTop: 10 }]}>
+                  🆘 Helpline (used as {"{helpline}"} — falls back to shop phone)
+                </Text>
+                <TextInput
+                  style={styles.bizLinkInput}
+                  placeholder="1800-xxx-xxxx (optional)"
+                  placeholderTextColor="#9CA3AF"
+                  value={helpline}
+                  onChangeText={setHelpline}
+                  keyboardType="phone-pad"
+                  maxLength={15}
                 />
               </View>
 

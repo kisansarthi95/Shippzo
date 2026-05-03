@@ -39,6 +39,7 @@ import {
   openWhatsAppShare,
   requestWhatsAppSend,
 } from "../lib/whatsappGuard";
+import { fillFromShipment } from "../lib/templateVariables";
 import DailyLimitBanner from "../components/DailyLimitBanner";
 
 type ConfStatus = "pending" | "sent" | "replied" | "confirmed" | "failed";
@@ -323,14 +324,7 @@ export default function DeliveryConfirmation() {
 
   // Substitute template variables.
   const fillTemplate = (template: string, s: ConfShipment): string => {
-    const vars: Record<string, string> = {
-      customer_name: String(s.customer_name || ""),
-      order_id: String(s.order_id || s.tracking_id || ""),
-      tracking_id: String(s.tracking_id || ""),
-      courier: String(s.courier_name || ""),
-      eta_days: String(s.courier_eta_days || ""),
-    };
-    return template.replace(/\{(\w+)\}/g, (_m, k) => vars[k] ?? "");
+    return fillFromShipment(template, s);
   };
 
   const getTemplate = useCallback(

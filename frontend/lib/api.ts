@@ -793,12 +793,15 @@ export const Api = {
     templates: Record<string, Record<string, string>>,
     default_language?: string,
     business_links?: { google_review_url?: string; website_url?: string },
+    contact?: { shop_phone?: string; helpline?: string },
   ) =>
     api
       .put("/me/whatsapp-templates", {
         templates,
         default_language,
         business_links,
+        shop_phone: contact?.shop_phone,
+        helpline: contact?.helpline,
       })
       .then((r) => r.data),
   adminWhatsAppTemplates: () =>

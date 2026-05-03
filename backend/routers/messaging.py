@@ -184,6 +184,12 @@ class TemplatePayload(BaseModel):
     # template's {google_review_url} / {website_url} variables. Only
     # respected on /me/... (admin config ignores this field).
     business_links: Optional[Dict[str, str]] = None
+    # Phase-15 E: per-user shop / helpline numbers referenced by
+    # {shop_phone} / {helpline} placeholders in any template variant.
+    # When `helpline` is omitted at send-time, the resolver falls back
+    # to `shop_phone` so most users only need to set ONE number.
+    shop_phone: Optional[str] = None
+    helpline:   Optional[str] = None
 
 
 class DispatchBulkRequest(BaseModel):
@@ -451,6 +457,17 @@ def init() -> None:
                 "business_links": 1,
             },
         ) or {}
+        user_doc = await db.settings.find_one(
+            {"user_id": current_user["id"]},
+            {
+                "_id": 0,
+                "default_message_language": 1,
+                "whatsapp_templates": 1,
+                "business_links": 1,
+                "shop_phone": 1,
+                "helpline": 1,
+            },
+        ) or {}
         user_saved = user_doc.get("whatsapp_templates") or {}
         user_lang = (user_doc.get("default_message_language") or "gu").lower()
         if user_lang not in LANGUAGES:
@@ -469,6 +486,9 @@ def init() -> None:
                 "google_review_url": str(biz.get("google_review_url") or ""),
                 "website_url": str(biz.get("website_url") or ""),
             },
+            # Phase-15 E
+            "shop_phone": str(user_doc.get("shop_phone") or ""),
+            "helpline":   str(user_doc.get("helpline")   or ""),
         }
 
     @messaging_router.put("/me/whatsapp-templates")
@@ -499,6 +519,14 @@ def init() -> None:
                 # the raw text at send time.
                 cleaned_links[k] = s[:500]
             update["business_links"] = cleaned_links
+        # Phase-15 E: shop_phone / helpline are stored as flat fields
+        # so they can be referenced from any template type via
+        # {shop_phone} / {helpline} placeholders. Empty string clears
+        # the value.
+        if payload.shop_phone is not None:
+            update["shop_phone"] = str(payload.shop_phone).strip()[:32]
+        if payload.helpline is not None:
+            update["helpline"] = str(payload.helpline).strip()[:32]
         await db.settings.update_one(
             {"user_id": current_user["id"]},
             {"$set": update},
@@ -534,6 +562,8 @@ def init() -> None:
                 "whatsapp_template_variants": 1,
                 "whatsapp_template_rotation": 1,
                 "business_links": 1,
+                "shop_phone": 1,
+                "helpline": 1,
             },
         ) or {}
         chosen_lang = (lang or user_doc.get("default_message_language") or "gu").lower()
@@ -592,10 +622,28 @@ def init() -> None:
         links = user_doc.get("business_links") or {}
         gurl = str(links.get("google_review_url") or "").strip()
         wurl = str(links.get("website_url") or "").strip()
+        # Phase-15 E: also substitute user-invariant placeholders that
+        # don't depend on the specific shipment — shop_name (from
+        # current_user), shop_phone / helpline (from settings).
+        # Customer- and order-level placeholders ({customer_name},
+        # {item}, …) remain client-side substitutions because they
+        # come from the shipment row.
+        shop_name_val = str(
+            current_user.get("shop_name")
+            or current_user.get("name")
+            or "",
+        ).strip()
+        shop_phone_val = str(user_doc.get("shop_phone") or "").strip()
+        helpline_val = str(
+            user_doc.get("helpline") or shop_phone_val,
+        ).strip()
         resolved = (
             template_body
             .replace("{google_review_url}", gurl)
             .replace("{website_url}", wurl)
+            .replace("{shop_name}", shop_name_val)
+            .replace("{shop_phone}", shop_phone_val)
+            .replace("{helpline}", helpline_val)
         )
 
         return {
@@ -861,9 +909,34 @@ def init() -> None:
             "the ones in the variables, plain text + 1-2 emojis max\n"
             "  • NOT be a literal translation of the English variant — "
             "use natural Gujarati / Hindi phrasing\n\n"
-            "VARIABLE PLACEHOLDERS — keep them EXACTLY as braces:\n"
-            "  {customer_name}, {order_id}, {tracking_id}, {courier}, "
-            "{eta_days}, {google_review_url}, {website_url}\n"
+            "AVAILABLE VARIABLE PLACEHOLDERS — keep them EXACTLY as braces.\n"
+            "Use whichever ones fit naturally for THIS template type. The\n"
+            "customer's name and the order id are required in every variant\n"
+            "as stated above. The other placeholders are optional —\n"
+            "weave them in only when they make the message clearer for\n"
+            "the customer (e.g. include {item} in feedback / delivery\n"
+            "messages so the customer knows which product to review):\n"
+            "\n"
+            "  Customer:  {customer_name}, {customer_phone}, {alt_phone}\n"
+            "  Order:     {order_id}, {tracking_id}, {item}, {items},\n"
+            "             {item_description}, {quantity}, {courier},\n"
+            "             {eta_days}, {amount}, {weight}, {payment_mode},\n"
+            "             {address}, {address_line1}, {address_line2},\n"
+            "             {city}, {state}, {pincode}\n"
+            "  Shop:      {shop_name}, {shop_phone}, {helpline}\n"
+            "  Links:     {google_review_url}, {website_url}\n"
+            "\n"
+            "STRONG RECOMMENDATION per template type:\n"
+            "  • shipment_sent / dispatch_confirmation → include {item} so\n"
+            "    the customer immediately knows which order is moving (they\n"
+            "    may have multiple parcels in flight from different shops).\n"
+            "  • delivery_confirmation / delivery_done / feedback_request →\n"
+            "    ALWAYS include {item}. An order id alone is meaningless\n"
+            "    when asking 'did you receive your parcel?' or asking for\n"
+            "    a review — the customer must know WHICH item to confirm /\n"
+            "    review.\n"
+            "  • feedback_request → include {google_review_url} when the\n"
+            "    field is non-empty, otherwise {website_url}.\n"
         )
 
         user_prompt = (

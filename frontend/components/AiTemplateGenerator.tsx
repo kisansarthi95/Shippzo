@@ -26,6 +26,7 @@ import {
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { Api } from "../lib/api";
+import { TEMPLATE_VARIABLES, VARIABLE_GROUPS } from "../lib/templateVariables";
 
 type Variants = { gu: string[]; hi: string[]; en: string[] };
 
@@ -151,6 +152,22 @@ export default function AiTemplateGenerator({
       const arr = [...prev[lang]];
       arr[idx] = value;
       return { ...prev, [lang]: arr };
+    });
+  };
+
+  // Track which variant input the user last focused so the chip strip
+  // knows where to insert the variable token. Falls back to V1 of the
+  // active language if nothing has been focused yet.
+  const [focusedIdx, setFocusedIdx] = useState<number>(0);
+
+  const insertVariable = (key: string) => {
+    const idx = focusedIdx;
+    setVariants((prev) => {
+      const arr = [...prev[activeLang]];
+      const cur = arr[idx] || "";
+      const needsSpace = cur.length > 0 && !cur.endsWith(" ") && !cur.endsWith("\n");
+      arr[idx] = `${cur}${needsSpace ? " " : ""}{${key}}`;
+      return { ...prev, [activeLang]: arr };
     });
   };
 
@@ -339,6 +356,7 @@ export default function AiTemplateGenerator({
                     <TextInput
                       value={value}
                       onChangeText={(t) => handleEditVariant(activeLang, idx, t)}
+                      onFocus={() => setFocusedIdx(idx)}
                       placeholder={`Variant ${idx + 1} ${LANG_TABS.find((x) => x.key === activeLang)?.label}`}
                       placeholderTextColor="#9CA3AF"
                       style={styles.varInput}
@@ -347,6 +365,49 @@ export default function AiTemplateGenerator({
                     />
                   </View>
                 ))}
+
+                {/* Variable insert chips — tap any chip to append the
+                    matching {placeholder} to the variant the user last
+                    focused (or V1 by default). Grouped by section so
+                    the long list stays scannable. Auto-fills at send. */}
+                <View style={styles.varStripWrap}>
+                  <Text style={styles.varStripTitle}>
+                    📥 Tap to insert into V{focusedIdx + 1}
+                  </Text>
+                  <Text style={styles.varStripSub}>
+                    Auto-fills with real values when WhatsApp message is sent
+                  </Text>
+                  {VARIABLE_GROUPS.map((g) => {
+                    const list = TEMPLATE_VARIABLES.filter((v) => v.group === g.key);
+                    if (!list.length) return null;
+                    return (
+                      <View key={g.key} style={styles.varGroup}>
+                        <Text style={styles.varGroupLabel}>
+                          {g.emoji}  {g.label}
+                        </Text>
+                        <ScrollView
+                          horizontal
+                          showsHorizontalScrollIndicator={false}
+                          contentContainerStyle={{ paddingVertical: 4 }}
+                        >
+                          {list.map((v) => (
+                            <TouchableOpacity
+                              key={v.key}
+                              style={styles.varInsertChip}
+                              onPress={() => insertVariable(v.key)}
+                              hitSlop={{ top: 4, bottom: 4, left: 4, right: 4 }}
+                            >
+                              <Text style={styles.varInsertChipEmoji}>{v.emoji}</Text>
+                              <Text style={styles.varInsertChipText} numberOfLines={1}>
+                                {v.label}
+                              </Text>
+                            </TouchableOpacity>
+                          ))}
+                        </ScrollView>
+                      </View>
+                    );
+                  })}
+                </View>
               </>
             )}
           </ScrollView>
@@ -466,6 +527,32 @@ const styles = StyleSheet.create({
     borderRadius: 8, padding: 10, fontSize: 13, color: "#111827",
     minHeight: 90,
   },
+
+  // Variable insert chip strip — appears below the variant list when
+  // there are templates to edit. Tap any chip to append the matching
+  // {placeholder} to the variant the user last focused.
+  varStripWrap: {
+    marginTop: 14, padding: 10, borderRadius: 12,
+    backgroundColor: "#FAFAFB",
+    borderWidth: 1, borderColor: "#E5E7EB",
+  },
+  varStripTitle: { fontSize: 12, fontWeight: "800", color: "#111827" },
+  varStripSub:   { fontSize: 10.5, color: "#6B7280", marginTop: 1, marginBottom: 6, lineHeight: 14 },
+  varGroup: { marginTop: 8 },
+  varGroupLabel: {
+    fontSize: 10.5, fontWeight: "800", color: "#4338CA",
+    letterSpacing: 0.4, textTransform: "uppercase", marginBottom: 2,
+  },
+  varInsertChip: {
+    flexDirection: "row", alignItems: "center", gap: 4,
+    paddingVertical: 6, paddingHorizontal: 10,
+    backgroundColor: "#fff",
+    borderWidth: 1, borderColor: "#C7D2FE",
+    borderRadius: 999,
+    marginRight: 6,
+  },
+  varInsertChipEmoji: { fontSize: 11 },
+  varInsertChipText:  { fontSize: 11, fontWeight: "700", color: "#3730A3" },
 
   bottomBar: {
     flexDirection: "row", gap: 8,
