@@ -893,7 +893,7 @@ export default function Shipments() {
           activeOpacity={needConfirmCount > 0 ? 0.85 : 1}
           onPress={() => {
             if (needConfirmCount > 0) {
-              router.push("/delivery-confirmation");
+              router.push("/bulk-message/delivery_confirmation" as any);
             }
           }}
           style={[

@@ -1937,11 +1937,10 @@ export default function SettingsScreen() {
             </TouchableOpacity>
           </Section>
 
-          {/* Phase-12 — Courier Rules shortcut (lets users jump
-              straight to the per-courier ETA editor used by the
-              Delivery-Confirmation queue). The Editor modal lives
-              inside delivery-confirmation.tsx and auto-opens when
-              this row's button leads there. */}
+          {/* Phase F4 — Courier Rules editor extracted into its own
+              standalone /courier-rules screen as part of the legacy
+              dispatch/delivery cleanup. The bulk Delivery Check-in
+              flow still reads these rules. */}
           <Section title="Courier Delivery Rules" icon="time-outline">
             <Text style={styles.toggleSub}>
               Set how many days each courier typically takes to deliver.
@@ -1950,7 +1949,7 @@ export default function SettingsScreen() {
             </Text>
             <TouchableOpacity
               testID="settings-hub-courier-rules"
-              onPress={() => router.push("/delivery-confirmation" as any)}
+              onPress={() => router.push("/courier-rules" as any)}
               style={[
                 styles.saveBtn,
                 { marginTop: 12, backgroundColor: "#F97316" },

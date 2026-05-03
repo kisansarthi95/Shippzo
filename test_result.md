@@ -9725,3 +9725,36 @@ agent_communication:
         REMAINING BACKLOG: Phase F4 (legacy dispatch/delivery
         confirmation cleanup), Push notifications wiring, Google
         Sheet auto-sync, Play Store readiness, Admin Analytics.
+
+    -agent: "main"
+    -message: |
+        Phase F4 — Legacy screen cleanup COMPLETE.
+
+        DONE:
+          1. Extracted CourierRulesEditor modal (lived inside the
+             833-line delivery-confirmation.tsx) into its own
+             standalone screen `/app/frontend/app/courier-rules.tsx`
+             — full-page form, Save/Cancel sticky bar.
+          2. Replaced /delivery-confirmation.tsx (833 lines) with a
+             19-line redirect stub → /bulk-message/delivery_confirmation
+          3. Replaced /dispatch-confirmation.tsx (633 lines) with a
+             19-line redirect stub → /bulk-message/dispatch_confirmation
+          4. Updated callers:
+             - /app/frontend/app/(tabs)/shipments.tsx → confirm card
+               now routes to /bulk-message/delivery_confirmation
+             - /app/frontend/app/(tabs)/settings.tsx → "Open Courier
+               Rules" routes to /courier-rules
+
+        VERIFIED via Playwright:
+          - GET /delivery-confirmation → URL flips to
+            /bulk-message/delivery_confirmation, generic UI loads ✓
+          - GET /dispatch-confirmation → URL flips to
+            /bulk-message/dispatch_confirmation ✓
+          - GET /courier-rules → standalone form renders with 7
+            couriers (DTDC, Demo, Indian Post, Nandan, Quick Delivery,
+            ST Courier + _default_) and Save/Cancel bar ✓
+
+        Net code shrinkage: ~1450 lines removed, ~225 lines added.
+
+        BACKLOG REMAINING: Push notifications, Google Sheet auto-sync,
+        Play Store readiness, Admin Analytics, server.py refactor.
