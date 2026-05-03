@@ -164,7 +164,7 @@ async def terms_of_service() -> HTMLResponse:
 <p>By creating an account or using {APP_NAME}, you agree to these Terms.</p>
 
 <h2>1. Service</h2>
-<p>{APP_NAME} is a courier-label management tool that lets businesses create shipping labels, send WhatsApp updates to customers, sync with Google Sheets, and receive operational analytics.</p>
+<p>{APP_NAME} is a courier-label management tool that lets businesses create shipping labels, assist in generating and managing customer communication workflows, sync with Google Sheets, and receive operational analytics.</p>
 
 <h2>2. Accounts</h2>
 <ul>
@@ -175,30 +175,34 @@ async def terms_of_service() -> HTMLResponse:
 
 <h2>3. Acceptable Use</h2>
 <ul>
-  <li>Do not send spam, fraudulent, or harassing WhatsApp messages.</li>
+  <li>Do not send spam, fraudulent, or harassing messages to customers.</li>
   <li>Do not use the platform to ship illegal, hazardous, or restricted goods.</li>
   <li>Do not reverse-engineer the API or attempt unauthorised access to other users' data.</li>
-  <li>Comply with WhatsApp&rsquo;s Business Policy when using the click-to-chat helpers.</li>
+  <li>You are solely responsible for compliance with applicable laws, courier regulations, and messaging platform policies.</li>
 </ul>
 
 <h2>4. Subscriptions &amp; Wallet</h2>
 <ul>
-  <li>Plans are billed in advance via Razorpay; auto-renewal can be cancelled anytime from the Subscription screen.</li>
-  <li>Wallet credits used for AI generation are non-refundable once consumed.</li>
+  <li>Plans are billed in advance; auto-renewal can be cancelled anytime from the Subscription screen.</li>
+  <li>Wallet credits used for in-app generation features are non-refundable once consumed.</li>
   <li>Refunds for unused subscription days follow the <a href="/api/legal/refund">Refund Policy</a>.</li>
+  <li>We reserve the right to modify pricing, features, or plan limits at any time with reasonable notice.</li>
 </ul>
 
 <h2>5. Third-Party Integrations</h2>
-<p>{APP_NAME} integrates Google Sheets, Razorpay, Gemini AI, and Expo Push. Outages or policy changes by these providers may affect functionality. We are not liable for issues originating outside our platform.</p>
+<p>{APP_NAME} may rely on essential third-party service providers (such as payment processors, cloud services, and notification services) to operate certain features.</p>
+<p>We are not responsible for service interruptions, delays, or policy changes caused by these external providers.</p>
 
 <h2>6. Intellectual Property</h2>
-<p>All app content, branding, code, and AI-generated templates remain the property of {COMPANY}. Shipment data you create is yours; you grant us a limited license to process it solely to deliver the Service.</p>
+<p>All app content, branding, code, and generated templates remain the property of {COMPANY}.</p>
+<p>Shipment data you create remains yours. You grant {APP_NAME} a limited, non-exclusive license to process and store such data solely to provide the Service.</p>
 
 <h2>7. Limitation of Liability</h2>
 <p>To the fullest extent permitted by law, {COMPANY} is not liable for indirect, incidental, or consequential damages arising from your use of the Service. Our total liability for any claim is limited to the fees you have paid in the past 3 months.</p>
+<p>We do not guarantee uninterrupted or error-free operation of the Service.</p>
 
 <h2>8. Termination</h2>
-<p>You may delete your account anytime by contacting <a href="mailto:{SUPPORT}">{SUPPORT}</a>. We may suspend accounts that violate these Terms after a reasonable warning, except in cases of fraud or abuse.</p>
+<p>You may delete your account anytime by contacting <a href="mailto:{SUPPORT}">{SUPPORT}</a>. We may suspend or terminate accounts with or without prior notice in cases of policy violation, abuse, or risk to the platform.</p>
 
 <h2>9. Governing Law</h2>
 <p>These Terms are governed by the laws of India, with exclusive jurisdiction in Gujarat courts.</p>
