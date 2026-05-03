@@ -28,7 +28,15 @@ type PlanKey = "free_trial" | "silver" | "gold" | "platinum";
 type Payload = {
   order: PlanKey[];
   defaults: { enabled: boolean; rates: Record<PlanKey, number> };
-  current:  { enabled: boolean; rates: Record<PlanKey, number> };
+  current:  {
+    enabled: boolean;
+    rates: Record<PlanKey, number>;
+    // Phase-15 extensions
+    ai_generation_rates?: Record<PlanKey, number>;
+    daily_limit?: number;
+    daily_warning_pct?: number;
+    allow_override_after_limit?: boolean;
+  };
 };
 
 const PLAN_META: Record<PlanKey, { label: string; color: string; accent: string }> = {
@@ -38,7 +46,20 @@ const PLAN_META: Record<PlanKey, { label: string; color: string; accent: string 
   platinum:   { label: "Platinum",   color: "#1E3A8A", accent: "#DBEAFE" },
 };
 
-const snapshotOf = (enabled: boolean, text: Record<PlanKey, string>) =>
+// Hard-coded AI gen rate defaults — kept here as fallback for the
+// "Reset" button when the backend hasn't supplied an explicit default.
+const AI_RATE_DEFAULTS: Record<PlanKey, number> = {
+  free_trial: 2, silver: 1.5, gold: 1, platinum: 0.5,
+};
+
+const snapshotOf = (
+  enabled: boolean,
+  text: Record<PlanKey, string>,
+  aiText: Record<PlanKey, string>,
+  dailyLimit: string,
+  warnPct: string,
+  allowOverride: boolean,
+) =>
   JSON.stringify({
     enabled,
     rates: Object.fromEntries(
@@ -46,6 +67,14 @@ const snapshotOf = (enabled: boolean, text: Record<PlanKey, string>) =>
         (k) => [k, Number(text[k]) || 0],
       ),
     ),
+    ai_rates: Object.fromEntries(
+      (Object.keys(aiText) as PlanKey[]).sort().map(
+        (k) => [k, Number(aiText[k]) || 0],
+      ),
+    ),
+    daily_limit:   Number(dailyLimit) || 0,
+    warn_pct:      Number(warnPct)    || 0,
+    allow_override: !!allowOverride,
   });
 
 export default function AdminWhatsAppPricingScreen() {
@@ -58,6 +87,11 @@ export default function AdminWhatsAppPricingScreen() {
   // survives a re-render (a pure number state would collapse "0." to
   // 0 and drop the dot before the user finishes typing "0.5").
   const [rateText, setRateText] = useState<Record<PlanKey, string> | null>(null);
+  // Phase-15 state — AI generation rates + daily-limit knobs.
+  const [aiRateText, setAiRateText] = useState<Record<PlanKey, string> | null>(null);
+  const [dailyLimitText, setDailyLimitText] = useState<string>("50");
+  const [warnPctText, setWarnPctText] = useState<string>("90");
+  const [allowOverride, setAllowOverride] = useState<boolean>(true);
   const [defaults, setDefaults] = useState<{ enabled: boolean; rates: Record<PlanKey, number> } | null>(null);
   const [originalSnap, setOriginalSnap] = useState("");
 
@@ -82,9 +116,23 @@ export default function AdminWhatsAppPricingScreen() {
         gold:       String(r.data.current.rates.gold       ?? 0),
         platinum:   String(r.data.current.rates.platinum   ?? 0),
       };
+      const aiSrc = r.data.current.ai_generation_rates || AI_RATE_DEFAULTS;
+      const asAi: Record<PlanKey, string> = {
+        free_trial: String(aiSrc.free_trial ?? AI_RATE_DEFAULTS.free_trial),
+        silver:     String(aiSrc.silver     ?? AI_RATE_DEFAULTS.silver),
+        gold:       String(aiSrc.gold       ?? AI_RATE_DEFAULTS.gold),
+        platinum:   String(aiSrc.platinum   ?? AI_RATE_DEFAULTS.platinum),
+      };
+      const dl = String(r.data.current.daily_limit ?? 50);
+      const wp = String(r.data.current.daily_warning_pct ?? 90);
+      const ao = r.data.current.allow_override_after_limit ?? true;
       setRateText(asText);
+      setAiRateText(asAi);
+      setDailyLimitText(dl);
+      setWarnPctText(wp);
+      setAllowOverride(ao);
       setDefaults(r.data.defaults);
-      setOriginalSnap(snapshotOf(r.data.current.enabled, asText));
+      setOriginalSnap(snapshotOf(r.data.current.enabled, asText, asAi, dl, wp, ao));
     } catch (e: any) {
       Alert.alert(
         "Load failed",
@@ -98,24 +146,40 @@ export default function AdminWhatsAppPricingScreen() {
   useEffect(() => { load(); }, [load]);
 
   const dirty = useMemo(
-    () => !!rateText && snapshotOf(enabled, rateText) !== originalSnap,
-    [enabled, rateText, originalSnap],
+    () =>
+      !!rateText &&
+      !!aiRateText &&
+      snapshotOf(enabled, rateText, aiRateText, dailyLimitText, warnPctText, allowOverride) !==
+        originalSnap,
+    [enabled, rateText, aiRateText, dailyLimitText, warnPctText, allowOverride, originalSnap],
   );
+
+  // Generic helper — accepts only digits + at most one dot, preserves
+  // trailing "." so the user can type "0." → "0.5" without the cursor
+  // jumping.
+  const cleanRate = (raw: string) => {
+    const c = raw.replace(/[^0-9.]/g, "");
+    const i = c.indexOf(".");
+    return i === -1 ? c : c.slice(0, i + 1) + c.slice(i + 1).replace(/\./g, "");
+  };
 
   const setRate = (plan: PlanKey, raw: string) => {
     if (!rateText) return;
-    // Accept digits + at most one decimal dot. Replace the user's input
-    // verbatim so partial states like "0.", "0.0", "" all render as-is
-    // and the cursor doesn't jump. Empty string is allowed and treated
-    // as 0 only at save-time.
-    const clean = raw.replace(/[^0-9.]/g, "");
-    const firstDot = clean.indexOf(".");
-    const normalised =
-      firstDot === -1
-        ? clean
-        : clean.slice(0, firstDot + 1) +
-          clean.slice(firstDot + 1).replace(/\./g, "");
-    setRateText({ ...rateText, [plan]: normalised });
+    setRateText({ ...rateText, [plan]: cleanRate(raw) });
+  };
+
+  const setAiRate = (plan: PlanKey, raw: string) => {
+    if (!aiRateText) return;
+    setAiRateText({ ...aiRateText, [plan]: cleanRate(raw) });
+  };
+
+  const setDailyLimit = (raw: string) => {
+    setDailyLimitText(raw.replace(/[^0-9]/g, "").slice(0, 5));
+  };
+
+  const setWarnPct = (raw: string) => {
+    const c = raw.replace(/[^0-9]/g, "").slice(0, 3);
+    setWarnPctText(c);
   };
 
   const resetPlan = (plan: PlanKey) => {
@@ -127,16 +191,34 @@ export default function AdminWhatsAppPricingScreen() {
   };
 
   const handleSave = async () => {
-    if (!rateText) return;
+    if (!rateText || !aiRateText) return;
+    // Validate daily-limit + warn-pct ranges before round-tripping.
+    const dl = Number(dailyLimitText) || 0;
+    const wp = Number(warnPctText) || 0;
+    if (dl < 1 || dl > 10000) {
+      Alert.alert("Invalid daily limit", "Daily limit must be between 1 and 10000.");
+      return;
+    }
+    if (wp < 1 || wp > 100) {
+      Alert.alert("Invalid warning %", "Warning threshold must be between 1 and 100.");
+      return;
+    }
     try {
       setSaving(true);
       const r = await api.put<Payload>("/admin/whatsapp-pricing", {
         enabled,
         plans: Object.fromEntries(
           (Object.keys(rateText) as PlanKey[]).map((k) => [
-            k, { per_message_credits: Number(rateText[k]) || 0 },
+            k,
+            {
+              per_message_credits:    Number(rateText[k])   || 0,
+              ai_generation_credits:  Number(aiRateText[k]) || 0,
+            },
           ]),
         ),
+        daily_limit:                dl,
+        daily_warning_pct:          wp,
+        allow_override_after_limit: allowOverride,
       });
       setEnabled(r.data.current.enabled);
       const asText: Record<PlanKey, string> = {
@@ -145,13 +227,27 @@ export default function AdminWhatsAppPricingScreen() {
         gold:       String(r.data.current.rates.gold       ?? 0),
         platinum:   String(r.data.current.rates.platinum   ?? 0),
       };
+      const aiSrc = r.data.current.ai_generation_rates || AI_RATE_DEFAULTS;
+      const asAi: Record<PlanKey, string> = {
+        free_trial: String(aiSrc.free_trial ?? AI_RATE_DEFAULTS.free_trial),
+        silver:     String(aiSrc.silver     ?? AI_RATE_DEFAULTS.silver),
+        gold:       String(aiSrc.gold       ?? AI_RATE_DEFAULTS.gold),
+        platinum:   String(aiSrc.platinum   ?? AI_RATE_DEFAULTS.platinum),
+      };
+      const dlS = String(r.data.current.daily_limit ?? 50);
+      const wpS = String(r.data.current.daily_warning_pct ?? 90);
+      const ao  = r.data.current.allow_override_after_limit ?? true;
       setRateText(asText);
-      setOriginalSnap(snapshotOf(r.data.current.enabled, asText));
+      setAiRateText(asAi);
+      setDailyLimitText(dlS);
+      setWarnPctText(wpS);
+      setAllowOverride(ao);
+      setOriginalSnap(snapshotOf(r.data.current.enabled, asText, asAi, dlS, wpS, ao));
       Alert.alert(
         "Saved",
         enabled
-          ? "Charging is now ON. Users will see the per-message credit notice."
-          : "Pricing saved. Charging is OFF — no debit will happen.",
+          ? "Charging is ON. AI generation cost & daily limit are live."
+          : "Pricing saved. Manual-message charging is OFF (AI gen + daily limit still apply).",
       );
     } catch (e: any) {
       Alert.alert(
@@ -163,7 +259,7 @@ export default function AdminWhatsAppPricingScreen() {
     }
   };
 
-  if (loading || !rateText || !defaults) {
+  if (loading || !rateText || !aiRateText || !defaults) {
     return (
       <SafeAreaView style={styles.safe} edges={["top"]}>
         <Header onBack={() => router.back()} />
@@ -218,7 +314,158 @@ export default function AdminWhatsAppPricingScreen() {
             />
           </View>
 
+          {/* Phase-15: Daily WhatsApp send limit (anti-block) */}
+          <View style={styles.sectionHeader}>
+            <Ionicons name="shield-checkmark-outline" size={16} color="#1F4FBF" />
+            <Text style={styles.sectionHeaderText}>Anti-Block Daily Limit</Text>
+          </View>
+          <View style={styles.dailyCard}>
+            <Text style={styles.dailyHint}>
+              Cap how many WhatsApp messages a single user can fire in one day
+              to keep their personal number safe from WhatsApp's spam-block
+              policy. Counter resets every midnight (IST).
+            </Text>
+
+            <View style={styles.dailyRow}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.dailyLabel}>Max messages per day</Text>
+                <Text style={styles.dailySub}>1 to 10000</Text>
+              </View>
+              <TextInput
+                style={styles.smallInput}
+                value={dailyLimitText}
+                onChangeText={setDailyLimit}
+                keyboardType="numeric"
+                placeholder="50"
+                placeholderTextColor="#9CA3AF"
+                selectTextOnFocus
+                testID="wa-pricing-daily-limit"
+              />
+            </View>
+
+            <View style={styles.dailyRow}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.dailyLabel}>Soft warning at</Text>
+                <Text style={styles.dailySub}>
+                  Warn the user when they have used this % of the daily limit
+                </Text>
+              </View>
+              <View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
+                <TextInput
+                  style={styles.smallInput}
+                  value={warnPctText}
+                  onChangeText={setWarnPct}
+                  keyboardType="numeric"
+                  placeholder="90"
+                  placeholderTextColor="#9CA3AF"
+                  selectTextOnFocus
+                  testID="wa-pricing-warn-pct"
+                />
+                <Text style={styles.suffix}>%</Text>
+              </View>
+            </View>
+
+            <View style={[styles.dailyRow, { alignItems: "center" }]}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.dailyLabel}>
+                  {allowOverride
+                    ? "Allow user override after limit"
+                    : "Hard block at limit (no override)"}
+                </Text>
+                <Text style={styles.dailySub}>
+                  {allowOverride
+                    ? "User sees a confirm modal at the limit and can choose to keep sending."
+                    : "Users CANNOT bypass the limit — sending is blocked until tomorrow."}
+                </Text>
+              </View>
+              <Switch
+                value={allowOverride}
+                onValueChange={setAllowOverride}
+                trackColor={{ false: "#D1D5DB", true: "#1F4FBF" }}
+                thumbColor="#fff"
+                testID="wa-pricing-allow-override"
+              />
+            </View>
+          </View>
+
+          {/* Phase-15: AI generation rates per plan */}
+          <View style={styles.sectionHeader}>
+            <Ionicons name="sparkles-outline" size={16} color="#6B5BFF" />
+            <Text style={styles.sectionHeaderText}>
+              AI Template Generation — Per Plan
+            </Text>
+          </View>
+          <View style={styles.aiHintBox}>
+            <Text style={styles.aiHintText}>
+              Charged once per "Generate" tap in WhatsApp Templates settings
+              (returns 9 ready-to-use variants — 3 languages × 3 variants).
+              Refunded automatically if the AI call fails.
+            </Text>
+          </View>
+          {(Object.keys(PLAN_META) as PlanKey[]).map((planKey) => {
+            const meta = PLAN_META[planKey];
+            const text = aiRateText![planKey];
+            const numRate = Number(text) || 0;
+            const def = AI_RATE_DEFAULTS[planKey];
+            const isOverride = numRate !== def;
+            return (
+              <View
+                key={`ai-${planKey}`}
+                style={[styles.planCard, { borderLeftColor: meta.color }]}
+              >
+                <View style={styles.planHeaderRow}>
+                  <View style={{ flex: 1 }}>
+                    <View style={styles.planTitleRow}>
+                      <Text style={[styles.planName, { color: meta.color }]}>
+                        {meta.label}
+                      </Text>
+                      {isOverride && <View style={styles.overrideDot} />}
+                    </View>
+                    <Text style={styles.planSub}>
+                      Default: {def} credits per generation
+                    </Text>
+                  </View>
+                  <TouchableOpacity
+                    onPress={() =>
+                      aiRateText &&
+                      setAiRateText({ ...aiRateText, [planKey]: String(def) })
+                    }
+                    style={styles.resetBtn}
+                    hitSlop={6}
+                  >
+                    <Text style={styles.resetTxt}>Reset</Text>
+                  </TouchableOpacity>
+                </View>
+                <View style={styles.inputRow}>
+                  <TextInput
+                    style={styles.input}
+                    value={text}
+                    onChangeText={(v) => setAiRate(planKey, v)}
+                    keyboardType="numeric"
+                    inputMode="decimal"
+                    placeholder="0"
+                    placeholderTextColor="#9CA3AF"
+                    selectTextOnFocus
+                    testID={`wa-ai-rate-${planKey}`}
+                  />
+                  <Text style={styles.suffix}>credits per generation</Text>
+                </View>
+                {numRate > 0 && (
+                  <Text style={styles.exampleText}>
+                    10 generations = {(numRate * 10).toFixed(2)} credits
+                  </Text>
+                )}
+              </View>
+            );
+          })}
+
           {/* Per-plan rates */}
+          <View style={styles.sectionHeader}>
+            <Ionicons name="logo-whatsapp" size={16} color="#25D366" />
+            <Text style={styles.sectionHeaderText}>
+              Per-Message Send — Per Plan
+            </Text>
+          </View>
           {planKeys.map((planKey) => {
             const meta = PLAN_META[planKey];
             const text = rateText[planKey];
@@ -363,6 +610,47 @@ const styles = StyleSheet.create({
   },
   toggleTitle: { fontSize: 14, fontWeight: "800", color: colors.text },
   toggleSub: { fontSize: 11.5, color: "#6B7280", marginTop: 3, lineHeight: 16 },
+
+  // Phase-15 — section dividers + daily-limit + AI hint card.
+  sectionHeader: {
+    flexDirection: "row", alignItems: "center", gap: 8,
+    marginHorizontal: 16, marginTop: 24, marginBottom: 4,
+  },
+  sectionHeaderText: {
+    fontSize: 13, fontWeight: "800",
+    color: colors.text, letterSpacing: 0.3, textTransform: "uppercase",
+  },
+  dailyCard: {
+    marginHorizontal: 12,
+    backgroundColor: "#fff",
+    borderRadius: 12,
+    borderWidth: 1, borderColor: "#E5E7EB",
+    padding: 14,
+  },
+  dailyHint: {
+    fontSize: 11.5, color: "#374151", lineHeight: 16, marginBottom: 10,
+  },
+  dailyRow: {
+    flexDirection: "row", alignItems: "flex-start",
+    gap: 10, paddingVertical: 8,
+    borderTopWidth: 1, borderTopColor: "#F3F4F6",
+  },
+  dailyLabel: { fontSize: 13, fontWeight: "700", color: colors.text },
+  dailySub: { fontSize: 11, color: "#6B7280", marginTop: 2, lineHeight: 15 },
+  smallInput: {
+    width: 70, height: 36,
+    borderWidth: 1, borderColor: "#D1D5DB", borderRadius: 8,
+    paddingHorizontal: 10, fontSize: 14, fontWeight: "700",
+    color: colors.text, textAlign: "center",
+    backgroundColor: "#F9FAFB",
+  },
+  aiHintBox: {
+    marginHorizontal: 12, marginTop: 4, marginBottom: 4,
+    padding: 10, backgroundColor: "#EEF2FF",
+    borderWidth: 1, borderColor: "#C7D2FE",
+    borderRadius: 10,
+  },
+  aiHintText: { fontSize: 11.5, color: "#3730A3", lineHeight: 16 },
 
   planCard: {
     marginHorizontal: 12,
