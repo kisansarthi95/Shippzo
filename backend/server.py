@@ -920,6 +920,10 @@ class Shipment(BaseModel):
     #   "skipped" — admin-marked as not-needed (e.g. local hand-delivery)
     dispatch_msg_status: str = "pending"
     dispatch_msg_sent_at: Optional[str] = None
+    # Phase-12: ISO timestamp of the Pending → Processing flip; set by
+    # /shipments/bulk-mark-processing. Lets the UI display "Started
+    # processing 2h ago" badges.
+    processing_started_at: Optional[str] = None
     sheet_row_key: str = ""     # used to dedupe/reference imported rows
     # Soft-delete audit: if this shipment was appended to the Master Sheet
     # (via Smart Paste), we remember the exact row number so deletion can
