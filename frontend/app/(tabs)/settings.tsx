@@ -3024,20 +3024,29 @@ export default function SettingsScreen() {
             <TouchableOpacity
               testID="about-privacy"
               style={styles.aboutLinkRow}
-              onPress={() => Linking.openURL(PRIVACY_URL)}
+              onPress={() => router.push("/refund-policy?tab=privacy" as any)}
             >
               <Ionicons name="lock-closed-outline" size={18} color={colors.primary} />
               <Text style={styles.aboutLinkText}>Privacy Policy</Text>
-              <Ionicons name="open-outline" size={16} color="#94A3B8" />
+              <Ionicons name="chevron-forward" size={16} color="#94A3B8" />
             </TouchableOpacity>
             <TouchableOpacity
               testID="about-terms"
               style={styles.aboutLinkRow}
-              onPress={() => Linking.openURL(TERMS_URL)}
+              onPress={() => router.push("/refund-policy?tab=terms" as any)}
             >
               <Ionicons name="document-text-outline" size={18} color={colors.primary} />
               <Text style={styles.aboutLinkText}>Terms of Service</Text>
-              <Ionicons name="open-outline" size={16} color="#94A3B8" />
+              <Ionicons name="chevron-forward" size={16} color="#94A3B8" />
+            </TouchableOpacity>
+            <TouchableOpacity
+              testID="about-refund"
+              style={styles.aboutLinkRow}
+              onPress={() => router.push("/refund-policy?tab=refund" as any)}
+            >
+              <Ionicons name="cash-outline" size={18} color={colors.primary} />
+              <Text style={styles.aboutLinkText}>Refund Policy</Text>
+              <Ionicons name="chevron-forward" size={16} color="#94A3B8" />
             </TouchableOpacity>
             <TouchableOpacity
               testID="about-refund"
