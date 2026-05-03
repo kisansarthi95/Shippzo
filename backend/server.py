@@ -6061,6 +6061,124 @@ async def me_get_whatsapp_pricing(
     }
 
 
+# ─────────────────────────────────────────────────────────────────────
+# Phase-G1: Stage Rules — Unified SLA + Alert + Template + Escalation
+# ─────────────────────────────────────────────────────────────────────
+# Admin-configurable behaviour for each of the 6 fixed pipeline stages.
+# Drives:
+#   • SLA breach detection (background job → internal alert)
+#   • Auto customer messaging (Delivered, Feedback)
+#   • Cooldown / escalation logic
+# Read by /me/stage-rules, written by /admin/stage-rules.
+
+from stage_rules import (
+    DEFAULT_STAGE_RULES,
+    DEFAULT_STAGE_RULES_DOC,
+    STAGES,
+    STAGE_TO_TEMPLATE,
+    StageRulesPayload,
+    merge_with_defaults as _merge_stage_rules,
+    normalise_phone as _normalise_alert_phone,
+)
+
+
+async def _load_stage_rules() -> Dict[str, Any]:
+    doc = await db.admin_config.find_one(
+        {"_id": "default"}, {"_id": 0, "stage_rules": 1},
+    ) or {}
+    return _merge_stage_rules(doc.get("stage_rules") or {})
+
+
+@api_router.get("/admin/stage-rules")
+async def admin_get_stage_rules(
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    """Returns the stored stage_rules doc (with defaults merged in)
+    plus the canonical defaults so the UI can offer a 'Reset' button
+    per stage."""
+    _require_admin(current_user)
+    return {
+        "current":  await _load_stage_rules(),
+        "defaults": DEFAULT_STAGE_RULES_DOC,
+        "stages":   STAGES,
+        "stage_to_template": STAGE_TO_TEMPLATE,
+    }
+
+
+@api_router.put("/admin/stage-rules")
+async def admin_put_stage_rules(
+    payload: StageRulesPayload,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    """Save the stage_rules doc. Every field is optional — values left
+    out preserve their current stored value. Admin-only."""
+    _require_admin(current_user)
+    current = await _load_stage_rules()
+
+    # Stages — partial update per stage. Unknown stage names are
+    # silently dropped to keep the schema canonical.
+    if payload.stages:
+        for stage_name, cfg in payload.stages.items():
+            if stage_name not in STAGES:
+                continue
+            current["stages"][stage_name] = {
+                **current["stages"][stage_name],
+                **{k: v for k, v in cfg.dict().items() if v is not None},
+            }
+
+    # Recipients — admin number, team list, app push uuids.
+    if payload.alert_admin_number is not None:
+        current["alert_admin_number"] = _normalise_alert_phone(
+            payload.alert_admin_number,
+        )
+    if payload.alert_team_numbers is not None:
+        cleaned = [
+            _normalise_alert_phone(p) for p in (payload.alert_team_numbers or [])
+        ]
+        current["alert_team_numbers"] = [p for p in cleaned if p]
+    if payload.alert_app_user_ids is not None:
+        current["alert_app_user_ids"] = [
+            str(u).strip() for u in (payload.alert_app_user_ids or []) if str(u).strip()
+        ]
+
+    # Master kill-switch.
+    if payload.global_enabled is not None:
+        current["global_enabled"] = bool(payload.global_enabled)
+
+    await db.admin_config.update_one(
+        {"_id": "default"},
+        {"$set": {"stage_rules": current}},
+        upsert=True,
+    )
+    return await admin_get_stage_rules(current_user)
+
+
+@api_router.get("/me/stage-rules")
+async def me_get_stage_rules(
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    """Read-only view for the user-side UI — exposes stages + their
+    SLA / template settings. Recipient phone numbers are HIDDEN from
+    non-admin callers (only `_admin_visible` flag tells the UI whether
+    the admin section should be linked)."""
+    rules = await _load_stage_rules()
+    is_admin = bool(current_user.get("is_admin"))
+    if not is_admin:
+        # Strip recipient PII for non-admin views.
+        rules = {**rules}
+        rules.pop("alert_admin_number", None)
+        rules.pop("alert_team_numbers", None)
+        rules.pop("alert_app_user_ids", None)
+    return {
+        "stages":             STAGES,
+        "stage_to_template":  STAGE_TO_TEMPLATE,
+        "rules":              rules,
+        "is_admin":           is_admin,
+    }
+
+
+
+
 @api_router.get("/me/feature-flags")
 async def me_feature_flags(
     current_user: Dict[str, Any] = Depends(get_current_user)
