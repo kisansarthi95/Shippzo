@@ -190,6 +190,32 @@ class DispatchBulkRequest(BaseModel):
     shipment_ids: List[str] = Field(default_factory=list)
 
 
+class GenerateVariantsRequest(BaseModel):
+    """Body shape for POST /me/whatsapp-templates/generate-variants.
+    Generates 9 message variants (3 languages × 3 variants) for ONE
+    template type using a single Gemini call."""
+    template_type: str
+    tone_description: Optional[str] = ""   # free-text describing desired tone
+    quick_chip: Optional[str] = None       # one of Short/Professional/Friendly/Premium/Urgent
+
+
+class SaveVariantsRequest(BaseModel):
+    """Body shape for POST /me/whatsapp-templates/save-variants.
+    Saves an entire {lang: [v1, v2, v3]} variant block for one template
+    type. Each variant is a free-form string (with placeholders)."""
+    template_type: str
+    variants: Dict[str, List[str]] = Field(default_factory=dict)
+
+
+class DailyIncrementRequest(BaseModel):
+    """Body shape for POST /me/whatsapp/daily-increment.
+    The frontend calls this whenever it actually opened WhatsApp share
+    intent for a customer message — so the counter reflects real sends.
+    `force=True` is used when the user has confirmed they want to push
+    past the daily limit (admin must allow override for this to work)."""
+    force: bool = False
+
+
 # ---------------------------------------------------------------------------
 # Late-binding init — pulls helpers from server.py once.
 # ---------------------------------------------------------------------------
@@ -505,6 +531,8 @@ def init() -> None:
                 "_id": 0,
                 "default_message_language": 1,
                 "whatsapp_templates": 1,
+                "whatsapp_template_variants": 1,
+                "whatsapp_template_rotation": 1,
                 "business_links": 1,
             },
         ) or {}
@@ -512,14 +540,40 @@ def init() -> None:
         if chosen_lang not in LANGUAGES:
             chosen_lang = "gu"
 
-        # Resolution cascade: user > admin > bundled fallback.
+        # Resolution cascade: user variants > user single > admin > bundled fallback.
         template_body = ""
         source = "bundled"
-        u = ((user_doc.get("whatsapp_templates") or {}).get(ttype) or {}).get(chosen_lang)
-        if u and str(u).strip():
-            template_body = u
-            source = "user"
-        else:
+        used_variant_index = -1
+        # 1. AI-generated variants (rotated round-robin per template type).
+        v_block = (user_doc.get("whatsapp_template_variants") or {}).get(ttype) or {}
+        v_arr = v_block.get(chosen_lang) or []
+        if isinstance(v_arr, list) and v_arr:
+            rot = (user_doc.get("whatsapp_template_rotation") or {}).get(ttype) or 0
+            try:
+                rot = int(rot)
+            except (TypeError, ValueError):
+                rot = 0
+            idx = rot % len(v_arr)
+            template_body = str(v_arr[idx]).strip()
+            source = f"user_variant_{idx + 1}"
+            used_variant_index = idx
+            # Persist next-rotation pointer (best-effort, don't fail the request).
+            try:
+                await db.settings.update_one(
+                    {"user_id": current_user["id"]},
+                    {"$set": {f"whatsapp_template_rotation.{ttype}": (rot + 1) % len(v_arr)}},
+                    upsert=True,
+                )
+            except Exception:
+                pass
+        # 2. Legacy single-variant user override.
+        if not template_body:
+            u = ((user_doc.get("whatsapp_templates") or {}).get(ttype) or {}).get(chosen_lang)
+            if u and str(u).strip():
+                template_body = u
+                source = "user"
+        # 3. Admin default.
+        if not template_body:
             admin_doc = await db.admin_config.find_one(
                 {"_id": "default"}, {"_id": 0, "whatsapp_templates": 1},
             ) or {}
@@ -527,9 +581,10 @@ def init() -> None:
             if a and str(a).strip():
                 template_body = a
                 source = "admin"
-            else:
-                template_body = DEFAULT_TEMPLATES[ttype][chosen_lang]
-                source = "bundled"
+        # 4. Bundled fallback.
+        if not template_body:
+            template_body = DEFAULT_TEMPLATES[ttype][chosen_lang]
+            source = "bundled"
 
         # Business-link substitution (graceful: empty string if the user
         # hasn't set the URL yet — the surrounding template copy still
@@ -553,6 +608,391 @@ def init() -> None:
                 "website_url": wurl,
             },
         }
+
+
+    # =====================================================================
+    # AI Template Generator — Smart WhatsApp Template Generation
+    # =====================================================================
+    # User describes desired tone in 1 line; we generate 9 variants
+    # (3 languages × 3 variants) via a single Gemini call. Wallet is
+    # debited per-plan from admin_config.whatsapp_pricing.ai_generation_rates.
+    # Fail-safe: no debit if generation fails.
+
+    _AI_QUICK_CHIP_PROMPTS = {
+        "Short":         "very short and concise, under 25 words each",
+        "Professional":  "professional, polite, formal tone",
+        "Friendly":      "warm, friendly, conversational tone",
+        "Premium":       "premium, classy, high-end brand tone",
+        "Urgent":        "urgent, action-driving but respectful tone",
+    }
+
+    _AI_TYPE_INTENTS = {
+        "shipment_sent":         "Order has been booked / accepted by the shop. Inform the customer that their parcel will be dispatched soon. Mention order id and expected dispatch.",
+        "dispatch_confirmation": "Parcel has just been dispatched / shipped. Inform the customer with the tracking id and courier; tell them to expect delivery in {eta_days} days.",
+        "delivery_confirmation": "Several days have passed since dispatch. Politely ask the customer if they have received the parcel. They should reply YES if received or NO if not.",
+        "delivery_done":         "Customer has confirmed they received the parcel. Thank them warmly and ask them to keep shopping with the brand.",
+        "feedback_request":      "Parcel was delivered. Politely ask the customer for their feedback / Google review with the link {google_review_url} and mention the website {website_url}.",
+    }
+
+    def _today_key() -> str:
+        # Day bucket in IST (UTC+5:30) so the counter resets at India midnight.
+        try:
+            from datetime import timedelta
+            ist = datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)
+            return ist.strftime("%Y-%m-%d")
+        except Exception:
+            return datetime.utcnow().strftime("%Y-%m-%d")
+
+    async def _load_user_daily_counter(user_id: str) -> Dict[str, Any]:
+        s = await db.settings.find_one(
+            {"user_id": user_id},
+            {"_id": 0, "wa_daily_counter": 1},
+        ) or {}
+        c = s.get("wa_daily_counter") or {}
+        today = _today_key()
+        if c.get("day") != today:
+            return {"day": today, "count": 0}
+        return {"day": today, "count": int(c.get("count") or 0)}
+
+    @messaging_router.get("/me/whatsapp/daily-status")
+    async def me_whatsapp_daily_status(
+        current_user: Dict[str, Any] = Depends(_get_current_user),
+    ):
+        """Returns the user's current daily WhatsApp send count, the
+        admin-configured limit, threshold percentage, and override
+        permission. Used by the frontend to:
+          - show the "X / 50 today" mini-banner
+          - decide whether to soft-warn (>= threshold) or hard-block
+            (>= limit AND override disabled)
+        """
+        from server import _load_whatsapp_pricing as _load_pricing  # late import
+        pricing = await _load_pricing()
+        counter = await _load_user_daily_counter(current_user["id"])
+        limit = int(pricing["daily_limit"])
+        warn_pct = int(pricing["daily_warning_pct"])
+        allow_override = bool(pricing["allow_override_after_limit"])
+        sent = int(counter["count"])
+        warn_at = max(1, int(round(limit * warn_pct / 100.0)))
+        if sent >= limit:
+            status = "limit_reached_overridable" if allow_override else "limit_reached_blocked"
+        elif sent >= warn_at:
+            status = "warn"
+        else:
+            status = "ok"
+        return {
+            "sent_today":     sent,
+            "limit":          limit,
+            "warning_pct":    warn_pct,
+            "warn_at":        warn_at,
+            "allow_override": allow_override,
+            "status":         status,
+            "day":            counter["day"],
+        }
+
+    @messaging_router.post("/me/whatsapp/daily-increment")
+    async def me_whatsapp_daily_increment(
+        payload: DailyIncrementRequest,
+        current_user: Dict[str, Any] = Depends(_get_current_user),
+    ):
+        """Increments the user's daily-sent counter. The frontend calls
+        this whenever a WhatsApp share intent has been opened for a
+        customer message. If the user is past the daily limit and admin
+        does NOT allow override, this returns 429 — and the frontend
+        must NOT proceed with the share intent."""
+        from server import _load_whatsapp_pricing as _load_pricing
+        pricing = await _load_pricing()
+        counter = await _load_user_daily_counter(current_user["id"])
+        limit = int(pricing["daily_limit"])
+        allow_override = bool(pricing["allow_override_after_limit"])
+        if counter["count"] >= limit:
+            if not allow_override:
+                raise HTTPException(
+                    status_code=429,
+                    detail=(
+                        f"Daily WhatsApp limit reached ({counter['count']}/{limit}). "
+                        f"Admin has disabled override; please retry tomorrow."
+                    ),
+                )
+            if not payload.force:
+                raise HTTPException(
+                    status_code=429,
+                    detail=(
+                        f"Daily WhatsApp limit reached ({counter['count']}/{limit}). "
+                        f"Confirm with force=true to send anyway "
+                        f"(WhatsApp may flag/block your number per their policy)."
+                    ),
+                )
+        new_count = counter["count"] + 1
+        await db.settings.update_one(
+            {"user_id": current_user["id"]},
+            {"$set": {"wa_daily_counter": {
+                "day":   counter["day"],
+                "count": new_count,
+            }}},
+            upsert=True,
+        )
+        # Re-derive status for client convenience.
+        warn_pct = int(pricing["daily_warning_pct"])
+        warn_at = max(1, int(round(limit * warn_pct / 100.0)))
+        if new_count >= limit:
+            status = "limit_reached_overridable" if allow_override else "limit_reached_blocked"
+        elif new_count >= warn_at:
+            status = "warn"
+        else:
+            status = "ok"
+        return {
+            "sent_today":     new_count,
+            "limit":          limit,
+            "warn_at":        warn_at,
+            "allow_override": allow_override,
+            "status":         status,
+        }
+
+    @messaging_router.post("/me/whatsapp-templates/generate-variants")
+    async def me_generate_template_variants(
+        payload: GenerateVariantsRequest,
+        current_user: Dict[str, Any] = Depends(_get_current_user),
+    ):
+        """Generate 9 WhatsApp message variants (3 languages × 3 variants)
+        for ONE template type. Charges the user's wallet according to
+        their plan's `ai_generation_credits` rate. Returns the raw
+        variants — the user reviews/edits and explicitly saves."""
+        ttype = (payload.template_type or "").strip()
+        if ttype not in TEMPLATE_TYPES:
+            raise HTTPException(400, "invalid template type")
+
+        intent = _AI_TYPE_INTENTS.get(ttype, "send a polite update to the customer")
+        tone_phrase = (payload.tone_description or "").strip()
+        chip = (payload.quick_chip or "").strip()
+        chip_phrase = _AI_QUICK_CHIP_PROMPTS.get(chip, "")
+        # Vague-input safety net (Section 9 of spec): if the user typed
+        # nothing, or something nonsensical / too short, default to
+        # professional + friendly.
+        if not tone_phrase or len(tone_phrase) < 3:
+            tone_phrase = "professional and friendly"
+        elif len(tone_phrase.split()) < 2 and not chip_phrase:
+            tone_phrase = f"{tone_phrase}, professional and friendly"
+
+        tone_block = tone_phrase
+        if chip_phrase:
+            tone_block = f"{tone_phrase}; also {chip_phrase}"
+
+        # Pull the user's brand info to bake into the signature.
+        u_doc = await db.settings.find_one(
+            {"user_id": current_user["id"]},
+            {"_id": 0, "business_links": 1},
+        ) or {}
+        biz = u_doc.get("business_links") or {}
+        shop_name = (
+            current_user.get("shop_name")
+            or current_user.get("name")
+            or "Our Shop"
+        ).strip()
+        google_url = str(biz.get("google_review_url") or "").strip()
+        website_url = str(biz.get("website_url") or "").strip()
+
+        # Charge wallet BEFORE the LLM call, refund on failure.
+        from server import (  # late import to avoid circular
+            _load_whatsapp_pricing as _load_pricing,
+            wallet_charge,
+            wallet_add_credits,
+            LabelCostBreakdown,
+        )
+        pricing = await _load_pricing()
+        plan_key = (current_user.get("plan") or "free_trial").lower()
+        cost = float(pricing["ai_generation_rates"].get(plan_key, 0.0))
+        charge_id = f"wa-tpl-gen-{ttype}-{int(datetime.now(timezone.utc).timestamp())}"
+        if cost > 0:
+            try:
+                bd = LabelCostBreakdown(
+                    ai_credits=cost,
+                    ai_complexity="wa_template_gen",
+                    ai_applies=True,
+                    plan_has_room=True,
+                    shipment_credits=0.0,
+                    total=cost,
+                )
+                await wallet_charge(db, current_user, charge_id, bd)
+            except HTTPException:
+                raise
+            except Exception:
+                raise HTTPException(
+                    status_code=402,
+                    detail="Insufficient wallet balance for AI template generation.",
+                )
+
+        async def _refund_safe(reason: str) -> None:
+            if cost <= 0:
+                return
+            try:
+                await wallet_add_credits(
+                    db,
+                    current_user["id"],
+                    cost,
+                    ctype="refund",
+                    description=f"refund: {reason}",
+                    order_id=charge_id,
+                )
+            except Exception:
+                pass
+
+        # Build the LLM prompt.
+        system = (
+            "You are a WhatsApp message copywriter for an Indian "
+            "shipping/courier business. Your job is to write SHORT, "
+            "WhatsApp-safe messages that a shopkeeper sends to their "
+            "customer. Output STRICT JSON only (no commentary).\n\n"
+            "OUTPUT SCHEMA:\n"
+            "{\n"
+            '  "gu": ["variant1", "variant2", "variant3"],\n'
+            '  "hi": ["variant1", "variant2", "variant3"],\n'
+            '  "en": ["variant1", "variant2", "variant3"]\n'
+            "}\n\n"
+            "Each variant MUST:\n"
+            "  • greet the customer using {customer_name}\n"
+            "  • reference {order_id}\n"
+            "  • have a different opening line and slightly different "
+            "phrasing from the other 2 variants in the same language\n"
+            "  • have a clear call-to-action where relevant "
+            "(YES/NO reply, tracking, review link)\n"
+            "  • end with a brand signature line (use the exact "
+            "shop_name supplied)\n"
+            "  • be WhatsApp-safe: NO heavy markdown, NO long URLs except "
+            "the ones in the variables, plain text + 1-2 emojis max\n"
+            "  • NOT be a literal translation of the English variant — "
+            "use natural Gujarati / Hindi phrasing\n\n"
+            "VARIABLE PLACEHOLDERS — keep them EXACTLY as braces:\n"
+            "  {customer_name}, {order_id}, {tracking_id}, {courier}, "
+            "{eta_days}, {google_review_url}, {website_url}\n"
+        )
+
+        user_prompt = (
+            f"Template type:    {ttype}\n"
+            f"Intent:           {intent}\n"
+            f"Tone:             {tone_block}\n"
+            f"Brand / shop:     {shop_name}\n"
+            f"Google review:    {google_url or '(not set — omit if empty)'}\n"
+            f"Website:          {website_url or '(not set — omit if empty)'}\n\n"
+            "Generate the JSON now. Strict JSON only, no preamble."
+        )
+
+        import os, json, re as _re
+        try:
+            from emergentintegrations.llm.chat import LlmChat, UserMessage
+            chat = LlmChat(
+                api_key=os.getenv("EMERGENT_LLM_KEY", ""),
+                session_id=f"wa-tpl-gen-{current_user['id']}-{ttype}-{int(datetime.now(timezone.utc).timestamp())}",
+                system_message=system,
+            ).with_model("gemini", os.getenv("WA_TEMPLATE_MODEL", "gemini-2.5-flash"))
+            raw = await chat.send_message(UserMessage(text=user_prompt))
+        except Exception as e:
+            await _refund_safe("LLM call failed")
+            raise HTTPException(
+                status_code=502,
+                detail=f"AI generation failed: {e}",
+            )
+
+        # Parse the JSON. Strip code fences if the model added them.
+        raw_clean = (raw or "").strip()
+        raw_clean = _re.sub(r"^```[a-zA-Z]*\s*", "", raw_clean)
+        raw_clean = _re.sub(r"\s*```$", "", raw_clean)
+        try:
+            parsed = json.loads(raw_clean)
+        except Exception:
+            # try last-ditch: find first {...} block
+            m = _re.search(r"\{.*\}", raw_clean, flags=_re.S)
+            if m:
+                try:
+                    parsed = json.loads(m.group(0))
+                except Exception:
+                    parsed = None
+            else:
+                parsed = None
+
+        def _is_valid(d: Any) -> bool:
+            if not isinstance(d, dict):
+                return False
+            for L in ("gu", "hi", "en"):
+                arr = d.get(L)
+                if not isinstance(arr, list) or len(arr) < 3:
+                    return False
+                if not all(isinstance(x, str) and x.strip() for x in arr[:3]):
+                    return False
+            return True
+
+        if not _is_valid(parsed):
+            await _refund_safe("invalid JSON output")
+            raise HTTPException(
+                status_code=502,
+                detail="AI returned malformed output. Please try again.",
+            )
+
+        # Trim to exactly 3 per language and cap each variant length.
+        variants: Dict[str, List[str]] = {}
+        for L in ("gu", "hi", "en"):
+            cleaned = []
+            for s in parsed[L][:3]:
+                cleaned.append(str(s).strip()[:1200])
+            variants[L] = cleaned
+
+        return {
+            "template_type": ttype,
+            "variants":      variants,
+            "credits_charged": round(cost, 2),
+            "tone_used":     tone_block,
+        }
+
+    @messaging_router.post("/me/whatsapp-templates/save-variants")
+    async def me_save_template_variants(
+        payload: SaveVariantsRequest,
+        current_user: Dict[str, Any] = Depends(_get_current_user),
+    ):
+        """Persist a `{gu/hi/en: [v1, v2, v3]}` block for one template
+        type to the user's settings. Stored under
+        `whatsapp_template_variants.<ttype>` so it doesn't collide with
+        the legacy single-string `whatsapp_templates.<ttype>` (which
+        still works for users who haven't generated variants)."""
+        ttype = (payload.template_type or "").strip()
+        if ttype not in TEMPLATE_TYPES:
+            raise HTTPException(400, "invalid template type")
+
+        cleaned: Dict[str, List[str]] = {}
+        for lang in LANGUAGES:
+            arr = payload.variants.get(lang) or []
+            if not isinstance(arr, list):
+                continue
+            kept: List[str] = []
+            for s in arr[:3]:
+                s2 = str(s or "").strip()
+                if s2:
+                    kept.append(s2[:1200])
+            if kept:
+                cleaned[lang] = kept
+
+        await db.settings.update_one(
+            {"user_id": current_user["id"]},
+            {"$set": {f"whatsapp_template_variants.{ttype}": cleaned}},
+            upsert=True,
+        )
+        return {"saved": True, "template_type": ttype, "variants": cleaned}
+
+    @messaging_router.get("/me/whatsapp-template-variants")
+    async def me_get_template_variants(
+        current_user: Dict[str, Any] = Depends(_get_current_user),
+    ):
+        """Returns ALL stored variant blocks for the current user keyed
+        by template type. Used by the AI generator UI to pre-populate
+        editor cards on revisit."""
+        s = await db.settings.find_one(
+            {"user_id": current_user["id"]},
+            {"_id": 0, "whatsapp_template_variants": 1},
+        ) or {}
+        return {
+            "variants": dict(s.get("whatsapp_template_variants") or {}),
+            "types":    TEMPLATE_TYPES,
+            "languages": LANGUAGES,
+        }
+
 
     # =====================================================================
     # Dispatch Confirmation — post-Shipped notification flow

@@ -5866,15 +5866,35 @@ _WA_DEFAULT_RATES: Dict[str, float] = {
     "platinum":   0.0,
 }
 
+# Default credit cost for generating ONE batch of 9 AI templates
+# (3 languages × 3 variants). Higher plans pay less. Admin can override
+# any of these via PUT /admin/whatsapp-pricing.
+_WA_AI_DEFAULT_RATES: Dict[str, float] = {
+    "free_trial": 2.0,
+    "silver":     1.5,
+    "gold":       1.0,
+    "platinum":   0.5,
+}
+
+# Anti-block daily WhatsApp send limits. Admin can adjust.
+_WA_DEFAULT_DAILY_LIMIT = 50           # max messages per user per day
+_WA_DEFAULT_WARN_PCT    = 90           # soft-warning kicks in at 90% of limit
+_WA_DEFAULT_ALLOW_OVERRIDE = True      # allow user to push past limit with confirm
+
 
 class WhatsAppPricingRow(BaseModel):
     """Per-plan rate in CREDITS (not ₹) charged per manual message."""
     per_message_credits: Optional[float] = None
+    ai_generation_credits: Optional[float] = None  # NEW: per 9-template batch
 
 
 class WhatsAppPricingPayload(BaseModel):
     enabled: Optional[bool] = None
     plans: Dict[str, WhatsAppPricingRow]
+    # NEW — anti-block daily limit knobs (admin-controlled)
+    daily_limit: Optional[int] = None
+    daily_warning_pct: Optional[int] = None
+    allow_override_after_limit: Optional[bool] = None
 
 
 async def _load_whatsapp_pricing() -> Dict[str, Any]:
@@ -5888,9 +5908,26 @@ async def _load_whatsapp_pricing() -> Dict[str, Any]:
     for k, v in (saved.get("rates") or {}).items():
         if k in rates and isinstance(v, (int, float)) and v >= 0:
             rates[k] = float(v)
+    ai_rates: Dict[str, float] = dict(_WA_AI_DEFAULT_RATES)
+    for k, v in (saved.get("ai_generation_rates") or {}).items():
+        if k in ai_rates and isinstance(v, (int, float)) and v >= 0:
+            ai_rates[k] = float(v)
+    daily_limit = int(saved.get("daily_limit") or _WA_DEFAULT_DAILY_LIMIT)
+    if daily_limit < 1:
+        daily_limit = _WA_DEFAULT_DAILY_LIMIT
+    warn_pct = int(saved.get("daily_warning_pct") or _WA_DEFAULT_WARN_PCT)
+    if not (1 <= warn_pct <= 100):
+        warn_pct = _WA_DEFAULT_WARN_PCT
+    allow_override = bool(saved.get(
+        "allow_override_after_limit", _WA_DEFAULT_ALLOW_OVERRIDE,
+    ))
     return {
-        "enabled": bool(saved.get("enabled", False)),
-        "rates":   rates,
+        "enabled":                    bool(saved.get("enabled", False)),
+        "rates":                      rates,
+        "ai_generation_rates":        ai_rates,
+        "daily_limit":                daily_limit,
+        "daily_warning_pct":          warn_pct,
+        "allow_override_after_limit": allow_override,
     }
 
 
@@ -5918,20 +5955,33 @@ async def admin_put_whatsapp_pricing(
     (e.g. 0.5) so admins can set half-credit rates for cheap messaging."""
     _require_admin(current_user)
     cleaned_rates: Dict[str, float] = {}
+    cleaned_ai_rates: Dict[str, float] = {}
     for plan_key in _WA_PLAN_ORDER:
         row = payload.plans.get(plan_key)
-        if row is None or row.per_message_credits is None:
+        if row is None:
             continue
-        try:
-            v = float(row.per_message_credits)
-            if v < 0:
-                raise ValueError
-        except (TypeError, ValueError):
-            raise HTTPException(
-                status_code=400,
-                detail=f"{plan_key}.per_message_credits must be ≥ 0",
-            )
-        cleaned_rates[plan_key] = round(v, 2)
+        if row.per_message_credits is not None:
+            try:
+                v = float(row.per_message_credits)
+                if v < 0:
+                    raise ValueError
+            except (TypeError, ValueError):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"{plan_key}.per_message_credits must be ≥ 0",
+                )
+            cleaned_rates[plan_key] = round(v, 2)
+        if row.ai_generation_credits is not None:
+            try:
+                v = float(row.ai_generation_credits)
+                if v < 0:
+                    raise ValueError
+            except (TypeError, ValueError):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"{plan_key}.ai_generation_credits must be ≥ 0",
+                )
+            cleaned_ai_rates[plan_key] = round(v, 2)
 
     # Default enabled = whatever's stored already (don't flip implicitly)
     current = await _load_whatsapp_pricing()
@@ -5941,12 +5991,44 @@ async def admin_put_whatsapp_pricing(
         else current["enabled"]
     )
 
+    daily_limit = current["daily_limit"]
+    if payload.daily_limit is not None:
+        try:
+            dl = int(payload.daily_limit)
+            if dl < 1 or dl > 10000:
+                raise ValueError
+            daily_limit = dl
+        except (TypeError, ValueError):
+            raise HTTPException(
+                status_code=400,
+                detail="daily_limit must be between 1 and 10000",
+            )
+    daily_warn_pct = current["daily_warning_pct"]
+    if payload.daily_warning_pct is not None:
+        try:
+            wp = int(payload.daily_warning_pct)
+            if not (1 <= wp <= 100):
+                raise ValueError
+            daily_warn_pct = wp
+        except (TypeError, ValueError):
+            raise HTTPException(
+                status_code=400,
+                detail="daily_warning_pct must be 1-100",
+            )
+    allow_override = current["allow_override_after_limit"]
+    if payload.allow_override_after_limit is not None:
+        allow_override = bool(payload.allow_override_after_limit)
+
     await db.admin_config.update_one(
         {"_id": "default"},
         {"$set": {
             "whatsapp_pricing": {
-                "enabled": enabled,
-                "rates":   {**current["rates"], **cleaned_rates},
+                "enabled":                    enabled,
+                "rates":                      {**current["rates"], **cleaned_rates},
+                "ai_generation_rates":        {**current["ai_generation_rates"], **cleaned_ai_rates},
+                "daily_limit":                daily_limit,
+                "daily_warning_pct":          daily_warn_pct,
+                "allow_override_after_limit": allow_override,
             },
         }},
         upsert=True,
@@ -5958,18 +6040,24 @@ async def admin_put_whatsapp_pricing(
 async def me_get_whatsapp_pricing(
     current_user: Dict[str, Any] = Depends(get_current_user),
 ):
-    """Read-only endpoint for the normal user's app — exposes ONLY the
-    rate for the current user's own plan, plus the global enabled flag.
-    The UI uses this to show "X credits will be charged" next to the
-    WhatsApp send button and to decide whether to show the notice at
-    all (when enabled=false, no debit happens and no notice is shown)."""
+    """Read-only endpoint for the normal user's app — exposes the
+    per-message rate for the current user's own plan, the AI-generation
+    rate for the current user's plan, and the daily-limit / override
+    knobs. The UI uses this to show "X credits will be charged",
+    surface warnings as the daily count climbs, and decide whether to
+    let the user push past the daily limit with a confirm."""
     data = await _load_whatsapp_pricing()
     plan_key = (current_user.get("plan") or "free_trial")
     rate = data["rates"].get(plan_key, 0.0)
+    ai_rate = data["ai_generation_rates"].get(plan_key, 0.0)
     return {
-        "enabled":             data["enabled"],
-        "plan":                plan_key,
-        "per_message_credits": rate,
+        "enabled":                    data["enabled"],
+        "plan":                       plan_key,
+        "per_message_credits":        rate,
+        "ai_generation_credits":      ai_rate,
+        "daily_limit":                data["daily_limit"],
+        "daily_warning_pct":          data["daily_warning_pct"],
+        "allow_override_after_limit": data["allow_override_after_limit"],
     }
 
 
