@@ -788,6 +788,33 @@ def init() -> None:
             status = "warn"
         else:
             status = "ok"
+
+        # Phase G6 — push notification at 80% threshold (once/day).
+        if status in ("warn", "limit_reached_overridable", "limit_reached_blocked"):
+            try:
+                fresh = await db.settings.find_one(
+                    {"user_id": current_user["id"]},
+                    {"_id": 0, "wa_daily_counter": 1},
+                ) or {}
+                ctr = fresh.get("wa_daily_counter") or {}
+                already = bool(ctr.get("warn_pushed_day") == counter["day"])
+                if not already:
+                    from server import _push_event
+                    pct = int((new_count / limit) * 100) if limit else 0
+                    await _push_event(
+                        [current_user["id"]],
+                        event_key="daily_limit_warn",
+                        title="⚠️ WhatsApp limit warning",
+                        body=f"You've sent {new_count}/{limit} messages today ({pct}%). Slow down to avoid blocks.",
+                        data={"type": "daily_limit_warn", "sent": new_count, "limit": limit},
+                    )
+                    await db.settings.update_one(
+                        {"user_id": current_user["id"]},
+                        {"$set": {"wa_daily_counter.warn_pushed_day": counter["day"]}},
+                    )
+            except Exception:
+                pass  # never let push fail the increment
+
         return {
             "sent_today":     new_count,
             "limit":          limit,

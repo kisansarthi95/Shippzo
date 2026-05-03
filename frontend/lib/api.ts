@@ -336,6 +336,12 @@ export type NotificationPrefs = {
   daily_summary: boolean;
   channel_push: boolean;
   channel_email: boolean;
+  // Phase G6 — operational events
+  sla_breach: boolean;
+  daily_limit_warn: boolean;
+  morning_reminder: boolean;
+  new_order: boolean;
+  low_wallet: boolean;
 };
 
 // Phase-4a Credit Wallet ----------------------------------------------------
@@ -583,6 +589,26 @@ export const Api = {
     api.get<NotificationPrefs>("/me/notification-prefs").then((r) => r.data),
   updateNotificationPrefs: (prefs: Partial<NotificationPrefs>) =>
     api.put<NotificationPrefs>("/me/notification-prefs", prefs).then((r) => r.data),
+
+  // ───────────────────────────────────────────────────────────────────
+  // Phase G6 — Expo push token registry & test
+  // ───────────────────────────────────────────────────────────────────
+  registerPushToken: (payload: { token: string; platform?: string; device_id?: string }) =>
+    api.post<{ ok: boolean; token: string; registered_at: string }>(
+      "/me/push-token", payload,
+    ).then((r) => r.data),
+  removePushToken: (token: string) =>
+    api.delete<{ ok: boolean; removed: number }>(
+      "/me/push-token", { params: { token } },
+    ).then((r) => r.data),
+  testPushToSelf: () =>
+    api.post<{ sent: number; errors: number; pruned: number; total: number; reason?: string }>(
+      "/me/push-token/test",
+    ).then((r) => r.data),
+  listMyPushTokens: () =>
+    api.get<{ count: number; tokens: Array<{ token: string; platform?: string; device_id?: string; updated_at?: string }> }>(
+      "/me/push-tokens",
+    ).then((r) => r.data),
   cancelSubscription: () =>
     api.post<{
       ok: true;

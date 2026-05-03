@@ -10,7 +10,7 @@
  */
 import React, { createContext, useContext, useEffect, useState, useCallback } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { api, registerUnauthorizedHandler } from "./api";
+import { api, registerUnauthorizedHandler, Api } from "./api";
 
 const TOKEN_KEY = "@auth_token";
 const USER_KEY = "@auth_user";
@@ -90,6 +90,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setToken(t);
     setUser(u);
     await AsyncStorage.multiSet([[TOKEN_KEY, t], [USER_KEY, JSON.stringify(u)]]);
+    // Phase G6 — fire-and-forget push token registration the first
+    // time the user authenticates on this device. Idempotent.
+    try {
+      const { registerForPushNotificationsAsync } = await import("./pushRegistration");
+      registerForPushNotificationsAsync().catch(() => {});
+    } catch { /* ignore */ }
   }, []);
 
   const signIn = useCallback(async (email: string, password: string) => {
@@ -134,6 +140,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [persist]);
 
   const signOut = useCallback(async () => {
+    // Phase G6 — drop the cached push token from the backend so this
+    // device stops receiving notifications for the previous account.
+    try {
+      const { getCachedPushToken, clearCachedPushToken } = await import("./pushRegistration");
+      const cached = getCachedPushToken();
+      if (cached) {
+        try { await Api.removePushToken(cached); } catch { /* ignore */ }
+      }
+      clearCachedPushToken();
+    } catch { /* ignore */ }
     try { await api.post("/auth/logout"); } catch {}
     applyTokenToAxios(null);
     setToken(null);

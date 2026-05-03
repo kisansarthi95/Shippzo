@@ -64,7 +64,7 @@ import logging
 import httpx
 from pathlib import Path
 from pydantic import BaseModel, Field
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Iterable
 import uuid
 from datetime import datetime, timezone, timedelta
 from dateutil.relativedelta import relativedelta
@@ -5335,6 +5335,13 @@ DEFAULT_NOTIFICATION_PREFS = {
     "daily_summary":    False,  # opt-in daily digest
     "channel_push":     True,   # delivery channel — push (default)
     "channel_email":    True,   # delivery channel — email (default)
+    # Phase G6 — Operational push events. Each defaults ON so the
+    # user starts seeing actionable alerts immediately.
+    "sla_breach":         True,  # new SLA breach raised
+    "daily_limit_warn":   True,  # WhatsApp daily limit ≥80%
+    "morning_reminder":   True,  # 8am IST daily pending bulk-msg digest
+    "new_order":          True,  # placeholder for Sheet auto-sync (Phase H)
+    "low_wallet":         True,  # wallet balance < ₹100 warning
 }
 
 
@@ -5363,6 +5370,12 @@ class NotificationPrefsRequest(BaseModel):
     daily_summary:   Optional[bool] = None
     channel_push:    Optional[bool] = None
     channel_email:   Optional[bool] = None
+    # Phase G6 — operational events
+    sla_breach:        Optional[bool] = None
+    daily_limit_warn:  Optional[bool] = None
+    morning_reminder:  Optional[bool] = None
+    new_order:         Optional[bool] = None
+    low_wallet:        Optional[bool] = None
 
 
 @api_router.put("/me/notification-prefs")
@@ -5381,7 +5394,113 @@ async def put_notification_prefs(
     return merged
 
 
-@api_router.post("/me/cancel-subscription")
+# ---------------------- Phase G6 — Push Token Registry ----------------------
+
+import push_sender as _push_sender  # noqa: E402
+
+
+class PushTokenRequest(BaseModel):
+    token: str
+    platform: Optional[str] = "unknown"   # "ios" | "android" | "web"
+    device_id: Optional[str] = ""
+
+
+@api_router.post("/me/push-token")
+async def register_push_token(
+    payload: PushTokenRequest,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    """Register or refresh an Expo push token for this device."""
+    try:
+        res = await _push_sender.register_token(
+            db, current_user["id"],
+            payload.token,
+            platform=payload.platform or "unknown",
+            device_id=payload.device_id or "",
+        )
+        return res
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@api_router.delete("/me/push-token")
+async def remove_push_token(
+    token: str,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    """Drop a token (e.g. user logged out / disabled notifications)."""
+    n = await _push_sender.remove_token(db, current_user["id"], token)
+    return {"ok": True, "removed": int(n)}
+
+
+@api_router.post("/me/push-token/test")
+async def push_token_self_test(
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    """Fire a test push to all devices of the calling user. Useful
+    from the Notification Prefs screen — confirms the device is
+    correctly registered."""
+    res = await _push_sender.send_push_to_users(
+        db,
+        user_ids=[current_user["id"]],
+        title="🔔 Notifications working",
+        body="If you can read this, push delivery is configured correctly.",
+        data={"type": "self_test"},
+        channel_id="default",
+    )
+    return res
+
+
+@api_router.get("/me/push-tokens")
+async def list_my_push_tokens(
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    fresh = await db.users.find_one({"id": current_user["id"]}, {"_id": 0}) or {}
+    toks = fresh.get("push_tokens") or []
+    return {
+        "count":  len(toks),
+        "tokens": [{
+            "token":     (t or {}).get("token", "")[:40] + "…",
+            "platform":  (t or {}).get("platform"),
+            "device_id": (t or {}).get("device_id"),
+            "updated_at": (t or {}).get("updated_at"),
+        } for t in toks],
+    }
+
+
+# Helper used by SLA engine + cron jobs to send a push only when the
+# user opted in to that event type. Centralized here so we have one
+# place to add throttling / digest logic later.
+async def _push_event(
+    user_ids: Iterable[str],
+    *,
+    event_key: str,
+    title: str,
+    body: str,
+    data: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Filter user_ids by their notification_prefs[event_key] AND
+    channel_push toggle, then dispatch via push_sender."""
+    user_ids = list(user_ids)
+    if not user_ids:
+        return {"sent": 0, "errors": 0, "pruned": 0, "total": 0, "filtered": 0}
+    cursor = db.users.find(
+        {"id": {"$in": user_ids}},
+        {"_id": 0, "id": 1, "notification_prefs": 1},
+    )
+    eligible: List[str] = []
+    async for u in cursor:
+        prefs = _coerce_notif_prefs(u.get("notification_prefs"))
+        if prefs.get("channel_push", True) and prefs.get(event_key, True):
+            eligible.append(u["id"])
+    res = await _push_sender.send_push_to_users(
+        db, eligible,
+        title=title, body=body,
+        data={**(data or {}), "event_key": event_key},
+        channel_id="default",
+    )
+    res["filtered"] = len(user_ids) - len(eligible)
+    return res
 async def cancel_subscription(
     current_user: Dict[str, Any] = Depends(get_current_user),
 ):
@@ -7569,6 +7688,12 @@ async def on_startup():
         _asyncio.create_task(_sla_scan_worker())
     except Exception:
         logger.exception("Failed to start SLA scan worker (non-fatal)")
+    # Phase G6 — Morning reminder push (8am IST daily).
+    try:
+        import asyncio as _asyncio
+        _asyncio.create_task(_morning_reminder_worker())
+    except Exception:
+        logger.exception("Failed to start morning reminder worker (non-fatal)")
     logger.info("Courier Label Manager API started; defaults seeded.")
 
 
@@ -7710,6 +7835,78 @@ async def _sla_scan_worker() -> None:
             logger.exception("SLA scan worker iteration failed")
             # Back off 5 min on errors instead of busy-looping.
             await _asyncio.sleep(300.0)
+
+
+async def _morning_reminder_worker() -> None:
+    """Phase G6 — Morning reminder push (8am IST daily).
+    Walks every active user, computes their pending bulk-message
+    counts via /me/bulk-message/dashboard-counts logic, and fires a
+    summary push if anything is pending. Idempotent per day via
+    `morning_reminder_pushed_day` flag on each user.
+    """
+    import asyncio as _asyncio
+    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+    IST = _tz(_td(hours=5, minutes=30))
+    await _asyncio.sleep(120.0)   # boot grace period
+    while True:
+        try:
+            now_ist = _dt.now(IST)
+            # Target = today 08:00 IST. If we're past it, schedule for
+            # tomorrow.
+            target = now_ist.replace(hour=8, minute=0, second=0, microsecond=0)
+            if now_ist >= target:
+                target = target + _td(days=1)
+            sleep_s = max(60.0, (target - now_ist).total_seconds())
+            await _asyncio.sleep(sleep_s)
+
+            today_str = _dt.now(IST).strftime("%Y-%m-%d")
+            cursor = db.users.find(
+                {"deleted_at": {"$exists": False}},
+                {"_id": 0, "id": 1, "email": 1, "morning_reminder_pushed_day": 1},
+            )
+            async for u in cursor:
+                uid = u["id"]
+                if u.get("morning_reminder_pushed_day") == today_str:
+                    continue
+                # Count pending shipments per ttype using existing
+                # backend logic. We'll just use total open Pending /
+                # Shipped to keep this lean.
+                pending = await db.shipments.count_documents({
+                    "user_id": uid,
+                    "status":   {"$in": ["Pending", "Processing"]},
+                    "deleted_at": {"$exists": False},
+                })
+                shipped = await db.shipments.count_documents({
+                    "user_id": uid,
+                    "status":   "Shipped",
+                    "deleted_at": {"$exists": False},
+                })
+                if pending == 0 and shipped == 0:
+                    continue
+                title = "🌅 Good morning — daily ops digest"
+                body_parts = []
+                if pending: body_parts.append(f"{pending} new orders to process")
+                if shipped: body_parts.append(f"{shipped} parcels in transit")
+                body = "  ·  ".join(body_parts) + "  — tap to review."
+                try:
+                    await _push_event(
+                        [uid],
+                        event_key="morning_reminder",
+                        title=title, body=body,
+                        data={"type": "morning_reminder",
+                              "pending": pending, "shipped": shipped},
+                    )
+                    await db.users.update_one(
+                        {"id": uid},
+                        {"$set": {"morning_reminder_pushed_day": today_str}},
+                    )
+                except Exception:
+                    logger.exception("morning push failed for %s", uid)
+        except _asyncio.CancelledError:
+            return
+        except Exception:
+            logger.exception("Morning reminder iteration failed")
+            await _asyncio.sleep(900.0)
 
 
 @app.on_event("shutdown")

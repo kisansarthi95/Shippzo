@@ -268,6 +268,34 @@ async def scan_all_users(db, *, now: Optional[datetime] = None) -> Dict[str, Any
             except Exception as e:
                 _LOG.warning("sla_alert_log update failed: %s", e)
         total_raised += len(new_alerts)
+
+        # Phase G6 — push notification dispatch (best-effort).
+        # Only fire when the admin has the `push` channel enabled in
+        # display_channels AND the user opted into `sla_breach`.
+        try:
+            display = (rules.get("display_channels") or {})
+            if display.get("push", False):
+                # Group counts by stage for a single concise body.
+                by_stage: Dict[str, int] = {}
+                for a in new_alerts:
+                    by_stage[a["stage"]] = by_stage.get(a["stage"], 0) + 1
+                body_parts = [f"{n} {s}" for s, n in by_stage.items()]
+                title = f"🚨 {len(new_alerts)} SLA breach{'es' if len(new_alerts) != 1 else ''}"
+                body  = " · ".join(body_parts) + " — tap to review"
+                # Late import to avoid cycle (server.py imports sla_engine).
+                try:
+                    from server import _push_event
+                    await _push_event(
+                        [uid],
+                        event_key="sla_breach",
+                        title=title, body=body,
+                        data={"type": "sla_breach", "count": len(new_alerts)},
+                    )
+                except Exception as e:
+                    _LOG.warning("SLA push dispatch failed for %s: %s", uid, e)
+        except Exception:
+            pass  # never let push fail the scan
+
         _LOG.info("SLA scan: user=%s raised=%d", uid, len(new_alerts))
 
     _LOG.info(

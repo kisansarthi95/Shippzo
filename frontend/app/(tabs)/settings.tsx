@@ -1960,6 +1960,27 @@ export default function SettingsScreen() {
             </TouchableOpacity>
           </Section>
 
+          {/* Phase G6 — Notification preferences shortcut. */}
+          <Section title="🔔 Push Notifications" icon="notifications-outline">
+            <Text style={styles.toggleSub}>
+              Choose which alerts you want on your phone — SLA breaches,
+              daily WhatsApp limit warnings, morning ops digest, plan
+              expiry, and more. Send a test notification to confirm
+              everything works.
+            </Text>
+            <TouchableOpacity
+              testID="settings-hub-notification-prefs"
+              onPress={() => router.push("/notification-prefs" as any)}
+              style={[
+                styles.saveBtn,
+                { marginTop: 12, backgroundColor: "#1F4FBF" },
+              ]}
+            >
+              <Ionicons name="notifications-outline" size={18} color="#fff" />
+              <Text style={styles.saveBtnText}>Open Notification Settings</Text>
+            </TouchableOpacity>
+          </Section>
+
 
           {/* Column picker modal */}
           <Modal

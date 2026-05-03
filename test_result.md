@@ -9758,3 +9758,58 @@ agent_communication:
 
         BACKLOG REMAINING: Push notifications, Google Sheet auto-sync,
         Play Store readiness, Admin Analytics, server.py refactor.
+
+    -agent: "main"
+    -message: |
+        Phase G6 — Push Notifications (Expo Push API) SHIPPED.
+
+        BACKEND:
+          - /app/backend/push_sender.py — wrapper around Expo Push HTTP API.
+            Auto-prunes stale tokens marked DeviceNotRegistered.
+          - server.py: added 5 endpoints
+              POST /api/me/push-token             (register)
+              DELETE /api/me/push-token            (remove)
+              POST /api/me/push-token/test         (self-test)
+              GET /api/me/push-tokens              (debug list)
+              + _push_event() helper that filters by per-event prefs.
+          - Notification prefs schema extended w/ 5 new keys:
+              sla_breach, daily_limit_warn, morning_reminder,
+              new_order, low_wallet
+          - Hooks added:
+              ✓ sla_engine emits push when display_channels.push=true
+                AND user.notification_prefs.sla_breach=true
+              ✓ /me/whatsapp/daily-increment fires daily-limit warn
+                push at the 80% threshold (idempotent per day)
+              ✓ Morning reminder cron: dedicated _morning_reminder_worker
+                wakes at 8 AM IST, sends per-user digest of pending +
+                in-transit shipments (idempotent via
+                morning_reminder_pushed_day flag)
+          - app.json: added android.permission.POST_NOTIFICATIONS +
+            useNextNotificationsApi: true.
+
+        FRONTEND:
+          - expo-notifications installed.
+          - /app/frontend/lib/pushRegistration.ts — handles permission,
+            Android channel setup, getExpoPushTokenAsync, backend POST.
+            Idempotent + cached. Silent failure on web/simulator.
+          - /app/frontend/app/notification-prefs.tsx — full settings UI:
+            device-status card, register/test buttons, 12 toggles
+            grouped (Channels / Ops / Account & billing). Master push
+            channel OFF dims the ops section to make muting obvious.
+          - auth.tsx: persist() auto-registers, signOut() removes the
+            backend token + clears cache.
+          - settings.tsx: new "🔔 Push Notifications" section linking
+            to /notification-prefs.
+
+        VALIDATED:
+          - /tmp/test_push_g6.py: 9/9 backend asserts pass — register,
+            list, test (graceful failure on fake token), prefs CRUD,
+            invalid-token rejection, remove all green ✓
+          - Playwright /notification-prefs renders correctly with all
+            12 toggles + status card. Web preview correctly shows
+            "No devices registered" (push only works on real
+            iOS/Android, expected limitation).
+
+        REMAINING BACKLOG: Google Sheet auto-sync, Play Store readiness
+        (app.json package + permissions audit), Admin Analytics,
+        server.py refactor.
