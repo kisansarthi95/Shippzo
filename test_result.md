@@ -9671,3 +9671,29 @@ agent_communication:
              dashboard (no crash, no banner shown).
 
         ALL FLOWS MUST PASS WITHOUT CRASHES.
+
+    -agent: "main"
+    -message: |
+        Phase F2/F3 — Generic Bulk Message frontend SHIPPED.
+
+        FRONTEND VALIDATED via Playwright:
+          - Dashboard now has new "📨 Bulk WhatsApp Messages" section
+            with 5 ActionPills (Order Received, Shipped Confirmation,
+            Delivery Check-in, Thank-You Delivered, Feedback / Review).
+            Each shows pending count from /api/me/bulk-message/dashboard-counts ✓
+          - Tapping "Order Received" → /bulk-message/shipment_sent
+            opens with 40 Pending shipments, Pending/Sent today/All
+            tabs, Select-all, language pill, sticky "Send WhatsApp" CTA ✓
+          - delivery_confirmation route shows "≥ 4d in Shipped"
+            threshold pill (min_days=4 from backend config) ✓
+          - All 5 ttypes route through one screen file:
+            /app/frontend/app/bulk-message/[type].tsx
+          - Send flow reuses preflightBatchWhatsApp daily-limit guard,
+            fillFromShipment, openWhatsAppShare, plus mark-sent same-day
+            dedup (skipped_ids returned by backend).
+
+        BACKEND already validated in Phase F1 (bulk-message routers).
+
+        LEGACY screens (/dispatch-confirmation, /delivery-confirmation)
+        remain on disk but no longer linked from dashboard. Phase F4
+        will remove them in a follow-up.

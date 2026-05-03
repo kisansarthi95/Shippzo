@@ -712,6 +712,50 @@ export const Api = {
       )
       .then((r) => r.data),
 
+  // ───────────────────────────────────────────────────────────────────
+  // Phase F2/F3 — Generic Bulk Message endpoints (5 stages share one
+  // pair). Replaces the per-type dispatch / delivery list calls.
+  // ───────────────────────────────────────────────────────────────────
+  bulkMsgEligible: (ttype: string, threshold_days?: number) =>
+    api
+      .get<{
+        ttype: string;
+        label: string;
+        icon: string;
+        min_days: number;
+        statuses: string[];
+        shipments: Array<Shipment & {
+          _days_since: number;
+          _msg_sent_today: boolean;
+          _last_msg: { status?: string; sent_at?: string };
+        }>;
+        counts: { list: number; sent_today: number; pending: number };
+      }>("/me/bulk-message/eligible", {
+        params: {
+          ttype,
+          ...(threshold_days != null ? { threshold_days } : {}),
+        },
+      })
+      .then((r) => r.data),
+  bulkMsgMarkSent: (ttype: string, shipment_ids: string[]) =>
+    api
+      .post<{
+        ttype: string;
+        updated: number;
+        skipped: number;
+        updated_ids: string[];
+        skipped_ids: string[];
+      }>("/me/bulk-message/mark-sent", { ttype, shipment_ids })
+      .then((r) => r.data),
+  bulkMsgReset: (ttype: string, shipment_ids: string[]) =>
+    api.post<{ updated: number }>(
+      "/me/bulk-message/reset", { ttype, shipment_ids },
+    ).then((r) => r.data),
+  bulkMsgDashboardCounts: () =>
+    api.get<Record<string, {
+      label: string; icon: string; pending: number; list: number;
+    }>>("/me/bulk-message/dashboard-counts").then((r) => r.data),
+
   /** Phase-12: Bulk Pending → Processing flip (warehouse "I'm starting
    *  to pack this batch" action). Skips rows already past Pending. */
   bulkMarkProcessing: (shipment_ids: string[]) =>

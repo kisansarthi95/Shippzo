@@ -101,17 +101,20 @@ export default function Dashboard() {
   const [recent, setRecent] = useState<Shipment[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [bulkCounts, setBulkCounts] = useState<Record<string, { label: string; icon: string; pending: number; list: number }>>({});
 
   const load = useCallback(async () => {
     try {
-      const [s, list, oc] = await Promise.all([
+      const [s, list, oc, bc] = await Promise.all([
         Api.getStats(),
         Api.listShipments({}),
         Api.pendingOrdersCount().catch(() => ({ count: 0 })),
+        Api.bulkMsgDashboardCounts().catch(() => ({})),
       ]);
       setStats(s);
       setRecent(list.slice(0, 5));
       setPendingOrdersCount(oc?.count ?? 0);
+      setBulkCounts((bc as any) || {});
     } catch {
       // ignore
     } finally {
@@ -1732,23 +1735,31 @@ export default function Dashboard() {
                 </View>
                 <Ionicons name="chevron-forward" size={20} color="#6B5BFF" />
               </TouchableOpacity>
-              {/* Phase-12: Post-print workflow pills. */}
-              <ActionPill
-                testID="quick-dispatch-confirmation"
-                icon="rocket-outline"
-                label="Ready to Ship Confirmation"
-                onPress={() => router.push("/dispatch-confirmation" as any)}
-                tone="violet"
-                chevron
-              />
-              <ActionPill
-                testID="quick-delivery-confirmation"
-                icon="checkmark-circle-outline"
-                label="Delivery Confirmation"
-                onPress={() => router.push("/delivery-confirmation" as any)}
-                tone="success"
-                chevron
-              />
+              {/* Phase F2/F3: 5-stage generic Bulk Message buttons.
+                  All five drive `/bulk-message/[type]` and share the
+                  same multi-select + sequential-WhatsApp flow. */}
+              <View style={styles.bulkMsgHeader}>
+                <Text style={styles.bulkMsgTitle}>📨 Bulk WhatsApp Messages</Text>
+                <Text style={styles.bulkMsgSub}>Tap a stage to send to multiple customers at once</Text>
+              </View>
+              {([
+                { ttype: "shipment_sent",         icon: "mail-outline",            label: "Order Received",      tone: "neutral" },
+                { ttype: "dispatch_confirmation", icon: "rocket-outline",          label: "Shipped Confirmation", tone: "violet" },
+                { ttype: "delivery_confirmation", icon: "checkmark-circle-outline", label: "Delivery Check-in",   tone: "success" },
+                { ttype: "delivery_done",         icon: "happy-outline",           label: "Thank-You (Delivered)", tone: "success" },
+                { ttype: "feedback_request",      icon: "star-outline",            label: "Feedback / Review",   tone: "warning" },
+              ] as const).map((b) => (
+                <ActionPill
+                  key={b.ttype}
+                  testID={`quick-bulk-${b.ttype}`}
+                  icon={b.icon as any}
+                  label={b.label}
+                  badge={bulkCounts[b.ttype]?.pending || 0}
+                  onPress={() => router.push(`/bulk-message/${b.ttype}` as any)}
+                  tone={b.tone as any}
+                  chevron
+                />
+              ))}
             </View>
 
             <View style={styles.sectionHeader}>
@@ -2170,6 +2181,10 @@ const styles = StyleSheet.create({
   },
   sectionTitle: { fontSize: 16, fontWeight: "800", color: colors.text },
   link: { color: colors.primary, fontWeight: "700" },
+
+  bulkMsgHeader: { paddingHorizontal: 4, marginTop: 14, marginBottom: 6 },
+  bulkMsgTitle:  { fontSize: 13, fontWeight: "800", color: colors.text },
+  bulkMsgSub:    { fontSize: 11, color: "#6B7280", marginTop: 2 },
   card: {
     marginHorizontal: 16,
     marginBottom: 10,
