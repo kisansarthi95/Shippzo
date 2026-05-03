@@ -393,9 +393,85 @@ Nothing else.
 CRITICAL_FIELD_RULES = """\
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ⚠️  CRITICAL FIELD EXTRACTION RULES — NON-NEGOTIABLE
-These TWO rules override ANY user customisation above. They apply to
+These rules override ANY user customisation above. They apply to
 EVERY single call, no exceptions. Violating them is a parse error.
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+## RULE X0 — PHONE DIGIT ACCURACY IS SACRED 🔒
+Phone numbers MUST be digit-perfect. A wrong digit breaks real-world
+parcel delivery and WhatsApp notification for a real customer. This
+rule is stricter than any other rule in this document.
+
+### STRICT DIGIT MAPPING (memorise verbatim)
+
+GUJARATI digits (Unicode U+0AE6..U+0AEF):
+  ૦ → 0     ૧ → 1     ૨ → 2     ૩ → 3     ૪ → 4
+  ૫ → 5     ૬ → 6     ૭ → 7     ૮ → 8     ૯ → 9
+
+HINDI / DEVANAGARI digits (Unicode U+0966..U+096F):
+  ० → 0     १ → 1     २ → 2     ३ → 3     ४ → 4
+  ५ → 5     ६ → 6     ७ → 7     ८ → 8     ९ → 9
+
+### MANDATORY 2-STEP PROCESS FOR EVERY PHONE NUMBER
+
+STEP 1 — Raw transcription (internal, silent):
+  Read the digits EXACTLY as drawn in the native script, character by
+  character, with zero interpretation. Example internal line:
+  "raw_guj = ૯ ૩ ૭ ૨ ૫ ૨ ૮ ૮ ૭ ૮"
+
+STEP 2 — Character-by-character mapping:
+  Apply the table above ONE CHARACTER AT A TIME. Do not merge, do not
+  re-order, do not "auto-correct" to a more familiar number pattern.
+  Example: ૯૩૭૨૫૨૮૮૭૮ → 9 3 7 2 5 2 8 8 7 8 → 9372528878
+
+STEP 3 — Length check:
+  Final output MUST be exactly 10 digits for an Indian mobile. If your
+  transcription yields 9 or 11 digits, RE-READ the image — do NOT pad
+  or truncate silently.
+
+### VISUAL CONFUSION WARNINGS (images / handwriting)
+
+These Gujarati glyph pairs are most often misread — look carefully:
+  ૨ (2, open-top horn)    vs   ૯ (9, CLOSED loop on top)
+  ૩ (3, hook upper-right) vs   ૭ (7, straight down-hook)
+  ૪ (4, angular Δ shape)  vs   ૮ (8, fat S / question-mark shape)
+  ૧ (1, vertical + hook)  vs   ૭ (7, similar stroke but shorter)
+  ૦ (0, circle)           vs   ૯ (9, circle + tail)
+
+These Hindi glyph pairs are most often misread:
+  २ (2) vs ३ (3) vs ७ (7)    — all share a curled opening, count strokes
+  ४ (4)         — has a closed left loop, NOT an 8
+  ५ (5) vs ६ (6) — ५ is open-bottomed, ६ has a filled top
+
+### ABSOLUTE PROHIBITIONS (phone field only)
+
+- ❌ NEVER "translate phonetically" (do not map ૨ to "bay" or any sound).
+- ❌ NEVER auto-correct a digit because the resulting number "looks
+     unusual" or "doesn't match a common pattern".
+- ❌ NEVER substitute the customer's number with a number that appeared
+     elsewhere (shop helpline, sender's own number, printed letterhead).
+- ❌ NEVER hallucinate missing digits. If the image is blurry, smudged,
+     partially cropped, or only 9 digits are legible, output PHONE: "-"
+     and explain in AI_REASON. A dash is ALWAYS better than a wrong
+     digit.
+- ❌ NEVER mix scripts inside ONE number. If the first 5 digits are
+     Gujarati and the last 5 are Arabic, transcribe each group using
+     ITS OWN script's mapping.
+
+### EXAMPLES — CORRECT vs WRONG
+
+Input: "મયુરભાઈ ૯૩૭૨૫૨૮૮૭૮"
+  ✅ PHONE: 9372528878       (character-by-character map)
+  ❌ PHONE: 9428528878       (hallucinated — ૩૭ became ૪૨)
+  ❌ PHONE: 9372528800       (truncated / wrong last two)
+
+Input: "Call ९८७६५४३२१०"
+  ✅ PHONE: 9876543210
+  ❌ PHONE: 9876543200       (dropped १)
+
+Input handwritten faint: "૯ ૩ ૭ ? ૫ ૨ ૮ ૮ ૭ ૮"   (4th digit unclear)
+  ✅ PHONE: -                (with AI_REASON: "4th digit illegible")
+  ❌ PHONE: 9370528878       (guessed)
 
 ## RULE X1 — ALT_PHONE (alternate mobile) capture is MANDATORY
 If the input contains TWO or more distinct 10-digit mobile numbers
@@ -404,14 +480,13 @@ numerals) — you MUST populate BOTH:
   PHONE:     <first number seen, normalised to 10 digits>
   ALT_PHONE: <second number seen, normalised to 10 digits>
 
-Indian-language numeral tables — treat these as Arabic digits:
-  Gujarati:  ૦૧૨૩૪૫૬૭૮૯ → 0123456789
-  Hindi:     ०१२३४५६७८९ → 0123456789
+Both PHONE and ALT_PHONE must be obtained using the STRICT RULE X0
+process above. Never share digits between the two numbers.
 
 Examples (input → expected PHONE / ALT_PHONE):
   "ભરતભાઈ ૯૪૨૮૪૪૬૧૮૪ / મયુરભાઈ ૯૩૭૨૫૨૮૮૭૮"
     → PHONE: 9428446184   ALT_PHONE: 9372528878
-  "Ramesh 9824446184 · Alt 9372528878"
+  "Ramesh ९८२४४४६१८४ · Alt ९३७२५२८८७८"
     → PHONE: 9824446184   ALT_PHONE: 9372528878
   "+91 98765 43210 / +91 87654 32109"
     → PHONE: 9876543210   ALT_PHONE: 8765432109

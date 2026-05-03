@@ -9022,3 +9022,168 @@ agent_communication:
         No regressions to other endpoints (test scope was strictly
         limited to the 3 endpoints in the review request).
 
+
+
+# ==========================================================================
+# Phase-13 Smart Paste regional-digit accuracy — 2026-05-03
+# ==========================================================================
+
+backend:
+  - task: "Smart Paste Gujarati/Hindi digit accuracy (RULE X0)"
+    implemented: true
+    working: true
+    file: "/app/backend/smart_paste_ai.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: |
+            Strengthened CRITICAL_FIELD_RULES (appended AFTER user's
+            custom instructions so it cannot be overridden).
+            Added new RULE X0 — "PHONE DIGIT ACCURACY IS SACRED".
+            Includes:
+              - Explicit Gujarati digit mapping table (૦-૯ → 0-9)
+              - Explicit Hindi/Devanagari digit mapping table (०-९ → 0-9)
+              - Mandatory 2-step process: raw transcription then char-by-
+                char mapping; length-check (10 digits for Indian mobile)
+              - Visual confusion warnings for glyph pairs commonly
+                misread in handwriting/low-res images
+                  Gujarati: ૨↔૯, ૩↔૭, ૪↔૮, ૧↔૭, ૦↔૯
+                  Hindi:    २↔३↔७, ४ has closed left loop, ५↔६
+              - Absolute prohibitions: no phonetic translation, no
+                auto-correct to familiar pattern, no substitution with
+                shop helpline, no hallucinating missing digits, no
+                script-mixing inside one number
+              - Concrete correct-vs-wrong examples including
+                "મયુરભાઈ ૯૩૭૨૫૨૮૮૭૮ → 9372528878" (the exact case the
+                user reported failing previously)
+              - Rule that blurry/illegible digits → PHONE "-" + reason,
+                never a guess
+            Applied identically to both text-parse path and vision
+            (image) path since CRITICAL_FIELD_RULES is appended at the
+            end of both prompts.
+        -working: true
+        -agent: "testing"
+        -comment: |
+            ALL 4/4 TESTS PASSED digit-for-digit against
+            https://logistics-hub-740.preview.emergentagent.com/api
+            via /app/backend_test.py. Real Gemini Vision pipeline (not
+            mocked) — admin@test.com bearer token, PNG images
+            generated at runtime with Pillow + Noto Sans Gujarati /
+            Devanagari fonts (installed via apt fonts-noto-core).
+
+            Endpoint: POST /api/smart-paste/photo
+            Body: { image_base64, mime: "image/png" }
+            Response shape verified: { fields: { customer_phone,
+            customer_alt_phone, ... }, missing, complete, ai_message,
+            complexity, reason, source, credits_charged, warnings }.
+
+            T1 — Two Gujarati mobile numbers on one image:
+              Rendered:
+                "ભરતભાઈ ૯૪૨૮૪૪૬૧૮૪"
+                "મયુરભાઈ ૯૩૭૨૫૨૮૮૭૮"
+              Expected PHONE=9428446184, ALT_PHONE=9372528878
+              Returned PHONE=9428446184, ALT_PHONE=9372528878 ✓
+              (This is the exact case the user reported failing — RULE
+              X0 now correctly maps ૯૩૭૨૫૨૮૮૭૮ → 9372528878 with no
+              hallucination/auto-correct.)
+
+            T2 — Single Hindi/Devanagari mobile number:
+              Rendered: "Ramesh  ९८२४४४६१८४"
+              Expected PHONE=9824446184, ALT in ("","-",None)
+              Returned PHONE=9824446184, ALT_PHONE="" ✓
+
+            T3 — Mixed Gujarati + Arabic in one line:
+              Rendered: "Call ૯૩૭૨૫૨૮૮૭૮ OR 9824446184"
+              Expected PHONE=9372528878, ALT_PHONE=9824446184
+              Returned PHONE=9372528878, ALT_PHONE=9824446184 ✓
+              (Order preserved — Gujarati first → PHONE, Arabic
+              second → ALT_PHONE, no script-mixing inside a single
+              number.)
+
+            T4 — Regression guard, all-English:
+              Rendered: "Call 9876543210"
+              Expected PHONE=9876543210
+              Returned PHONE=9876543210 ✓
+
+            No residual hallucination patterns observed. RULE X0 is
+            production-ready for the user-reported failure cases T1
+            and T3. Backend logs show 4 successful POSTs with 200
+            responses; wallet was charged 1.5 credits per call as
+            expected.
+
+            Full per-test JSON responses saved at
+            /tmp/phase13_responses.json (admins can inspect for any
+            future regression).
+
+test_plan:
+  current_focus:
+    - "Smart Paste Gujarati/Hindi digit accuracy (RULE X0)"
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"
+
+agent_communication:
+    -agent: "main"
+    -message: |
+        Please test the Smart Paste photo endpoint
+        (POST /api/smart-paste/photo) with base64 images that contain
+        Indian-language digit phone numbers, to validate RULE X0 in
+        /app/backend/smart_paste_ai.py::CRITICAL_FIELD_RULES.
+
+        REQUIRED TEST CASES (generate small PNG/JPEG images at runtime
+        using Pillow with a font that supports Gujarati + Devanagari
+        glyphs — DejaVu is fallback; Noto Sans Gujarati / Devanagari
+        are installed on the container at /usr/share/fonts if needed):
+
+        T1) Two Gujarati mobile numbers on one image:
+              "ભરતભાઈ ૯૪૨૮૪૪૬૧૮૪"
+              "મયુરભાઈ ૯૩૭૨૫૨૮૮૭૮"
+            Expected: PHONE == "9428446184" AND ALT_PHONE == "9372528878"
+
+        T2) Single Hindi mobile number:
+              "Ramesh  ९८२४४४६१८४"
+            Expected: PHONE == "9824446184" AND ALT_PHONE in ("", "-")
+
+        T3) Mixed Gujarati + Arabic in one block:
+              "Call ૯૩૭૨૫૨૮૮૭૮ OR 9824446184"
+            Expected: PHONE == "9372528878" AND ALT_PHONE == "9824446184"
+
+        T4) Sanity — all-English phone continues to work:
+              "Call 9876543210"
+            Expected: PHONE == "9876543210"
+
+        Auth: use credentials from /app/memory/test_credentials.md.
+        Endpoint body shape:
+            { "image_base64": "<b64 with no data: prefix>",
+              "mime": "image/png" }
+
+        Pass criterion: T1 and T3 must match digit-for-digit.
+        (T2, T4 are regression guards.)
+
+        If the model still hallucinates digits, capture the returned
+        `raw` + `ai_reason` fields in your report so we can tune the
+        prompt further.
+
+
+agent_communication:
+    -agent: "testing"
+    -message: |
+        Phase-13 Smart Paste Gujarati/Hindi digit-accuracy validation
+        — ALL 4/4 PASS digit-for-digit. RULE X0 in
+        /app/backend/smart_paste_ai.py::CRITICAL_FIELD_RULES is
+        working as designed end-to-end via the real Gemini Vision
+        pipeline (POST /api/smart-paste/photo). Test artefacts:
+          - /app/backend_test.py (image-rendering + assertion harness)
+          - /tmp/phase13_T{1..4}.png (rendered inputs)
+          - /tmp/phase13_responses.json (full backend responses)
+        No residual hallucination/auto-correct pattern observed in
+        any of the 4 cases — including the user-reported failing
+        case "મયુરભાઈ ૯૩૭૨૫૨૮૮૭૮ → 9372528878".
+        Installed fonts-noto-core (apt) so Pillow could render
+        Gujarati + Devanagari glyphs — this is a one-time test-env
+        dependency and does NOT affect the backend image. No code
+        changes were made by the testing agent.
+
