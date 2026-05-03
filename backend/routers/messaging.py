@@ -1233,3 +1233,244 @@ def init() -> None:
             "eta_max": eta_max,
             "threshold_override": threshold_days,
         }
+
+
+    # =====================================================================
+    # Phase-F1: Generic Bulk-Message system (works for ALL template types)
+    # =====================================================================
+    # One pair of endpoints replaces the per-type dispatch / delivery
+    # bulk listings. Internally a unified `bulk_msg_log` dict on each
+    # shipment tracks per-template-type status + last-sent timestamp,
+    # so we can prevent same-day repeat sends for ANY message type
+    # without polluting the shipment schema with N new fields.
+    #
+    # Per-type filter rules (`_BULK_FILTERS`):
+    #   shipment_sent          → status=Pending             (no message yet today)
+    #   dispatch_confirmation  → status=Shipped             (no message yet today)
+    #   delivery_confirmation  → status=Shipped + days >= X (no message yet today)
+    #   delivery_done          → status=Delivered           (no message yet today)
+    #   feedback_request       → status=Delivered + days >=Y (no message yet today)
+
+    _BULK_FILTERS: Dict[str, Dict[str, Any]] = {
+        "shipment_sent": {
+            "statuses":      ["Pending"],
+            "since_field":   None,
+            "min_days":      0,
+            "label":         "Order Received (Pending)",
+            "icon":          "📥",
+        },
+        "dispatch_confirmation": {
+            "statuses":      ["Shipped"],
+            "since_field":   "shipped_at",
+            "min_days":      0,
+            "label":         "Shipped Confirmation",
+            "icon":          "🚚",
+        },
+        "delivery_confirmation": {
+            "statuses":      ["Shipped"],
+            "since_field":   "shipped_at",
+            "min_days":      4,    # default — admin-tunable later
+            "label":         "Delivery Confirmation",
+            "icon":          "✅",
+        },
+        "delivery_done": {
+            "statuses":      ["Delivered"],
+            "since_field":   "delivered_at",
+            "min_days":      0,
+            "label":         "Thank-You (Delivered)",
+            "icon":          "🎉",
+        },
+        "feedback_request": {
+            "statuses":      ["Delivered"],
+            "since_field":   "delivered_at",
+            "min_days":      2,
+            "label":         "Feedback / Review",
+            "icon":          "⭐",
+        },
+    }
+
+    def _msg_log(shipment: Dict[str, Any], ttype: str) -> Dict[str, str]:
+        return ((shipment.get("bulk_msg_log") or {}).get(ttype) or {})
+
+    def _msg_sent_today(shipment: Dict[str, Any], ttype: str) -> bool:
+        log = _msg_log(shipment, ttype)
+        sent_at = str(log.get("sent_at") or "")
+        return log.get("status") == "sent" and sent_at[:10] == utcnow_iso()[:10]
+
+    @messaging_router.get("/me/bulk-message/eligible")
+    async def me_bulk_message_eligible(
+        ttype: str,
+        threshold_days: Optional[int] = None,
+        current_user: Dict[str, Any] = Depends(_get_current_user),
+    ):
+        """Return all shipments eligible for the given template type +
+        per-bucket counts (list / sent_today / pending). The frontend
+        picks the rows it wants and posts them to /mark-sent."""
+        if ttype not in _BULK_FILTERS:
+            raise HTTPException(400, f"Unknown bulk template type '{ttype}'")
+        cfg = _BULK_FILTERS[ttype]
+        min_days = (
+            threshold_days if (threshold_days is not None and threshold_days >= 0)
+            else cfg["min_days"]
+        )
+        q = {
+            "user_id": current_user["id"],
+            "status": {"$in": cfg["statuses"]},
+        }
+        rows = await db.shipments.find(q, {"_id": 0}).sort("created_at", -1).to_list(5000)
+
+        eligible: List[Dict[str, Any]] = []
+        sent_today_count = 0
+        pending_count = 0
+        for r in rows:
+            since_iso = r.get(cfg["since_field"]) if cfg["since_field"] else None
+            days = _days_since_iso(since_iso) if since_iso else 0
+            r["_days_since"] = days
+            if cfg["since_field"] and days < min_days:
+                continue
+            if _msg_sent_today(r, ttype):
+                sent_today_count += 1
+                r["_msg_sent_today"] = True
+            else:
+                pending_count += 1
+                r["_msg_sent_today"] = False
+            # Surface the per-type log for UI ("last sent" badge).
+            r["_last_msg"] = _msg_log(r, ttype)
+            eligible.append(r)
+
+        return {
+            "ttype":      ttype,
+            "label":      cfg["label"],
+            "icon":       cfg["icon"],
+            "min_days":   min_days,
+            "statuses":   cfg["statuses"],
+            "shipments":  eligible,
+            "counts": {
+                "list":         len(eligible),
+                "sent_today":   sent_today_count,
+                "pending":      pending_count,
+            },
+        }
+
+    class BulkMarkSentRequest(BaseModel):
+        ttype: str
+        shipment_ids: List[str] = Field(default_factory=list)
+
+    @messaging_router.post("/me/bulk-message/mark-sent")
+    async def me_bulk_message_mark_sent(
+        payload: BulkMarkSentRequest,
+        current_user: Dict[str, Any] = Depends(_get_current_user),
+    ):
+        """Mark shipments as message-sent for the given template type.
+        Same-day repeat sends are blocked — the response splits ids into
+        `updated_ids` (counter advanced) and `skipped_ids` (already sent
+        today, idempotent). The frontend should iterate over
+        updated_ids for the actual share-intent loop."""
+        ttype = (payload.ttype or "").strip()
+        if ttype not in _BULK_FILTERS:
+            raise HTTPException(400, f"Unknown bulk template type '{ttype}'")
+        ids = [i for i in (payload.shipment_ids or []) if i]
+        if not ids:
+            return {"updated": 0, "skipped": 0, "updated_ids": [], "skipped_ids": []}
+        rows = await db.shipments.find(
+            {"user_id": current_user["id"], "id": {"$in": ids}},
+            {"_id": 0, "id": 1, "bulk_msg_log": 1, "dispatch_msg_status": 1, "dispatch_msg_sent_at": 1},
+        ).to_list(len(ids))
+        today = utcnow_iso()[:10]
+        updated_ids: List[str] = []
+        skipped_ids: List[str] = []
+        for r in rows:
+            log_entry = ((r.get("bulk_msg_log") or {}).get(ttype) or {})
+            sent_at = str(log_entry.get("sent_at") or "")
+            if log_entry.get("status") == "sent" and sent_at[:10] == today:
+                skipped_ids.append(r["id"])
+                continue
+            updated_ids.append(r["id"])
+        if updated_ids:
+            now = utcnow_iso()
+            set_ops: Dict[str, Any] = {
+                f"bulk_msg_log.{ttype}.status":  "sent",
+                f"bulk_msg_log.{ttype}.sent_at": now,
+            }
+            # Mirror to the legacy fields so the OLD per-type screens
+            # still see "sent" badges without a migration.
+            if ttype == "dispatch_confirmation":
+                set_ops["dispatch_msg_status"]  = "sent"
+                set_ops["dispatch_msg_sent_at"] = now
+            elif ttype == "delivery_confirmation":
+                set_ops["delivery_msg_status"]  = "sent"
+                set_ops["delivery_msg_sent_at"] = now
+            await db.shipments.update_many(
+                {"user_id": current_user["id"], "id": {"$in": updated_ids}},
+                {"$set": set_ops},
+            )
+        return {
+            "ttype":         ttype,
+            "updated":       len(updated_ids),
+            "skipped":       len(skipped_ids),
+            "updated_ids":   updated_ids,
+            "skipped_ids":   skipped_ids,
+        }
+
+    @messaging_router.post("/me/bulk-message/reset")
+    async def me_bulk_message_reset(
+        payload: BulkMarkSentRequest,
+        current_user: Dict[str, Any] = Depends(_get_current_user),
+    ):
+        """Roll a per-type message status back to 'pending' for retries."""
+        ttype = (payload.ttype or "").strip()
+        if ttype not in _BULK_FILTERS:
+            raise HTTPException(400, f"Unknown bulk template type '{ttype}'")
+        ids = [i for i in (payload.shipment_ids or []) if i]
+        if not ids:
+            return {"updated": 0}
+        unset_ops = {
+            f"bulk_msg_log.{ttype}.status":  "pending",
+            f"bulk_msg_log.{ttype}.sent_at": "",
+        }
+        if ttype == "dispatch_confirmation":
+            unset_ops["dispatch_msg_status"] = "pending"
+        elif ttype == "delivery_confirmation":
+            unset_ops["delivery_msg_status"] = "pending"
+        res = await db.shipments.update_many(
+            {"user_id": current_user["id"], "id": {"$in": ids}},
+            {"$set": unset_ops},
+        )
+        return {"updated": int(res.modified_count)}
+
+    @messaging_router.get("/me/bulk-message/dashboard-counts")
+    async def me_bulk_message_dashboard_counts(
+        current_user: Dict[str, Any] = Depends(_get_current_user),
+    ):
+        """One-shot counts for the dashboard 5-button grid — returns
+        {ttype: {label, icon, pending, list}} for every type."""
+        out: Dict[str, Any] = {}
+        for ttype, cfg in _BULK_FILTERS.items():
+            q = {
+                "user_id": current_user["id"],
+                "status":  {"$in": cfg["statuses"]},
+            }
+            rows = await db.shipments.find(
+                q, {"_id": 0, "bulk_msg_log": 1, cfg["since_field"] or "created_at": 1},
+            ).to_list(5000)
+            today = utcnow_iso()[:10]
+            list_n = 0
+            pending_n = 0
+            for r in rows:
+                if cfg["since_field"]:
+                    days = _days_since_iso(r.get(cfg["since_field"]))
+                    if days < cfg["min_days"]:
+                        continue
+                list_n += 1
+                log = ((r.get("bulk_msg_log") or {}).get(ttype) or {})
+                if log.get("status") == "sent" and str(log.get("sent_at") or "")[:10] == today:
+                    continue
+                pending_n += 1
+            out[ttype] = {
+                "label":   cfg["label"],
+                "icon":    cfg["icon"],
+                "list":    list_n,
+                "pending": pending_n,
+            }
+        return out
+
