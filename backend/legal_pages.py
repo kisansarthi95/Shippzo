@@ -85,7 +85,7 @@ async def privacy_policy() -> HTMLResponse:
 <h3>1.2 Shipment data you create</h3>
 <ul>
   <li>Customer names, addresses, phone numbers, order amounts, courier choice, status updates.</li>
-  <li>Photos / barcodes you scan with your camera (processed on-device or via Smart Paste OCR).</li>
+  <li>Photos / barcodes you scan with your camera.</li>
 </ul>
 <h3>1.3 Device & usage data</h3>
 <ul>
@@ -93,28 +93,31 @@ async def privacy_policy() -> HTMLResponse:
   <li>Push notification tokens issued by Apple / Google so we can send alerts you opt in to.</li>
   <li>Aggregate usage metrics (number of shipments created, WhatsApp messages sent) for billing & analytics.</li>
 </ul>
+<h3>1.4 How you provide shipment data</h3>
+<p>You may input shipment data manually, by pasting text (such as from messaging apps), uploading files, or connecting your Google Sheet. We do not access your messaging apps directly.</p>
 
 <h2>2. How We Use Your Data</h2>
 <ul>
   <li>To create courier labels, manage shipments, and sync with your own Google Sheet.</li>
   <li>To send transactional and operational notifications you have explicitly enabled (SLA breaches, daily digest, payment receipts).</li>
-  <li>To provide AI-powered features (Smart Paste OCR, WhatsApp template generation) — see Section 4.</li>
+  <li>To support features that automatically extract or format address and shipment details from text or images you provide.</li>
   <li>To maintain billing, enforce subscription tier limits, prevent abuse.</li>
   <li>To improve product reliability via aggregated, non-identifying analytics.</li>
 </ul>
 
 <h2>3. Sharing &amp; Third Parties</h2>
-<p>We do <strong>not</strong> sell your personal data. We share data only with the following sub-processors strictly to deliver the Service:</p>
+<p>We do not sell your personal data.</p>
+<p>We share data only with essential service providers required to operate the app:</p>
 <ul>
-  <li><strong>Google Workspace APIs</strong> — when <em>you</em> connect your own Google Sheet for auto-sync.</li>
-  <li><strong>Razorpay</strong> — payment processing (we never store full card details).</li>
-  <li><strong>Apple Push / Firebase Cloud Messaging</strong> — push notification delivery.</li>
-  <li><strong>OpenAI / Google Gemini</strong> — Smart Paste OCR + WhatsApp template generation. Only the address text or template prompts you submit are forwarded; never your full account or shipment list.</li>
-  <li><strong>Tesseract OCR</strong> — runs locally on our servers; data is not transmitted to any third party.</li>
+  <li><strong>Google services</strong> &mdash; when you choose to connect your Google Sheet for data sync.</li>
+  <li><strong>Push notification services (Apple / Google)</strong> &mdash; to deliver notifications you opt in to.</li>
+  <li><strong>Payment providers</strong> &mdash; only when you make payments within the app (if applicable).</li>
 </ul>
+<p>We share only the minimum data necessary to provide these features.</p>
 
-<h2>4. AI Processing</h2>
-<p>When you use Smart Paste, the address text or photo you paste is sent to a Large Language Model (Gemini 2.5 Flash by default) for parsing. We do not train any model on your data and we do not retain prompts beyond the immediate response.</p>
+<h2>4. Automated Processing</h2>
+<p>Some features use automated processing to extract and format address or shipment details from text or images you provide.</p>
+<p>This processing may be performed on-device or through secure services. We do not use your data to train any models.</p>
 
 <h2>5. Data Retention &amp; Deletion</h2>
 <ul>
@@ -125,16 +128,16 @@ async def privacy_policy() -> HTMLResponse:
 
 <h2>6. Permissions</h2>
 <ul>
-  <li><strong>Camera</strong> — to scan addresses and barcodes; photos are processed locally and never uploaded unless you explicitly send them through Smart Paste.</li>
-  <li><strong>Photos</strong> — to attach images for label printing; shown as a system picker.</li>
-  <li><strong>Notifications</strong> — only after you tap &ldquo;Allow&rdquo;; you can revoke in OS settings or in-app Notifications screen.</li>
+  <li><strong>Camera</strong> &mdash; to scan addresses and barcodes; photos are used only as you direct inside the app.</li>
+  <li><strong>Photos</strong> &mdash; to attach images for label printing; shown as a system picker.</li>
+  <li><strong>Notifications</strong> &mdash; only after you tap &ldquo;Allow&rdquo;; you can revoke in OS settings or in-app Notifications screen.</li>
 </ul>
 
 <h2>7. Children</h2>
 <p>{APP_NAME} is intended for businesses and adults age 18+. We do not knowingly collect data from children.</p>
 
 <h2>8. Security</h2>
-<p>All connections are TLS-encrypted in transit. Passwords are bcrypt-hashed. Server access is limited to authorised maintainers.</p>
+<p>All connections are encrypted in transit. Passwords are securely hashed. Access to systems handling your data is restricted to authorised personnel.</p>
 
 <h2>9. Your Rights</h2>
 <p>You can access, correct, export, or delete your data anytime by emailing <a href="mailto:{SUPPORT}">{SUPPORT}</a>. India PDP, EU GDPR, and California CCPA rights are honoured.</p>
