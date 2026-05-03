@@ -9571,3 +9571,103 @@ agent_communication:
 
         NEXT: build Phase G5 dashboard "Action Required" widget
         (frontend) and Phase G4 customer-message auto-trigger cron.
+
+# ──────────────────────────────────────────────────────────────────
+# Phase G3 — SLA Engine + Alert Dispatch (added 2026-05-03)
+# ──────────────────────────────────────────────────────────────────
+backend:
+  - task: "Phase G3 — SLA Engine + Alert Dispatch"
+    implemented: true
+    working: true
+    file: "/app/backend/sla_engine.py + /app/backend/server.py + /app/backend/stage_rules.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "main"
+        -comment: |
+            sla_engine.scan_all_users() reads stage_rules + every
+            shipment, applies SLA + cooldown + escalation, writes
+            /sla_alerts collection. Background _sla_scan_worker boots
+            with 60s grace then loops every scan_interval_minutes
+            (clamped 15-240). New endpoints:
+              POST /api/admin/sla/run-now
+              GET  /api/admin/sla/alerts (filters: stage, dismissed, user_id)
+              GET  /api/admin/sla/summary
+              POST /api/admin/sla/alerts/{id}/dismiss
+              POST /api/admin/sla/alerts/dismiss-bulk
+              GET  /api/me/sla/alerts (banner-mute aware)
+            Smoke test /tmp/test_sla_engine.py: 88 alerts raised in
+            first scan, 0 in second (cooldown ✓), bulk + single
+            dismiss ✓, /me banner mute ✓.
+
+frontend:
+  - task: "Phase G3 — Admin SLA Engine settings + Alerts list"
+    implemented: true
+    working: "NA"
+    file: "/app/frontend/app/admin/stage-rules.tsx + /app/frontend/app/admin/sla-alerts.tsx + /app/frontend/lib/api.ts"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: |
+            Stage Rules screen now has an "⚙️ SLA Engine Settings"
+            block with: master switch, scan interval chips
+            (15m/30m/1h/2h/4h), default cooldown chips
+            (6h/12h/24h/2d/3d/7d), display channel toggles (list,
+            banner, push), Run-now button + last-run timestamp, link
+            to alerts list. New /admin/sla-alerts screen lists every
+            breach with open/resolved tabs, stage filter chips,
+            individual + bulk dismiss, WhatsApp deep-link to alert
+            recipient, refresh control. Needs e2e UI verification.
+
+test_plan:
+  current_focus:
+    - "Phase G3 — Admin SLA Engine settings + Alerts list"
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"
+
+agent_communication:
+    -agent: "main"
+    -message: |
+        Phase G3 frontend ready for end-to-end UI verification.
+
+        TEST CREDENTIALS (already in /app/memory/test_credentials.md):
+          Email: admin@test.com
+          Password: Admin@12345
+
+        TEST SCRIPT (mobile width 390x844):
+          1. Login as admin → Dashboard.
+          2. Navigate to Admin → Stage Rules
+             (drawer or admin menu — path /admin/stage-rules).
+          3. Scroll past the 6 stage rows down to the new
+             "⚙️ SLA Engine Settings" card. Verify:
+             • Master toggle visible at top-right.
+             • Scan interval chips (15m / 30m / 1h / 2h / 4h) — tap 30m.
+             • Default cooldown chips (6h / 12h / 24h / 2d / 3d / 7d) — tap 12h.
+             • Three display-channel toggles: List, Banner, Push.
+             • Verify "Last scan" line shows a recent timestamp + count.
+             • Tap "Run scan now" → expect Alert popup
+               "Scan complete · Users scanned: 7 · New alerts: 0".
+             • Tap "View open SLA alerts →" — should navigate to /admin/sla-alerts.
+          4. On /admin/sla-alerts:
+             • Verify summary card shows 87 open alerts (1 was dismissed in smoke test).
+             • Open / Resolved tab toggle works.
+             • Stage filter chips reflect summary counts.
+             • A card has stage badge, customer name, days-overdue,
+               WhatsApp button (green), Dismiss button.
+             • Tap Dismiss on the first card → it disappears, total
+               count decrements.
+             • Toggle to "Resolved" tab → dismissed alerts appear.
+          5. Back on Stage Rules:
+             • Toggle "Banner" channel OFF + Save changes → expect
+               success toast. Reload page; verify state persisted.
+          6. Logout / login as user2@test.com (User@12345) → make sure
+             /me/sla/alerts banner-disabled scenario doesn't break the
+             dashboard (no crash, no banner shown).
+
+        ALL FLOWS MUST PASS WITHOUT CRASHES.
