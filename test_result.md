@@ -9924,3 +9924,67 @@ agent_communication:
             "By status" bar chart with all 10 statuses sorted by count.
 
         REMAINING BACKLOG: Play Store readiness, server.py refactor.
+
+    -agent: "main"
+    -message: |
+        Phase J — Play Store / App Store Readiness COMPLETE.
+
+        APP.JSON CHANGES:
+          - name: "Courier Label Manager" → "Shippzo"
+          - slug: "frontend" → "shippzo"
+          - scheme: "frontend" → "shippzo" (deep links shippzo://)
+          - ios.bundleIdentifier: "com.shippzo.app" (was missing — Apple required)
+          - ios.buildNumber: "1" (was missing — App Store required)
+          - android.package: "com.shippzo.app" (was missing — Play Store required)
+          - android.versionCode: 1 (was missing — Play Store required)
+          - ios.infoPlist.ITSAppUsesNonExemptEncryption: false (skips
+            the App Store export-compliance question)
+          - ios.infoPlist.LSApplicationQueriesSchemes: now includes
+            whatsapp / tel / mailto so canOpenURL() works correctly
+          - extra.storeListingName: "Shippzo - Courier Labels"
+          - extra.privacyPolicyUrl: "https://shippzo.com/privacy"
+          - extra.termsUrl: "https://shippzo.com/terms"
+          - extra.supportEmail: "shippzo.support@gmail.com"
+          - extra.appCategory: "BUSINESS"
+          - plugins: added expo-notifications block with icon/color/
+            defaultChannel="default" — needed for Android FCM
+          - android.permissions: removed deprecated READ_EXTERNAL_STORAGE,
+            added INTERNET + ACCESS_NETWORK_STATE (auto-granted but
+            Play Store requires declaration).
+          - android.blockedPermissions: explicitly blocks RECORD_AUDIO,
+            ACCESS_FINE_LOCATION, ACCESS_COARSE_LOCATION, READ_CONTACTS,
+            WRITE_EXTERNAL_STORAGE so Expo libraries don't accidentally
+            request them on Play Store review.
+
+        SETTINGS UI CHANGES:
+          - About / Help & Support / Legal sections now read
+            APP_NAME / SUPPORT_EMAIL / PRIVACY_URL / TERMS_URL from
+            Constants.expoConfig.extra instead of hardcoded values.
+            Real Play Store / App Store builds will show the correct
+            "Shippzo" name & shippzo.support@gmail.com mailto link
+            without further code changes.
+          - Privacy + Terms rows changed from Alert.alert() to
+            Linking.openURL() so they actually open the public URLs
+            (Play Store reviews verify a working policy link).
+
+        VALIDATED:
+          - app.json structure parsed cleanly by Expo bundler.
+          - Web preview still shows cached "Courier Label Manager"
+            because the metro web bundle was built before the change;
+            iOS/Android Expo Go reload + EAS production builds will
+            pick up the new metadata automatically.
+
+        REMAINING BACKLOG: server.py refactor into /routers/ (P2 cleanup).
+
+        PUBLISH CHECKLIST FOR USER (manual steps that can't be auto-
+        scripted):
+          1. Add EAS project ID once via `eas build:configure` in the
+             /app/frontend dir. This populates expo.extra.eas.projectId
+             which fixes the push-token "No projectId found" warning
+             that's currently logged by Expo Go.
+          2. Upload privacy policy + terms HTML to https://shippzo.com.
+          3. Generate a Play Store ASO listing using the
+             extra.storeListingName.
+          4. Run `eas build --platform android --profile production`
+             and `eas build --platform ios --profile production`.
+          5. Upload the AAB / IPA to Play Console + App Store Connect.

@@ -26,6 +26,24 @@ import { Api, Courier, Settings as SettingsT, SenderAddress, SheetPreview, SHEET
 import { useFeatureFlag } from "../../lib/feature_flags";
 import { colors } from "../../lib/theme";
 import { useAuth } from "../../lib/auth";
+import Constants from "expo-constants";
+
+// App-level metadata pulled from app.json `extra` block. Used by the
+// About / Help & Support / Legal sections so the published Play Store
+// + App Store builds always show the correct support email + policy
+// URLs without code edits.
+const APP_EXTRA = (Constants.expoConfig?.extra || {}) as {
+  storeListingName?: string;
+  privacyPolicyUrl?: string;
+  termsUrl?: string;
+  supportEmail?: string;
+  supportPhone?: string;
+};
+const APP_NAME    = Constants.expoConfig?.name || "Shippzo";
+const APP_VERSION = Constants.expoConfig?.version || "1.0.0";
+const SUPPORT_EMAIL = APP_EXTRA.supportEmail || "shippzo.support@gmail.com";
+const PRIVACY_URL   = APP_EXTRA.privacyPolicyUrl || "https://shippzo.com/privacy";
+const TERMS_URL     = APP_EXTRA.termsUrl || "https://shippzo.com/terms";
 
 /**
  * CONTENT BUDGET SYSTEM
@@ -2956,11 +2974,11 @@ export default function SettingsScreen() {
           <Section title="About" icon="information-circle-outline">
             <View style={styles.aboutRow}>
               <Text style={styles.aboutKey}>App</Text>
-              <Text style={styles.aboutVal}>Courier Label Manager</Text>
+              <Text style={styles.aboutVal}>{APP_EXTRA.storeListingName || APP_NAME}</Text>
             </View>
             <View style={styles.aboutRow}>
               <Text style={styles.aboutKey}>Version</Text>
-              <Text style={styles.aboutVal}>1.0.0</Text>
+              <Text style={styles.aboutVal}>{APP_VERSION}</Text>
             </View>
             <View style={styles.aboutRow}>
               <Text style={styles.aboutKey}>Build</Text>
@@ -2972,7 +2990,11 @@ export default function SettingsScreen() {
             <TouchableOpacity
               testID="about-contact-support"
               style={styles.aboutLinkRow}
-              onPress={() => Linking.openURL("mailto:support@example.com?subject=Courier%20Label%20Manager%20Support")}
+              onPress={() =>
+                Linking.openURL(
+                  `mailto:${SUPPORT_EMAIL}?subject=${encodeURIComponent(APP_NAME + " support")}`,
+                )
+              }
             >
               <Ionicons name="mail-outline" size={18} color={colors.primary} />
               <Text style={styles.aboutLinkText}>Contact Support</Text>
@@ -3002,20 +3024,20 @@ export default function SettingsScreen() {
             <TouchableOpacity
               testID="about-privacy"
               style={styles.aboutLinkRow}
-              onPress={() => Alert.alert("Privacy Policy", "Your data stays in your account. We don't sell or share with third parties.")}
+              onPress={() => Linking.openURL(PRIVACY_URL)}
             >
               <Ionicons name="lock-closed-outline" size={18} color={colors.primary} />
               <Text style={styles.aboutLinkText}>Privacy Policy</Text>
-              <Ionicons name="chevron-forward" size={16} color="#94A3B8" />
+              <Ionicons name="open-outline" size={16} color="#94A3B8" />
             </TouchableOpacity>
             <TouchableOpacity
               testID="about-terms"
               style={styles.aboutLinkRow}
-              onPress={() => router.push("/refund-policy?tab=terms" as any)}
+              onPress={() => Linking.openURL(TERMS_URL)}
             >
               <Ionicons name="document-text-outline" size={18} color={colors.primary} />
               <Text style={styles.aboutLinkText}>Terms of Service</Text>
-              <Ionicons name="chevron-forward" size={16} color="#94A3B8" />
+              <Ionicons name="open-outline" size={16} color="#94A3B8" />
             </TouchableOpacity>
             <TouchableOpacity
               testID="about-refund"
