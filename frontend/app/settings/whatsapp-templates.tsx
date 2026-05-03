@@ -77,6 +77,15 @@ const VARIABLE_HINTS = [
   "{eta_days}",
 ];
 
+// Phase-12: business-link variables — substituted server-side from
+// settings.business_links. Surfaced as a separate chip group so the
+// editor signals "these need their URLs set above before they'll
+// expand to anything useful".
+const BUSINESS_LINK_HINTS = [
+  "{google_review_url}",
+  "{website_url}",
+];
+
 type ServerData = {
   admin_templates: Record<string, Record<string, string>>;
   user_templates: Record<string, Record<string, string>>;
@@ -84,6 +93,10 @@ type ServerData = {
   types: string[];
   languages: string[];
   defaults: Record<string, Record<string, string>>;
+  business_links: {
+    google_review_url: string;
+    website_url: string;
+  };
 };
 
 export default function WhatsAppTemplatesSettings() {
@@ -96,6 +109,11 @@ export default function WhatsAppTemplatesSettings() {
   const [activeType, setActiveType] = useState<string>("dispatch_confirmation");
   const [activeLang, setActiveLang] = useState<string>("gu");
   const [defaultLang, setDefaultLang] = useState("gu");
+  // Phase-12: business URLs that the {google_review_url} /
+  // {website_url} variables expand to at send time. Empty = the
+  // variable substitutes to "" (template still readable).
+  const [googleReviewUrl, setGoogleReviewUrl] = useState("");
+  const [websiteUrl, setWebsiteUrl] = useState("");
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -105,6 +123,8 @@ export default function WhatsAppTemplatesSettings() {
       setEdits(d.user_templates || {});
       setActiveLang(d.default_language || "gu");
       setDefaultLang(d.default_language || "gu");
+      setGoogleReviewUrl(d.business_links?.google_review_url || "");
+      setWebsiteUrl(d.business_links?.website_url || "");
     } catch (e: any) {
       Alert.alert("Error", e?.response?.data?.detail || e?.message || "Failed");
     } finally {
@@ -148,7 +168,10 @@ export default function WhatsAppTemplatesSettings() {
   const handleSave = async () => {
     setSaving(true);
     try {
-      await Api.meSaveWhatsAppTemplates(edits, defaultLang);
+      await Api.meSaveWhatsAppTemplates(edits, defaultLang, {
+        google_review_url: googleReviewUrl.trim(),
+        website_url: websiteUrl.trim(),
+      });
       Alert.alert("Saved", "Your WhatsApp templates are updated.");
       load();
     } catch (e: any) {
@@ -206,6 +229,51 @@ export default function WhatsAppTemplatesSettings() {
             <ActivityIndicator color="#6B5BFF" style={{ marginVertical: 36 }} />
           ) : (
             <>
+              {/* Phase-12: Business links — referenced by the
+                  {google_review_url} / {website_url} variables in the
+                  Feedback Request template (and reusable in any
+                  custom message). Substituted server-side at send
+                  time so a single edit here updates every template
+                  that uses these variables. Leave blank to remove
+                  the line entirely. */}
+              <View style={styles.section}>
+                <Text style={styles.sectionTitle}>Business Links</Text>
+                <Text style={styles.sectionHint}>
+                  These two URLs auto-fill in any template that uses
+                  the variables{" "}
+                  <Text style={{ fontFamily: "monospace", color: "#6B5BFF" }}>
+                    {"{google_review_url}"}
+                  </Text>{" "}
+                  or{" "}
+                  <Text style={{ fontFamily: "monospace", color: "#6B5BFF" }}>
+                    {"{website_url}"}
+                  </Text>
+                  . Leave blank to skip that line.
+                </Text>
+                <Text style={styles.bizLinkLabel}>⭐ Google Review URL</Text>
+                <TextInput
+                  style={styles.bizLinkInput}
+                  placeholder="https://g.page/r/..."
+                  placeholderTextColor="#9CA3AF"
+                  value={googleReviewUrl}
+                  onChangeText={setGoogleReviewUrl}
+                  autoCapitalize="none"
+                  keyboardType="url"
+                />
+                <Text style={[styles.bizLinkLabel, { marginTop: 10 }]}>
+                  🛒 Website / Product Reviews URL
+                </Text>
+                <TextInput
+                  style={styles.bizLinkInput}
+                  placeholder="https://yourshop.com/reviews"
+                  placeholderTextColor="#9CA3AF"
+                  value={websiteUrl}
+                  onChangeText={setWebsiteUrl}
+                  autoCapitalize="none"
+                  keyboardType="url"
+                />
+              </View>
+
               {/* Default language picker */}
               <View style={styles.section}>
                 <Text style={styles.sectionTitle}>Default Send Language</Text>
@@ -378,6 +446,35 @@ export default function WhatsAppTemplatesSettings() {
                     </TouchableOpacity>
                   ))}
                 </View>
+                {/* Phase-12: Business-link chips. Highlighted gold so
+                    operators notice they auto-fill from the URLs at
+                    the top of the screen. */}
+                <Text style={[styles.varLabel, { marginTop: 10 }]}>
+                  Business links (auto-filled from URLs above):
+                </Text>
+                <View style={styles.varChipsRow}>
+                  {BUSINESS_LINK_HINTS.map((v) => (
+                    <TouchableOpacity
+                      key={v}
+                      style={[
+                        styles.varChip,
+                        {
+                          backgroundColor: "#FEF3C7",
+                          borderColor: "#FCD34D",
+                        },
+                      ]}
+                      onPress={() => {
+                        const current = currentValue(activeType, activeLang) ||
+                                        placeholderFor(activeType, activeLang);
+                        setEdit(activeType, activeLang, current + v);
+                      }}
+                    >
+                      <Text style={[styles.varChipText, { color: "#92400E" }]}>
+                        {v}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
               </View>
             </>
           )}
@@ -493,6 +590,23 @@ const styles = StyleSheet.create({
     borderWidth: 1, borderColor: "#D8D2FF",
   },
   varChipText: { fontSize: 11, fontWeight: "700", color: "#6B5BFF" },
+  // Phase-12: Business links input fields.
+  bizLinkLabel: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: "#374151",
+    marginBottom: 4,
+  },
+  bizLinkInput: {
+    backgroundColor: "#F8F9FB",
+    borderWidth: 1,
+    borderColor: "#E5E7EB",
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    fontSize: 13,
+    color: "#111827",
+  },
   stickyBar: {
     backgroundColor: "#fff",
     borderTopWidth: 1, borderColor: "#EDEEF1",

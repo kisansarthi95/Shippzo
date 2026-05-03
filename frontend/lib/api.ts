@@ -783,14 +783,23 @@ export const Api = {
         types: string[];
         languages: string[];
         defaults: Record<string, Record<string, string>>;
+        business_links: {
+          google_review_url: string;
+          website_url: string;
+        };
       }>("/me/whatsapp-templates")
       .then((r) => r.data),
   meSaveWhatsAppTemplates: (
     templates: Record<string, Record<string, string>>,
     default_language?: string,
+    business_links?: { google_review_url?: string; website_url?: string },
   ) =>
     api
-      .put("/me/whatsapp-templates", { templates, default_language })
+      .put("/me/whatsapp-templates", {
+        templates,
+        default_language,
+        business_links,
+      })
       .then((r) => r.data),
   adminWhatsAppTemplates: () =>
     api

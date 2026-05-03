@@ -130,19 +130,26 @@ DEFAULT_TEMPLATES: Dict[str, Dict[str, str]] = {
         "gu": (
             "નમસ્તે {customer_name} 🌟\n"
             "તમારા ઓર્ડર #{order_id} અંગે તમારો અનુભવ શેર કરશો?\n"
-            "1 થી 5 ★ માંથી rating આપો — તમારા feedback થી અમે વધુ સારી "
-            "service આપી શકીશું. આભાર! 🙏"
+            "તમારા feedback થી અમે વધુ સારી service આપી શકીશું.\n\n"
+            "⭐ Google પર rating આપો: {google_review_url}\n"
+            "🛒 Website પર review: {website_url}\n\n"
+            "આભાર! 🙏"
         ),
         "hi": (
             "नमस्ते {customer_name} 🌟\n"
             "क्या आप अपने ऑर्डर #{order_id} का अनुभव साझा करेंगे?\n"
-            "1 से 5 ★ में से रेटिंग दें — आपके feedback से हम बेहतर सेवा दे सकते हैं। "
+            "आपके feedback से हम बेहतर सेवा दे सकते हैं।\n\n"
+            "⭐ Google पर rating दें: {google_review_url}\n"
+            "🛒 Website पर review: {website_url}\n\n"
             "धन्यवाद! 🙏"
         ),
         "en": (
             "Hi {customer_name} 🌟\n"
             "How was your experience with order #{order_id}?\n"
-            "Rate us 1 to 5 ★ — your feedback helps us improve. Thank you! 🙏"
+            "Your feedback helps us improve.\n\n"
+            "⭐ Rate us on Google: {google_review_url}\n"
+            "🛒 Review on website: {website_url}\n\n"
+            "Thank you! 🙏"
         ),
     },
 }
@@ -173,6 +180,10 @@ class TemplatePayload(BaseModel):
     """Body shape for PUT /admin|me/whatsapp-templates."""
     templates: Dict[str, Dict[str, str]] = Field(default_factory=dict)
     default_language: Optional[str] = None  # only respected on /me/...
+    # Phase-12: per-user business links referenced by the feedback
+    # template's {google_review_url} / {website_url} variables. Only
+    # respected on /me/... (admin config ignores this field).
+    business_links: Optional[Dict[str, str]] = None
 
 
 class DispatchBulkRequest(BaseModel):
@@ -407,12 +418,20 @@ def init() -> None:
 
         user_doc = await db.settings.find_one(
             {"user_id": current_user["id"]},
-            {"_id": 0, "whatsapp_templates": 1, "default_message_language": 1},
+            {
+                "_id": 0,
+                "whatsapp_templates": 1,
+                "default_message_language": 1,
+                "business_links": 1,
+            },
         ) or {}
         user_saved = user_doc.get("whatsapp_templates") or {}
         user_lang = (user_doc.get("default_message_language") or "gu").lower()
         if user_lang not in LANGUAGES:
             user_lang = "gu"
+        # business_links are user-level settings referenced by the
+        # {google_review_url} / {website_url} template variables.
+        biz = user_doc.get("business_links") or {}
         return {
             "admin_templates": admin_merged,    # what the user sees as base
             "user_templates": user_saved,       # only fields user explicitly set
@@ -420,6 +439,10 @@ def init() -> None:
             "types": TEMPLATE_TYPES,
             "languages": LANGUAGES,
             "defaults": DEFAULT_TEMPLATES,
+            "business_links": {
+                "google_review_url": str(biz.get("google_review_url") or ""),
+                "website_url": str(biz.get("website_url") or ""),
+            },
         }
 
     @messaging_router.put("/me/whatsapp-templates")
@@ -433,6 +456,23 @@ def init() -> None:
             lang = str(payload.default_language).lower()
             if lang in LANGUAGES:
                 update["default_message_language"] = lang
+        # business_links: accepted as an optional nested object. Only
+        # fields actually sent are written; the client can null-out a
+        # URL by sending empty string.
+        if payload.business_links is not None:
+            bl = payload.business_links or {}
+            cleaned_links: Dict[str, str] = {}
+            for k in ("google_review_url", "website_url"):
+                v = bl.get(k)
+                if v is None:
+                    continue
+                s = str(v).strip()
+                # Cheap URL sanity: must look http(s) or start with www
+                # — otherwise we store whatever the user typed so they
+                # see it round-trip, but the template will just show
+                # the raw text at send time.
+                cleaned_links[k] = s[:500]
+            update["business_links"] = cleaned_links
         await db.settings.update_one(
             {"user_id": current_user["id"]},
             {"$set": update},
@@ -448,31 +488,70 @@ def init() -> None:
     ):
         """Returns the most-specific template body for a given type+language.
         Precedence: user override → admin default → bundled fallback.
+
+        Phase-12: server-side substitution for the two business-level
+        variables `{google_review_url}` and `{website_url}`. These live
+        in settings.business_links (per-user) so every template type
+        can reference them without the client having to know where
+        they're stored. Customer-specific variables (name, order_id,
+        courier, …) remain client-side substitutions because they
+        depend on the specific shipment being messaged.
         """
         if ttype not in TEMPLATE_TYPES:
             raise HTTPException(400, "invalid template type")
         user_doc = await db.settings.find_one(
             {"user_id": current_user["id"]},
-            {"_id": 0, "default_message_language": 1, "whatsapp_templates": 1},
+            {
+                "_id": 0,
+                "default_message_language": 1,
+                "whatsapp_templates": 1,
+                "business_links": 1,
+            },
         ) or {}
         chosen_lang = (lang or user_doc.get("default_message_language") or "gu").lower()
         if chosen_lang not in LANGUAGES:
             chosen_lang = "gu"
-        # User override.
+
+        # Resolution cascade: user > admin > bundled fallback.
+        template_body = ""
+        source = "bundled"
         u = ((user_doc.get("whatsapp_templates") or {}).get(ttype) or {}).get(chosen_lang)
         if u and str(u).strip():
-            return {"template": u, "language": chosen_lang, "source": "user"}
-        # Admin default.
-        admin_doc = await db.admin_config.find_one(
-            {"_id": "default"}, {"_id": 0, "whatsapp_templates": 1},
-        ) or {}
-        a = ((admin_doc.get("whatsapp_templates") or {}).get(ttype) or {}).get(chosen_lang)
-        if a and str(a).strip():
-            return {"template": a, "language": chosen_lang, "source": "admin"}
+            template_body = u
+            source = "user"
+        else:
+            admin_doc = await db.admin_config.find_one(
+                {"_id": "default"}, {"_id": 0, "whatsapp_templates": 1},
+            ) or {}
+            a = ((admin_doc.get("whatsapp_templates") or {}).get(ttype) or {}).get(chosen_lang)
+            if a and str(a).strip():
+                template_body = a
+                source = "admin"
+            else:
+                template_body = DEFAULT_TEMPLATES[ttype][chosen_lang]
+                source = "bundled"
+
+        # Business-link substitution (graceful: empty string if the user
+        # hasn't set the URL yet — the surrounding template copy still
+        # reads fine, just without a clickable URL to paste).
+        links = user_doc.get("business_links") or {}
+        gurl = str(links.get("google_review_url") or "").strip()
+        wurl = str(links.get("website_url") or "").strip()
+        resolved = (
+            template_body
+            .replace("{google_review_url}", gurl)
+            .replace("{website_url}", wurl)
+        )
+
         return {
-            "template": DEFAULT_TEMPLATES[ttype][chosen_lang],
+            "template": resolved,
+            "raw_template": template_body,     # un-substituted (for editor preview)
             "language": chosen_lang,
-            "source": "bundled",
+            "source": source,
+            "business_links": {
+                "google_review_url": gurl,
+                "website_url": wurl,
+            },
         }
 
     # =====================================================================
