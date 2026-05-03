@@ -9988,3 +9988,100 @@ agent_communication:
           4. Run `eas build --platform android --profile production`
              and `eas build --platform ios --profile production`.
           5. Upload the AAB / IPA to Play Console + App Store Connect.
+
+  - task: "Phase I.2 — Unified Analytics endpoint (per-user + admin platform) with filters"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: |
+          Added a new `GET /api/analytics/overview` endpoint accessible
+          to ALL authenticated users (replaces admin-only legacy).
+          Query params: range (today/7d/30d/90d/all), scope (mine|platform),
+          courier, status, payment_mode, state. Backend enforces is_admin
+          for scope=platform. Returns KPI cards (total/delivered/pending/
+          revenue split by COD vs Prepaid), 30-day trend, by_status,
+          by_courier, by_payment, by_state, by_city aggregations, and
+          filter_options (couriers/statuses/states populated from data).
+          Admin scope additionally returns top 5 users + SLA breach count.
+          Legacy `/api/admin/analytics/overview` retained for back-compat.
+
+          NEEDS BACKEND TESTING:
+            - GET /api/analytics/overview with default scope=mine returns
+              user-scoped data with KPI/breakdowns.
+            - scope=platform requires is_admin (403 for regular users).
+            - Filter params (courier/status/payment_mode/state) properly
+              narrow KPI, by_status, by_courier, by_payment, by_state aggs.
+            - Revenue calculation sums shipment.amount correctly bucketed
+              by payment_mode (COD vs PREPAID).
+            - filter_options.couriers/statuses/states populated from
+              user's own data when scope=mine.
+        -working: true
+        -agent: "testing"
+        -comment: |
+            All 54/54 assertions passed via /app/backend_test.py against
+            https://logistics-hub-740.preview.emergentagent.com/api.
+
+            Verified end-to-end:
+            1. AUTH: GET /api/analytics/overview without bearer → 401.
+            2. scope=mine (regular user user2@test.com):
+                 - 200, scope="mine", admin field NOT present.
+                 - kpi.total>=0; kpi.delivered + kpi.pending == kpi.total.
+                 - shipments.by_status is dict.
+                 - filter_options.couriers/statuses/states all lists.
+                 - trend_30d has exactly 30 entries each shaped {date, count}.
+            3. scope=platform as regular user → 403 with detail
+               "Platform scope is admin-only." (mentions admin).
+            4. scope=mine as admin (admin@test.com) → 200, scope=mine,
+               admin field NOT present (correct — only added on platform).
+            5. scope=platform as admin → 200, scope=platform, admin field
+               present with users.{total,today} ints, top_users list, sla_open int.
+            6. range filter (today / 7d / 90d / all) all → 200; range echoed;
+               since is ISO timestamp for non-"all", null for "all".
+            7. Filter combinations (admin scope=mine, range=all):
+                 - courier=DTDC → by_courier only contains "DTDC";
+                   filters.courier echoed.
+                 - status=Shipped → by_status keys subset of {"Shipped"}.
+                 - payment_mode=COD → by_payment.PREPAID == 0.
+                 - state=Delhi → by_state only contains "Delhi"
+                   (case-insensitive backend regex).
+            8. Revenue validity: kpi.revenue == revenue_cod + revenue_prepaid
+               + Other (diff>=0); all 6 kpi numeric fields are ints (no
+               NaN/null).
+            9. Legacy /api/admin/analytics/overview: admin → 200,
+               regular user → 403. No regression.
+
+            No issues found. Endpoint is production-ready.
+
+metadata:
+  test_sequence: 0
+  run_ui: false
+
+test_plan:
+  current_focus:
+    - "Phase I.2 — Unified Analytics endpoint (per-user + admin platform) with filters"
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"
+
+agent_communication:
+    -agent: "main"
+    -comment: |
+      Phase I.2 backend complete. Added unified /api/analytics/overview
+      endpoint that scopes data by user (default) or platform (admin only).
+      Supports 4 filter params (courier/status/payment_mode/state) and
+      returns rich aggregates including revenue split by payment mode.
+      Frontend `/app/analytics.tsx` consumes it; `/admin/analytics.tsx`
+      now redirects to it. Dashboard button visible to ALL users (not
+      just admin) — admins toggle "My data" / "Platform Total" inside
+      the screen. Please test the new endpoint:
+        1. As regular user → scope=mine returns own data; scope=platform → 403
+        2. As admin → both scopes work
+        3. Filter combinations narrow aggregates correctly
+        4. Revenue sums non-zero when shipments have amount + payment_mode
+

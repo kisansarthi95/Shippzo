@@ -1743,6 +1743,24 @@ export default function Dashboard() {
                   no breaches OR admin has muted the banner channel. */}
               <SlaActionWidget isAdmin={isAdmin} />
 
+              {/* Phase I.2 — Analytics Dashboard.
+                  Visible to ALL users — own data by default; admins
+                  get a "Platform Total" toggle inside the screen. */}
+              <View style={styles.bulkMsgHeader}>
+                <Text style={styles.bulkMsgTitle}>📊 Analytics & Reports</Text>
+                <Text style={styles.bulkMsgSub}>
+                  Orders, revenue, courier-wise & state-wise breakdowns
+                </Text>
+              </View>
+              <ActionPill
+                testID="quick-analytics"
+                icon="stats-chart"
+                label="📈 Open Analytics Dashboard"
+                onPress={() => router.push("/analytics" as any)}
+                tone="violet"
+                chevron
+              />
+
               {/* Phase I — Admin-only quick links to power tools.
                   Hidden for regular users so the dashboard stays
                   uncluttered. */}
@@ -1750,16 +1768,8 @@ export default function Dashboard() {
                 <>
                   <View style={styles.bulkMsgHeader}>
                     <Text style={styles.bulkMsgTitle}>🛠 Admin Tools</Text>
-                    <Text style={styles.bulkMsgSub}>Live KPIs, SLA breaches, stage rules, sheet sync</Text>
+                    <Text style={styles.bulkMsgSub}>SLA breaches, stage rules, sheet sync</Text>
                   </View>
-                  <ActionPill
-                    testID="quick-admin-analytics"
-                    icon="stats-chart"
-                    label="📈 Analytics Dashboard"
-                    onPress={() => router.push("/admin/analytics" as any)}
-                    tone="violet"
-                    chevron
-                  />
                   <ActionPill
                     testID="quick-admin-sla-alerts"
                     icon="alert-circle"

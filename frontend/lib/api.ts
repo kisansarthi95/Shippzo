@@ -591,8 +591,53 @@ export const Api = {
     api.put<NotificationPrefs>("/me/notification-prefs", prefs).then((r) => r.data),
 
   // ───────────────────────────────────────────────────────────────────
-  // Phase I — Admin Analytics Dashboard
+  // Phase I.2 — Unified Analytics (per-user + admin platform)
   // ───────────────────────────────────────────────────────────────────
+  analyticsOverview: (params: {
+    range?: "today" | "7d" | "30d" | "90d" | "all";
+    scope?: "mine" | "platform";
+    courier?: string;
+    status?: string;
+    payment_mode?: string;
+    state?: string;
+  } = {}) =>
+    api.get<{
+      range: string;
+      scope: "mine" | "platform";
+      since: string | null;
+      filters: { courier: string; status: string; payment_mode: string; state: string };
+      filter_options: { couriers: string[]; statuses: string[]; states: string[] };
+      kpi: {
+        total: number; delivered: number; pending: number;
+        revenue: number; revenue_cod: number; revenue_prepaid: number;
+      };
+      shipments: {
+        total: number;
+        by_status: Record<string, number>;
+        by_courier: Array<{ name: string; count: number }>;
+        by_payment: Record<string, number>;
+        by_state:   Array<{ name: string; count: number }>;
+        by_city:    Array<{ name: string; count: number }>;
+      };
+      trend_30d: Array<{ date: string; count: number }>;
+      admin?: {
+        users: { total: number; today: number };
+        top_users: Array<{ user_id: string; name: string; email: string; count: number }>;
+        sla_open: number;
+      };
+    }>("/analytics/overview", {
+      params: {
+        range:        params.range ?? "30d",
+        scope:        params.scope ?? "mine",
+        courier:      params.courier,
+        status:       params.status,
+        payment_mode: params.payment_mode,
+        state:        params.state,
+      },
+    }).then((r) => r.data),
+
+  // Legacy (kept for backward compat — will be retired once UI fully
+  // migrates to analyticsOverview).
   adminAnalyticsOverview: (range: "today" | "7d" | "30d" | "90d" | "all" = "30d") =>
     api.get<{
       range: string;
