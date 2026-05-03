@@ -32,6 +32,12 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { Stack } from "expo-router";
 import { Api, Shipment } from "../lib/api";
+import {
+  preflightBatchWhatsApp,
+  openWhatsAppShare,
+  requestWhatsAppSend,
+} from "../lib/whatsappGuard";
+import DailyLimitBanner from "../components/DailyLimitBanner";
 
 type DStatus = "pending" | "sent";
 type Tab = "list" | "sent" | "pending";
@@ -191,6 +197,13 @@ export default function DispatchConfirmation() {
       );
       return;
     }
+    // Phase-15 D: pre-flight the daily WhatsApp limit ONCE for the
+    // whole batch, then loop. The user gets at most one confirm dialog.
+    const guard = await preflightBatchWhatsApp(selectedIds.length, {
+      batchLabel: "dispatch confirmation",
+    });
+    if (!guard.ok) return;
+
     setBusy(true);
     try {
       const markRes = await Api.dispatchConfMarkSent(selectedIds);
@@ -198,10 +211,20 @@ export default function DispatchConfirmation() {
       const skipped = markRes.skipped;
       const toMsg = rows.filter((r) => markRes.updated_ids.includes(r.id));
       let opened = 0;
+      let limitHit = false;
       for (const r of toMsg) {
+        if (limitHit) break;
         const phone = String(r.customer_phone || "").trim();
         const msg = fillTemplate(tpl, r);
-        const ok2 = await openWhatsApp(phone, msg);
+        try {
+          await Api.meWhatsAppDailyIncrement(guard.force);
+        } catch {
+          // Counter refused — admin flipped override mid-batch or
+          // server is offline. Stop the loop with a notice.
+          limitHit = true;
+          break;
+        }
+        const ok2 = await openWhatsAppShare(phone, msg);
         if (ok2) opened += 1;
         if (Platform.OS === "android") {
           await new Promise((r) => setTimeout(r, 350));
@@ -209,7 +232,8 @@ export default function DispatchConfirmation() {
       }
       Alert.alert(
         "Dispatch message sent",
-        `${opened} chat(s) opened.\n${ok} marked sent.\n${skipped} skipped (already sent today).`,
+        `${opened} chat(s) opened.\n${ok} marked sent.\n${skipped} skipped (already sent today).` +
+          (limitHit ? "\n\n⚠️ Stopped: WhatsApp daily limit hit mid-batch." : ""),
       );
       setSelected({});
       load();
@@ -263,6 +287,11 @@ export default function DispatchConfirmation() {
       />
 
       <ScrollView contentContainerStyle={{ padding: 14, paddingBottom: 120 }}>
+        {/* Phase-15 D — daily WhatsApp limit indicator (anti-block).
+            Stays hidden when user is far from the limit; escalates
+            color as the count climbs. */}
+        <DailyLimitBanner variant="strip" showAtPct={50} />
+
         {/* Top banner */}
         <View style={styles.banner}>
           <View style={styles.bannerIcon}>
@@ -393,7 +422,11 @@ export default function DispatchConfirmation() {
                     onPress={async () => {
                       const tpl = await getTemplate(defaultLang);
                       if (!tpl) return;
-                      await openWhatsApp(phone, fillTemplate(tpl, r));
+                      // Phase-15 D: single-row send routes through guard
+                      // → soft-warn / confirm / hard-block.
+                      await requestWhatsAppSend(phone, fillTemplate(tpl, r), {
+                        templateLabel: "Dispatch confirmation",
+                      });
                     }}
                     hitSlop={8}
                   >

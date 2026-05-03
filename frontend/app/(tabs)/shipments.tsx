@@ -26,6 +26,8 @@ import { buildCopyText, buildWhatsAppText, cleanPhone } from "../../lib/format";
 import { buildLabelHtml, pageDimensionsFor } from "../../lib/label";
 import { colors } from "../../lib/theme";
 import { useFeatureFlag } from "../../lib/feature_flags";
+import { requestWhatsAppSend } from "../../lib/whatsappGuard";
+import DailyLimitBanner from "../../components/DailyLimitBanner";
 
 type StatusFilter =
   | "All"
@@ -492,14 +494,18 @@ export default function Shipments() {
     ]);
   };
 
-  const sendWhatsApp = (s: Shipment) => {
+  const sendWhatsApp = async (s: Shipment) => {
     if (!s.customer_phone) {
       Alert.alert("No phone", "Customer phone not set.");
       return;
     }
     const msg = buildWhatsAppText(s, settings, findCourier(s));
-    const phone = cleanPhone(s.customer_phone);
-    Linking.openURL(`https://wa.me/${phone}?text=${encodeURIComponent(msg)}`);
+    // Phase-15 D: route through the daily-limit guard so the user gets
+    // soft-warn / confirm / hard-block per admin policy, and the
+    // server-side counter stays in sync across devices.
+    await requestWhatsAppSend(s.customer_phone, msg, {
+      templateLabel: "Shipped tracking message",
+    });
   };
 
   const copyAll = async (s: Shipment) => {
