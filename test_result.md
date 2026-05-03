@@ -9374,3 +9374,168 @@ agent_communication:
         carry the corrected numbers to the Smart Paste sheet.
 
 
+
+
+# ==========================================================================
+# Phase-15 — Smart WhatsApp Template Generator (AI) + Daily Limit
+# ==========================================================================
+
+backend:
+  - task: "WhatsApp pricing schema extension (AI gen rates + daily limit knobs)"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "main"
+        -comment: |
+            Extended `whatsapp_pricing` admin config with:
+              - ai_generation_rates per plan (free_trial=2, silver=1.5, gold=1, platinum=0.5)
+              - daily_limit (50 default, admin-tunable 1-10000)
+              - daily_warning_pct (90 default, 1-100)
+              - allow_override_after_limit (True default)
+            GET/PUT /api/admin/whatsapp-pricing accept all new fields.
+            GET /api/me/whatsapp-pricing exposes them to the user-facing UI.
+            Verified end-to-end via /tmp/phase15_smoke.py — admin can flip
+            override to NO and the daily-increment endpoint then returns
+            HTTP 429 at the limit.
+
+  - task: "AI WhatsApp template generator (9 variants × 1 LLM call)"
+    implemented: true
+    working: "NA"
+    file: "/app/backend/routers/messaging.py"
+    needs_retesting: true
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: |
+            New endpoint POST /api/me/whatsapp-templates/generate-variants
+            generates 3 variants × 3 languages (gu/hi/en) for ONE template
+            type via gemini-2.5-flash. Wallet is debited per-plan BEFORE
+            the LLM call; on JSON-parse failure or LLM error we auto-refund
+            via wallet.add_credits(ctype="refund"). Vague-input safety net
+            falls back to "professional + friendly". Quick-chip presets:
+            Short / Professional / Friendly / Premium / Urgent.
+            Strict-JSON contract enforced; output must contain v1/v2/v3
+            non-empty strings per language, otherwise refund + 502.
+
+            Companion endpoints (no LLM cost):
+              POST /api/me/whatsapp-templates/save-variants
+              GET  /api/me/whatsapp-template-variants
+            Variants persist under settings.whatsapp_template_variants.<ttype>.
+
+  - task: "Variant rotation (V1 → V2 → V3 round-robin) in resolve-template"
+    implemented: true
+    working: true
+    file: "/app/backend/routers/messaging.py"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "main"
+        -comment: |
+            GET /api/me/resolve-template now picks variant N where
+            N = settings.whatsapp_template_rotation[ttype] % len(variants),
+            then increments N by 1. Verified via /tmp/phase15_smoke.py:
+            5 calls in a row returned source = user_variant_1 → 2 → 3 → 1 → 2.
+            Falls through to legacy single-string template, then admin
+            default, then bundled fallback if no variants saved.
+
+  - task: "Anti-block daily WhatsApp send limit (hard block + override flow)"
+    implemented: true
+    working: true
+    file: "/app/backend/routers/messaging.py"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "main"
+        -comment: |
+            Two new endpoints power the WhatsApp policy-block guard:
+              GET /api/me/whatsapp/daily-status
+                returns { sent_today, limit, warn_at, allow_override,
+                          status: ok | warn | limit_reached_blocked |
+                                  limit_reached_overridable }
+              POST /api/me/whatsapp/daily-increment
+                body { force: bool }
+                - At limit + override=False  → HTTP 429 always
+                - At limit + override=True  + force=False → HTTP 429 (asks
+                                                                    confirm)
+                - At limit + override=True  + force=True  → counter advances
+            Counter resets at IST midnight (UTC+5:30 day bucket).
+
+frontend:
+  - task: "AI Template Generator modal (Phase-15 frontend)"
+    implemented: true
+    working: "NA"
+    file: "/app/frontend/components/AiTemplateGenerator.tsx"
+    needs_retesting: true
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: |
+            New component — slide-up modal triggered from each template
+            row in Settings → WhatsApp Templates. Features:
+              - 1-line tone description input
+              - 5 quick chips (Short/Professional/Friendly/Premium/Urgent)
+              - Up-front cost preview ("X credits per generation · Balance: Y")
+              - Generate button → 9 variants
+              - 3 language tabs (gu / hi / en) × 3 editable cards each
+              - Save All / Reset / Regenerate
+            Pre-populates with previously saved variants on revisit so the
+            user can re-edit without spending credits again.
+
+  - task: "Settings → WhatsApp Templates AI Generate hooks"
+    implemented: true
+    working: "NA"
+    file: "/app/frontend/app/settings/whatsapp-templates.tsx"
+    needs_retesting: true
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: |
+            Each of the 5 template rows in the settings screen now shows
+            a dashed "✨ AI Generate / Edit 9 Variants" button below the
+            header. A green "· N AI variants" tag is appended to the
+            template label when variants have been saved. The rest of
+            the page (legacy single-template editing, language picker,
+            business links) is untouched and continues to work.
+
+test_plan:
+  current_focus:
+    - "AI WhatsApp template generator (9 variants × 1 LLM call)"
+    - "AI Template Generator modal (Phase-15 frontend)"
+    - "Settings → WhatsApp Templates AI Generate hooks"
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"
+
+agent_communication:
+    -agent: "main"
+    -message: |
+        Phase-15 Smart WhatsApp Template Generator + anti-block daily
+        limit implemented end-to-end (backend + frontend).
+
+        BACKEND VALIDATED (LLM-free smoke tests via /tmp/phase15_smoke.py):
+          - Pricing schema exposes all new fields ✅
+          - Daily-status reports correct status keys ✅
+          - Save / Get variants persist 9-variant block ✅
+          - Resolve-template rotates V1→V2→V3→V1→V2 ✅
+          - Admin daily_limit knob + hard block (override=False) ✅
+          - Admin override knob (allow_override toggle) ✅
+
+        NOT YET VALIDATED (intentionally — user is credit-sensitive):
+          - LLM-fired generate-variants endpoint
+          - Frontend modal end-to-end click flow
+
+        NEXT: user should open Settings → WhatsApp Templates on their
+        device, tap "AI Generate" on any template type, optionally type a
+        tone hint, tap Generate, and verify:
+          1. Wallet shows the per-plan AI generation cost (e.g. 1.5 credits
+             for Silver) charged once
+          2. 9 variants appear (3 per language tab) and are editable
+          3. Save persists and rotation kicks in on the next WhatsApp send
+        Phase C (Admin pricing UI) and Phase D (daily-limit banner +
+        confirm modal in send paths) are queued — please confirm to
+        proceed.
+
+

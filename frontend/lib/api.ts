@@ -822,6 +822,80 @@ export const Api = {
           (lang ? `&lang=${lang}` : ""),
       )
       .then((r) => r.data),
+  // ───────────────────────────────────────────────────────────────────
+  // Phase-15: AI WhatsApp template generator + daily-limit anti-block
+  // ───────────────────────────────────────────────────────────────────
+  meWhatsAppPricing: () =>
+    api
+      .get<{
+        enabled: boolean;
+        plan: string;
+        per_message_credits: number;
+        ai_generation_credits: number;
+        daily_limit: number;
+        daily_warning_pct: number;
+        allow_override_after_limit: boolean;
+      }>("/me/whatsapp-pricing")
+      .then((r) => r.data),
+  meWhatsAppDailyStatus: () =>
+    api
+      .get<{
+        sent_today: number;
+        limit: number;
+        warning_pct: number;
+        warn_at: number;
+        allow_override: boolean;
+        // "ok" / "warn" / "limit_reached_overridable" / "limit_reached_blocked"
+        status: string;
+        day: string;
+      }>("/me/whatsapp/daily-status")
+      .then((r) => r.data),
+  meWhatsAppDailyIncrement: (force = false) =>
+    api
+      .post<{
+        sent_today: number;
+        limit: number;
+        warn_at: number;
+        allow_override: boolean;
+        status: string;
+      }>("/me/whatsapp/daily-increment", { force })
+      .then((r) => r.data),
+  meGenerateTemplateVariants: (
+    template_type: string,
+    tone_description: string,
+    quick_chip?: string,
+  ) =>
+    api
+      .post<{
+        template_type: string;
+        variants: { gu: string[]; hi: string[]; en: string[] };
+        credits_charged: number;
+        tone_used: string;
+      }>("/me/whatsapp-templates/generate-variants", {
+        template_type,
+        tone_description,
+        quick_chip,
+      })
+      .then((r) => r.data),
+  meSaveTemplateVariants: (
+    template_type: string,
+    variants: Record<string, string[]>,
+  ) =>
+    api
+      .post<{
+        saved: boolean;
+        template_type: string;
+        variants: Record<string, string[]>;
+      }>("/me/whatsapp-templates/save-variants", { template_type, variants })
+      .then((r) => r.data),
+  meGetTemplateVariants: () =>
+    api
+      .get<{
+        variants: Record<string, Record<string, string[]>>;
+        types: string[];
+        languages: string[];
+      }>("/me/whatsapp-template-variants")
+      .then((r) => r.data),
   /**
    * Lookup an existing shipment by tracking_id. Returns null when no
    * match (HTTP 404) instead of throwing, so callers don't have to

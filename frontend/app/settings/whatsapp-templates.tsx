@@ -29,6 +29,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { Stack } from "expo-router";
 import { Api } from "../../lib/api";
+import AiTemplateGenerator from "../../components/AiTemplateGenerator";
 
 const TYPE_META: Record<string, { label: string; sub: string; icon: any; tone: string }> = {
   shipment_sent: {
@@ -115,6 +116,21 @@ export default function WhatsAppTemplatesSettings() {
   const [googleReviewUrl, setGoogleReviewUrl] = useState("");
   const [websiteUrl, setWebsiteUrl] = useState("");
 
+  // Phase-15: AI generator modal + saved variants per template type.
+  // savedVariants[ttype] = { gu: [v1,v2,v3], hi: [...], en: [...] }
+  const [aiOpen, setAiOpen] = useState(false);
+  const [aiType, setAiType] = useState<string>("");
+  const [savedVariants, setSavedVariants] = useState<
+    Record<string, { gu: string[]; hi: string[]; en: string[] }>
+  >({});
+
+  const loadVariants = useCallback(async () => {
+    try {
+      const v = await Api.meGetTemplateVariants();
+      setSavedVariants((v.variants || {}) as any);
+    } catch {/* ignore — variants are optional */}
+  }, []);
+
   const load = useCallback(async () => {
     setLoading(true);
     try {
@@ -132,7 +148,7 @@ export default function WhatsAppTemplatesSettings() {
     }
   }, []);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => { load(); loadVariants(); }, [load, loadVariants]);
 
   const setEdit = (type: string, lang: string, val: string) => {
     setEdits((prev) => {
@@ -311,12 +327,15 @@ export default function WhatsAppTemplatesSettings() {
                   const meta = TYPE_META[t];
                   const active = activeType === t;
                   const hasOverrides = !!edits[t] && Object.keys(edits[t]).length > 0;
+                  const v = savedVariants[t];
+                  const variantCount =
+                    (v?.gu?.length || 0) + (v?.hi?.length || 0) + (v?.en?.length || 0);
                   return (
-                    <TouchableOpacity
-                      key={t}
-                      style={[styles.typeRow, active && styles.typeRowActive]}
-                      onPress={() => setActiveType(t)}
-                    >
+                    <View key={t}>
+                      <TouchableOpacity
+                        style={[styles.typeRow, active && styles.typeRowActive]}
+                        onPress={() => setActiveType(t)}
+                      >
                       <View
                         style={[
                           styles.typeIconBox,
@@ -335,6 +354,9 @@ export default function WhatsAppTemplatesSettings() {
                           {hasOverrides && (
                             <Text style={styles.overrideTag}> · custom</Text>
                           )}
+                          {variantCount > 0 && (
+                            <Text style={styles.variantTag}> · {variantCount} AI variants</Text>
+                          )}
                         </Text>
                         <Text style={styles.typeSub} numberOfLines={2}>
                           {meta?.sub || ""}
@@ -345,7 +367,25 @@ export default function WhatsAppTemplatesSettings() {
                         size={18}
                         color="#9CA3AF"
                       />
-                    </TouchableOpacity>
+                      </TouchableOpacity>
+                      {/* Phase-15: AI Generate button — one per template
+                          type, keeps its own DB block keyed by ttype.
+                          Modal opens with prefilled saved variants
+                          (if any) for fast re-edits without re-spending
+                          credits. */}
+                      <TouchableOpacity
+                        style={styles.aiBtn}
+                        onPress={() => {
+                          setAiType(t);
+                          setAiOpen(true);
+                        }}
+                      >
+                        <Ionicons name="sparkles" size={13} color="#6B5BFF" />
+                        <Text style={styles.aiBtnText}>
+                          ✨ AI Generate {variantCount > 0 ? "/ Edit" : ""} 9 Variants
+                        </Text>
+                      </TouchableOpacity>
+                    </View>
                   );
                 })}
               </View>
@@ -497,6 +537,26 @@ export default function WhatsAppTemplatesSettings() {
           </TouchableOpacity>
         </View>
       </KeyboardAvoidingView>
+
+      {/* Phase-15: AI Generator modal */}
+      <AiTemplateGenerator
+        visible={aiOpen}
+        templateType={aiType}
+        templateLabel={TYPE_META[aiType]?.label || aiType}
+        initialVariants={
+          aiType
+            ? {
+                gu: savedVariants[aiType]?.gu || [],
+                hi: savedVariants[aiType]?.hi || [],
+                en: savedVariants[aiType]?.en || [],
+              }
+            : null
+        }
+        onClose={() => setAiOpen(false)}
+        onSaved={() => {
+          loadVariants();
+        }}
+      />
     </SafeAreaView>
   );
 }
@@ -539,6 +599,16 @@ const styles = StyleSheet.create({
   typeLabel: { fontSize: 14, fontWeight: "800", color: "#111827" },
   typeSub: { fontSize: 11, color: "#6B7280", marginTop: 2 },
   overrideTag: { color: "#6B5BFF", fontWeight: "700", fontSize: 11 },
+  variantTag: { color: "#10B981", fontWeight: "700", fontSize: 11 },
+  aiBtn: {
+    flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6,
+    marginTop: 6, marginBottom: 4,
+    paddingVertical: 9, paddingHorizontal: 10,
+    backgroundColor: "#EEF2FF",
+    borderWidth: 1, borderColor: "#C7D2FE", borderStyle: "dashed",
+    borderRadius: 10,
+  },
+  aiBtnText: { fontSize: 12, fontWeight: "800", color: "#4338CA" },
   editorHeader: {
     flexDirection: "row", alignItems: "center",
     justifyContent: "space-between", marginBottom: 10,
