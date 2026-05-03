@@ -43,6 +43,7 @@ class PlanSpec:
     daily_cap: Optional[int]   # Platinum only
     badge: Optional[str]       # "Most Popular" | "🚀" | None
     cta: str           # upgrade line under the card
+    packing_variant_cap: int = 1  # max packing variants per courier (Phase 2)
 
 
 PLANS: Dict[str, PlanSpec] = {
@@ -57,6 +58,7 @@ PLANS: Dict[str, PlanSpec] = {
         trial_days=7,
         bulk_max=0,
         daily_cap=None,
+        packing_variant_cap=1,
         badge=None,
         cta="Upgrade to unlock full features",
     ),
@@ -73,6 +75,7 @@ PLANS: Dict[str, PlanSpec] = {
         daily_cap=None,
         badge=None,
         cta="Upgrade when your orders grow",
+        packing_variant_cap=2,
     ),
     "gold": PlanSpec(
         key="gold",
@@ -87,6 +90,7 @@ PLANS: Dict[str, PlanSpec] = {
         daily_cap=None,
         badge="Most Popular",
         cta="Upgrade for high-volume efficiency",
+        packing_variant_cap=5,
     ),
     "platinum": PlanSpec(
         key="platinum",
@@ -101,6 +105,7 @@ PLANS: Dict[str, PlanSpec] = {
         daily_cap=100,
         badge="🚀",
         cta="No delays. No limits feeling. Full control.",
+        packing_variant_cap=8,
     ),
 }
 
@@ -115,7 +120,7 @@ def plan_for(user: Dict[str, Any]) -> PlanSpec:
 # runtime WITHOUT a code deploy. Defaults above are the fallback when a
 # key isn't present in the override document.
 _OVERRIDABLE_FIELDS = ("label_cap", "bulk_max", "daily_cap",
-                       "price_inr", "trial_days")
+                       "price_inr", "trial_days", "packing_variant_cap")
 
 
 async def _load_plan_overrides(db) -> Dict[str, Dict[str, Any]]:

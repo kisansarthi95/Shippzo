@@ -3,6 +3,7 @@ from fastapi.responses import PlainTextResponse
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
+from pymongo import ReturnDocument
 
 # CRITICAL: load .env BEFORE importing any module that reads
 # os.environ at module-load time (auth.py reads JWT_SECRET).
@@ -1260,6 +1261,221 @@ async def consume_tracking(
     tid = f"{c.series_prefix}{str(c.next_number).zfill(c.number_padding)}"
     await db.couriers.update_one({"id": courier_id, "user_id": current_user["id"]}, {"$inc": {"next_number": 1}})
     return {"tracking_id": tid}
+
+
+# ──────────────────────────────────────────────────────────────────
+# Phase 2 — Courier Packing Variants & Rate Management
+# ──────────────────────────────────────────────────────────────────
+# Per-courier packing variants (e.g. "ODC 320gm Cover", "Saree Box L").
+# Each variant captures Package Type, Category, Dimensions (LxWxH cm),
+# Weight (g), and TWO rates: within-state and outside-state. Plan-wise
+# cap (free=1, silver=2, gold=5, platinum=8) is enforced on create —
+# admin bypasses entirely.
+# ──────────────────────────────────────────────────────────────────
+
+PACKAGE_TYPES = ["Cover", "Poly Bag", "Small Box", "Medium Box", "Large Box", "Tube"]
+CATEGORIES    = ["Electronics", "Clothing", "Medical", "Documents", "Home Goods", "Other"]
+
+
+class CourierVariant(BaseModel):
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    user_id: str
+    courier_id: str
+    variant_name: str
+    package_type: str = ""        # one of PACKAGE_TYPES (free-form fallback OK)
+    category: str = ""             # one of CATEGORIES (free-form fallback OK)
+    length_cm: float = 0
+    width_cm: float = 0
+    height_cm: float = 0
+    weight_g: float = 0            # in grams
+    within_state_rate: float = 0   # ₹
+    outside_state_rate: float = 0  # ₹
+    active: bool = True
+    created_at: str = Field(default_factory=utcnow_iso)
+
+
+class CourierVariantCreate(BaseModel):
+    variant_name: str
+    package_type: Optional[str] = ""
+    category: Optional[str] = ""
+    length_cm: Optional[float] = 0
+    width_cm: Optional[float] = 0
+    height_cm: Optional[float] = 0
+    weight_g: Optional[float] = 0
+    within_state_rate: Optional[float] = 0
+    outside_state_rate: Optional[float] = 0
+    active: Optional[bool] = True
+
+
+class CourierVariantUpdate(BaseModel):
+    variant_name: Optional[str] = None
+    package_type: Optional[str] = None
+    category: Optional[str] = None
+    length_cm: Optional[float] = None
+    width_cm: Optional[float] = None
+    height_cm: Optional[float] = None
+    weight_g: Optional[float] = None
+    within_state_rate: Optional[float] = None
+    outside_state_rate: Optional[float] = None
+    active: Optional[bool] = None
+
+
+def _packing_variant_cap_for_user(user: Dict[str, Any]) -> Optional[int]:
+    """Return the variants-per-courier cap for this user's plan, with
+    admin overrides applied. Returns None for unlimited (admins)."""
+    if user.get("is_admin"):
+        return None
+    plan_key = (user.get("plan") or "free_trial").lower()
+    spec = PLAN_TABLE.get(plan_key) or PLAN_TABLE["free_trial"]
+    return int(spec.packing_variant_cap)
+
+
+@api_router.get("/couriers/{courier_id}/variants")
+async def list_courier_variants(
+    courier_id: str,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    """List all variants for a given courier (own data only)."""
+    # Confirm courier ownership.
+    courier = await db.couriers.find_one(
+        {"id": courier_id, "user_id": current_user["id"]}, {"_id": 0, "id": 1, "name": 1},
+    )
+    if not courier:
+        raise HTTPException(status_code=404, detail="Courier not found")
+    rows = await db.courier_variants.find(
+        {"courier_id": courier_id, "user_id": current_user["id"]},
+        {"_id": 0},
+    ).sort("created_at", 1).to_list(50)
+    cap = _packing_variant_cap_for_user(current_user)
+    return {
+        "variants":         rows,
+        "cap":              cap,
+        "current_count":    len(rows),
+        "remaining":        None if cap is None else max(0, cap - len(rows)),
+        "package_types":    PACKAGE_TYPES,
+        "categories":       CATEGORIES,
+    }
+
+
+@api_router.post("/couriers/{courier_id}/variants", response_model=CourierVariant)
+async def create_courier_variant(
+    courier_id: str,
+    body: CourierVariantCreate,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    """Create a new variant for a courier — enforces plan-wise cap."""
+    # Confirm courier ownership.
+    courier = await db.couriers.find_one(
+        {"id": courier_id, "user_id": current_user["id"]}, {"_id": 0, "id": 1},
+    )
+    if not courier:
+        raise HTTPException(status_code=404, detail="Courier not found")
+    if not (body.variant_name or "").strip():
+        raise HTTPException(status_code=400, detail="variant_name is required")
+
+    cap = _packing_variant_cap_for_user(current_user)
+    if cap is not None:
+        existing = await db.courier_variants.count_documents(
+            {"courier_id": courier_id, "user_id": current_user["id"]},
+        )
+        if existing >= cap:
+            raise HTTPException(
+                status_code=402,
+                detail=(
+                    f"Packing variant limit reached for your plan ({cap}). "
+                    "Upgrade to add more variants per courier."
+                ),
+            )
+
+    variant = CourierVariant(
+        user_id=current_user["id"],
+        courier_id=courier_id,
+        variant_name=body.variant_name.strip(),
+        package_type=(body.package_type or "").strip(),
+        category=(body.category or "").strip(),
+        length_cm=float(body.length_cm or 0),
+        width_cm=float(body.width_cm or 0),
+        height_cm=float(body.height_cm or 0),
+        weight_g=float(body.weight_g or 0),
+        within_state_rate=float(body.within_state_rate or 0),
+        outside_state_rate=float(body.outside_state_rate or 0),
+        active=bool(body.active if body.active is not None else True),
+    )
+    await db.courier_variants.insert_one(variant.model_dump())
+    return variant
+
+
+@api_router.put("/couriers/{courier_id}/variants/{variant_id}", response_model=CourierVariant)
+async def update_courier_variant(
+    courier_id: str,
+    variant_id: str,
+    body: CourierVariantUpdate,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    update: Dict[str, Any] = {}
+    for field in (
+        "variant_name", "package_type", "category", "length_cm", "width_cm",
+        "height_cm", "weight_g", "within_state_rate", "outside_state_rate",
+        "active",
+    ):
+        v = getattr(body, field)
+        if v is not None:
+            update[field] = (
+                v.strip() if isinstance(v, str) else
+                bool(v) if field == "active" else
+                float(v) if field in (
+                    "length_cm", "width_cm", "height_cm", "weight_g",
+                    "within_state_rate", "outside_state_rate",
+                ) else v
+            )
+    if not update:
+        raise HTTPException(status_code=400, detail="No fields to update")
+    res = await db.courier_variants.find_one_and_update(
+        {"id": variant_id, "courier_id": courier_id, "user_id": current_user["id"]},
+        {"$set": update},
+        return_document=ReturnDocument.AFTER,
+        projection={"_id": 0},
+    )
+    if not res:
+        raise HTTPException(status_code=404, detail="Variant not found")
+    return CourierVariant(**res)
+
+
+@api_router.delete("/couriers/{courier_id}/variants/{variant_id}")
+async def delete_courier_variant(
+    courier_id: str,
+    variant_id: str,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    res = await db.courier_variants.delete_one(
+        {"id": variant_id, "courier_id": courier_id, "user_id": current_user["id"]},
+    )
+    if res.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Variant not found")
+    return {"ok": True}
+
+
+@api_router.get("/me/all-variants")
+async def list_all_variants(
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    """Convenience: return ALL variants across the user's couriers — used
+    by the New Shipment form to pre-load the variant picker once on
+    open instead of fetching per-courier."""
+    rows = await db.courier_variants.find(
+        {"user_id": current_user["id"], "active": True},
+        {"_id": 0},
+    ).sort("created_at", 1).to_list(500)
+    # Group by courier_id so the UI can render sections cleanly.
+    by_courier: Dict[str, List[Dict[str, Any]]] = {}
+    for r in rows:
+        by_courier.setdefault(r["courier_id"], []).append(r)
+    return {
+        "variants":      rows,
+        "by_courier":    by_courier,
+        "package_types": PACKAGE_TYPES,
+        "categories":    CATEGORIES,
+    }
 
 
 # -------- Settings --------
@@ -5911,6 +6127,7 @@ class PlanLimitsRow(BaseModel):
     daily_cap: Optional[int] = None  # 0 or None = no daily cap
     price_inr: Optional[int] = None
     trial_days: Optional[int] = None  # only meaningful for free_trial
+    packing_variant_cap: Optional[int] = None  # Phase 2: max variants per courier
 
 
 class PlanLimitsPayload(BaseModel):
@@ -5941,6 +6158,7 @@ async def admin_get_plan_limits(
             "price_inr": spec.price_inr,
             "trial_days": spec.trial_days,
             "period": spec.period,
+            "packing_variant_cap": spec.packing_variant_cap,
         }
         # Merge the stored override (if any) on top so the UI shows
         # the EFFECTIVE current value — not the original default.
@@ -5951,6 +6169,7 @@ async def admin_get_plan_limits(
             "daily_cap":  ov.get("daily_cap",  spec.daily_cap),
             "price_inr":  ov.get("price_inr",  spec.price_inr),
             "trial_days": ov.get("trial_days", spec.trial_days),
+            "packing_variant_cap": ov.get("packing_variant_cap", spec.packing_variant_cap),
         }
     return {
         "order": _PLAN_KEYS_ORDER,
@@ -5978,11 +6197,12 @@ async def admin_put_plan_limits(
         spec = PLAN_TABLE[plan_key]
         out: Dict[str, Any] = {}
 
-        # label_cap, bulk_max, price_inr: non-negative int
+        # label_cap, bulk_max, price_inr, packing_variant_cap: non-negative int
         for f, default_v in (
             ("label_cap",  spec.label_cap),
             ("bulk_max",   spec.bulk_max),
             ("price_inr",  spec.price_inr),
+            ("packing_variant_cap", spec.packing_variant_cap),
         ):
             v = getattr(row, f)
             if v is None:

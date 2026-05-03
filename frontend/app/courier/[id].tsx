@@ -394,6 +394,26 @@ export default function CourierEdit() {
             )}
           </Section>
 
+          {!isNew && (
+            <Section title="Packing Variants & Rates">
+              <Text style={styles.hint}>
+                Define packing variants (e.g. "ODC 320gm") with package
+                type, dimensions, weight and within-state vs outside-state
+                rates. Used in New Shipment to auto-fill weight + rate.
+              </Text>
+              <TouchableOpacity
+                testID="courier-manage-variants-btn"
+                style={[styles.outlineBtn, { borderColor: "#7C3AED", marginTop: 8 }]}
+                onPress={() => router.push(`/courier/${id}/variants` as any)}
+              >
+                <Ionicons name="cube-outline" size={16} color="#7C3AED" />
+                <Text style={[styles.outlineBtnText, { color: "#7C3AED" }]}>
+                  📦 Manage Packing Variants
+                </Text>
+              </TouchableOpacity>
+            </Section>
+          )}
+
           <TouchableOpacity testID="courier-save-btn" style={styles.saveBtn} onPress={save} disabled={saving}>
             {saving ? <ActivityIndicator color="#fff" /> : (
               <>

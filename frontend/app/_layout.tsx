@@ -115,6 +115,7 @@ export default function RootLayout() {
                 <Stack.Screen name="scanner" options={{ presentation: "modal", headerShown: false }} />
                 <Stack.Screen name="label/[id]" options={{ headerShown: false }} />
                 <Stack.Screen name="courier/[id]" options={{ headerShown: false }} />
+                <Stack.Screen name="courier/[id]/variants" options={{ headerShown: false }} />
                 <Stack.Screen
                   name="plans"
                   options={{ headerShown: true, title: "Plans & Billing" }}

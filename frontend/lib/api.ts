@@ -412,6 +412,90 @@ export const Api = {
       .post<{ tracking_id: string }>(`/couriers/${id}/consume-tracking`)
       .then((r) => r.data),
 
+  // ───────────────────────────────────────────────────────────────────
+  // Phase 2 — Courier Packing Variants & Rate Management
+  // ───────────────────────────────────────────────────────────────────
+  listCourierVariants: (courierId: string) =>
+    api.get<{
+      variants: Array<{
+        id: string;
+        user_id: string;
+        courier_id: string;
+        variant_name: string;
+        package_type: string;
+        category: string;
+        length_cm: number;
+        width_cm: number;
+        height_cm: number;
+        weight_g: number;
+        within_state_rate: number;
+        outside_state_rate: number;
+        active: boolean;
+        created_at: string;
+      }>;
+      cap: number | null;
+      current_count: number;
+      remaining: number | null;
+      package_types: string[];
+      categories: string[];
+    }>(`/couriers/${courierId}/variants`).then((r) => r.data),
+
+  createCourierVariant: (
+    courierId: string,
+    payload: {
+      variant_name: string;
+      package_type?: string;
+      category?: string;
+      length_cm?: number;
+      width_cm?: number;
+      height_cm?: number;
+      weight_g?: number;
+      within_state_rate?: number;
+      outside_state_rate?: number;
+      active?: boolean;
+    },
+  ) => api.post(`/couriers/${courierId}/variants`, payload).then((r) => r.data),
+
+  updateCourierVariant: (
+    courierId: string,
+    variantId: string,
+    payload: Partial<{
+      variant_name: string;
+      package_type: string;
+      category: string;
+      length_cm: number;
+      width_cm: number;
+      height_cm: number;
+      weight_g: number;
+      within_state_rate: number;
+      outside_state_rate: number;
+      active: boolean;
+    }>,
+  ) => api.put(`/couriers/${courierId}/variants/${variantId}`, payload).then((r) => r.data),
+
+  deleteCourierVariant: (courierId: string, variantId: string) =>
+    api.delete(`/couriers/${courierId}/variants/${variantId}`).then((r) => r.data),
+
+  listAllVariants: () =>
+    api.get<{
+      variants: Array<{
+        id: string;
+        courier_id: string;
+        variant_name: string;
+        package_type: string;
+        category: string;
+        length_cm: number;
+        width_cm: number;
+        height_cm: number;
+        weight_g: number;
+        within_state_rate: number;
+        outside_state_rate: number;
+      }>;
+      by_courier: Record<string, any[]>;
+      package_types: string[];
+      categories: string[];
+    }>("/me/all-variants").then((r) => r.data),
+
   // --- Phase-3a Plans & Usage ---
   listPlans: () =>
     api
