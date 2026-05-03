@@ -1682,24 +1682,11 @@ export default function Dashboard() {
                 tone="neutral"
                 chevron
               />
-              {/* Phase-12: 3-pill stack for the post-print workflows.
-                  Need Dispatch routes to Pending shipments so the user can
-                  ship them out; Dispatch + Delivery Confirmation route to
-                  the new dedicated screens. */}
-              <ActionPill
-                testID="quick-need-dispatch"
-                icon="cube-outline"
-                label="Need Dispatch"
-                badge={stats?.pending ?? 0}
-                onPress={() =>
-                  router.push({
-                    pathname: "/(tabs)/shipments",
-                    params: { status: "Pending" },
-                  })
-                }
-                tone="warning"
-                chevron
-              />
+              {/* Phase-12: Post-print workflow pills.
+                  Note: "Need Dispatch" was removed as it duplicated the
+                  Pending Shipments pill above (same status filter, same
+                  count). Dispatch + Delivery Confirmation route to the
+                  dedicated post-shipping notification screens. */}
               <ActionPill
                 testID="quick-dispatch-confirmation"
                 icon="rocket-outline"

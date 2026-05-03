@@ -30,9 +30,11 @@ import { useFeatureFlag } from "../../lib/feature_flags";
 type StatusFilter =
   | "All"
   | "Pending"
+  | "Processing"
   | "Dispatch"
   | "Shipped"
   | "Delivered"
+  | "Feedback"
   | "Modified"
   | "Cancel by buyer"
   | "Cancelled"
@@ -45,10 +47,13 @@ type DateFilter = "all" | "today" | "week" | "month" | "custom";
 // Phase-9 color palette (locked): Pending = BLACK active (warehouse emphasis),
 // Dispatch = soft CREAM (#F4E3CF / #8B5E34), Shipped = lavender, Delivered = green.
 // `activeBg` / `activeFg` override the default black pill when a bucket is selected.
+// `label` overrides the visible chip text — used to rename "Dispatch" to
+// "Ready to Ship" without breaking historic DB rows still tagged "Dispatch".
 const STATUS_META: Record<
   Exclude<StatusFilter, "All">,
   {
     value: string;
+    label?: string;
     bg: string;
     fg: string;
     aliases?: string[];
@@ -63,15 +68,25 @@ const STATUS_META: Record<
     activeBg: "#000000",
     activeFg: "#FFFFFF",
   },
+  // NEW: Processing — between Pending and Ready-to-Ship. Used for parcels
+  // that are currently being packed / labelled but not yet handed over.
+  "Processing": {
+    value: "Processing",
+    bg: "#FEF3C7",
+    fg: "#92400E",
+    activeBg: "#FCD34D",
+    activeFg: "#7C2D12",
+  },
   "Dispatch": {
     value: "Dispatch",
+    label: "Ready to Ship",   // displayed label (legacy key kept for compat)
     bg: "#F4E3CF",
     fg: "#8B5E34",
     activeBg: "#F4E3CF",
     activeFg: "#8B5E34",
-    // Legacy synonym: older shipments stored "Dispatched" — surface
-    // them under this same Dispatch tab for backwards compat.
-    aliases: ["Dispatched"],
+    // Legacy synonyms: pre-rename DB rows + the new explicit values
+    // both surface under this same Ready-to-Ship tab.
+    aliases: ["Dispatched", "Ready to Ship", "ReadyToShip", "READY_TO_SHIP"],
   },
   "Shipped": {
     value: "Shipped",
@@ -87,13 +102,24 @@ const STATUS_META: Record<
     activeBg: "#E6F7EE",
     activeFg: "#1F9D55",
   },
+  // NEW: Feedback — terminal stage. Customer has confirmed receipt and
+  // (optionally) given a rating/review. Lives after "Delivered" so the
+  // workflow flows linearly Pending → Processing → Ready → Shipped →
+  // Delivered → Feedback.
+  "Feedback": {
+    value: "Feedback",
+    bg: "#DBEAFE",
+    fg: "#1E40AF",
+    activeBg: "#1E40AF",
+    activeFg: "#FFFFFF",
+  },
   "Modified":        { value: "Modified",       bg: "#FEF9C3", fg: "#854D0E" },
   "Cancel by buyer": { value: "Cancel by buyer", bg: "#FCE7F3", fg: "#9D174D" },
   "Cancelled":       { value: "Cancelled",      bg: "#FEE2E2", fg: "#991B1B" },
   "Returned":        { value: "Returned",       bg: "#FFEDD5", fg: "#9A3412" },
 };
 const STATUS_FILTER_ORDER: StatusFilter[] = [
-  "All", "Pending", "Dispatch", "Shipped", "Delivered",
+  "All", "Pending", "Processing", "Dispatch", "Shipped", "Delivered", "Feedback",
   "Modified", "Cancel by buyer", "Cancelled", "Returned",
 ];
 
@@ -413,7 +439,8 @@ export default function Shipments() {
   const statusCounts = useMemo(() => {
     const counts: Record<StatusFilter, number> = {
       "All": items.length,
-      "Pending": 0, "Dispatch": 0, "Shipped": 0, "Delivered": 0, "Modified": 0,
+      "Pending": 0, "Processing": 0, "Dispatch": 0, "Shipped": 0,
+      "Delivered": 0, "Feedback": 0, "Modified": 0,
       "Cancel by buyer": 0, "Cancelled": 0, "Returned": 0,
     };
     for (const s of items) {
@@ -678,7 +705,7 @@ export default function Shipments() {
                     styles.filterText,
                     { color: active ? activeFg : (meta ? meta.fg : colors.text) },
                   ]}
-                >{f}</Text>
+                >{meta?.label || f}</Text>
                 <View
                   style={[
                     styles.filterCount,
@@ -1456,7 +1483,7 @@ export default function Shipments() {
                       <Text
                         style={[styles.statusOptionLabel, { color: meta.fg }]}
                       >
-                        {f}
+                        {meta.label || f}
                       </Text>
                       <Text style={styles.statusOptionHint} numberOfLines={1}>
                         Stored as "{meta.value}"
