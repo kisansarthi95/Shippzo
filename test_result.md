@@ -9873,3 +9873,54 @@ agent_communication:
 
         REMAINING BACKLOG: Play Store readiness, Admin Analytics,
         server.py refactor.
+
+    -agent: "main"
+    -message: |
+        Phase I — Admin Analytics Dashboard SHIPPED.
+
+        BACKEND:
+          - NEW endpoint GET /api/admin/analytics/overview?range=today|7d|30d|90d|all
+            One-shot payload covering:
+              users (total / today / last_7_days / in_range / active)
+              shipments (total / by_status / by_courier top-7)
+              30-day creation trend (always 30 days regardless of range)
+              top 5 users by volume
+              SLA (open / dismissed_in_range)
+              WhatsApp messages today
+              Sheet-sync health (connected_users / counts / queue_pending)
+              Revenue (total / in_range, INR; tolerates missing payments coll)
+          - Dedicated `analytics_router` mounted via app.include_router
+            because api_router was already included earlier in the file.
+          - All aggregations done in MongoDB pipelines (no in-memory loops
+            over user/shipment collections). Range filter via _range_to_since.
+
+        FRONTEND:
+          - NEW screen /app/frontend/app/admin/analytics.tsx
+              Range chip filter (Today / 7d / 30d / 90d / All)
+              4 KPI cards (Users, Shipments, SLA breaches, Revenue)
+              30-day line chart (react-native-chart-kit, bezier)
+              "By status" horizontal bar chart with stage colour map
+              "Top couriers" + "Top users" ranked lists
+              "System health" 4-tile grid (WA today, sheets connected,
+                rows synced, sync attention)
+              Quick links row to /admin/sla-alerts, /admin/stage-rules,
+              /sheet-sync.
+          - react-native-chart-kit installed.
+          - Settings hub: new "📈 Admin Analytics" card (admin-only)
+            linking to /admin/analytics.
+          - api.ts: adminAnalyticsOverview() helper.
+
+        VALIDATED:
+          - /tmp/test_analytics.py: all 4 ranges (today/7d/30d/all) → 200 OK
+            with rich data. Snapshot:
+              total users=7 active=7
+              shipments=151 (Pending 47, Delivered 31, Shipped 14, ...)
+              top couriers: Demo Courier 93, Nandan Courier 40, ...
+              top users: admin@test.com 51, kisansarthiofficial 24, ...
+              sheet sync: ok=34 error=17 never=100, queue=...
+              WhatsApp today: 3 msgs
+          - Playwright UI screenshot verified: range chips, 4 KPI cards,
+            30-day line chart with bezier curve + peak at 04-16, full
+            "By status" bar chart with all 10 statuses sorted by count.
+
+        REMAINING BACKLOG: Play Store readiness, server.py refactor.

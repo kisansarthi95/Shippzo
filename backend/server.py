@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, BackgroundTasks, Body
+from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, BackgroundTasks, Body, Query
 from fastapi.responses import PlainTextResponse
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
@@ -7996,6 +7996,7 @@ async def _morning_reminder_worker() -> None:
 # call earlier in the file, so we attach them to a fresh sub-router and
 # include it directly on the app (single explicit include below).
 sheet_sync_router = APIRouter(prefix="/api", tags=["sheet-sync"])
+analytics_router  = APIRouter(prefix="/api", tags=["admin-analytics"])
 
 
 @sheet_sync_router.get("/me/sheet-sync/status")
@@ -8128,9 +8129,235 @@ async def me_sheet_sync_one(
 
 
 
+# ──────────────────────────────────────────────────────────────────
+# Phase I — Admin Analytics Dashboard
+# ──────────────────────────────────────────────────────────────────
+
+
+def _range_to_since(range_key: str) -> Optional[datetime]:
+    """Convert a UI range key (today / 7d / 30d / 90d / all) to a UTC
+    datetime cutoff. Returns None for `all` (no filter)."""
+    now = datetime.now(timezone.utc)
+    if range_key == "today":
+        return now.replace(hour=0, minute=0, second=0, microsecond=0)
+    if range_key == "7d":
+        return now - timedelta(days=7)
+    if range_key == "30d":
+        return now - timedelta(days=30)
+    if range_key == "90d":
+        return now - timedelta(days=90)
+    return None
+
+
+@analytics_router.get("/admin/analytics/overview")
+async def admin_analytics_overview(
+    range_key: str = Query("30d", alias="range"),
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    """One-shot dashboard payload — KPI cards, time-series, top lists."""
+    _require_admin(current_user)
+    since = _range_to_since(range_key)
+    iso_since = since.isoformat() if since else None
+    today_midnight = datetime.now(timezone.utc).replace(
+        hour=0, minute=0, second=0, microsecond=0,
+    ).isoformat()
+    seven_days_ago = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
+
+    # ── 1) Users ──────────────────────────────────────────────────
+    users_total = await db.users.count_documents({"deleted_at": {"$exists": False}})
+    users_today = await db.users.count_documents({
+        "created_at": {"$gte": today_midnight},
+        "deleted_at": {"$exists": False},
+    })
+    users_7d = await db.users.count_documents({
+        "created_at": {"$gte": seven_days_ago},
+        "deleted_at": {"$exists": False},
+    })
+    users_in_range = await db.users.count_documents({
+        "created_at": {"$gte": iso_since} if iso_since else {"$exists": True},
+        "deleted_at": {"$exists": False},
+    })
+
+    # Active = at least 1 shipment created in range.
+    if iso_since:
+        cur = db.shipments.aggregate([
+            {"$match": {"created_at": {"$gte": iso_since}}},
+            {"$group": {"_id": "$user_id"}},
+            {"$count": "n"},
+        ])
+        first = await cur.to_list(length=1)
+        active_users = (first[0]["n"] if first else 0)
+    else:
+        active_users = users_total
+
+    # ── 2) Shipments ──────────────────────────────────────────────
+    ship_match: Dict[str, Any] = {"deleted_at": {"$exists": False}}
+    if iso_since:
+        ship_match["created_at"] = {"$gte": iso_since}
+    total_shipments = await db.shipments.count_documents(ship_match)
+
+    by_status: Dict[str, int] = {}
+    async for row in db.shipments.aggregate([
+        {"$match": ship_match},
+        {"$group": {"_id": "$status", "count": {"$sum": 1}}},
+        {"$sort": {"count": -1}},
+    ]):
+        by_status[row["_id"] or "Unknown"] = int(row["count"])
+
+    by_courier: List[Dict[str, Any]] = []
+    async for row in db.shipments.aggregate([
+        {"$match": ship_match},
+        {"$group": {"_id": "$courier_name", "count": {"$sum": 1}}},
+        {"$sort": {"count": -1}},
+        {"$limit": 7},
+    ]):
+        by_courier.append({"name": row["_id"] or "Unknown", "count": int(row["count"])})
+
+    # ── 3) 30-day creation trend (always 30 days, irrespective of range) ─
+    trend_since = (datetime.now(timezone.utc) - timedelta(days=29)).replace(
+        hour=0, minute=0, second=0, microsecond=0,
+    )
+    by_day_raw: Dict[str, int] = {}
+    async for row in db.shipments.aggregate([
+        {"$match": {
+            "deleted_at": {"$exists": False},
+            "created_at": {"$gte": trend_since.isoformat()},
+        }},
+        {"$group": {
+            "_id": {"$substr": ["$created_at", 0, 10]},
+            "count": {"$sum": 1},
+        }},
+    ]):
+        by_day_raw[row["_id"]] = int(row["count"])
+    daily_trend = [
+        {
+            "date":  (trend_since + timedelta(days=i)).strftime("%Y-%m-%d"),
+            "count": int(by_day_raw.get(
+                (trend_since + timedelta(days=i)).strftime("%Y-%m-%d"), 0)),
+        }
+        for i in range(30)
+    ]
+
+    # ── 4) Top 5 users by shipment volume in range ────────────────
+    top_user_rows = []
+    user_ids: List[str] = []
+    async for row in db.shipments.aggregate([
+        {"$match": ship_match},
+        {"$group": {"_id": "$user_id", "count": {"$sum": 1}}},
+        {"$sort": {"count": -1}},
+        {"$limit": 5},
+    ]):
+        user_ids.append(row["_id"])
+        top_user_rows.append(row)
+    user_lookup: Dict[str, Dict[str, Any]] = {}
+    if user_ids:
+        cur = db.users.find(
+            {"id": {"$in": user_ids}},
+            {"_id": 0, "id": 1, "email": 1, "name": 1},
+        )
+        async for u in cur:
+            user_lookup[u["id"]] = u
+    top_users = [{
+        "user_id": r["_id"],
+        "name":    user_lookup.get(r["_id"], {}).get("name") or "",
+        "email":   user_lookup.get(r["_id"], {}).get("email") or "—",
+        "count":   int(r["count"]),
+    } for r in top_user_rows]
+
+    # ── 5) SLA health ─────────────────────────────────────────────
+    sla_open = await db.sla_alerts.count_documents({"dismissed": False})
+    if iso_since:
+        sla_dismissed_in_range = await db.sla_alerts.count_documents({
+            "dismissed":    True,
+            "dismissed_at": {"$gte": iso_since},
+        })
+    else:
+        sla_dismissed_in_range = await db.sla_alerts.count_documents({"dismissed": True})
+
+    # ── 6) WhatsApp activity (today) ──────────────────────────────
+    today_yyyy_mm_dd = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    wa_today_total = 0
+    async for row in db.settings.aggregate([
+        {"$match": {"wa_daily_counter.day": today_yyyy_mm_dd}},
+        {"$group": {"_id": None, "total": {"$sum": "$wa_daily_counter.count"}}},
+    ]):
+        wa_today_total = int(row.get("total") or 0)
+
+    # ── 7) Sheet-sync health (across all users) ───────────────────
+    sheet_counts: Dict[str, int] = {}
+    async for row in db.shipments.aggregate([
+        {"$match": {"deleted_at": {"$exists": False}}},
+        {"$group": {"_id": "$user_sheet_sync_status", "count": {"$sum": 1}}},
+    ]):
+        sheet_counts[row["_id"] or "never"] = int(row["count"])
+    queue_pending = await db.user_sheet_sync_pending.count_documents({})
+    sheets_connected = await db.settings.count_documents({
+        "sheet.sheet_id": {"$exists": True, "$ne": ""},
+    })
+
+    # ── 8) Revenue (best-effort; tolerates missing `payments` coll) ─
+    revenue_total = 0
+    revenue_in_range = 0
+    try:
+        async for row in db.payments.aggregate([
+            {"$match": {"status": "captured"}},
+            {"$group": {"_id": None, "sum": {"$sum": "$amount_inr"}}},
+        ]):
+            revenue_total = int(row.get("sum") or 0)
+        match_range: Dict[str, Any] = {"status": "captured"}
+        if iso_since:
+            match_range["created_at"] = {"$gte": iso_since}
+        async for row in db.payments.aggregate([
+            {"$match": match_range},
+            {"$group": {"_id": None, "sum": {"$sum": "$amount_inr"}}},
+        ]):
+            revenue_in_range = int(row.get("sum") or 0)
+    except Exception:
+        pass
+
+    return {
+        "range":      range_key,
+        "since":      iso_since,
+        "users": {
+            "total":       users_total,
+            "today":       users_today,
+            "last_7_days": users_7d,
+            "in_range":    users_in_range,
+            "active":      active_users,
+        },
+        "shipments": {
+            "total":      total_shipments,
+            "by_status":  by_status,
+            "by_courier": by_courier,
+        },
+        "trend_30d": daily_trend,
+        "top_users": top_users,
+        "sla": {
+            "open":               sla_open,
+            "dismissed_in_range": sla_dismissed_in_range,
+        },
+        "whatsapp": {
+            "messages_today": wa_today_total,
+        },
+        "sheet_sync": {
+            "connected_users": sheets_connected,
+            "counts":          sheet_counts,
+            "queue_pending":   queue_pending,
+        },
+        "revenue": {
+            "total":    revenue_total,
+            "in_range": revenue_in_range,
+            "currency": "INR",
+        },
+    }
+
+
+
+
 # Register the Phase-H sub-router on the app (api_router was already
 # included earlier so we can't add new routes to it).
 app.include_router(sheet_sync_router)
+app.include_router(analytics_router)
 
 
 @app.on_event("shutdown")

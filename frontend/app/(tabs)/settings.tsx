@@ -2002,6 +2002,29 @@ export default function SettingsScreen() {
             </TouchableOpacity>
           </Section>
 
+          {/* Phase I — Admin analytics shortcut (admins only). */}
+          {(user as any)?.is_admin && (
+            <Section title="📈 Admin Analytics" icon="stats-chart-outline">
+              <Text style={styles.toggleSub}>
+                Live KPIs across all users — total shipments, top
+                couriers, top users, SLA health, sheet-sync status,
+                and 30-day shipment trend chart with date-range
+                filters.
+              </Text>
+              <TouchableOpacity
+                testID="settings-hub-analytics"
+                onPress={() => router.push("/admin/analytics" as any)}
+                style={[
+                  styles.saveBtn,
+                  { marginTop: 12, backgroundColor: "#9333EA" },
+                ]}
+              >
+                <Ionicons name="stats-chart-outline" size={18} color="#fff" />
+                <Text style={styles.saveBtnText}>Open Analytics</Text>
+              </TouchableOpacity>
+            </Section>
+          )}
+
 
           {/* Column picker modal */}
           <Modal

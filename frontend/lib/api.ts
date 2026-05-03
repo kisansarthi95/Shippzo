@@ -591,6 +591,31 @@ export const Api = {
     api.put<NotificationPrefs>("/me/notification-prefs", prefs).then((r) => r.data),
 
   // ───────────────────────────────────────────────────────────────────
+  // Phase I — Admin Analytics Dashboard
+  // ───────────────────────────────────────────────────────────────────
+  adminAnalyticsOverview: (range: "today" | "7d" | "30d" | "90d" | "all" = "30d") =>
+    api.get<{
+      range: string;
+      since: string | null;
+      users: { total: number; today: number; last_7_days: number; in_range: number; active: number };
+      shipments: {
+        total: number;
+        by_status: Record<string, number>;
+        by_courier: Array<{ name: string; count: number }>;
+      };
+      trend_30d: Array<{ date: string; count: number }>;
+      top_users: Array<{ user_id: string; name: string; email: string; count: number }>;
+      sla: { open: number; dismissed_in_range: number };
+      whatsapp: { messages_today: number };
+      sheet_sync: {
+        connected_users: number;
+        counts: Record<string, number>;
+        queue_pending: number;
+      };
+      revenue: { total: number; in_range: number; currency: string };
+    }>("/admin/analytics/overview", { params: { range } }).then((r) => r.data),
+
+  // ───────────────────────────────────────────────────────────────────
   // Phase H — User personal-sheet auto-sync
   // ───────────────────────────────────────────────────────────────────
   meSheetSyncStatus: () =>
