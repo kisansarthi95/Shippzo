@@ -1682,54 +1682,56 @@ export default function Dashboard() {
                 tone="neutral"
                 chevron
               />
-              {/* Phase-12: Two-up scanner shortcuts. Sits between the
-                  general "Print All" entry and the post-shipping
-                  notification pills so the warehouse operator's most
-                  common actions (scan in / scan out) are 1 tap away
-                  from the home screen instead of buried inside the
-                  Shipments tab. */}
-              <View style={styles.scanGrid}>
-                <TouchableOpacity
-                  testID="quick-scan-ready"
-                  style={[styles.scanBox, styles.scanBoxReady]}
-                  onPress={() =>
-                    router.push({
-                      pathname: "/scanner-dispatch",
-                      params: { mode: "dispatch" },
-                    } as any)
-                  }
-                  activeOpacity={0.85}
-                >
-                  <View style={styles.scanBoxIcon}>
-                    <Ionicons name="barcode-outline" size={28} color="#8B5E34" />
-                  </View>
-                  <Text style={styles.scanBoxTitle}>Scan & Ready to Ship</Text>
-                  <Text style={styles.scanBoxSub}>
-                    Pending → Ready to Ship
-                  </Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  testID="quick-scan-shipped"
-                  style={[styles.scanBox, styles.scanBoxShipped]}
-                  onPress={() =>
-                    router.push({
-                      pathname: "/scanner-dispatch",
-                      params: { mode: "ship" },
-                    } as any)
-                  }
-                  activeOpacity={0.85}
-                >
-                  <View style={[styles.scanBoxIcon, { backgroundColor: "#E0DAFF" }]}>
-                    <Ionicons name="rocket-outline" size={26} color="#4B3FCF" />
-                  </View>
-                  <Text style={[styles.scanBoxTitle, { color: "#4B3FCF" }]}>
+              {/* Phase-12: Scanner shortcuts. Stacked vertically (full
+                  width pills) so the 4 post-print actions read as a
+                  single ordered list:  1) Scan & Ready, 2) Scan &
+                  Shipped, 3) Ready-to-Ship Confirmation, 4) Delivery
+                  Confirmation. Side-by-side layout proved confusing —
+                  operators kept missing #1 because #2 sat next to it. */}
+              <TouchableOpacity
+                testID="quick-scan-ready"
+                style={[styles.scanRow, styles.scanRowReady]}
+                onPress={() =>
+                  router.push({
+                    pathname: "/scanner-dispatch",
+                    params: { mode: "dispatch" },
+                  } as any)
+                }
+                activeOpacity={0.85}
+              >
+                <View style={styles.scanRowIcon}>
+                  <Ionicons name="barcode-outline" size={22} color="#8B5E34" />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.scanRowTitle}>Scan & Ready to Ship</Text>
+                  <Text style={styles.scanRowSub}>Pending → Ready to Ship</Text>
+                </View>
+                <Ionicons name="chevron-forward" size={20} color="#A87842" />
+              </TouchableOpacity>
+              <TouchableOpacity
+                testID="quick-scan-shipped"
+                style={[styles.scanRow, styles.scanRowShipped]}
+                onPress={() =>
+                  router.push({
+                    pathname: "/scanner-dispatch",
+                    params: { mode: "ship" },
+                  } as any)
+                }
+                activeOpacity={0.85}
+              >
+                <View style={[styles.scanRowIcon, { backgroundColor: "#E0DAFF" }]}>
+                  <Ionicons name="rocket-outline" size={22} color="#4B3FCF" />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={[styles.scanRowTitle, { color: "#4B3FCF" }]}>
                     Scan & Mark as Shipped
                   </Text>
-                  <Text style={[styles.scanBoxSub, { color: "#6B5BFF" }]}>
+                  <Text style={[styles.scanRowSub, { color: "#6B5BFF" }]}>
                     Ready to Ship → Shipped
                   </Text>
-                </TouchableOpacity>
-              </View>
+                </View>
+                <Ionicons name="chevron-forward" size={20} color="#6B5BFF" />
+              </TouchableOpacity>
               {/* Phase-12: Post-print workflow pills. */}
               <ActionPill
                 testID="quick-dispatch-confirmation"
@@ -1919,16 +1921,30 @@ function ActionPill({
 }
 
 function StatusChip({ status }: { status: string }) {
-  const map: Record<string, { bg: string; fg: string }> = {
-    Delivered: { bg: colors.successBg, fg: colors.successText },
-    Pending: { bg: colors.warningBg, fg: colors.warningText },
-    Cancelled: { bg: colors.dangerBg, fg: colors.dangerText },
+  // Phase-12: status alias map. Renames the legacy "Dispatch"/"Dispatched"
+  // DB values to the user-facing "Ready to Ship" badge so the home-screen
+  // Recent-Shipments card stays consistent with the Shipments tab.
+  const aliasMap: Record<string, string> = {
+    Dispatch: "Ready to Ship",
+    Dispatched: "Ready to Ship",
+    ReadyToShip: "Ready to Ship",
+    READY_TO_SHIP: "Ready to Ship",
   };
-  const m = map[status] || map.Pending;
+  const display = aliasMap[status] || status;
+  const map: Record<string, { bg: string; fg: string }> = {
+    Delivered:        { bg: colors.successBg, fg: colors.successText },
+    Pending:          { bg: colors.warningBg, fg: colors.warningText },
+    Cancelled:        { bg: colors.dangerBg,  fg: colors.dangerText },
+    Processing:       { bg: "#FEF3C7",        fg: "#92400E" },
+    "Ready to Ship":  { bg: "#F4E3CF",        fg: "#8B5E34" },
+    Shipped:          { bg: "#EEE9FF",        fg: "#6B5BFF" },
+    Feedback:         { bg: "#DBEAFE",        fg: "#1E40AF" },
+  };
+  const m = map[display] || map.Pending;
   return (
     <View style={[styles.chip, { backgroundColor: m.bg }]}>
       <Text style={[styles.chipText, { color: m.fg }]}>
-        {status.toUpperCase()}
+        {display.toUpperCase()}
       </Text>
     </View>
   );
@@ -1936,7 +1952,48 @@ function StatusChip({ status }: { status: string }) {
 
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: colors.background },
-  // ───── Phase-12: Scanner shortcut grid (2 boxes side-by-side) ─────
+  // ───── Phase-12: Scanner shortcut rows (full-width pills, stacked) ─────
+  // Side-by-side layout was confusing because operators kept missing
+  // step #1; vertical stack reads top→bottom in the same order the
+  // workflow actually runs (1: Scan & Ready, 2: Scan & Shipped, 3:
+  // Ready-to-Ship Confirm, 4: Delivery Confirm).
+  scanRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingVertical: 14,
+    paddingHorizontal: 14,
+    borderRadius: 14,
+    borderWidth: 1,
+    marginBottom: 4,
+    gap: 12,
+  },
+  // Box 1 — cream palette (matches "Ready to Ship" status colour).
+  scanRowReady: {
+    backgroundColor: "#FBF1E2",
+    borderColor: "#E6C9A8",
+  },
+  // Box 2 — lavender palette (matches "Shipped" status colour).
+  scanRowShipped: {
+    backgroundColor: "#F0EBFF",
+    borderColor: "#C8BCFF",
+  },
+  scanRowIcon: {
+    width: 40, height: 40, borderRadius: 10,
+    backgroundColor: "#F4E3CF",
+    alignItems: "center", justifyContent: "center",
+  },
+  scanRowTitle: {
+    fontSize: 15,
+    fontWeight: "800",
+    color: "#8B5E34",
+  },
+  scanRowSub: {
+    fontSize: 11,
+    fontWeight: "600",
+    color: "#A87842",
+    marginTop: 2,
+  },
+  // (Legacy 2-up grid styles below kept for back-compat — superseded by scanRow.)
   scanGrid: {
     flexDirection: "row",
     gap: 10,
@@ -1951,12 +2008,10 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     justifyContent: "space-between",
   },
-  // Box 1 — cream palette (matches "Ready to Ship" status colour).
   scanBoxReady: {
     backgroundColor: "#FBF1E2",
     borderColor: "#E6C9A8",
   },
-  // Box 2 — lavender palette (matches "Shipped" status colour).
   scanBoxShipped: {
     backgroundColor: "#F0EBFF",
     borderColor: "#C8BCFF",
