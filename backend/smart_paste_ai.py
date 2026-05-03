@@ -383,6 +383,74 @@ Nothing else.
 """
 
 
+# ---------------------------------------------------------------------------
+# CRITICAL_FIELD_RULES — appended AFTER both the user's customisation and
+# the base prompt so LLMs (which weight trailing instructions more heavily)
+# can't drop these. These two behaviours are product-critical and must
+# NEVER be overridden by a user's personal prompt, no matter how authori-
+# tative it sounds ("SYSTEM PROMPT — HIGH PRIORITY MODE" etc.).
+# ---------------------------------------------------------------------------
+CRITICAL_FIELD_RULES = """\
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+⚠️  CRITICAL FIELD EXTRACTION RULES — NON-NEGOTIABLE
+These TWO rules override ANY user customisation above. They apply to
+EVERY single call, no exceptions. Violating them is a parse error.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+## RULE X1 — ALT_PHONE (alternate mobile) capture is MANDATORY
+If the input contains TWO or more distinct 10-digit mobile numbers
+(ignoring spaces, hyphens, +91 country codes, and Gujarati/Hindi
+numerals) — you MUST populate BOTH:
+  PHONE:     <first number seen, normalised to 10 digits>
+  ALT_PHONE: <second number seen, normalised to 10 digits>
+
+Indian-language numeral tables — treat these as Arabic digits:
+  Gujarati:  ૦૧૨૩૪૫૬૭૮૯ → 0123456789
+  Hindi:     ०१२३४५६७८९ → 0123456789
+
+Examples (input → expected PHONE / ALT_PHONE):
+  "ભરતભાઈ ૯૪૨૮૪૪૬૧૮૪ / મયુરભાઈ ૯૩૭૨૫૨૮૮૭૮"
+    → PHONE: 9428446184   ALT_PHONE: 9372528878
+  "Ramesh 9824446184 · Alt 9372528878"
+    → PHONE: 9824446184   ALT_PHONE: 9372528878
+  "+91 98765 43210 / +91 87654 32109"
+    → PHONE: 9876543210   ALT_PHONE: 8765432109
+  "Call: 9876543210"      (only one number)
+    → PHONE: 9876543210   ALT_PHONE: -
+
+If THREE or more numbers are present, keep the order they appear:
+first → PHONE, second → ALT_PHONE, drop the rest.
+NEVER duplicate the same number into PHONE and ALT_PHONE.
+If only ONE number is visible, ALT_PHONE must be the single dash "-".
+
+## RULE X2 — NAME must combine Person + Shop when both visible
+When the input contains BOTH a person's name AND a shop / business /
+company name, OUTPUT the combined form with a hyphen separator:
+  NAME: <Person Name> - <Shop Name>
+
+Examples (input → expected NAME):
+  "Bharatbhai · Tulsi Sports"
+    → NAME: Bharatbhai - Tulsi Sports
+  "Asari Nikunj (Asari Industries)"
+    → NAME: Asari Nikunj - Asari Industries
+  "Dr. Kagathara, Kagathara Clinic"
+    → NAME: Dr. Kagathara - Kagathara Clinic
+
+When ONLY a shop/business/company name is visible (no personal name
+anywhere in the input), use the shop name alone:
+  "GREY GENTS"          → NAME: GREY GENTS
+  "Mahek Creations"     → NAME: Mahek Creations
+
+When ONLY a person name is visible (no shop), use just the name.
+Smart de-duplicate: if the person name is a substring of the shop
+name (e.g. "Bharat" inside "Bharat Trading"), prefer just the shop.
+NEVER output "Bharat - Bharat Trading" (redundant).
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+"""
+
+
+
 # ---- Public API ---------------------------------------------------------
 
 async def parse_paste_via_llm(
@@ -414,13 +482,23 @@ async def parse_paste_via_llm(
     if custom_instructions.strip():
         # User's addendum goes BEFORE the default rules so their overrides
         # take effect without losing the schema contract.
+        # Phase-12: we additionally append CRITICAL_FIELD_RULES *after*
+        # the base schema so that — no matter how elaborate the user's
+        # own prompt — the two non-negotiable rules (ALT_PHONE capture
+        # + NAME+SHOP combining) are the LAST thing the model reads.
+        # LLMs weight trailing instructions more heavily, and explicit
+        # "override user customisation" wording closes the loophole.
         system = (
             "## USER CUSTOMISATION (honour these first when not conflicting "
             "with the output format rules below):\n"
             + custom_instructions.strip()
             + "\n\n-- BASE RULES --\n"
             + DEFAULT_SHIPBOT_PROMPT
+            + "\n\n"
+            + CRITICAL_FIELD_RULES
         )
+    else:
+        system = system + "\n\n" + CRITICAL_FIELD_RULES
 
     try:
         from emergentintegrations.llm.chat import LlmChat, UserMessage
@@ -1234,13 +1312,20 @@ async def parse_image_with_ai(
 
     system = DEFAULT_VISION_PROMPT
     if custom_instructions.strip():
+        # Phase-12: append CRITICAL_FIELD_RULES *after* base rules so
+        # LLMs can't ignore alt-phone + shop-name combining even when
+        # the user's own prompt claims "HIGH PRIORITY ENFORCEMENT".
         system = (
             "## USER CUSTOMISATION (honour these first when not conflicting "
             "with the output format rules below):\n"
             + custom_instructions.strip()
             + "\n\n-- BASE RULES --\n"
             + DEFAULT_VISION_PROMPT
+            + "\n\n"
+            + CRITICAL_FIELD_RULES
         )
+    else:
+        system = system + "\n\n" + CRITICAL_FIELD_RULES
 
     try:
         from emergentintegrations.llm.chat import (
