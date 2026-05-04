@@ -1775,7 +1775,7 @@ export default function Dashboard() {
                 icon="document-text"
                 label="📄 Courier Billing Report"
                 onPress={() => router.push("/reports/courier-billing" as any)}
-                tone="primary"
+                tone="neutral"
                 chevron
               />
 
