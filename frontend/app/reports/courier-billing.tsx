@@ -23,13 +23,13 @@ import { Api } from "../../lib/api";
 import { errMsg } from "../../lib/errMsg";
 
 type RangeKey = "this_week" | "last_week" | "this_month" | "last_month" | "last_30" | "custom";
+// Note: "custom" rendered as a separate prominent button below — not in this list.
 const RANGES: Array<[RangeKey, string]> = [
   ["this_week",  "This Week"],
   ["last_week",  "Last Week"],
   ["this_month", "This Month"],
   ["last_month", "Last Month"],
   ["last_30",    "Last 30 days"],
-  ["custom",     "Custom"],
 ];
 
 type Report = Awaited<ReturnType<typeof Api.courierBillingReport>>;
@@ -258,26 +258,55 @@ export default function CourierBillingReportScreen() {
           />
         }
       >
-        {/* Range chips */}
-        <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-          <View style={{ flexDirection: "row", gap: 6 }}>
-            {RANGES.map(([key, label]) => {
-              const active = range === key;
-              return (
-                <TouchableOpacity
-                  key={key}
-                  testID={`range-${key}`}
-                  style={[styles.chip, active && styles.chipActive]}
-                  onPress={() => onRangeChipPress(key)}
-                >
-                  <Text style={[styles.chipTxt, active && { color: "#fff" }]}>
-                    {key === "custom" && appliedLabel ? `📅 ${appliedLabel}` : label}
-                  </Text>
-                </TouchableOpacity>
-              );
-            })}
-          </View>
-        </ScrollView>
+        {/* Range chips — wrap so all are visible on one screen */}
+        <View style={styles.chipsWrap}>
+          {RANGES.map(([key, label]) => {
+            const active = range === key;
+            return (
+              <TouchableOpacity
+                key={key}
+                testID={`range-${key}`}
+                style={[styles.chip, active && styles.chipActive]}
+                onPress={() => onRangeChipPress(key)}
+              >
+                <Text style={[styles.chipTxt, active && { color: "#fff" }]}>
+                  {label}
+                </Text>
+              </TouchableOpacity>
+            );
+          })}
+        </View>
+
+        {/* Prominent "Custom Date / Multi-Month" button — always visible */}
+        <TouchableOpacity
+          testID="range-custom"
+          style={[
+            styles.customBtn,
+            range === "custom" && styles.customBtnActive,
+          ]}
+          onPress={() => onRangeChipPress("custom")}
+        >
+          <Ionicons
+            name="calendar"
+            size={16}
+            color={range === "custom" ? "#fff" : "#1F4FBF"}
+          />
+          <Text
+            style={[
+              styles.customBtnTxt,
+              range === "custom" && { color: "#fff" },
+            ]}
+          >
+            {range === "custom" && appliedLabel
+              ? appliedLabel
+              : "Custom Date / Pick Months (up to 3)"}
+          </Text>
+          <Ionicons
+            name="chevron-forward"
+            size={14}
+            color={range === "custom" ? "#fff" : "#9CA3AF"}
+          />
+        </TouchableOpacity>
 
         {/* Courier filter chips */}
         <Text style={[styles.sectionLabel, { marginTop: 12 }]}>Filter by courier</Text>
@@ -687,4 +716,178 @@ const styles = StyleSheet.create({
     borderWidth: 1, borderColor: "#E5E7EB",
   },
   emptyTxt: { fontSize: 13, fontWeight: "700", color: "#6B7280", marginTop: 8 },
+
+  // Phase 2.5b — Custom date range / multi-month picker styles
+  chipsWrap: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 6,
+  },
+  customBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    backgroundColor: "#fff",
+    borderWidth: 1.5,
+    borderColor: "#1F4FBF",
+    borderStyle: "dashed",
+    borderRadius: 12,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    marginTop: 10,
+  },
+  customBtnActive: {
+    backgroundColor: "#1F4FBF",
+    borderColor: "#1F4FBF",
+    borderStyle: "solid",
+  },
+  customBtnTxt: {
+    flex: 1,
+    fontSize: 13,
+    fontWeight: "800",
+    color: "#1F4FBF",
+  },
+
+  modalBg: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.55)",
+    justifyContent: "flex-end",
+  },
+  sheet: {
+    backgroundColor: "#fff",
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    padding: 18,
+    paddingBottom: 28,
+    maxHeight: "85%",
+  },
+  sheetHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingBottom: 10,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: "#E5E7EB",
+  },
+  sheetTitle: {
+    fontSize: 16,
+    fontWeight: "800",
+    color: "#111827",
+  },
+
+  modeRow: {
+    flexDirection: "row",
+    backgroundColor: "#F3F4F6",
+    borderRadius: 10,
+    padding: 4,
+    marginTop: 14,
+  },
+  modeBtn: {
+    flex: 1,
+    paddingVertical: 9,
+    alignItems: "center",
+    borderRadius: 8,
+  },
+  modeBtnActive: {
+    backgroundColor: "#fff",
+    shadowColor: "#000",
+    shadowOpacity: 0.06,
+    shadowRadius: 3,
+    shadowOffset: { width: 0, height: 1 },
+    elevation: 1,
+  },
+  modeTxt: {
+    fontSize: 12.5,
+    fontWeight: "700",
+    color: "#6B7280",
+  },
+  modeTxtActive: {
+    color: "#1F4FBF",
+  },
+
+  fieldLabel: {
+    fontSize: 11,
+    fontWeight: "800",
+    color: "#6B7280",
+    letterSpacing: 0.5,
+    marginBottom: 6,
+  },
+  dateBox: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    backgroundColor: "#F9FAFB",
+    borderWidth: 1,
+    borderColor: "#E5E7EB",
+    borderRadius: 10,
+    paddingVertical: 12,
+    paddingHorizontal: 12,
+  },
+  dateTxt: {
+    flex: 1,
+    fontSize: 13,
+    fontWeight: "700",
+    color: "#111827",
+  },
+  helperTxt: {
+    fontSize: 11.5,
+    color: "#6B7280",
+    marginTop: 10,
+    lineHeight: 16,
+  },
+  iosDoneBtn: {
+    alignSelf: "flex-end",
+    paddingVertical: 8,
+    paddingHorizontal: 16,
+    backgroundColor: "#1F4FBF",
+    borderRadius: 8,
+    marginTop: 8,
+  },
+  iosDoneTxt: {
+    color: "#fff",
+    fontWeight: "800",
+    fontSize: 12,
+  },
+
+  monthGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+    marginTop: 10,
+  },
+  monthChip: {
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    borderRadius: 999,
+    backgroundColor: "#F9FAFB",
+    borderWidth: 1,
+    borderColor: "#E5E7EB",
+    minWidth: "30%",
+    alignItems: "center",
+  },
+  monthChipActive: {
+    backgroundColor: "#1F4FBF",
+    borderColor: "#1F4FBF",
+  },
+  monthChipTxt: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: "#374151",
+  },
+
+  applyBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    backgroundColor: "#1F4FBF",
+    paddingVertical: 14,
+    borderRadius: 12,
+    marginTop: 18,
+  },
+  applyBtnTxt: {
+    color: "#fff",
+    fontWeight: "800",
+    fontSize: 14,
+  },
 });
