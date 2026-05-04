@@ -153,8 +153,13 @@ export default function BulkMessageScreen() {
       Alert.alert("No selection", "Tick the parcels you want to message.");
       return;
     }
-    const tpl = await getTemplate(defaultLang);
-    if (!tpl) {
+    // Phase 2 fix — Probe once to ensure templates exist, but DON'T
+    // cache + reuse for every recipient. Each recipient gets a fresh
+    // /me/resolve-template call so the backend's round-robin variant
+    // pointer advances PER MESSAGE — otherwise everyone in the batch
+    // would receive the same variant text.
+    const probe = await getTemplate(defaultLang);
+    if (!probe) {
       Alert.alert(
         "Template missing",
         "Configure this template in Settings → WhatsApp Templates before sending.",
@@ -172,10 +177,28 @@ export default function BulkMessageScreen() {
       const toMsg = rows.filter((r) => markRes.updated_ids.includes(r.id));
       let opened = 0;
       let limitHit = false;
+      // Track which variant index went to which shipment for the
+      // post-send summary — useful when the user has 3 AI variants
+      // and wants to verify rotation actually rotated.
+      const variantHits: Record<string, number> = {};
       for (const r of toMsg) {
         if (limitHit) break;
         const phone = String(r.customer_phone || "").trim();
-        const msg = fillTpl(tpl, r);
+        // Per-recipient resolve — the backend advances rotation pointer
+        // each call, so customer #1 gets variant 1, #2 → 2, #3 → 3, etc.
+        let perRecipientTpl = probe;
+        let variantSource = "cache";
+        try {
+          const fresh = await Api.resolveTemplate(ttype, defaultLang);
+          if (fresh?.template) {
+            perRecipientTpl = fresh.template;
+            variantSource = String(fresh.source || "");
+          }
+        } catch {
+          /* fall back to probe — better to send something than nothing */
+        }
+        variantHits[variantSource] = (variantHits[variantSource] || 0) + 1;
+        const msg = fillTpl(perRecipientTpl, r);
         try {
           await Api.meWhatsAppDailyIncrement(guard.force);
         } catch {
@@ -188,9 +211,16 @@ export default function BulkMessageScreen() {
           await new Promise((res) => setTimeout(res, 350));
         }
       }
+      // Build the rotation summary line so the user can see e.g.
+      //   "Variants used: variant 1×2, variant 2×1"
+      const hitLine = Object.entries(variantHits)
+        .filter(([k]) => k.startsWith("user_variant_"))
+        .map(([k, n]) => `variant ${k.replace("user_variant_", "")}×${n}`)
+        .join(", ");
       Alert.alert(
         "Done",
         `${opened} chat(s) opened\n${markRes.updated} marked sent\n${markRes.skipped} skipped (already sent today)`
+        + (hitLine ? `\n\n🔀 Variants used: ${hitLine}` : "")
         + (limitHit ? "\n\n⚠️ Stopped: WhatsApp daily limit hit." : ""),
       );
       setSelected({});
@@ -223,7 +253,7 @@ export default function BulkMessageScreen() {
               setSelected({});
               load();
             } catch (e: any) {
-              Alert.alert("Error", e?.message || "Reset failed");
+              Alert.alert("Error", errMsg(e, "Reset failed"));
             } finally {
               setBusy(false);
             }

@@ -73,6 +73,9 @@ CATEGORY_ORDER = [
     "WhatsApp",
     "AI & Wallet",
     "Form Fields",
+    "Packing Variants",
+    "Analytics & SLA",
+    "Notifications",
 ]
 
 # The single source of truth. Order is preserved by Python 3.7+ dicts.
@@ -155,6 +158,11 @@ FEATURE_REGISTRY: Dict[str, Dict[str, str]] = {
     "whatsapp_copy_template":    {"label": "Separate copy template",       "category": "WhatsApp"},
     # NEW (2026-04-30 PM2) — Per-courier WhatsApp message templates (Gold+ tier feature)
     "whatsapp_per_courier_template": {"label": "Per-courier WhatsApp templates", "category": "WhatsApp"},
+    # NEW (2026-05-04) — Phase-2 — AI-generated 3 variants per template type
+    "whatsapp_ai_variants":      {"label": "AI Template Variants (3 per type)", "category": "WhatsApp"},
+    # NEW (2026-05-04) — Round-robin variant rotation per recipient (so the
+    # same template doesn't go to every customer in a bulk send).
+    "whatsapp_variant_rotation": {"label": "Auto-rotate variants per recipient",  "category": "WhatsApp"},
 
     # ── AI & Wallet ──────────────────────────────────────────────
     "ai_rate_customization":     {"label": "Custom AI rate card",          "category": "AI & Wallet"},
@@ -167,6 +175,30 @@ FEATURE_REGISTRY: Dict[str, Dict[str, str]] = {
     "form_shipment_notes":       {"label": "Special instructions field",   "category": "Form Fields"},
     # NEW (2026-04-30 PM3) — Plan-gated per-user custom fields (Gold=3, Platinum=5)
     "custom_fields":             {"label": "Custom fields (per-user defined columns)", "category": "Form Fields"},
+
+    # ── Packing Variants (NEW category, 2026-05-04) ─────────────
+    # Per-courier packing variants (e.g. "ODC 320gm" → weight + dims +
+    # within/outside-state rates). Plan-wise CAP is separate (see
+    # admin Plan Limits → packing_variant_cap). These are FEATURE
+    # FLAGS — they decide whether the section is visible at all.
+    "packing_variants_manage":     {"label": "Manage packing variants per courier",        "category": "Packing Variants"},
+    "packing_variants_picker":     {"label": "Pick variant in New Shipment (auto-fill)",   "category": "Packing Variants"},
+    "packing_variants_flexible":   {"label": "Flexible mode (chip mix-match)",             "category": "Packing Variants"},
+    "packing_variants_copy":       {"label": "Copy variants from another courier",         "category": "Packing Variants"},
+    "packing_variants_custom_categories": {"label": "Add custom categories (+ Add Category)", "category": "Packing Variants"},
+
+    # ── Analytics & SLA (NEW category, 2026-05-04) ──────────────
+    "analytics_dashboard":         {"label": "Personal Analytics Dashboard",                "category": "Analytics & SLA"},
+    "analytics_filters":           {"label": "Advanced filters (courier / status / state)", "category": "Analytics & SLA"},
+    "analytics_revenue_breakdown": {"label": "Revenue breakdown (COD vs Prepaid)",          "category": "Analytics & SLA"},
+    "sla_engine":                  {"label": "SLA Engine (auto-detect breaches)",           "category": "Analytics & SLA"},
+    "sla_alerts_dashboard":        {"label": "SLA Alerts dashboard widget",                 "category": "Analytics & SLA"},
+    "stage_rules_editor":          {"label": "Stage Rules editor (custom SLA timings)",     "category": "Analytics & SLA"},
+
+    # ── Notifications (NEW category, 2026-05-04) ────────────────
+    "push_notifications":          {"label": "Push notifications (Expo)",                   "category": "Notifications"},
+    "bulk_messaging_stages":       {"label": "Bulk messaging across all stages",            "category": "Notifications"},
+    "bulk_message_select_filter":  {"label": "Filter / search shipments before sending",    "category": "Notifications"},
 }
 
 ALL_KEYS: List[str] = list(FEATURE_REGISTRY.keys())

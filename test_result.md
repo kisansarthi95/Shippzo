@@ -10664,3 +10664,111 @@ agent_communication:
         No further action needed on this task — main agent can
         summarize and finish.
 
+
+---
+
+## Backend Test Run: Phase-2 Final — Feature Registry Expansion + Variant Rotation (2026-05-04)
+
+backend:
+  - task: "Feature Registry expansion — 16 new keys + 3 new categories"
+    implemented: true
+    working: true
+    file: "/app/backend/feature_registry.py, /app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "testing"
+        -comment: |
+            All 149/149 assertions passed via /app/backend_test.py against
+            https://logistics-hub-740.preview.emergentagent.com/api.
+
+            ── TEST 1 — GET /api/admin/plan-features (admin@test.com) ──
+            HTTP 200. Response includes registry.categories and plans.
+            Categories order returned (verbatim):
+              ['Smart Paste', 'Shipments List', 'Label Design',
+               'Google Sheets', 'Master Order ID', 'Couriers & Tracking',
+               'Scanner', 'Customer Intelligence', 'Offline Mode',
+               'Print & PDF', 'WhatsApp', 'AI & Wallet', 'Form Fields',
+               'Packing Variants', 'Analytics & SLA', 'Notifications']
+            • All 3 NEW categories ("Packing Variants", "Analytics & SLA",
+              "Notifications") present.
+            • All 3 appear AFTER "Form Fields" (idx 13, 14, 15 respectively
+              vs Form Fields at idx 12).
+            • All 16 NEW feature keys present in registry.features:
+                whatsapp_ai_variants, whatsapp_variant_rotation,
+                packing_variants_manage, packing_variants_picker,
+                packing_variants_flexible, packing_variants_copy,
+                packing_variants_custom_categories,
+                analytics_dashboard, analytics_filters,
+                analytics_revenue_breakdown,
+                sla_engine, sla_alerts_dashboard, stage_rules_editor,
+                push_notifications, bulk_messaging_stages,
+                bulk_message_select_filter
+            • Each new key has a non-empty human-readable label.
+            • Platinum plan list contains ALL 16 new keys (auto-injected
+              via `list(ALL_KEYS)` migration).
+            • free_trial / silver / gold do NOT contain any of the 16 new
+              keys by default — they are gated to Platinum-only by the
+              registry's DEFAULT_PLAN_FEATURES, as designed.
+
+            ── TEST 2 — GET /api/admin/plan-features as user2@test.com ──
+            HTTP 403 (Admin access required). _require_admin guard works.
+
+            ── TEST 3 — PUT /api/admin/plan-features (admin) ──
+            Body: plans.silver = ["whatsapp_ai_variants"] (other plans
+            kept as-is). Response 200 OK with plans.silver returning
+            exactly ["whatsapp_ai_variants"]. Subsequent GET confirms
+            silver_after contains "whatsapp_ai_variants".
+            (Restored silver to its original 21-key default after the
+            assertion to keep the live tenant clean.)
+
+            ── TEST 4 — VARIANT ROTATION (user2) — CRITICAL ──
+            POST /api/me/whatsapp-templates/save-variants with payload:
+              { template_type: "shipment_sent",
+                variants: { gu: ["VARIANT_A_TEXT_GU rotation_test_AAA",
+                                 "VARIANT_B_TEXT_GU rotation_test_BBB",
+                                 "VARIANT_C_TEXT_GU rotation_test_CCC"] } }
+            → 200 OK, 3 variants persisted under
+              settings.whatsapp_template_variants.shipment_sent.gu.
+
+            Then GET /api/me/resolve-template?ttype=shipment_sent&lang=gu
+            FOUR consecutive times. Result (verbatim):
+              call 1: source='user_variant_1' body='VARIANT_A_TEXT_GU rotation_test_AAA'
+              call 2: source='user_variant_2' body='VARIANT_B_TEXT_GU rotation_test_BBB'
+              call 3: source='user_variant_3' body='VARIANT_C_TEXT_GU rotation_test_CCC'
+              call 4: source='user_variant_1' body='VARIANT_A_TEXT_GU rotation_test_AAA'
+
+            ✅ Source field advances by 1 on each call (mod 3).
+            ✅ Each of the 3 variants returned a DIFFERENT template body
+               in the first 3 calls (3 distinct bodies).
+            ✅ Call 4 wrapped round-robin back to variant 1 — both
+               source AND body match call 1 exactly (round-robin
+               correctly persists `whatsapp_template_rotation.shipment_sent`
+               via `(rot + 1) % len(v_arr)` in messaging.py:603).
+
+            ── TEST 5 — GET /api/me/feature-flags ──
+            user2 (silver plan): HTTP 200, response shape
+              {plan:"silver", features:[...21 keys...], is_admin:false}.
+            admin: HTTP 200, is_admin=true and `features` includes
+              every one of the 16 new keys (confirms admin bypass).
+
+            All flows verified end-to-end against the live preview
+            backend with real auth. No mocks. The variant rotation is
+            the central new feature for Phase 2 and works exactly as
+            specified in the review contract.
+
+agent_communication:
+    -agent: "testing"
+    -message: |
+        Phase-2 Final verification — ALL PASS (149/149 assertions).
+        • Feature registry: 3 new categories + 16 new keys correctly
+          registered, ordered, and Platinum-default-only by design.
+        • Admin gate: 403 for user2, 200 for admin.
+        • Plan-features PUT round-trips correctly (saved & restored).
+        • CRITICAL — Variant rotation: round-robin advances on every
+          call (1→2→3→1). Each call returns a distinct template body
+          and the `source` field correctly reflects user_variant_N.
+        • /me/feature-flags works for both regular user and admin.
+        No issues found. Main agent can summarise and finish.
