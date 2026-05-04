@@ -901,6 +901,15 @@ class Shipment(BaseModel):
     token_amount: float = 0.0   # advance already collected (prepaid portion)
     box_dimensions: str = ""    # e.g. "30×20×10 cm"
     shipment_notes: str = ""    # free text, shown on label if toggled on
+    # Phase 2 — Packing variant + courier rate snapshot for reporting.
+    # Captured at save time so historical reports stay stable even if
+    # the variant row is later edited or deleted.
+    variant_id: str = ""
+    variant_name: str = ""
+    package_type: str = ""
+    category: str = ""
+    rate_applied: float = 0.0   # ₹ actually charged for this shipment
+    rate_basis: str = ""        # "within_state" | "outside_state" | ""
     # Per-shipment dynamic custom field values.
     # Key = CustomLabelField.id, Value = the text to print for this shipment.
     custom_values: Dict[str, str] = Field(default_factory=dict)
@@ -961,6 +970,13 @@ class ShipmentCreate(BaseModel):
     token_amount: Optional[float] = 0.0
     box_dimensions: Optional[str] = ""
     shipment_notes: Optional[str] = ""
+    # Phase 2 — Packing variant snapshot.
+    variant_id: Optional[str] = ""
+    variant_name: Optional[str] = ""
+    package_type: Optional[str] = ""
+    category: Optional[str] = ""
+    rate_applied: Optional[float] = 0.0
+    rate_basis: Optional[str] = ""
     custom_values: Optional[Dict[str, str]] = None
     sheet_row_key: Optional[str] = ""
 

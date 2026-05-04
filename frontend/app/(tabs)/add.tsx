@@ -164,6 +164,36 @@ export default function AddShipment() {
   const [importFilter, setImportFilter] = useState<"pending" | "all">("pending");
   const [importSearch, setImportSearch] = useState("");
 
+  // Phase 2 — Packing Variant state. When the user picks a courier we
+  // load that courier's variants and offer a chip row so they can fill
+  // weight / dimensions / rate in one tap. `originState` comes from the
+  // user's sender address in Settings → Business Profile and drives the
+  // within-vs-outside-state rate choice.
+  const [variants, setVariants] = useState<Array<{
+    id: string;
+    variant_name: string;
+    package_type: string;
+    category: string;
+    length_cm: number;
+    width_cm: number;
+    height_cm: number;
+    weight_g: number;
+    within_state_rate: number;
+    outside_state_rate: number;
+    active: boolean;
+  }>>([]);
+  const [selectedVariant, setSelectedVariant] = useState<typeof variants[0] | null>(null);
+  const [originState, setOriginState] = useState<string>("");
+  // Rate basis captured at save time — derived from origin-vs-destination
+  // state comparison. Exposed here so the UI can preview which rate is
+  // currently applicable for the picked variant.
+  const rateBasis: "within_state" | "outside_state" | "" = (() => {
+    if (!originState || !state) return "";
+    return originState.trim().toLowerCase() === state.trim().toLowerCase()
+      ? "within_state"
+      : "outside_state";
+  })();
+
   useEffect(() => {
     (async () => {
       const [cs, settings, lc, lp, lt] = await Promise.all([
@@ -178,6 +208,8 @@ export default function AddShipment() {
       setSheetConnected(Boolean(settings.sheet?.sheet_id));
       setCustomFields(((settings as any).custom_fields || []) as any[]);
       setFieldReqs(((settings as any).field_requirements || {}) as Record<string, boolean>);
+      // Phase 2 — Origin state for variant rate (within vs outside).
+      setOriginState(((settings as any).sender?.state || "").toString().trim());
       // Per-user custom fields (plan-gated, defined in Manage Custom Fields).
       // Loaded best-effort — never blocks the form.
       Api.listMyCustomFields()
@@ -218,7 +250,55 @@ export default function AddShipment() {
     })();
   }, []);
 
-  // Phase-7e: Fetch a fresh Master Order ID preview when the form opens.
+  // Phase 2 — Load variants whenever the user picks a courier (or
+  // switches). Also resets the current selection so we never apply a
+  // stale variant from the previous courier.
+  useEffect(() => {
+    setSelectedVariant(null);
+    if (!selectedCourier?.id) {
+      setVariants([]);
+      return;
+    }
+    let cancelled = false;
+    Api.listCourierVariants(selectedCourier.id)
+      .then((r) => {
+        if (cancelled) return;
+        const active = (r.variants || []).filter((v: any) => v.active !== false);
+        setVariants(active as any);
+      })
+      .catch(() => { if (!cancelled) setVariants([]); });
+    return () => { cancelled = true; };
+  }, [selectedCourier?.id]);
+
+  // Phase 2 — Apply a variant: auto-fill weight, dims and rate. User
+  // can still override anything; we only fill empty-or-matching fields
+  // to avoid clobbering manual edits. Rate is applied only when the
+  // amount field is empty so Prepaid orders aren't overwritten.
+  const applyVariant = useCallback((v: typeof variants[0]) => {
+    setSelectedVariant(v);
+    // Weight
+    if (v.weight_g) {
+      setWeight(String(v.weight_g));
+      setWeightUnit("g");
+    }
+    // Dimensions
+    if (v.length_cm) setBoxL(String(v.length_cm));
+    if (v.width_cm)  setBoxW(String(v.width_cm));
+    if (v.height_cm) setBoxH(String(v.height_cm));
+    // Rate — only auto-fill amount when currently empty/0 to avoid
+    // clobbering a manually-entered prepaid amount.
+    const currentAmt = parseFloat(amount) || 0;
+    if (!currentAmt) {
+      const basis: "within_state" | "outside_state" = (() => {
+        if (!originState || !state) return "outside_state";
+        return originState.trim().toLowerCase() === state.trim().toLowerCase()
+          ? "within_state" : "outside_state";
+      })();
+      const rate = basis === "within_state" ? v.within_state_rate : v.outside_state_rate;
+      if (rate) setAmount(String(rate));
+    }
+  }, [amount, originState, state]);
+
   // Auto-fills the Order ID input ONLY when:
   //   - User is creating a NEW shipment (no edit_id)
   //   - Auto-Generate Order ID is ON
@@ -842,6 +922,17 @@ export default function AddShipment() {
           item_description: items.join(", "),
           weight: weight.trim() ? `${weight.trim()} ${weightUnit}` : "",
           sheet_row_key: sheetRowKey,
+          // Phase 2 — Variant snapshot (captured at save time).
+          variant_id: selectedVariant?.id || "",
+          variant_name: selectedVariant?.variant_name || "",
+          package_type: selectedVariant?.package_type || "",
+          category: selectedVariant?.category || "",
+          rate_applied: (() => {
+            if (!selectedVariant) return 0;
+            if (rateBasis === "within_state") return selectedVariant.within_state_rate || 0;
+            return selectedVariant.outside_state_rate || 0;
+          })(),
+          rate_basis: selectedVariant ? (rateBasis || "outside_state") : "",
           custom_values: (() => {
             // Keep only values for fields that still exist + are enabled
             // + use per-shipment source. Trim empty strings.
@@ -1044,6 +1135,92 @@ export default function AddShipment() {
               })}
             </ScrollView>
           </Section>
+
+          {/* Phase 2 — Packing Variant Picker. Only shown when a courier
+              is selected AND that courier has at least one variant
+              defined. One-tap applies weight + dimensions + rate. */}
+          {selectedCourier && variants.length > 0 && (
+            <Section title="📦 Packing Variant (optional)">
+              <Text style={styles.hint}>
+                Tap a variant to auto-fill weight, dimensions, and rate
+                ({originState && state
+                  ? rateBasis === "within_state"
+                    ? `within ${originState}`
+                    : `outside ${originState} → ${state || "other"}`
+                  : "state detection pending — fill customer state first"})
+              </Text>
+              <ScrollView
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                contentContainerStyle={{ gap: 8, paddingRight: 16, paddingVertical: 6 }}
+              >
+                {variants.map((v) => {
+                  const active = selectedVariant?.id === v.id;
+                  const currentRate =
+                    rateBasis === "within_state" ? v.within_state_rate :
+                    rateBasis === "outside_state" ? v.outside_state_rate :
+                    v.outside_state_rate; // default to outside when unknown
+                  return (
+                    <TouchableOpacity
+                      key={v.id}
+                      testID={`variant-card-${v.variant_name}`}
+                      onPress={() => applyVariant(v)}
+                      style={[
+                        styles.variantCard,
+                        active && styles.variantCardActive,
+                      ]}
+                    >
+                      <Text style={[
+                        styles.variantCardName,
+                        active && { color: "#fff" },
+                      ]} numberOfLines={1}>
+                        {v.variant_name}
+                      </Text>
+                      <Text style={[
+                        styles.variantCardMeta,
+                        active && { color: "#E0E7FF" },
+                      ]} numberOfLines={1}>
+                        {v.weight_g ? `${v.weight_g}g` : "—"}
+                        {" · "}
+                        {v.length_cm ? `${v.length_cm}×${v.width_cm}×${v.height_cm}` : "—"}
+                      </Text>
+                      <Text style={[
+                        styles.variantCardRate,
+                        active && { color: "#fff" },
+                      ]}>
+                        ₹{currentRate || 0}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </ScrollView>
+              {selectedVariant && (
+                <TouchableOpacity
+                  onPress={() => setSelectedVariant(null)}
+                  style={styles.clearVariantBtn}
+                >
+                  <Ionicons name="close-circle" size={14} color="#6B7280" />
+                  <Text style={styles.clearVariantTxt}>Clear variant</Text>
+                </TouchableOpacity>
+              )}
+            </Section>
+          )}
+          {selectedCourier && variants.length === 0 && (
+            <Section title="📦 Packing Variants">
+              <Text style={styles.hint}>
+                No variants defined for this courier yet.
+              </Text>
+              <TouchableOpacity
+                style={styles.outlineBtn}
+                onPress={() => router.push(`/courier/${selectedCourier.id}/variants` as any)}
+              >
+                <Ionicons name="add-circle-outline" size={16} color="#7C3AED" />
+                <Text style={[styles.outlineBtnText, { color: "#7C3AED" }]}>
+                  Add variants for {selectedCourier.name}
+                </Text>
+              </TouchableOpacity>
+            </Section>
+          )}
 
           {/* Tracking */}
           <Section title="Tracking ID *">
@@ -1912,6 +2089,35 @@ const styles = StyleSheet.create({
   toggleBtnActive: { backgroundColor: colors.primary, borderColor: colors.primary },
   toggleText: { fontWeight: "700", color: colors.text, fontSize: 13 },
   hint: { fontSize: 12, color: colors.textMuted, marginTop: 6 },
+
+  // Phase 2 — Packing Variant picker
+  variantCard: {
+    minWidth: 130,
+    paddingVertical: 10, paddingHorizontal: 12,
+    borderRadius: 10,
+    backgroundColor: "#fff", borderWidth: 1, borderColor: "#E5E7EB",
+  },
+  variantCardActive: {
+    backgroundColor: "#7C3AED", borderColor: "#7C3AED",
+  },
+  variantCardName: { fontSize: 13, fontWeight: "800", color: colors.text },
+  variantCardMeta: { fontSize: 10.5, color: "#6B7280", marginTop: 3 },
+  variantCardRate: { fontSize: 13, fontWeight: "800", color: "#1F4FBF", marginTop: 5 },
+  clearVariantBtn: {
+    flexDirection: "row", alignItems: "center", gap: 4,
+    alignSelf: "flex-start",
+    paddingVertical: 4, paddingHorizontal: 8, marginTop: 4,
+  },
+  clearVariantTxt: { fontSize: 11, color: "#6B7280" },
+  outlineBtn: {
+    flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6,
+    paddingVertical: 10, borderRadius: 10,
+    backgroundColor: "#fff",
+    borderWidth: 1, borderColor: "#E5E7EB",
+    marginTop: 8,
+  },
+  outlineBtnText: { fontSize: 13, fontWeight: "700", color: colors.text },
+
   requiredHint: {
     fontSize: 12,
     fontWeight: "700",

@@ -1,367 +1,324 @@
-"""
-Backend tests — Courier Packing Variants endpoints (Phase 2).
+"""Phase 2B Backend Test — Shipment Create with Packing Variant snapshot fields.
 
-Covers:
-  - GET    /api/couriers/{courier_id}/variants
-  - POST   /api/couriers/{courier_id}/variants
-  - PUT    /api/couriers/{courier_id}/variants/{variant_id}
-  - DELETE /api/couriers/{courier_id}/variants/{variant_id}
-  - GET    /api/me/all-variants
-  - GET/PUT /api/admin/plan-limits  (packing_variant_cap exposure)
-
-Run:  python /app/backend_test.py
+Tests the NEW optional fields on Shipment/ShipmentCreate:
+  variant_id, variant_name, package_type, category, rate_applied, rate_basis
+and the /api/me/all-variants endpoint + ShipmentUpdate behavior.
 """
+
 import os
 import sys
-import uuid
 import json
+import uuid
 import requests
-from typing import Any, Dict, List, Optional, Tuple
 
-BASE_URL = "https://logistics-hub-740.preview.emergentagent.com/api"
+BACKEND_URL = "https://logistics-hub-740.preview.emergentagent.com"
+API = f"{BACKEND_URL}/api"
 
-ADMIN = {"email": "admin@test.com", "password": "Admin@12345"}
-USER2 = {"email": "user2@test.com", "password": "User@12345"}
+USER_EMAIL = "user2@test.com"
+USER_PASSWORD = "User@12345"
+ADMIN_EMAIL = "admin@test.com"
+ADMIN_PASSWORD = "Admin@12345"
 
-PASS_COUNT = 0
-FAIL_COUNT = 0
-FAILS: List[str] = []
+passed = []
+failed = []
 
 
-def _check(cond: bool, msg: str):
-    global PASS_COUNT, FAIL_COUNT
-    if cond:
-        PASS_COUNT += 1
-        print(f"  ✅ {msg}")
+def p(ok, label, details=""):
+    if ok:
+        passed.append(label)
+        print(f"  PASS  {label}")
     else:
-        FAIL_COUNT += 1
-        FAILS.append(msg)
-        print(f"  ❌ {msg}")
+        failed.append((label, details))
+        print(f"  FAIL  {label}  | {details}")
 
 
-def login(creds: Dict[str, str]) -> str:
-    r = requests.post(f"{BASE_URL}/auth/login", json=creds, timeout=20)
-    r.raise_for_status()
+def login(email, password):
+    r = requests.post(f"{API}/auth/login", json={"email": email, "password": password}, timeout=15)
+    assert r.status_code == 200, f"login failed: {r.status_code} {r.text}"
     return r.json()["token"]
 
 
-def auth_headers(tok: str) -> Dict[str, str]:
-    return {"Authorization": f"Bearer {tok}"}
+def auth_hdr(token):
+    return {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
 
 
-def get_user_plan(tok: str) -> str:
-    r = requests.get(f"{BASE_URL}/auth/me", headers=auth_headers(tok), timeout=20)
-    r.raise_for_status()
-    return r.json().get("plan", "free_trial")
+def main():
+    print(f"=== Phase 2B Test against {API} ===")
 
+    # Try user2 first; fall back to admin if user2 is over cap for couriers.
+    token = login(USER_EMAIL, USER_PASSWORD)
+    who = "user2"
 
-def get_first_courier_id(tok: str) -> Optional[str]:
-    r = requests.get(f"{BASE_URL}/couriers", headers=auth_headers(tok), timeout=20)
-    r.raise_for_status()
-    arr = r.json()
-    return arr[0]["id"] if arr else None
+    # Step 1: fetch couriers, create if none
+    r = requests.get(f"{API}/couriers", headers=auth_hdr(token), timeout=15)
+    p(r.status_code == 200, "1. GET /api/couriers returns 200", f"status={r.status_code} body={r.text[:200]}")
+    couriers = r.json() if r.status_code == 200 else []
+    print(f"  user2 has {len(couriers)} couriers")
 
+    courier = None
+    if couriers:
+        courier = couriers[0]
+    else:
+        # Create one
+        r2 = requests.post(f"{API}/couriers",
+                           headers=auth_hdr(token),
+                           json={"name": "TEST_COURIER_PV"},
+                           timeout=15)
+        if r2.status_code != 200:
+            # Might be plan cap — switch to admin
+            print(f"  user2 POST /couriers failed ({r2.status_code}: {r2.text[:120]}), switching to admin")
+            token = login(ADMIN_EMAIL, ADMIN_PASSWORD)
+            who = "admin"
+            r = requests.get(f"{API}/couriers", headers=auth_hdr(token), timeout=15)
+            couriers = r.json()
+            if couriers:
+                courier = couriers[0]
+            else:
+                r2 = requests.post(f"{API}/couriers",
+                                   headers=auth_hdr(token),
+                                   json={"name": "TEST_COURIER_PV"},
+                                   timeout=15)
+                p(r2.status_code == 200, "1a. POST /api/couriers (admin) 200", r2.text[:200])
+                courier = r2.json()
+        else:
+            p(True, "1a. POST /api/couriers created new courier")
+            courier = r2.json()
 
-# ─────────────────────── TESTS ───────────────────────
+    courier_id = courier["id"]
+    courier_name = courier["name"]
+    print(f"  Using courier: {courier_name} ({courier_id}) as {who}")
 
-def test_auth_required():
-    print("\n[1] Auth required (no token → 401)")
-    r = requests.get(f"{BASE_URL}/couriers/{uuid.uuid4()}/variants", timeout=20)
-    _check(r.status_code in (401, 403),
-           f"GET variants without token → {r.status_code} (expected 401/403)")
-
-
-def cleanup_variants(tok: str, courier_id: str):
-    """Wipe all variants for given courier (so we start from zero)."""
-    r = requests.get(f"{BASE_URL}/couriers/{courier_id}/variants",
-                     headers=auth_headers(tok), timeout=20)
-    if r.status_code != 200:
-        return
-    for v in r.json().get("variants", []):
-        requests.delete(
-            f"{BASE_URL}/couriers/{courier_id}/variants/{v['id']}",
-            headers=auth_headers(tok), timeout=20,
-        )
-
-
-def test_user2_flow():
-    print("\n[2..7] User2 flow (login, list empty, create, cap, list, update, delete)")
-    tok = login(USER2)
-    plan = get_user_plan(tok)
-    print(f"  • user2 plan = {plan!r}")
-
-    courier_id = get_first_courier_id(tok)
-    _check(courier_id is not None, "user2 has at least one courier (Demo Courier or seeded)")
-    if not courier_id:
-        return
-
-    cleanup_variants(tok, courier_id)
-
-    # --- Empty list ---
-    r = requests.get(f"{BASE_URL}/couriers/{courier_id}/variants",
-                     headers=auth_headers(tok), timeout=20)
-    _check(r.status_code == 200, f"GET empty variants → 200 (got {r.status_code})")
-    j = r.json()
-    _check("variants" in j and "cap" in j and "current_count" in j and "remaining" in j,
-           "GET response has variants/cap/current_count/remaining keys")
-    _check(j.get("current_count") == 0, f"current_count == 0 (got {j.get('current_count')})")
-    _check(j.get("variants") == [], "variants is []")
-    _check("package_types" in j and isinstance(j["package_types"], list),
-           "package_types list present")
-    _check("categories" in j and isinstance(j["categories"], list),
-           "categories list present")
-    expected_caps = {"free_trial": 1, "silver": 2, "gold": 5, "platinum": 8}
-    expected = expected_caps.get(plan, 1)
-    cap_returned = j.get("cap")
-    _check(cap_returned == expected,
-           f"cap = {cap_returned} matches plan {plan!r} expected {expected}")
-    print(f"  • cap={cap_returned}  current_count={j.get('current_count')}  remaining={j.get('remaining')}")
-
-    # --- Create one variant ---
-    payload = {
-        "variant_name": "ODC 320gm",
+    # Step 2: Create a packing variant
+    variant_body = {
+        "variant_name": f"ODC 320gm PV-{uuid.uuid4().hex[:4]}",
         "package_type": "Cover",
         "category": "Documents",
-        "length_cm": 25, "width_cm": 18, "height_cm": 2,
+        "length_cm": 25,
+        "width_cm": 18,
+        "height_cm": 2,
         "weight_g": 320,
         "within_state_rate": 30,
         "outside_state_rate": 60,
     }
-    r = requests.post(f"{BASE_URL}/couriers/{courier_id}/variants",
-                      headers=auth_headers(tok), json=payload, timeout=20)
-    _check(r.status_code == 200, f"POST first variant → 200 (got {r.status_code} body={r.text[:200]})")
+    r = requests.post(f"{API}/couriers/{courier_id}/variants",
+                      headers=auth_hdr(token),
+                      json=variant_body,
+                      timeout=15)
+    if r.status_code == 402:
+        # plan cap — fallback: list existing variants and reuse/create on admin
+        print(f"  POST variant hit plan cap: {r.text[:160]}")
+        # try listing
+        rl = requests.get(f"{API}/couriers/{courier_id}/variants", headers=auth_hdr(token), timeout=15)
+        existing = (rl.json() or {}).get("variants") or []
+        if existing:
+            variant = existing[0]
+            print(f"  Reusing existing variant on same plan: {variant['id']}")
+            # But test rate values may not match; patch them via PUT to satisfy assertions
+            upd = requests.put(f"{API}/couriers/{courier_id}/variants/{variant['id']}",
+                               headers=auth_hdr(token),
+                               json={"within_state_rate": 30, "outside_state_rate": 60,
+                                     "package_type": "Cover", "category": "Documents"},
+                               timeout=15)
+            if upd.status_code == 200:
+                variant = upd.json()
+            p(True, "2. variant available (existing, plan-capped)")
+        else:
+            # escalate to admin
+            print("  No existing variants — switching to admin to create one")
+            token = login(ADMIN_EMAIL, ADMIN_PASSWORD)
+            who = "admin"
+            # Need an admin courier
+            rc = requests.get(f"{API}/couriers", headers=auth_hdr(token), timeout=15)
+            adm_couriers = rc.json() or []
+            if not adm_couriers:
+                rc2 = requests.post(f"{API}/couriers", headers=auth_hdr(token),
+                                    json={"name": "TEST_COURIER_PV"}, timeout=15)
+                courier = rc2.json()
+            else:
+                courier = adm_couriers[0]
+            courier_id = courier["id"]
+            courier_name = courier["name"]
+            r = requests.post(f"{API}/couriers/{courier_id}/variants",
+                              headers=auth_hdr(token),
+                              json=variant_body, timeout=15)
+            p(r.status_code == 200, "2. POST /api/couriers/{id}/variants (admin) 200",
+              f"status={r.status_code} body={r.text[:200]}")
+            variant = r.json()
+    else:
+        p(r.status_code == 200, "2. POST /api/couriers/{id}/variants 200",
+          f"status={r.status_code} body={r.text[:200]}")
+        if r.status_code != 200:
+            print("Aborting — cannot create variant.")
+            print_summary()
+            sys.exit(1)
+        variant = r.json()
+
+    variant_id = variant["id"]
+    print(f"  Created variant id={variant_id} name={variant['variant_name']}")
+
+    # validate variant fields
+    p(variant.get("package_type") == "Cover", "2a. variant.package_type = 'Cover'", str(variant.get("package_type")))
+    p(variant.get("category") == "Documents", "2b. variant.category = 'Documents'", str(variant.get("category")))
+    p(abs(float(variant.get("within_state_rate") or 0) - 30) < 0.01, "2c. variant.within_state_rate = 30")
+    p(abs(float(variant.get("outside_state_rate") or 0) - 60) < 0.01, "2d. variant.outside_state_rate = 60")
+
+    # Step 3: Create shipment WITH variant fields
+    tracking_id = f"TST-PV-{uuid.uuid4().hex[:8].upper()}"
+    ship_body_with = {
+        "tracking_id": tracking_id,
+        "courier_id": courier_id,
+        "courier_name": courier_name,
+        "order_id": f"ORD-PV-{uuid.uuid4().hex[:6]}",
+        "customer_name": "Test Customer",
+        "customer_phone": "9876543210",
+        "address_line1": "Test address",
+        "city": "Ahmedabad",
+        "state": "Gujarat",
+        "pincode": "380001",
+        "payment_mode": "COD",
+        "amount": 60,
+        "variant_id": variant_id,
+        "variant_name": variant["variant_name"],
+        "package_type": "Cover",
+        "category": "Documents",
+        "rate_applied": 60,
+        "rate_basis": "outside_state",
+    }
+    r = requests.post(f"{API}/shipments", headers=auth_hdr(token), json=ship_body_with, timeout=30)
+    p(r.status_code == 200, "3. POST /api/shipments WITH variant fields 200",
+      f"status={r.status_code} body={r.text[:300]}")
     if r.status_code != 200:
-        return
-    v1 = r.json()
-    _check(v1.get("variant_name") == "ODC 320gm", "variant_name persisted")
-    _check(v1.get("package_type") == "Cover", "package_type persisted")
-    _check(v1.get("category") == "Documents", "category persisted")
-    _check(float(v1.get("length_cm", 0)) == 25, "length_cm persisted")
-    _check(float(v1.get("weight_g", 0)) == 320, "weight_g persisted")
-    _check(float(v1.get("within_state_rate", 0)) == 30, "within_state_rate persisted")
-    _check(float(v1.get("outside_state_rate", 0)) == 60, "outside_state_rate persisted")
-    _check(v1.get("user_id") and v1.get("courier_id") == courier_id, "user_id+courier_id stamped")
-    _check(bool(v1.get("active", False)), "active=true by default")
-
-    # --- Plan cap enforcement ---
-    cap = cap_returned
-    if cap is not None:
-        # already created 1; create up to cap, then expect 402 on next
-        created_extra = []
-        for i in range(2, cap + 1):
-            extra = dict(payload, variant_name=f"Cap fill #{i}")
-            r2 = requests.post(f"{BASE_URL}/couriers/{courier_id}/variants",
-                               headers=auth_headers(tok), json=extra, timeout=20)
-            _check(r2.status_code == 200, f"POST fill #{i}/{cap} → 200 (got {r2.status_code})")
-            if r2.status_code == 200:
-                created_extra.append(r2.json().get("id"))
-        # Now exceed cap
-        r3 = requests.post(f"{BASE_URL}/couriers/{courier_id}/variants",
-                           headers=auth_headers(tok),
-                           json=dict(payload, variant_name="Should be blocked"),
-                           timeout=20)
-        _check(r3.status_code == 402, f"POST beyond cap → 402 (got {r3.status_code})")
-        body = r3.text
-        _check("Packing variant limit reached" in body or "limit" in body.lower(),
-               f"402 body mentions 'Packing variant limit reached' (got: {body[:160]})")
-
-    # --- List populated ---
-    r = requests.get(f"{BASE_URL}/couriers/{courier_id}/variants",
-                     headers=auth_headers(tok), timeout=20)
-    _check(r.status_code == 200, "GET after fill → 200")
-    j2 = r.json()
-    _check(j2.get("current_count") == cap, f"current_count == cap ({cap}) (got {j2.get('current_count')})")
-    _check(j2.get("remaining") == 0, f"remaining == 0 (got {j2.get('remaining')})")
-    names = [v["variant_name"] for v in j2.get("variants", [])]
-    _check("ODC 320gm" in names, "Original ODC 320gm appears in list")
-
-    # --- Update first variant ---
-    vid = v1["id"]
-    r = requests.put(f"{BASE_URL}/couriers/{courier_id}/variants/{vid}",
-                     headers=auth_headers(tok),
-                     json={"within_state_rate": 45}, timeout=20)
-    _check(r.status_code == 200, f"PUT update rate → 200 (got {r.status_code})")
-    if r.status_code == 200:
-        _check(float(r.json().get("within_state_rate", 0)) == 45,
-               f"within_state_rate updated to 45 (got {r.json().get('within_state_rate')})")
-        # Other fields preserved
-        _check(r.json().get("variant_name") == "ODC 320gm", "variant_name preserved on PUT")
-
-    # --- Delete first variant ---
-    r = requests.delete(f"{BASE_URL}/couriers/{courier_id}/variants/{vid}",
-                        headers=auth_headers(tok), timeout=20)
-    _check(r.status_code == 200, f"DELETE variant → 200 (got {r.status_code})")
-    r = requests.get(f"{BASE_URL}/couriers/{courier_id}/variants",
-                     headers=auth_headers(tok), timeout=20)
-    after_delete_names = [v["variant_name"] for v in r.json().get("variants", [])]
-    _check("ODC 320gm" not in after_delete_names, "Deleted variant gone from list")
-    _check(r.json().get("current_count") == cap - 1,
-           f"current_count decreased by 1 (got {r.json().get('current_count')})")
-    _check(r.json().get("remaining") == 1,
-           f"remaining == 1 (got {r.json().get('remaining')})")
-
-    # cleanup remaining test variants
-    cleanup_variants(tok, courier_id)
-
-
-def test_bad_courier_id():
-    print("\n[9] Bad courier_id")
-    tok = login(USER2)
-    bogus = str(uuid.uuid4())
-    r = requests.get(f"{BASE_URL}/couriers/{bogus}/variants",
-                     headers=auth_headers(tok), timeout=20)
-    _check(r.status_code == 404, f"GET bogus courier → 404 (got {r.status_code})")
-    _check("Courier not found" in r.text, "GET 404 body mentions 'Courier not found'")
-    r = requests.post(f"{BASE_URL}/couriers/{bogus}/variants",
-                      headers=auth_headers(tok),
-                      json={"variant_name": "x"}, timeout=20)
-    _check(r.status_code == 404, f"POST bogus courier → 404 (got {r.status_code})")
-    _check("Courier not found" in r.text, "POST 404 body mentions 'Courier not found'")
-
-
-def test_admin_bypass():
-    print("\n[10] Admin bypass — cap=null + can create > plan cap")
-    tok = login(ADMIN)
-    courier_id = get_first_courier_id(tok)
-    _check(courier_id is not None, "admin has at least one courier")
-    if not courier_id:
-        return
-    cleanup_variants(tok, courier_id)
-
-    r = requests.get(f"{BASE_URL}/couriers/{courier_id}/variants",
-                     headers=auth_headers(tok), timeout=20)
-    _check(r.status_code == 200, "Admin GET variants → 200")
-    j = r.json()
-    _check(j.get("cap") is None, f"Admin cap == null (got {j.get('cap')!r})")
-    _check(j.get("remaining") is None, f"Admin remaining == null (got {j.get('remaining')!r})")
-
-    # Create 9 variants — exceeds platinum cap of 8 — should still succeed for admin
-    created_ids = []
-    for i in range(9):
-        r = requests.post(f"{BASE_URL}/couriers/{courier_id}/variants",
-                          headers=auth_headers(tok),
-                          json={"variant_name": f"Admin V{i}",
-                                "package_type": "Cover", "category": "Other",
-                                "within_state_rate": 10, "outside_state_rate": 20},
-                          timeout=20)
-        if r.status_code == 200:
-            created_ids.append(r.json()["id"])
-    _check(len(created_ids) == 9, f"Admin created 9 variants beyond top plan cap (got {len(created_ids)})")
-
-    # cleanup
-    for vid in created_ids:
-        requests.delete(f"{BASE_URL}/couriers/{courier_id}/variants/{vid}",
-                        headers=auth_headers(tok), timeout=20)
-
-
-def test_all_variants_endpoint():
-    print("\n[11] /me/all-variants scope + shape")
-    tok = login(USER2)
-    courier_id = get_first_courier_id(tok)
-    cleanup_variants(tok, courier_id)
-    # Create 2 variants for user2
-    for i in range(2):
-        requests.post(f"{BASE_URL}/couriers/{courier_id}/variants",
-                      headers=auth_headers(tok),
-                      json={"variant_name": f"AVar {i}", "package_type": "Cover",
-                            "within_state_rate": 5, "outside_state_rate": 10},
-                      timeout=20)
-    r = requests.get(f"{BASE_URL}/me/all-variants", headers=auth_headers(tok), timeout=20)
-    _check(r.status_code == 200, f"GET /me/all-variants → 200 (got {r.status_code})")
-    j = r.json()
-    _check("variants" in j and "by_courier" in j and "package_types" in j and "categories" in j,
-           "Response keys: variants, by_courier, package_types, categories")
-    arr = j.get("variants", [])
-    _check(len(arr) >= 2, f"Returns user's variants (got {len(arr)})")
-    _check(all(v.get("user_id") for v in arr), "All variants belong to current user (user_id stamped)")
-    by = j.get("by_courier", {})
-    _check(courier_id in by, f"by_courier has courier_id={courier_id}")
-    _check(len(by.get(courier_id, [])) >= 2, "by_courier[courier_id] has 2+ entries")
-    cleanup_variants(tok, courier_id)
-
-
-def test_validation_missing_name():
-    print("\n[12] Validation: missing/empty variant_name → 400")
-    tok = login(USER2)
-    courier_id = get_first_courier_id(tok)
-    # Empty string
-    r = requests.post(f"{BASE_URL}/couriers/{courier_id}/variants",
-                      headers=auth_headers(tok), json={"variant_name": ""}, timeout=20)
-    _check(r.status_code == 400, f"POST empty variant_name → 400 (got {r.status_code} body={r.text[:160]})")
-    # Whitespace only
-    r = requests.post(f"{BASE_URL}/couriers/{courier_id}/variants",
-                      headers=auth_headers(tok), json={"variant_name": "   "}, timeout=20)
-    _check(r.status_code == 400, f"POST whitespace variant_name → 400 (got {r.status_code})")
-    # Missing field — Pydantic should 422 (treat as a validation error category)
-    r = requests.post(f"{BASE_URL}/couriers/{courier_id}/variants",
-                      headers=auth_headers(tok), json={}, timeout=20)
-    _check(r.status_code in (400, 422), f"POST missing variant_name → 400/422 (got {r.status_code})")
-
-
-def test_plan_limits_exposure():
-    print("\n[13] /admin/plan-limits exposes packing_variant_cap (and PUT round-trip)")
-    tok = login(ADMIN)
-    r = requests.get(f"{BASE_URL}/admin/plan-limits", headers=auth_headers(tok), timeout=20)
-    _check(r.status_code == 200, f"GET /admin/plan-limits → 200 (got {r.status_code})")
-    if r.status_code != 200:
-        return
-    j = r.json()
-    _check("defaults" in j and "current" in j, "Response has defaults+current")
-    expected_defaults = {"free_trial": 1, "silver": 2, "gold": 5, "platinum": 8}
-    for key, val in expected_defaults.items():
-        d = j.get("defaults", {}).get(key, {})
-        c = j.get("current", {}).get(key, {})
-        _check(d.get("packing_variant_cap") == val,
-               f"defaults.{key}.packing_variant_cap == {val} (got {d.get('packing_variant_cap')})")
-        _check("packing_variant_cap" in c,
-               f"current.{key} contains packing_variant_cap key")
-
-    # PUT round-trip — set silver to 3
-    put_body = {"plans": {"silver": {"packing_variant_cap": 3}}}
-    r = requests.put(f"{BASE_URL}/admin/plan-limits",
-                     headers=auth_headers(tok), json=put_body, timeout=20)
-    _check(r.status_code == 200, f"PUT plan-limits silver=3 → 200 (got {r.status_code} body={r.text[:200]})")
-    if r.status_code == 200:
-        cur = r.json().get("current", {}).get("silver", {})
-        _check(cur.get("packing_variant_cap") == 3,
-               f"current.silver.packing_variant_cap == 3 (got {cur.get('packing_variant_cap')})")
-    # Confirm via GET
-    r = requests.get(f"{BASE_URL}/admin/plan-limits", headers=auth_headers(tok), timeout=20)
-    _check(r.status_code == 200 and r.json().get("current", {}).get("silver", {}).get("packing_variant_cap") == 3,
-           "GET reflects silver packing_variant_cap=3 after PUT")
-
-    # Restore default (delete override)
-    r_reset = requests.put(f"{BASE_URL}/admin/plan-limits",
-                           headers=auth_headers(tok),
-                           json={"plans": {"silver": {"packing_variant_cap": 2}}},
-                           timeout=20)
-    print(f"  • restore silver to default (status {r_reset.status_code})")
-
-
-def main():
-    print(f"=== Courier Packing Variants Backend Tests ===")
-    print(f"Base URL: {BASE_URL}")
-    try:
-        test_auth_required()
-        test_user2_flow()
-        test_bad_courier_id()
-        test_admin_bypass()
-        test_all_variants_endpoint()
-        test_validation_missing_name()
-        test_plan_limits_exposure()
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        print(f"\nFATAL: {e}")
-        sys.exit(2)
-    print(f"\n=== RESULTS: {PASS_COUNT} passed, {FAIL_COUNT} failed ===")
-    if FAIL_COUNT:
-        print("\nFailures:")
-        for f in FAILS:
-            print(f"  - {f}")
+        print_summary()
         sys.exit(1)
-    sys.exit(0)
+    ship_with = r.json()
+    print(f"  Created shipment id={ship_with['id']} tracking={ship_with['tracking_id']}")
+
+    # Verify returned shipment has the snapshot fields
+    p(ship_with.get("variant_id") == variant_id, "3a. response.variant_id matches",
+      f"got={ship_with.get('variant_id')!r} expected={variant_id!r}")
+    p(ship_with.get("variant_name") == variant["variant_name"], "3b. response.variant_name matches",
+      f"got={ship_with.get('variant_name')!r}")
+    p(ship_with.get("package_type") == "Cover", "3c. response.package_type == 'Cover'",
+      f"got={ship_with.get('package_type')!r}")
+    p(ship_with.get("category") == "Documents", "3d. response.category == 'Documents'",
+      f"got={ship_with.get('category')!r}")
+    p(abs(float(ship_with.get("rate_applied") or 0) - 60) < 0.01,
+      "3e. response.rate_applied == 60",
+      f"got={ship_with.get('rate_applied')!r}")
+    p(ship_with.get("rate_basis") == "outside_state", "3f. response.rate_basis == 'outside_state'",
+      f"got={ship_with.get('rate_basis')!r}")
+
+    # Step 4: Read back via GET /api/shipments
+    r = requests.get(f"{API}/shipments", headers=auth_hdr(token), timeout=30)
+    p(r.status_code == 200, "4. GET /api/shipments 200", f"status={r.status_code}")
+    shipments = r.json() if r.status_code == 200 else []
+    found = next((s for s in shipments if s.get("id") == ship_with["id"]), None)
+    p(found is not None, "4a. Created shipment found in list")
+    if found:
+        p(found.get("variant_id") == variant_id, "4b. list.variant_id matches",
+          f"got={found.get('variant_id')!r}")
+        p(found.get("variant_name") == variant["variant_name"], "4c. list.variant_name matches")
+        p(found.get("package_type") == "Cover", "4d. list.package_type == 'Cover'")
+        p(found.get("category") == "Documents", "4e. list.category == 'Documents'")
+        p(abs(float(found.get("rate_applied") or 0) - 60) < 0.01, "4f. list.rate_applied == 60")
+        p(found.get("rate_basis") == "outside_state", "4g. list.rate_basis == 'outside_state'")
+
+    # Step 5: Create shipment WITHOUT variant fields
+    tracking_id2 = f"TST-NV-{uuid.uuid4().hex[:8].upper()}"
+    ship_body_without = {
+        "tracking_id": tracking_id2,
+        "courier_id": courier_id,
+        "courier_name": courier_name,
+        "order_id": f"ORD-NV-{uuid.uuid4().hex[:6]}",
+        "customer_name": "Test NoVariant",
+        "customer_phone": "9876543211",
+        "address_line1": "Test address 2",
+        "city": "Ahmedabad",
+        "state": "Gujarat",
+        "pincode": "380001",
+        "payment_mode": "Prepaid",
+        "amount": 100,
+    }
+    r = requests.post(f"{API}/shipments", headers=auth_hdr(token), json=ship_body_without, timeout=30)
+    p(r.status_code == 200, "5. POST /api/shipments WITHOUT variant fields 200",
+      f"status={r.status_code} body={r.text[:300]}")
+    if r.status_code == 200:
+        ship_without = r.json()
+        p(ship_without.get("variant_id") == "", "5a. default variant_id == ''",
+          f"got={ship_without.get('variant_id')!r}")
+        p(ship_without.get("variant_name") == "", "5b. default variant_name == ''",
+          f"got={ship_without.get('variant_name')!r}")
+        p(float(ship_without.get("rate_applied") or 0) == 0.0, "5c. default rate_applied == 0",
+          f"got={ship_without.get('rate_applied')!r}")
+        p(ship_without.get("rate_basis") == "", "5d. default rate_basis == ''",
+          f"got={ship_without.get('rate_basis')!r}")
+    else:
+        ship_without = None
+
+    # Step 6: Update shipment with rate_applied/rate_basis
+    # ShipmentUpdate does NOT list these fields — report accordingly.
+    upd_body = {"rate_applied": 45, "rate_basis": "within_state"}
+    r = requests.put(f"{API}/shipments/{ship_with['id']}", headers=auth_hdr(token),
+                     json=upd_body, timeout=15)
+    print(f"  6. PUT /api/shipments/{{id}} with rate_applied/rate_basis → status={r.status_code}")
+    if r.status_code == 400 and "No fields to update" in r.text:
+        # Model silently drops unknown fields; Pydantic extras == ignore.
+        p(False, "6. PUT update accepts rate_applied/rate_basis",
+          "ShipmentUpdate does NOT list variant/rate fields — server responded 'No fields to update' "
+          "(fields silently ignored). Report: main agent should add rate_applied/rate_basis/variant_* "
+          "to ShipmentUpdate model if post-save edits are expected.")
+    elif r.status_code == 200:
+        body = r.json()
+        got_rate = float(body.get("rate_applied") or 0)
+        got_basis = body.get("rate_basis")
+        if abs(got_rate - 45) < 0.01 and got_basis == "within_state":
+            p(True, "6. PUT update accepts rate_applied/rate_basis and applies them")
+        else:
+            p(False, "6. PUT update applied rate fields",
+              f"values NOT updated — got rate_applied={got_rate} rate_basis={got_basis!r}. "
+              f"ShipmentUpdate model likely ignores unknown fields → Pydantic didn't set them.")
+    else:
+        p(False, "6. PUT update accepts rate_applied/rate_basis",
+          f"unexpected status={r.status_code} body={r.text[:200]}")
+
+    # Step 7: GET /api/me/all-variants
+    r = requests.get(f"{API}/me/all-variants", headers=auth_hdr(token), timeout=15)
+    p(r.status_code == 200, "7. GET /api/me/all-variants 200", f"status={r.status_code}")
+    if r.status_code == 200:
+        body = r.json()
+        by_courier = body.get("by_courier") or {}
+        p(courier_id in by_courier, "7a. by_courier[courier_id] present",
+          f"keys={list(by_courier.keys())[:5]}")
+        vlist = by_courier.get(courier_id) or []
+        variant_ids = [v.get("id") for v in vlist]
+        p(variant_id in variant_ids, "7b. created variant_id present in by_courier list",
+          f"got_ids={variant_ids}")
+
+    # cleanup attempt (non-fatal)
+    try:
+        if ship_with:
+            requests.delete(f"{API}/shipments/{ship_with['id']}", headers=auth_hdr(token), timeout=10)
+        if ship_without:
+            requests.delete(f"{API}/shipments/{ship_without['id']}", headers=auth_hdr(token), timeout=10)
+    except Exception:
+        pass
+
+    print_summary()
+
+
+def print_summary():
+    print("\n=== SUMMARY ===")
+    print(f"PASSED: {len(passed)}")
+    print(f"FAILED: {len(failed)}")
+    if failed:
+        print("\nFailed assertions:")
+        for lbl, det in failed:
+            print(f"  - {lbl}")
+            if det:
+                print(f"      {det}")
+    print(f"\nTotal: {len(passed)}/{len(passed)+len(failed)}")
 
 
 if __name__ == "__main__":
     main()
+    sys.exit(0 if not failed else 1)

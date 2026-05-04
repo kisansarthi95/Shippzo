@@ -10169,3 +10169,114 @@ agent_communication:
         a working PUT round-trip — all verified.
 
         No issues found. No code changes were made by testing agent.
+
+---
+
+## Backend Test Run: Phase 2B — Shipment Create with Packing Variant Snapshot (2026-05-04)
+
+backend:
+  - task: "Shipment Create/Read with Packing Variant snapshot fields"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "testing"
+        -comment: |
+            29/30 assertions passed via /app/backend_test.py against
+            https://logistics-hub-740.preview.emergentagent.com/api
+            (auth: user2@test.com).
+
+            VERIFIED END-TO-END:
+
+            1. Login as user2 → OK. GET /api/couriers returned 1 courier
+               (the seeded "Demo Courier"), reused it.
+
+            2. POST /api/couriers/{courier_id}/variants with the exact
+               review body returned 200 + full CourierVariant. Fields
+               stored verbatim: variant_name="ODC 320gm PV-xxxx",
+               package_type="Cover", category="Documents",
+               length_cm=25, width_cm=18, height_cm=2, weight_g=320,
+               within_state_rate=30, outside_state_rate=60, active=true.
+
+            3. POST /api/shipments with variant_id / variant_name /
+               package_type / category / rate_applied=60 / rate_basis=
+               "outside_state" returned 200 + full Shipment object.
+               All six snapshot fields round-trip exactly:
+                 - variant_id == posted UUID ✅
+                 - variant_name == posted string ✅
+                 - package_type == "Cover" ✅
+                 - category == "Documents" ✅
+                 - rate_applied == 60.0 ✅
+                 - rate_basis == "outside_state" ✅
+
+            4. GET /api/shipments → the newly created shipment was
+               found in the list and ALL six snapshot fields matched
+               exactly (same values surfaced by list endpoint).
+
+            5. POST /api/shipments WITHOUT variant_* fields (legacy/
+               old path) returned 200 with the documented defaults:
+                 - variant_id == "" ✅
+                 - variant_name == "" ✅
+                 - rate_applied == 0.0 ✅
+                 - rate_basis == "" ✅
+               Backward-compat is intact.
+
+            6. KNOWN GAP (reported per review instructions, not a bug):
+               PUT /api/shipments/{id} with body
+               {rate_applied: 45, rate_basis: "within_state"} returned
+               HTTP 400 "No fields to update". Root cause: the
+               ShipmentUpdate model (/app/backend/server.py lines
+               984-1006) does NOT list variant_id / variant_name /
+               package_type / category / rate_applied / rate_basis as
+               updatable fields, so Pydantic's default extras=ignore
+               silently drops them, and the handler's
+               `{k: v for k, v in payload.model_dump().items() if v
+               is not None}` dict ends up empty → 400.
+
+               This matches the review's own caveat: "if the
+               ShipmentUpdate model does NOT list these fields, please
+               report". Shipment CREATE path (the primary review
+               contract) works perfectly; only post-save EDIT of the
+               snapshot is unsupported. Main agent to decide whether
+               to add the six fields to ShipmentUpdate in a follow-up
+               (rate_applied + rate_basis are the useful ones; the
+               variant snapshot should probably remain immutable).
+
+            7. GET /api/me/all-variants returned 200 with:
+                 - variants[] present
+                 - by_courier[courier_id] → list containing the just-
+                   created variant_id ✅
+                 - package_types list (Cover / Poly Bag / ... ) present
+                 - categories list present.
+
+            No regressions observed in couriers / shipments listing.
+            Test artefacts (1 shipment with variant + 1 without) were
+            DELETE'd at end of run — verified in logs.
+
+agent_communication:
+    -agent: "testing"
+    -message: |
+        Phase 2B backend validation PASSED. Shipment create/read with the
+        new variant snapshot fields (variant_id, variant_name,
+        package_type, category, rate_applied, rate_basis) works exactly
+        as specified — 29/30 assertions green.
+
+        Only "failure" is the expected, pre-flagged gap at Step 6: the
+        ShipmentUpdate model does not currently list the six new fields,
+        so PUT /api/shipments/{id} cannot edit rate_applied / rate_basis
+        post-creation (silently returns 400 "No fields to update"). The
+        review request explicitly allows skipping/noting this case — it
+        is reported here, not counted as a blocker.
+
+        Recommendation to main agent: if post-save edit of rate_applied
+        / rate_basis is a real use case, extend ShipmentUpdate (lines
+        984-1006 of /app/backend/server.py) to add Optional float /
+        string for those two fields. Variant_id/name/package_type/
+        category likely should remain immutable (snapshot semantics).
+
+        No further backend retesting required for this phase.
+
