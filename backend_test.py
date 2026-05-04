@@ -1,281 +1,481 @@
 """
-Phase 2 final verification — feature registry expansion + variant rotation.
+Backend tests for Phase 2.5 Courier Billing Report endpoints.
 
-Tests:
-1. GET /api/admin/plan-features as admin → 200, new categories+keys present.
-2. GET /api/admin/plan-features as user2 → 403.
-3. PUT /api/admin/plan-features adds whatsapp_ai_variants to silver.
-4. CRITICAL — Variant rotation: save 3 variants and call resolve-template 4 times,
-   confirm round-robin advancing each call.
-5. GET /api/me/feature-flags as user2.
+Routes under test:
+  - GET /api/me/reports/courier-billing
+  - GET /api/me/reports/courier-billing/excel
 """
 from __future__ import annotations
+
+import json
 import os
 import sys
-import json
+import traceback
+
 import requests
 
-BASE_URL = os.environ.get(
-    "BACKEND_URL", "https://logistics-hub-740.preview.emergentagent.com"
-).rstrip("/")
-API = f"{BASE_URL}/api"
+BASE = os.environ.get(
+    "BACKEND_BASE",
+    "https://logistics-hub-740.preview.emergentagent.com/api",
+)
 
 ADMIN_EMAIL = "admin@test.com"
 ADMIN_PASS  = "Admin@12345"
 USER2_EMAIL = "user2@test.com"
 USER2_PASS  = "User@12345"
 
-results = []
+_results = []  # list[(label, ok, detail)]
 
-def assert_eq(label, got, want):
-    ok = (got == want)
-    results.append((ok, label, f"got={got!r} want={want!r}" if not ok else ""))
-    if not ok:
-        print(f"  ❌ {label}: got={got!r} want={want!r}")
-    return ok
 
-def assert_true(label, cond, info=""):
-    ok = bool(cond)
-    results.append((ok, label, info if not ok else ""))
-    if not ok:
-        print(f"  ❌ {label}: {info}")
-    return ok
+def record(label: str, ok: bool, detail: str = "") -> None:
+    _results.append((label, ok, detail))
+    status = "PASS" if ok else "FAIL"
+    print(f"[{status}] {label}" + (f" :: {detail}" if detail else ""))
 
-def login(email, password):
-    r = requests.post(f"{API}/auth/login",
-                      json={"email": email, "password": password},
-                      timeout=20)
+
+def login(email: str, password: str) -> str:
+    r = requests.post(
+        f"{BASE}/auth/login",
+        json={"email": email, "password": password},
+        timeout=30,
+    )
     r.raise_for_status()
-    j = r.json()
-    return j["token"], j
+    return r.json()["token"]
 
-def H(token):
+
+def auth_headers(token: str) -> dict:
     return {"Authorization": f"Bearer {token}"}
 
-def main():
-    # ───────────────────────── Login ─────────────────────────
-    print("\n— LOGIN —")
-    admin_token, admin_user = login(ADMIN_EMAIL, ADMIN_PASS)
-    user2_token, user2_user = login(USER2_EMAIL, USER2_PASS)
-    assert_true("admin token present", bool(admin_token))
-    assert_true("user2 token present", bool(user2_token))
-    assert_eq("admin is_admin=true", admin_user.get("is_admin"), True)
-    assert_eq("user2 is_admin=false", user2_user.get("is_admin", False), False)
 
-    # ─────────────────── 1. GET plan-features (admin) ───────────────────
-    print("\n— TEST 1: GET /api/admin/plan-features as admin —")
-    r = requests.get(f"{API}/admin/plan-features", headers=H(admin_token), timeout=20)
-    assert_eq("admin /plan-features status", r.status_code, 200)
+# ──────────────────────────────────────────────────────────────────
+# TEST 1 — Auth required
+# ──────────────────────────────────────────────────────────────────
+
+def t1_auth_required() -> None:
+    for path in [
+        "/me/reports/courier-billing",
+        "/me/reports/courier-billing/excel",
+    ]:
+        r = requests.get(f"{BASE}{path}", timeout=30)
+        record(
+            f"T1 no-token {path} → 401",
+            r.status_code == 401,
+            f"got {r.status_code}",
+        )
+
+
+# ──────────────────────────────────────────────────────────────────
+# TEST 2 — default (this_month) response shape
+# ──────────────────────────────────────────────────────────────────
+
+REQ_TOP = {"period", "couriers", "grand_total", "rows_without_rate"}
+REQ_PERIOD = {"from", "to", "label"}
+REQ_COURIER = {
+    "courier_id", "courier_name", "total_shipments", "total_charges",
+    "cod", "prepaid", "other", "by_package_type", "by_state", "shipments",
+}
+REQ_GRAND = {"shipments", "charges"}
+
+
+def t2_default_shape(user_token: str) -> dict:
+    r = requests.get(
+        f"{BASE}/me/reports/courier-billing",
+        headers=auth_headers(user_token),
+        timeout=30,
+    )
+    record("T2 default this_month 200", r.status_code == 200, f"got {r.status_code}")
+    if r.status_code != 200:
+        return {}
+
     data = r.json()
-    registry = data.get("registry") or {}
-    plans = data.get("plans") or {}
+    record(
+        "T2 top-level keys present",
+        REQ_TOP.issubset(data.keys()),
+        f"missing={REQ_TOP - set(data.keys())}",
+    )
 
-    cats = registry.get("categories") or []
-    print("  Categories:", cats)
-    for nc in ("Packing Variants", "Analytics & SLA", "Notifications"):
-        assert_true(f"category '{nc}' present", nc in cats, info=f"cats={cats}")
-    if "Form Fields" in cats:
-        ff_idx = cats.index("Form Fields")
-        for nc in ("Packing Variants", "Analytics & SLA", "Notifications"):
-            if nc in cats:
-                assert_true(
-                    f"'{nc}' index > Form Fields index",
-                    cats.index(nc) > ff_idx,
-                    info=f"FF idx={ff_idx} {nc} idx={cats.index(nc)}",
-                )
+    period = data.get("period") or {}
+    record(
+        "T2 period keys present",
+        REQ_PERIOD.issubset(period.keys()),
+        f"missing={REQ_PERIOD - set(period.keys())}",
+    )
+    record(
+        "T2 period.label non-empty string",
+        isinstance(period.get("label"), str) and len(period["label"]) > 0,
+        f"label={period.get('label')!r}",
+    )
 
-    new_keys = [
-        "whatsapp_ai_variants", "whatsapp_variant_rotation",
-        "packing_variants_manage", "packing_variants_picker",
-        "packing_variants_flexible", "packing_variants_copy",
-        "packing_variants_custom_categories",
-        "analytics_dashboard", "analytics_filters",
-        "analytics_revenue_breakdown",
-        "sla_engine", "sla_alerts_dashboard", "stage_rules_editor",
-        "push_notifications", "bulk_messaging_stages",
-        "bulk_message_select_filter",
-    ]
-    feat_keys = {f["key"] for f in (registry.get("features") or [])}
-    for k in new_keys:
-        assert_true(f"feature key present: {k}", k in feat_keys)
+    grand = data.get("grand_total") or {}
+    record(
+        "T2 grand_total keys present",
+        REQ_GRAND.issubset(grand.keys()),
+        f"missing={REQ_GRAND - set(grand.keys())}",
+    )
 
-    feat_by_key = {f["key"]: f for f in (registry.get("features") or [])}
-    for k in new_keys:
-        if k in feat_by_key:
-            label = feat_by_key[k].get("label") or ""
-            assert_true(f"{k} has non-empty label", bool(label.strip()),
-                        info=f"label={label!r}")
+    record(
+        "T2 rows_without_rate is int >=0",
+        isinstance(data.get("rows_without_rate"), int) and data["rows_without_rate"] >= 0,
+        f"value={data.get('rows_without_rate')!r}",
+    )
 
-    # Platinum has all 16 new keys
-    plat = set(plans.get("platinum") or [])
-    for k in new_keys:
-        assert_true(f"platinum has {k}", k in plat)
+    couriers = data.get("couriers") or []
+    record(
+        "T2 couriers is list",
+        isinstance(couriers, list),
+        f"type={type(couriers).__name__}",
+    )
 
-    # Free/silver/gold do NOT have these new keys
-    for plan_name in ("free_trial", "silver", "gold"):
-        s = set(plans.get(plan_name) or [])
-        for k in new_keys:
-            assert_true(
-                f"{plan_name} does NOT have {k} by default",
-                k not in s,
-                info=f"{plan_name} unexpectedly has {k}",
+    if couriers:
+        c0 = couriers[0]
+        missing = REQ_COURIER - set(c0.keys())
+        record(
+            "T2 courier[0] has all required keys",
+            not missing,
+            f"missing={missing}",
+        )
+        record(
+            "T2 courier[0].cod has count+amount",
+            {"count", "amount"}.issubset(c0.get("cod", {}).keys()),
+            f"cod={c0.get('cod')}",
+        )
+        record(
+            "T2 courier[0].prepaid has count+amount",
+            {"count", "amount"}.issubset(c0.get("prepaid", {}).keys()),
+            "",
+        )
+        record(
+            "T2 courier[0].other has count+amount",
+            {"count", "amount"}.issubset(c0.get("other", {}).keys()),
+            "",
+        )
+        record(
+            "T2 courier[0].by_package_type is list",
+            isinstance(c0.get("by_package_type"), list),
+            "",
+        )
+        record(
+            "T2 courier[0].by_state is list",
+            isinstance(c0.get("by_state"), list),
+            "",
+        )
+        record(
+            "T2 courier[0].shipments is list",
+            isinstance(c0.get("shipments"), list),
+            "",
+        )
+        if c0.get("shipments"):
+            s0 = c0["shipments"][0]
+            req_ship = {
+                "id", "tracking_id", "order_id", "date", "customer_name",
+                "city", "state", "weight", "rate", "payment_mode", "status",
+                "package_type", "variant_name",
+            }
+            missing_s = req_ship - set(s0.keys())
+            record(
+                "T2 shipment row has all required keys",
+                not missing_s,
+                f"missing={missing_s}",
+            )
+    else:
+        print("       [info] user2 has no shipments in this_month window — skipping courier-shape assertions")
+
+    return data
+
+
+# ──────────────────────────────────────────────────────────────────
+# TEST 3 — all range chips
+# ──────────────────────────────────────────────────────────────────
+
+def t3_range_chips(user_token: str) -> None:
+    for rng in ["this_week", "last_week", "this_month", "last_month", "last_30"]:
+        r = requests.get(
+            f"{BASE}/me/reports/courier-billing",
+            params={"range": rng},
+            headers=auth_headers(user_token),
+            timeout=30,
+        )
+        ok = r.status_code == 200
+        record(f"T3 range={rng} → 200", ok, f"got {r.status_code}")
+        if ok:
+            label = (r.json().get("period") or {}).get("label")
+            record(
+                f"T3 range={rng} period.label present",
+                bool(label),
+                f"label={label!r}",
             )
 
-    # ─────────────────── 2. GET plan-features (regular user) ───────────────────
-    print("\n— TEST 2: GET /api/admin/plan-features as user2 —")
-    r = requests.get(f"{API}/admin/plan-features", headers=H(user2_token), timeout=20)
-    assert_eq("user2 /plan-features status (forbidden)", r.status_code, 403)
 
-    # ─────────────────── 3. PUT plan-features (admin) ───────────────────
-    print("\n— TEST 3: PUT /api/admin/plan-features (silver = [whatsapp_ai_variants]) —")
-    original_silver = list(plans.get("silver") or [])
-    payload_plans = {
-        "free_trial": list(plans.get("free_trial") or []),
-        "silver":     ["whatsapp_ai_variants"],
-        "gold":       list(plans.get("gold") or []),
-        "platinum":   list(plans.get("platinum") or []),
-    }
-    r = requests.put(
-        f"{API}/admin/plan-features",
-        headers=H(admin_token),
-        json={"plans": payload_plans},
-        timeout=20,
-    )
-    assert_eq("PUT /admin/plan-features status", r.status_code, 200)
-    body = r.json()
-    new_silver = body.get("plans", {}).get("silver") or []
-    assert_eq("PUT response: silver = [whatsapp_ai_variants]",
-              new_silver, ["whatsapp_ai_variants"])
+# ──────────────────────────────────────────────────────────────────
+# TEST 4 — custom range
+# ──────────────────────────────────────────────────────────────────
 
-    r = requests.get(f"{API}/admin/plan-features", headers=H(admin_token), timeout=20)
-    after = r.json()
-    silver_after = set(after.get("plans", {}).get("silver") or [])
-    assert_true("after GET: silver has whatsapp_ai_variants",
-                "whatsapp_ai_variants" in silver_after)
-
-    # Restore original silver
-    payload_plans["silver"] = original_silver
-    rrest = requests.put(
-        f"{API}/admin/plan-features",
-        headers=H(admin_token),
-        json={"plans": payload_plans},
-        timeout=20,
-    )
-    print(f"  restored silver to original ({len(original_silver)} keys); status={rrest.status_code}")
-
-    # ─────────────────── 4. CRITICAL — Variant Rotation ───────────────────
-    print("\n— TEST 4: VARIANT ROTATION (user2) —")
-    ttype = "shipment_sent"
-    variants_payload = {
-        "template_type": ttype,
-        "variants": {
-            "gu": [
-                "VARIANT_A_TEXT_GU rotation_test_AAA",
-                "VARIANT_B_TEXT_GU rotation_test_BBB",
-                "VARIANT_C_TEXT_GU rotation_test_CCC",
-            ],
+def t4_custom_range(user_token: str) -> None:
+    r = requests.get(
+        f"{BASE}/me/reports/courier-billing",
+        params={
+            "range": "custom",
+            "from":  "2026-01-01",
+            "to":    "2026-12-31",
         },
-    }
-    r = requests.post(
-        f"{API}/me/whatsapp-templates/save-variants",
-        headers=H(user2_token),
-        json=variants_payload,
-        timeout=20,
+        headers=auth_headers(user_token),
+        timeout=30,
     )
-    assert_eq("save-variants status", r.status_code, 200)
-    sv_body = r.json()
-    saved = sv_body.get("variants", {}).get("gu") or []
-    assert_eq("saved variants count", len(saved), 3)
+    record("T4 custom range 200", r.status_code == 200, f"got {r.status_code}")
 
-    # Call 4 times; rotation advances on each call (mod 3).
-    sources, bodies = [], []
-    for i in range(4):
+
+# ──────────────────────────────────────────────────────────────────
+# TEST 5 — bad custom range → 400
+# ──────────────────────────────────────────────────────────────────
+
+def t5_bad_custom_range(user_token: str) -> None:
+    r = requests.get(
+        f"{BASE}/me/reports/courier-billing",
+        params={"range": "custom", "from": "garbage"},
+        headers=auth_headers(user_token),
+        timeout=30,
+    )
+    # Missing `to` means the custom branch won't trigger (falls through to default),
+    # so we also try with bad `from` + valid `to` to force the ISO parse failure.
+    r2 = requests.get(
+        f"{BASE}/me/reports/courier-billing",
+        params={"range": "custom", "from": "garbage", "to": "2026-12-31"},
+        headers=auth_headers(user_token),
+        timeout=30,
+    )
+    record(
+        "T5 bad custom range → 400",
+        r2.status_code == 400,
+        f"got {r2.status_code} body={r2.text[:200]}",
+    )
+
+
+# ──────────────────────────────────────────────────────────────────
+# TEST 6 — filter by courier_id
+# ──────────────────────────────────────────────────────────────────
+
+def t6_courier_filter(user_token: str, default_data: dict) -> None:
+    couriers = default_data.get("couriers") or []
+    if not couriers:
+        record("T6 courier_id filter (skipped — no couriers)", True, "no shipments to filter")
+        return
+
+    # Prefer a courier_id that is non-empty
+    cid = None
+    target_name = None
+    for c in couriers:
+        if c.get("courier_id"):
+            cid = c["courier_id"]
+            target_name = c["courier_name"]
+            break
+    if not cid:
+        record("T6 courier_id filter (skipped — no courier_id values)", True, "")
+        return
+
+    r = requests.get(
+        f"{BASE}/me/reports/courier-billing",
+        params={"courier_id": cid},
+        headers=auth_headers(user_token),
+        timeout=30,
+    )
+    ok = r.status_code == 200
+    record("T6 filter 200", ok, f"got {r.status_code}")
+    if not ok:
+        return
+    data = r.json()
+    cs = data.get("couriers") or []
+    record(
+        "T6 filter returns <=1 courier",
+        len(cs) <= 1,
+        f"count={len(cs)}",
+    )
+    if cs:
+        record(
+            "T6 filter returns the requested courier",
+            cs[0].get("courier_id") == cid,
+            f"got {cs[0].get('courier_id')} vs {cid}",
+        )
+
+
+# ──────────────────────────────────────────────────────────────────
+# TEST 7 — rows_without_rate counter
+# ──────────────────────────────────────────────────────────────────
+
+def t7_rows_without_rate(default_data: dict) -> None:
+    val = default_data.get("rows_without_rate")
+    record(
+        "T7 rows_without_rate is non-negative int",
+        isinstance(val, int) and val >= 0,
+        f"value={val}",
+    )
+
+
+# ──────────────────────────────────────────────────────────────────
+# TEST 8 — Excel via Authorization header
+# ──────────────────────────────────────────────────────────────────
+
+def t8_excel_header(user_token: str) -> None:
+    r = requests.get(
+        f"{BASE}/me/reports/courier-billing/excel",
+        headers=auth_headers(user_token),
+        timeout=60,
+    )
+    ok = r.status_code == 200
+    record("T8 Excel header 200", ok, f"got {r.status_code}")
+    if not ok:
+        return
+    ct = r.headers.get("content-type", "")
+    record(
+        "T8 Excel content-type xlsx",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" in ct,
+        f"ct={ct!r}",
+    )
+    body = r.content
+    record(
+        "T8 Excel body starts with PK",
+        body[:2] == b"PK",
+        f"first bytes={body[:4]!r}",
+    )
+    record(
+        "T8 Excel body non-trivial size",
+        len(body) > 500,
+        f"len={len(body)}",
+    )
+
+
+# ──────────────────────────────────────────────────────────────────
+# TEST 9 — Excel via ?token= fallback
+# ──────────────────────────────────────────────────────────────────
+
+def t9_excel_query_token(user_token: str) -> None:
+    r = requests.get(
+        f"{BASE}/me/reports/courier-billing/excel",
+        params={"token": user_token},
+        timeout=60,
+    )
+    ok = r.status_code == 200
+    record("T9 Excel ?token= 200", ok, f"got {r.status_code} body={r.text[:200] if not ok else ''}")
+    if not ok:
+        return
+    ct = r.headers.get("content-type", "")
+    record(
+        "T9 Excel ?token= content-type xlsx",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" in ct,
+        f"ct={ct!r}",
+    )
+    body = r.content
+    record(
+        "T9 Excel ?token= body starts with PK",
+        body[:2] == b"PK",
+        "",
+    )
+
+
+# ──────────────────────────────────────────────────────────────────
+# TEST 10 — Excel invalid token
+# ──────────────────────────────────────────────────────────────────
+
+def t10_excel_invalid_token() -> None:
+    r = requests.get(
+        f"{BASE}/me/reports/courier-billing/excel",
+        params={"token": "garbage"},
+        timeout=30,
+    )
+    ok = r.status_code == 401
+    record("T10 Excel invalid token → 401", ok, f"got {r.status_code}")
+    if ok:
+        body = r.json() if r.headers.get("content-type", "").startswith("application/json") else {}
+        record(
+            "T10 Excel invalid token detail 'Auth required'",
+            body.get("detail") == "Auth required",
+            f"detail={body.get('detail')!r}",
+        )
+
+
+# ──────────────────────────────────────────────────────────────────
+# TEST 11 — grand total math
+# ──────────────────────────────────────────────────────────────────
+
+def t11_grand_total(default_data: dict) -> None:
+    couriers = default_data.get("couriers") or []
+    sum_ships = sum((c.get("total_shipments") or 0) for c in couriers)
+    sum_charges = sum((c.get("total_charges") or 0) for c in couriers)
+    grand = default_data.get("grand_total") or {}
+    record(
+        "T11 sum(couriers.total_shipments) == grand_total.shipments",
+        sum_ships == grand.get("shipments"),
+        f"sum={sum_ships} vs {grand.get('shipments')}",
+    )
+    record(
+        "T11 sum(couriers.total_charges) == grand_total.charges (±0.01)",
+        abs(sum_charges - (grand.get("charges") or 0)) < 0.01,
+        f"sum={sum_charges} vs {grand.get('charges')}",
+    )
+
+
+# ──────────────────────────────────────────────────────────────────
+# Runner
+# ──────────────────────────────────────────────────────────────────
+
+def main() -> int:
+    print(f"=== Running courier-billing report tests against {BASE} ===")
+    try:
+        user2_token = login(USER2_EMAIL, USER2_PASS)
+        print(f"[info] logged in as {USER2_EMAIL}")
+    except Exception as exc:
+        print(f"FATAL: login failed: {exc}")
+        traceback.print_exc()
+        return 1
+
+    t1_auth_required()
+    default_data = t2_default_shape(user2_token)
+    t3_range_chips(user2_token)
+    t4_custom_range(user2_token)
+    t5_bad_custom_range(user2_token)
+    t6_courier_filter(user2_token, default_data)
+    t7_rows_without_rate(default_data)
+    t8_excel_header(user2_token)
+    t9_excel_query_token(user2_token)
+    t10_excel_invalid_token()
+    t11_grand_total(default_data)
+
+    # Also try with admin since admin has ~50 legacy shipments — good for
+    # rows_without_rate coverage.
+    try:
+        admin_token = login(ADMIN_EMAIL, ADMIN_PASS)
         r = requests.get(
-            f"{API}/me/resolve-template",
-            headers=H(user2_token),
-            params={"ttype": ttype, "lang": "gu"},
-            timeout=20,
+            f"{BASE}/me/reports/courier-billing",
+            params={"range": "last_30"},
+            headers=auth_headers(admin_token),
+            timeout=30,
         )
-        assert_eq(f"resolve-template call {i+1} status", r.status_code, 200)
-        j = r.json()
-        sources.append(j.get("source"))
-        bodies.append(j.get("template"))
-        print(f"  call {i+1}: source={j.get('source')!r}  body={(j.get('template') or '')[:80]!r}")
+        record("Extra admin last_30 200", r.status_code == 200, f"got {r.status_code}")
+        if r.status_code == 200:
+            d = r.json()
+            record(
+                "Extra admin rows_without_rate int",
+                isinstance(d.get("rows_without_rate"), int),
+                f"value={d.get('rows_without_rate')}",
+            )
+            print(f"       [info] admin couriers={len(d.get('couriers') or [])} "
+                  f"rows_without_rate={d.get('rows_without_rate')} "
+                  f"grand_total={d.get('grand_total')}")
+    except Exception as exc:
+        print(f"[info] admin cross-check skipped: {exc}")
 
-    for i, s in enumerate(sources):
-        assert_true(
-            f"call {i+1} source starts with 'user_variant_'",
-            isinstance(s, str) and s.startswith("user_variant_"),
-            info=f"got source={s!r}",
-        )
-
-    def parse_idx(s):
-        try:
-            return int(s.split("_")[-1])
-        except Exception:
-            return -1
-
-    idxs = [parse_idx(s) for s in sources]
-    print(f"  rotation 1-based indices: {idxs}")
-
-    # Each call must advance by exactly 1 (mod 3).
-    for i in range(1, 4):
-        diff = (idxs[i] - idxs[i-1]) % 3
-        assert_eq(
-            f"call {i+1} advanced by 1 vs prev ({idxs[i-1]}→{idxs[i]})",
-            diff, 1,
-        )
-
-    distinct_bodies = set(bodies[:3])
-    assert_eq("first 3 calls produce 3 distinct templates",
-              len(distinct_bodies), 3)
-
-    assert_eq("call 4 wraps round-robin (body == call 1 body)",
-              bodies[3], bodies[0])
-    assert_eq("call 4 wraps round-robin (source == call 1 source)",
-              sources[3], sources[0])
-
-    # ─────────────────── 5. GET feature-flags ───────────────────
-    print("\n— TEST 5: GET /api/me/feature-flags —")
-    r = requests.get(f"{API}/me/feature-flags", headers=H(user2_token), timeout=20)
-    assert_eq("user2 /me/feature-flags status", r.status_code, 200)
-    j = r.json()
-    assert_true("response has 'plan'", "plan" in j)
-    assert_true("response 'features' is list", isinstance(j.get("features"), list))
-    assert_eq("user2 is_admin=false", j.get("is_admin"), False)
-    print(f"  user2 plan={j.get('plan')!r} feature_count={len(j.get('features') or [])}")
-
-    r = requests.get(f"{API}/me/feature-flags", headers=H(admin_token), timeout=20)
-    assert_eq("admin /me/feature-flags status", r.status_code, 200)
-    j2 = r.json()
-    assert_eq("admin is_admin=true in feature-flags", j2.get("is_admin"), True)
-    feat_admin = set(j2.get("features") or [])
-    for k in new_keys:
-        assert_true(f"admin feature-flags has {k}", k in feat_admin)
-
-    # ─────────────────────── REPORT ───────────────────────
-    print("\n" + "=" * 70)
-    passed = sum(1 for ok, *_ in results if ok)
-    total  = len(results)
-    fails = [(lbl, info) for ok, lbl, info in results if not ok]
-    print(f"RESULT: {passed}/{total} assertions passed")
-    if fails:
-        print(f"\n— {len(fails)} FAILURE(S) —")
-        for lbl, info in fails:
-            print(f"  ❌ {lbl}: {info}")
-        sys.exit(1)
-    else:
-        print("ALL PASS ✅")
-        sys.exit(0)
+    # Summary
+    print()
+    print("=" * 60)
+    total = len(_results)
+    passed = sum(1 for _, ok, _ in _results if ok)
+    print(f"SUMMARY: {passed}/{total} passed")
+    failures = [x for x in _results if not x[1]]
+    if failures:
+        print(f"\n{len(failures)} FAILURE(S):")
+        for label, _, detail in failures:
+            print(f"  ✗ {label} :: {detail}")
+    return 0 if passed == total else 2
 
 
 if __name__ == "__main__":
-    try:
-        main()
-    except requests.HTTPError as e:
-        print(f"HTTP error: {e}\nResponse: {e.response.text if e.response else ''}")
-        sys.exit(2)
-    except Exception:
-        import traceback
-        traceback.print_exc()
-        sys.exit(3)
+    sys.exit(main())

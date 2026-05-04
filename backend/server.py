@@ -8027,6 +8027,19 @@ try:
 except Exception as _msg_exc:
     logger.exception(f"Failed to mount messaging router: {_msg_exc}")
 
+# Phase 2.5 — Courier Billing Reports router. Late-bound `init()`
+# closes over `db` + `get_current_user` so the reports module doesn't
+# need to circular-import them at top-level.
+try:
+    from routers.reports import (
+        reports_router as _reports_router,
+        init as _init_reports_router,
+    )
+    _init_reports_router()
+    app.include_router(_reports_router)
+except Exception as _rep_exc:
+    print(f"Failed to mount reports router: {_rep_exc!r}")
+
 app.include_router(api_router)
 app.include_router(auth_router)
 

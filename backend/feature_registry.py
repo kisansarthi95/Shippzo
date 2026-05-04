@@ -76,6 +76,7 @@ CATEGORY_ORDER = [
     "Packing Variants",
     "Analytics & SLA",
     "Notifications",
+    "Reports",
 ]
 
 # The single source of truth. Order is preserved by Python 3.7+ dicts.
@@ -199,6 +200,12 @@ FEATURE_REGISTRY: Dict[str, Dict[str, str]] = {
     "push_notifications":          {"label": "Push notifications (Expo)",                   "category": "Notifications"},
     "bulk_messaging_stages":       {"label": "Bulk messaging across all stages",            "category": "Notifications"},
     "bulk_message_select_filter":  {"label": "Filter / search shipments before sending",    "category": "Notifications"},
+
+    # ── Reports (NEW category, 2026-05-04 — Phase 2.5) ───────────
+    # Per-courier billing / volume / charge reports. Tied to the
+    # /me/reports/* endpoints. Default off everywhere — admin enables
+    # per plan via the Plan Features admin screen.
+    "reports_courier_billing":     {"label": "Courier Billing report (in-app + Excel)",     "category": "Reports"},
 }
 
 ALL_KEYS: List[str] = list(FEATURE_REGISTRY.keys())

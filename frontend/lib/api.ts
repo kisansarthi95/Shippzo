@@ -543,6 +543,51 @@ export const Api = {
       `/me/categories/${encodeURIComponent(name)}`,
     ).then((r) => r.data),
 
+  // ───────────────────────────────────────────────────────────────────
+  // Phase 2.5 — Courier Billing Report
+  // ───────────────────────────────────────────────────────────────────
+  courierBillingReport: (params: {
+    range?: "this_week" | "last_week" | "this_month" | "last_month" | "last_30" | "custom";
+    courier_id?: string;
+    from?: string;
+    to?: string;
+  } = {}) =>
+    api.get<{
+      period: { from: string; to: string; label: string };
+      couriers: Array<{
+        courier_id: string;
+        courier_name: string;
+        total_shipments: number;
+        total_charges: number;
+        cod:     { count: number; amount: number };
+        prepaid: { count: number; amount: number };
+        other:   { count: number; amount: number };
+        by_package_type: Array<{ type: string;  count: number; amount: number }>;
+        by_state:        Array<{ state: string; count: number }>;
+        shipments: Array<{
+          id: string; tracking_id: string; order_id: string; date: string;
+          customer_name: string; city: string; state: string;
+          weight: string; rate: number; payment_mode: string; status: string;
+          package_type: string; variant_name: string;
+        }>;
+      }>;
+      grand_total:        { shipments: number; charges: number };
+      rows_without_rate:  number;
+    }>("/me/reports/courier-billing", { params }).then((r) => r.data),
+
+  // Returns the absolute URL to the Excel download endpoint — the UI
+  // hands it to expo-linking / the native browser to trigger download.
+  courierBillingReportExcelUrl: (params: {
+    range?: string;
+    courier_id?: string;
+    from?: string;
+    to?: string;
+  } = {}) => {
+    const qs = new URLSearchParams();
+    Object.entries(params).forEach(([k, v]) => { if (v) qs.set(k, String(v)); });
+    return `${BASE}/api/me/reports/courier-billing/excel?${qs.toString()}`;
+  },
+
   // --- Phase-3a Plans & Usage ---
   listPlans: () =>
     api
