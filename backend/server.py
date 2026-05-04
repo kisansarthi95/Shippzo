@@ -1503,6 +1503,65 @@ async def list_all_variants(
     }
 
 
+# ──────────────────────────────────────────────────────────────────
+# Phase 2D — User-defined custom Categories
+# ──────────────────────────────────────────────────────────────────
+# Per-user list of additional category names beyond the built-in
+# CATEGORIES. Surfaced wherever variants are edited (Fixed list +
+# Flexible mode in New Shipment) so the user can grow their taxonomy
+# without admin intervention.
+# ──────────────────────────────────────────────────────────────────
+
+
+@api_router.get("/me/categories")
+async def list_my_categories(
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    doc = await db.user_meta.find_one(
+        {"user_id": current_user["id"]}, {"_id": 0, "custom_categories": 1},
+    )
+    custom = sorted((doc or {}).get("custom_categories") or [])
+    return {"presets": CATEGORIES, "custom": custom}
+
+
+@api_router.post("/me/categories")
+async def add_my_category(
+    payload: Dict[str, Any] = Body(...),
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    name = (payload.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Category name required")
+    if len(name) > 40:
+        raise HTTPException(status_code=400, detail="Category name too long (40 chars max)")
+    # Reject built-ins (case-insensitive) — they're already available.
+    if name.lower() in {c.lower() for c in CATEGORIES}:
+        raise HTTPException(status_code=400, detail=f"'{name}' is already a built-in category")
+    await db.user_meta.update_one(
+        {"user_id": current_user["id"]},
+        {"$addToSet": {"custom_categories": name}, "$setOnInsert": {"user_id": current_user["id"]}},
+        upsert=True,
+    )
+    doc = await db.user_meta.find_one(
+        {"user_id": current_user["id"]}, {"_id": 0, "custom_categories": 1},
+    )
+    return {"presets": CATEGORIES, "custom": sorted((doc or {}).get("custom_categories") or [])}
+
+
+@api_router.delete("/me/categories/{name}")
+async def remove_my_category(
+    name: str,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    await db.user_meta.update_one(
+        {"user_id": current_user["id"]}, {"$pull": {"custom_categories": name}},
+    )
+    doc = await db.user_meta.find_one(
+        {"user_id": current_user["id"]}, {"_id": 0, "custom_categories": 1},
+    )
+    return {"presets": CATEGORIES, "custom": sorted((doc or {}).get("custom_categories") or [])}
+
+
 @api_router.post("/couriers/{courier_id}/variants/copy-from/{source_courier_id}")
 async def copy_variants_from_courier(
     courier_id: str,

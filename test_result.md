@@ -10362,3 +10362,82 @@ agent_communication:
         shape exact match. No regressions. Ready for main agent to
         summarise and finish.
 
+
+---
+
+## Backend Test Run: Phase 2D-update Custom Categories (2026-05-04)
+
+backend:
+  - task: "Custom Categories endpoints (GET/POST/DELETE /api/me/categories)"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "testing"
+        -comment: |
+            All 46/46 assertions passed via /app/backend_test.py against
+            https://logistics-hub-740.preview.emergentagent.com/api
+            as user2@test.com.
+
+            Coverage verified end-to-end:
+            1. AUTH: GET/POST/DELETE /api/me/categories without
+               Authorization header all return 401/403 (all three verbs).
+            2. INITIAL STATE: GET returns {presets, custom} where presets
+               contains the 6 built-ins (Electronics, Clothing, Medical,
+               Documents, Home Goods, Other) and custom is [] on fresh
+               user (after cleanup).
+            3. ADD: POST {name:"Toys"} → 200, custom contains "Toys".
+               Presets still 6 entries.
+            4. IDEMPOTENT: 2nd POST Toys → 200, custom still has EXACTLY
+               one "Toys" (verified via count). $addToSet works correctly.
+            5. EMPTY NAME: POST {name:"   "} → 400, detail="Category
+               name required".
+            6. TOO LONG: POST {name:"X"*41} → 400, detail="Category
+               name too long (40 chars max)". Boundary check: name of
+               exactly 40 chars ("Y"*40) accepted with 200.
+            7. BUILT-IN COLLISION:
+                 - POST "Electronics" → 400, detail includes
+                   "'Electronics' is already a built-in category".
+                 - POST "electronics" (lowercase) → 400 (case-insensitive).
+                 - POST "HOME GOODS" (upper + space) → 400 (multi-word
+                   case-insensitive).
+            8. DELETE CUSTOM: DELETE /api/me/categories/Toys → 200,
+               response custom no longer contains "Toys", presets intact.
+            9. DELETE NON-EXISTENT: DELETE /api/me/categories/DoesNotExist
+               → 200 (idempotent), response shape {presets, custom}
+               still returned.
+           10. URL-ENCODED DELETE: Added "Home Decor" + "Kids" via POST;
+               DELETE /api/me/categories/Home%20Decor → 200; subsequent
+               GET confirms "Home Decor" removed but "Kids" retained.
+               FastAPI path parameter URL-decodes the %20 into a space
+               correctly, allowing multi-word categories to be deleted.
+
+            Contract shape {presets: [...], custom: [...]} is returned
+            on EVERY successful endpoint call (GET, POST, DELETE).
+            Custom list is sorted alphabetically in the response.
+            Cleanup removed all test categories (Toys, Home Decor,
+            Kids, 40-char boundary) — user2 custom list now [] as
+            before the test run.
+
+agent_communication:
+    -agent: "testing"
+    -message: |
+        Phase 2D-update Custom Categories — all 46/46 assertions passed.
+        GET/POST/DELETE /api/me/categories all work per spec:
+          - 6 built-in presets always returned (Electronics, Clothing,
+            Medical, Documents, Home Goods, Other)
+          - Add is idempotent via $addToSet (no duplicates)
+          - Empty name → 400 "Category name required"
+          - > 40 chars → 400 "Category name too long (40 chars max)"
+          - Built-in collision blocked case-insensitively with clear
+            "is already a built-in category" message
+          - Delete is idempotent; URL-encoded paths (e.g. Home%20Decor)
+            correctly resolve to multi-word category names
+          - Response shape {presets, custom} consistent across all verbs
+          - 401/403 returned without bearer token on all three verbs
+        No regressions, no minor issues. Ready for main agent to finish.
+

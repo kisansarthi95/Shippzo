@@ -507,6 +507,21 @@ export const Api = {
     }>(`/couriers/${targetCourierId}/variants/copy-from/${sourceCourierId}`)
       .then((r) => r.data),
 
+  // Phase 2D-update — User-defined custom Categories
+  listMyCategories: () =>
+    api.get<{ presets: string[]; custom: string[] }>("/me/categories")
+      .then((r) => r.data),
+
+  addMyCategory: (name: string) =>
+    api.post<{ presets: string[]; custom: string[] }>(
+      "/me/categories", { name },
+    ).then((r) => r.data),
+
+  removeMyCategory: (name: string) =>
+    api.delete<{ presets: string[]; custom: string[] }>(
+      `/me/categories/${encodeURIComponent(name)}`,
+    ).then((r) => r.data),
+
   // --- Phase-3a Plans & Usage ---
   listPlans: () =>
     api

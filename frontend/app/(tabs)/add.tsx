@@ -195,6 +195,18 @@ export default function AddShipment() {
   const [flexCategory, setFlexCategory] = useState<string>("");
   const [flexBasis, setFlexBasis]       = useState<"within_state" | "outside_state" | "">("");
   const [flexRate, setFlexRate]         = useState<string>("");
+  // Phase 2D-update — Custom dim / weight / category support.
+  const [showDimCustom, setShowDimCustom]       = useState(false);
+  const [customDimL, setCustomDimL]             = useState("");
+  const [customDimW, setCustomDimW]             = useState("");
+  const [customDimH, setCustomDimH]             = useState("");
+  const [showWeightCustom, setShowWeightCustom] = useState(false);
+  const [customWeightG, setCustomWeightG]       = useState("");
+  // User-defined custom categories — loaded once on mount, mutable
+  // via a small "+ Add Category" affordance under the Other chip.
+  const [customCategories, setCustomCategories] = useState<string[]>([]);
+  const [showAddCategory, setShowAddCategory]   = useState(false);
+  const [newCategoryName, setNewCategoryName]   = useState("");
   // Rate basis captured at save time — derived from origin-vs-destination
   // state comparison. Exposed here so the UI can preview which rate is
   // currently applicable for the picked variant.
@@ -347,11 +359,53 @@ export default function AddShipment() {
 
   const flexCatChips = useMemo(() => {
     const PRESET = ["Electronics", "Clothing", "Medical", "Documents", "Home Goods", "Other"];
-    const extra = Array.from(new Set(
+    const variantCats = Array.from(new Set(
       variants.map((v) => (v.category || "").trim()).filter((c) => c && !PRESET.includes(c)),
     ));
-    return [...PRESET, ...extra];
-  }, [variants]);
+    // Custom categories merged with variant-derived ones, dedup'd.
+    const all = Array.from(new Set([...PRESET, ...customCategories, ...variantCats]));
+    return all;
+  }, [variants, customCategories]);
+
+  // Phase 2D-update — Load user's custom categories once. Keeps the
+  // chip list reactive so a category added inline re-renders both the
+  // Flexible picker and the Fixed Variants screen on next visit.
+  useEffect(() => {
+    let cancelled = false;
+    Api.listMyCategories()
+      .then((r) => { if (!cancelled) setCustomCategories(r.custom || []); })
+      .catch(() => { if (!cancelled) setCustomCategories([]); });
+    return () => { cancelled = true; };
+  }, []);
+
+  // "+ Add Category" handler — saves to backend then merges into the
+  // local list so the new chip is selectable immediately.
+  const addCustomCategory = useCallback(async () => {
+    const nm = newCategoryName.trim();
+    if (!nm) return;
+    try {
+      const r = await Api.addMyCategory(nm);
+      setCustomCategories(r.custom || []);
+      setFlexCategory(nm);
+      setNewCategoryName("");
+      setShowAddCategory(false);
+    } catch (e: any) {
+      Alert.alert(
+        "Couldn't save category",
+        e?.response?.data?.detail || e?.message || "Try a different name.",
+      );
+    }
+  }, [newCategoryName]);
+
+  // Phase 2D-update — Auto-default category to "Other" once the user
+  // touches any other Flexible field but never picks a category.
+  useEffect(() => {
+    if (!flexibleMode) return;
+    const touched = !!(flexDim || flexWeightG || flexPkgType || flexBasis || flexRate);
+    if (touched && !flexCategory) {
+      setFlexCategory("Other");
+    }
+  }, [flexibleMode, flexDim, flexWeightG, flexPkgType, flexBasis, flexRate, flexCategory]);
 
   // Suggested rate = closest variant by weight (within flex basis).
   const flexSuggestedRate = useMemo(() => {
@@ -1375,30 +1429,82 @@ export default function AddShipment() {
                   <View style={styles.flexBlock}>
                     {/* Dimensions */}
                     <Text style={styles.flexLabel}>📏 Box Dimensions (cm)</Text>
-                    {flexDimChips.length === 0 ? (
-                      <Text style={styles.flexEmpty}>No dimension presets — define a Fixed Variant first.</Text>
-                    ) : (
-                      <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-                        <View style={{ flexDirection: "row", gap: 6 }}>
-                          {flexDimChips.map((d) => {
-                            const active = flexDim === d.label;
-                            return (
-                              <TouchableOpacity
-                                key={d.label}
-                                onPress={() => setFlexDim(active ? "" : d.label)}
-                                style={[styles.flexChip, active && styles.flexChipActive]}
-                              >
-                                <Text style={[
-                                  styles.flexChipTxt,
-                                  active && styles.flexChipTxtActive,
-                                ]}>
-                                  {d.label}
-                                </Text>
-                              </TouchableOpacity>
-                            );
-                          })}
-                        </View>
-                      </ScrollView>
+                    <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+                      <View style={{ flexDirection: "row", gap: 6 }}>
+                        {flexDimChips.map((d) => {
+                          const active = flexDim === d.label;
+                          return (
+                            <TouchableOpacity
+                              key={d.label}
+                              onPress={() => {
+                                setFlexDim(active ? "" : d.label);
+                                setShowDimCustom(false);
+                              }}
+                              style={[styles.flexChip, active && styles.flexChipActive]}
+                            >
+                              <Text style={[
+                                styles.flexChipTxt,
+                                active && styles.flexChipTxtActive,
+                              ]}>
+                                {d.label}
+                              </Text>
+                            </TouchableOpacity>
+                          );
+                        })}
+                        {/* + Custom dim chip */}
+                        <TouchableOpacity
+                          testID="flex-dim-custom"
+                          onPress={() => setShowDimCustom((s) => !s)}
+                          style={[
+                            styles.flexChip, styles.flexChipDashed,
+                            showDimCustom && styles.flexChipActive,
+                          ]}
+                        >
+                          <Text style={[
+                            styles.flexChipTxt,
+                            showDimCustom && styles.flexChipTxtActive,
+                          ]}>
+                            + Custom
+                          </Text>
+                        </TouchableOpacity>
+                      </View>
+                    </ScrollView>
+                    {showDimCustom && (
+                      <View style={styles.flexCustomRow}>
+                        <TextInput
+                          value={customDimL} onChangeText={setCustomDimL}
+                          keyboardType="decimal-pad" placeholder="L"
+                          placeholderTextColor="#9CA3AF" style={styles.flexCustomInput}
+                        />
+                        <Text style={styles.flexCustomX}>×</Text>
+                        <TextInput
+                          value={customDimW} onChangeText={setCustomDimW}
+                          keyboardType="decimal-pad" placeholder="W"
+                          placeholderTextColor="#9CA3AF" style={styles.flexCustomInput}
+                        />
+                        <Text style={styles.flexCustomX}>×</Text>
+                        <TextInput
+                          value={customDimH} onChangeText={setCustomDimH}
+                          keyboardType="decimal-pad" placeholder="H"
+                          placeholderTextColor="#9CA3AF" style={styles.flexCustomInput}
+                        />
+                        <TouchableOpacity
+                          style={styles.flexCustomApply}
+                          onPress={() => {
+                            const l = parseFloat(customDimL) || 0;
+                            const w = parseFloat(customDimW) || 0;
+                            const h = parseFloat(customDimH) || 0;
+                            if (!l && !w && !h) {
+                              Alert.alert("Enter at least one dimension");
+                              return;
+                            }
+                            setFlexDim(`${l}×${w}×${h}`);
+                            setShowDimCustom(false);
+                          }}
+                        >
+                          <Text style={styles.flexCustomApplyTxt}>Apply</Text>
+                        </TouchableOpacity>
+                      </View>
                     )}
 
                     {/* Weight */}
@@ -1411,7 +1517,10 @@ export default function AddShipment() {
                           return (
                             <TouchableOpacity
                               key={`w-${g}`}
-                              onPress={() => setFlexWeightG(active ? 0 : g)}
+                              onPress={() => {
+                                setFlexWeightG(active ? 0 : g);
+                                setShowWeightCustom(false);
+                              }}
                               style={[styles.flexChip, active && styles.flexChipActive]}
                             >
                               <Text style={[
@@ -1423,8 +1532,48 @@ export default function AddShipment() {
                             </TouchableOpacity>
                           );
                         })}
+                        {/* + Custom weight chip */}
+                        <TouchableOpacity
+                          testID="flex-weight-custom"
+                          onPress={() => setShowWeightCustom((s) => !s)}
+                          style={[
+                            styles.flexChip, styles.flexChipDashed,
+                            showWeightCustom && styles.flexChipActive,
+                          ]}
+                        >
+                          <Text style={[
+                            styles.flexChipTxt,
+                            showWeightCustom && styles.flexChipTxtActive,
+                          ]}>
+                            + Custom
+                          </Text>
+                        </TouchableOpacity>
                       </View>
                     </ScrollView>
+                    {showWeightCustom && (
+                      <View style={styles.flexCustomRow}>
+                        <TextInput
+                          value={customWeightG} onChangeText={setCustomWeightG}
+                          keyboardType="decimal-pad" placeholder="Weight (grams)"
+                          placeholderTextColor="#9CA3AF"
+                          style={[styles.flexCustomInput, { flex: 1 }]}
+                        />
+                        <TouchableOpacity
+                          style={styles.flexCustomApply}
+                          onPress={() => {
+                            const g = parseFloat(customWeightG) || 0;
+                            if (!g) {
+                              Alert.alert("Enter a weight in grams");
+                              return;
+                            }
+                            setFlexWeightG(g);
+                            setShowWeightCustom(false);
+                          }}
+                        >
+                          <Text style={styles.flexCustomApplyTxt}>Apply</Text>
+                        </TouchableOpacity>
+                      </View>
+                    )}
 
                     {/* Package Type */}
                     <Text style={[styles.flexLabel, { marginTop: 12 }]}>📦 Package Type</Text>
@@ -1471,8 +1620,45 @@ export default function AddShipment() {
                             </TouchableOpacity>
                           );
                         })}
+                        {/* + Add Category chip — only enabled when current
+                            selection is "Other" or empty (matches request:
+                            "Other" chip પર click → "+ Add Category"). */}
+                        <TouchableOpacity
+                          testID="flex-add-category"
+                          onPress={() => setShowAddCategory((s) => !s)}
+                          style={[
+                            styles.flexChip, styles.flexChipDashed,
+                            showAddCategory && styles.flexChipActive,
+                          ]}
+                        >
+                          <Text style={[
+                            styles.flexChipTxt,
+                            showAddCategory && styles.flexChipTxtActive,
+                          ]}>
+                            + Add Category
+                          </Text>
+                        </TouchableOpacity>
                       </View>
                     </ScrollView>
+                    {showAddCategory && (
+                      <View style={styles.flexCustomRow}>
+                        <TextInput
+                          value={newCategoryName}
+                          onChangeText={setNewCategoryName}
+                          placeholder='New category name (e.g. "Toys")'
+                          placeholderTextColor="#9CA3AF"
+                          style={[styles.flexCustomInput, { flex: 1 }]}
+                          autoCapitalize="words"
+                          maxLength={40}
+                        />
+                        <TouchableOpacity
+                          style={styles.flexCustomApply}
+                          onPress={addCustomCategory}
+                        >
+                          <Text style={styles.flexCustomApplyTxt}>Save</Text>
+                        </TouchableOpacity>
+                      </View>
+                    )}
 
                     {/* Delivery basis radio */}
                     <Text style={[styles.flexLabel, { marginTop: 12 }]}>🚚 Delivery</Text>
@@ -2446,8 +2632,25 @@ const styles = StyleSheet.create({
     backgroundColor: "#fff", borderWidth: 1, borderColor: "#D8B4FE",
   },
   flexChipActive: { backgroundColor: "#7C3AED", borderColor: "#7C3AED" },
+  flexChipDashed: { borderStyle: "dashed", backgroundColor: "#FAF5FF" },
   flexChipTxt: { fontSize: 11.5, fontWeight: "700", color: "#6B21A8" },
   flexChipTxtActive: { color: "#fff" },
+  flexCustomRow: {
+    flexDirection: "row", alignItems: "center", gap: 6,
+    marginTop: 8, paddingHorizontal: 4,
+  },
+  flexCustomInput: {
+    width: 60, paddingHorizontal: 10, paddingVertical: 8,
+    borderWidth: 1, borderColor: "#D8B4FE", borderRadius: 8,
+    fontSize: 13, color: colors.text, backgroundColor: "#fff",
+    textAlign: "center",
+  },
+  flexCustomX: { fontSize: 14, fontWeight: "800", color: "#9CA3AF" },
+  flexCustomApply: {
+    paddingHorizontal: 14, paddingVertical: 9, borderRadius: 8,
+    backgroundColor: "#7C3AED",
+  },
+  flexCustomApplyTxt: { fontSize: 12, fontWeight: "800", color: "#fff" },
   flexRadio: {
     flexDirection: "row", alignItems: "center", gap: 6,
     paddingHorizontal: 12, paddingVertical: 9, borderRadius: 8,

@@ -82,7 +82,16 @@ export default function CourierVariantsScreen() {
       setVariants(r.variants as Variant[]);
       setCap(r.cap);
       setPackageTypes(r.package_types);
-      setCategories(r.categories);
+      // Phase 2D-update — Merge built-in CATEGORIES with the user's
+      // custom list so the Fixed editor sees the same chip set as the
+      // Flexible picker in New Shipment.
+      let userCustomCats: string[] = [];
+      try {
+        const cats = await Api.listMyCategories();
+        userCustomCats = cats.custom || [];
+      } catch { /* fallthrough — presets still work */ }
+      const merged = Array.from(new Set([...(r.categories || []), ...userCustomCats]));
+      setCategories(merged);
       // Phase 2D — Build the "copy from another courier" candidate
       // list once we know how many variants this target already has.
       try {
