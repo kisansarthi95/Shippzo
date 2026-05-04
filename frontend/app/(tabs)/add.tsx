@@ -1136,91 +1136,111 @@ export default function AddShipment() {
             </ScrollView>
           </Section>
 
-          {/* Phase 2 — Packing Variant Picker. Only shown when a courier
-              is selected AND that courier has at least one variant
-              defined. One-tap applies weight + dimensions + rate. */}
-          {selectedCourier && variants.length > 0 && (
-            <Section title="📦 Packing Variant (optional)">
+          {/* Phase 2 — Packing Variant Picker. Always shown so users
+              discover the feature. Gracefully handles the three states:
+              no courier picked yet / courier has no variants / courier
+              has variants ready to pick. */}
+          <Section title="📦 Packing Variant & Rate (optional)">
+            {!selectedCourier ? (
               <Text style={styles.hint}>
-                Tap a variant to auto-fill weight, dimensions, and rate
-                ({originState && state
-                  ? rateBasis === "within_state"
-                    ? `within ${originState}`
-                    : `outside ${originState} → ${state || "other"}`
-                  : "state detection pending — fill customer state first"})
+                Pick a Courier Partner above first to see its packing
+                variants (weight + rate auto-fill).
               </Text>
-              <ScrollView
-                horizontal
-                showsHorizontalScrollIndicator={false}
-                contentContainerStyle={{ gap: 8, paddingRight: 16, paddingVertical: 6 }}
-              >
-                {variants.map((v) => {
-                  const active = selectedVariant?.id === v.id;
-                  const currentRate =
-                    rateBasis === "within_state" ? v.within_state_rate :
-                    rateBasis === "outside_state" ? v.outside_state_rate :
-                    v.outside_state_rate; // default to outside when unknown
-                  return (
-                    <TouchableOpacity
-                      key={v.id}
-                      testID={`variant-card-${v.variant_name}`}
-                      onPress={() => applyVariant(v)}
-                      style={[
-                        styles.variantCard,
-                        active && styles.variantCardActive,
-                      ]}
-                    >
-                      <Text style={[
-                        styles.variantCardName,
-                        active && { color: "#fff" },
-                      ]} numberOfLines={1}>
-                        {v.variant_name}
-                      </Text>
-                      <Text style={[
-                        styles.variantCardMeta,
-                        active && { color: "#E0E7FF" },
-                      ]} numberOfLines={1}>
-                        {v.weight_g ? `${v.weight_g}g` : "—"}
-                        {" · "}
-                        {v.length_cm ? `${v.length_cm}×${v.width_cm}×${v.height_cm}` : "—"}
-                      </Text>
-                      <Text style={[
-                        styles.variantCardRate,
-                        active && { color: "#fff" },
-                      ]}>
-                        ₹{currentRate || 0}
-                      </Text>
-                    </TouchableOpacity>
-                  );
-                })}
-              </ScrollView>
-              {selectedVariant && (
-                <TouchableOpacity
-                  onPress={() => setSelectedVariant(null)}
-                  style={styles.clearVariantBtn}
-                >
-                  <Ionicons name="close-circle" size={14} color="#6B7280" />
-                  <Text style={styles.clearVariantTxt}>Clear variant</Text>
-                </TouchableOpacity>
-              )}
-            </Section>
-          )}
-          {selectedCourier && variants.length === 0 && (
-            <Section title="📦 Packing Variants">
-              <Text style={styles.hint}>
-                No variants defined for this courier yet.
-              </Text>
-              <TouchableOpacity
-                style={styles.outlineBtn}
-                onPress={() => router.push(`/courier/${selectedCourier.id}/variants` as any)}
-              >
-                <Ionicons name="add-circle-outline" size={16} color="#7C3AED" />
-                <Text style={[styles.outlineBtnText, { color: "#7C3AED" }]}>
-                  Add variants for {selectedCourier.name}
+            ) : variants.length === 0 ? (
+              <>
+                <Text style={styles.hint}>
+                  No variants defined for {selectedCourier.name} yet. Add
+                  your first one (e.g. "ODC 320gm") so this form can
+                  auto-fill weight, dimensions and rate on future orders.
                 </Text>
-              </TouchableOpacity>
-            </Section>
-          )}
+                <TouchableOpacity
+                  testID="add-first-variant-btn"
+                  style={styles.outlineBtn}
+                  onPress={() => router.push(`/courier/${selectedCourier.id}/variants` as any)}
+                >
+                  <Ionicons name="add-circle-outline" size={16} color="#7C3AED" />
+                  <Text style={[styles.outlineBtnText, { color: "#7C3AED" }]}>
+                    Add Packing Variants
+                  </Text>
+                </TouchableOpacity>
+              </>
+            ) : (
+              <>
+                <Text style={styles.hint}>
+                  Tap a variant to auto-fill weight, dimensions, and rate
+                  ({originState && state
+                    ? rateBasis === "within_state"
+                      ? `within ${originState}`
+                      : `outside ${originState} → ${state || "other"}`
+                    : "state detection pending — fill customer state first"})
+                </Text>
+                <ScrollView
+                  horizontal
+                  showsHorizontalScrollIndicator={false}
+                  contentContainerStyle={{ gap: 8, paddingRight: 16, paddingVertical: 6 }}
+                >
+                  {variants.map((v) => {
+                    const active = selectedVariant?.id === v.id;
+                    const currentRate =
+                      rateBasis === "within_state" ? v.within_state_rate :
+                      rateBasis === "outside_state" ? v.outside_state_rate :
+                      v.outside_state_rate; // default to outside when unknown
+                    return (
+                      <TouchableOpacity
+                        key={v.id}
+                        testID={`variant-card-${v.variant_name}`}
+                        onPress={() => applyVariant(v)}
+                        style={[
+                          styles.variantCard,
+                          active && styles.variantCardActive,
+                        ]}
+                      >
+                        <Text style={[
+                          styles.variantCardName,
+                          active && { color: "#fff" },
+                        ]} numberOfLines={1}>
+                          {v.variant_name}
+                        </Text>
+                        <Text style={[
+                          styles.variantCardMeta,
+                          active && { color: "#E0E7FF" },
+                        ]} numberOfLines={1}>
+                          {v.weight_g ? `${v.weight_g}g` : "—"}
+                          {" · "}
+                          {v.length_cm ? `${v.length_cm}×${v.width_cm}×${v.height_cm}` : "—"}
+                        </Text>
+                        <Text style={[
+                          styles.variantCardRate,
+                          active && { color: "#fff" },
+                        ]}>
+                          ₹{currentRate || 0}
+                        </Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </ScrollView>
+                {selectedVariant && (
+                  <TouchableOpacity
+                    onPress={() => setSelectedVariant(null)}
+                    style={styles.clearVariantBtn}
+                  >
+                    <Ionicons name="close-circle" size={14} color="#6B7280" />
+                    <Text style={styles.clearVariantTxt}>Clear variant</Text>
+                  </TouchableOpacity>
+                )}
+                <TouchableOpacity
+                  testID="manage-variants-link"
+                  style={styles.manageVariantsLink}
+                  onPress={() => router.push(`/courier/${selectedCourier.id}/variants` as any)}
+                >
+                  <Ionicons name="settings-outline" size={12} color="#6B7280" />
+                  <Text style={styles.manageVariantsLinkTxt}>
+                    Manage variants for {selectedCourier.name}
+                  </Text>
+                </TouchableOpacity>
+              </>
+            )}
+          </Section>
 
           {/* Tracking */}
           <Section title="Tracking ID *">
@@ -2109,6 +2129,12 @@ const styles = StyleSheet.create({
     paddingVertical: 4, paddingHorizontal: 8, marginTop: 4,
   },
   clearVariantTxt: { fontSize: 11, color: "#6B7280" },
+  manageVariantsLink: {
+    flexDirection: "row", alignItems: "center", gap: 4,
+    alignSelf: "flex-start",
+    paddingVertical: 4, paddingHorizontal: 4, marginTop: 4,
+  },
+  manageVariantsLinkTxt: { fontSize: 10.5, color: "#6B7280", textDecorationLine: "underline" },
   outlineBtn: {
     flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6,
     paddingVertical: 10, borderRadius: 10,
