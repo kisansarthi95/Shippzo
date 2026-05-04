@@ -74,18 +74,10 @@ export default function CourierBillingReportScreen() {
 
   const downloadExcel = async () => {
     try {
-      const url = Api.courierBillingReportExcelUrl({
+      const url = await Api.courierBillingReportExcelUrl({
         range,
         courier_id: courierId === "all" ? undefined : courierId,
       });
-      // Append the auth token so the FastAPI dependency can authorise
-      // the static-file download. We expose it as a query parameter
-      // since headers can't be set on a browser-redirected download.
-      // NOTE: backend currently uses Authorization header — for the
-      // Excel route to work we either need to add ?token= support OR
-      // surface the URL through Share so the user can paste it after
-      // logging in. For now we just hand off to the browser; user
-      // needs to be signed in there too.
       await Linking.openURL(url);
     } catch (e: any) {
       Alert.alert("Couldn't open download", errMsg(e, "Try again"));

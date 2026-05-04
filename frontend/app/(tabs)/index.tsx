@@ -1761,6 +1761,24 @@ export default function Dashboard() {
                 chevron
               />
 
+              {/* Phase 2.5 — Courier Billing Report.
+                  Visible to all users (admin can hide via Plan Features
+                  feature flag `reports_courier_billing` if desired). */}
+              <View style={styles.bulkMsgHeader}>
+                <Text style={styles.bulkMsgTitle}>📋 Reports & Bills</Text>
+                <Text style={styles.bulkMsgSub}>
+                  Per-courier monthly bills (Excel + share)
+                </Text>
+              </View>
+              <ActionPill
+                testID="quick-courier-billing"
+                icon="document-text"
+                label="📄 Courier Billing Report"
+                onPress={() => router.push("/reports/courier-billing" as any)}
+                tone="primary"
+                chevron
+              />
+
               {/* Phase I — Admin-only quick links to power tools.
                   Hidden for regular users so the dashboard stays
                   uncluttered. */}

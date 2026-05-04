@@ -575,9 +575,14 @@ export const Api = {
       rows_without_rate:  number;
     }>("/me/reports/courier-billing", { params }).then((r) => r.data),
 
-  // Returns the absolute URL to the Excel download endpoint — the UI
-  // hands it to expo-linking / the native browser to trigger download.
-  courierBillingReportExcelUrl: (params: {
+  // Returns the absolute URL to the Excel download endpoint with the
+  // auth token appended as `?token=…`. The backend's auth_gate
+  // middleware exempts this exact path so the route's own
+  // header-or-query auth logic runs and accepts either carrier.
+  // Browsers can't set custom Authorization headers on a redirected
+  // download, so the token query carrier is what makes Linking.openURL
+  // work end-to-end.
+  courierBillingReportExcelUrl: async (params: {
     range?: string;
     courier_id?: string;
     from?: string;
@@ -585,6 +590,10 @@ export const Api = {
   } = {}) => {
     const qs = new URLSearchParams();
     Object.entries(params).forEach(([k, v]) => { if (v) qs.set(k, String(v)); });
+    try {
+      const tok = await AsyncStorage.getItem("@auth_token");
+      if (tok) qs.set("token", tok);
+    } catch { /* token missing — endpoint will return 401 */ }
     return `${BASE}/api/me/reports/courier-billing/excel?${qs.toString()}`;
   },
 
