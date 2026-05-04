@@ -5,6 +5,7 @@ import { StatusBar } from "expo-status-bar";
 import { Platform, View, ActivityIndicator, Text, LogBox } from "react-native";
 import * as SplashScreen from "expo-splash-screen";
 import { Ionicons } from "@expo/vector-icons";
+import * as Font from "expo-font";
 import { AuthProvider, useAuth } from "../lib/auth";
 import { FeatureFlagsProvider } from "../lib/feature_flags";
 import ErrorBoundary from "../components/ErrorBoundary";
@@ -68,8 +69,21 @@ export default function RootLayout() {
     let cancelled = false;
     (async () => {
       try {
-        // Preload icon fonts so screens don't jitter
-        // On web, wrap in a race with a timeout to avoid fontfaceobserver hanging
+        // Preload icon fonts so screens don't jitter.
+        // We load through `expo-font.loadAsync` first because it uses
+        // a different code path than Ionicons.loadFont() and is more
+        // resilient when the icon-font asset has been corrupted in
+        // Expo Go's local cache (the cause of the recurring
+        // "Font file for ionicons is empty" crash). Fall back to
+        // Ionicons.loadFont() if that fails.
+        try {
+          await Font.loadAsync({
+            // eslint-disable-next-line @typescript-eslint/no-var-requires
+            Ionicons: require("@expo/vector-icons/build/vendor/react-native-vector-icons/Fonts/Ionicons.ttf"),
+          });
+        } catch {
+          /* swallow — try the icon's own loader next */
+        }
         const fontLoad = Ionicons.loadFont();
         if (Platform.OS === "web") {
           await Promise.race([
