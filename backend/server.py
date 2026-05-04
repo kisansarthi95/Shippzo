@@ -1004,6 +1004,15 @@ class ShipmentUpdate(BaseModel):
     box_dimensions: Optional[str] = None
     shipment_notes: Optional[str] = None
     status: Optional[str] = None
+    # Phase 2 — allow editing variant snapshot on an existing shipment
+    # (e.g. when the user swaps the variant on a draft shipment). Keep
+    # optional; absent = leave existing value untouched.
+    variant_id: Optional[str] = None
+    variant_name: Optional[str] = None
+    package_type: Optional[str] = None
+    category: Optional[str] = None
+    rate_applied: Optional[float] = None
+    rate_basis: Optional[str] = None
 
 
 # ---------------------- Helpers ----------------------
