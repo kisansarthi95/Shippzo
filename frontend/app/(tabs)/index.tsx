@@ -48,8 +48,10 @@ export default function Dashboard() {
   const { user } = useAuth();
   const isAdmin = !!user?.is_admin;
   const { width: screenWidth, height: screenHeight } = useWindowDimensions();
-  // 3-column stat grid: 16px horizontal padding + 10px × 2 gaps
-  const cardW = Math.floor((screenWidth - 32 - 20) / 3);
+  // 3-column stat grid: 8px horizontal padding + 10px × 2 gaps
+  // Reduced edge padding from 16→8 so cards stretch closer to
+  // the device edge (user requested edge-to-edge feel).
+  const cardW = Math.floor((screenWidth - 16 - 20) / 3);
 
   // ────────────────────────────────────────────────────────────
   // Smart Paste bottom-sheet drag logic.
@@ -2144,7 +2146,7 @@ const styles = StyleSheet.create({
   statsGrid: {
     flexDirection: "row",
     flexWrap: "wrap",
-    paddingHorizontal: 16,
+    paddingHorizontal: 8,
     gap: 10,
     marginTop: 4,
   },
@@ -2202,7 +2204,7 @@ const styles = StyleSheet.create({
 
   /* Full-width stacked action pills (Pending Orders / Shipments / Print All) */
   pillsCol: {
-    paddingHorizontal: 16,
+    paddingHorizontal: 8,
     marginTop: 16,
     gap: 10,
   },
@@ -2258,7 +2260,7 @@ const styles = StyleSheet.create({
   bulkMsgTitle:  { fontSize: 13, fontWeight: "800", color: colors.text },
   bulkMsgSub:    { fontSize: 11, color: "#6B7280", marginTop: 2 },
   card: {
-    marginHorizontal: 16,
+    marginHorizontal: 8,
     marginBottom: 10,
     backgroundColor: colors.surface,
     borderWidth: 2,
@@ -2287,7 +2289,7 @@ const styles = StyleSheet.create({
   empty: {
     alignItems: "center",
     padding: 30,
-    marginHorizontal: 16,
+    marginHorizontal: 8,
     backgroundColor: colors.surface,
     borderRadius: 12,
     borderWidth: 2,

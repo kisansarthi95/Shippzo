@@ -190,7 +190,7 @@ export default function HomeAlerts() {
   if (banners.length === 0) return null;
 
   return (
-    <View style={{ paddingHorizontal: 16, gap: 8, marginBottom: 8 }}>
+    <View style={{ paddingHorizontal: 8, gap: 8, marginBottom: 8 }}>
       {banners.map((b) => (
         <BannerView
           key={b.key}

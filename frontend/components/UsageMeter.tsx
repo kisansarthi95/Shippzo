@@ -143,7 +143,7 @@ export default function UsageMeter() {
 
 const styles = StyleSheet.create({
   card: {
-    marginHorizontal: 16,
+    marginHorizontal: 8,
     marginTop: 4,
     marginBottom: 14,
     borderRadius: 14,
