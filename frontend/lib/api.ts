@@ -496,6 +496,17 @@ export const Api = {
       categories: string[];
     }>("/me/all-variants").then((r) => r.data),
 
+  copyVariantsFromCourier: (targetCourierId: string, sourceCourierId: string) =>
+    api.post<{
+      ok: boolean;
+      copied_count: number;
+      skipped_duplicates: string[];
+      skipped_cap_full: string[];
+      source_courier_name: string;
+      target_courier_name: string;
+    }>(`/couriers/${targetCourierId}/variants/copy-from/${sourceCourierId}`)
+      .then((r) => r.data),
+
   // --- Phase-3a Plans & Usage ---
   listPlans: () =>
     api

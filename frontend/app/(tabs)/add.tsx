@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   View,
   Text,
@@ -184,6 +184,17 @@ export default function AddShipment() {
   }>>([]);
   const [selectedVariant, setSelectedVariant] = useState<typeof variants[0] | null>(null);
   const [originState, setOriginState] = useState<string>("");
+  // Phase 2D — Flexible Variant mode. Lets the user mix-and-match
+  // dimensions / weight / package-type / category from existing fixed
+  // variants when the order doesn't match any variant exactly. Rate is
+  // derived from the closest matching variant + delivery basis radio.
+  const [flexibleMode, setFlexibleMode] = useState(false);
+  const [flexDim, setFlexDim]           = useState<string>("");   // "L×W×H" string
+  const [flexWeightG, setFlexWeightG]   = useState<number>(0);
+  const [flexPkgType, setFlexPkgType]   = useState<string>("");
+  const [flexCategory, setFlexCategory] = useState<string>("");
+  const [flexBasis, setFlexBasis]       = useState<"within_state" | "outside_state" | "">("");
+  const [flexRate, setFlexRate]         = useState<string>("");
   // Rate basis captured at save time — derived from origin-vs-destination
   // state comparison. Exposed here so the UI can preview which rate is
   // currently applicable for the picked variant.
@@ -275,6 +286,7 @@ export default function AddShipment() {
   // to avoid clobbering manual edits. Rate is applied only when the
   // amount field is empty so Prepaid orders aren't overwritten.
   const applyVariant = useCallback((v: typeof variants[0]) => {
+    setFlexibleMode(false);                          // exit flex mode
     setSelectedVariant(v);
     // Weight
     if (v.weight_g) {
@@ -298,6 +310,82 @@ export default function AddShipment() {
       if (rate) setAmount(String(rate));
     }
   }, [amount, originState, state]);
+
+  // Phase 2D — Flexible Mode helpers ------------------------------
+  // Aggregate distinct dimensions / weights / package_types / categories
+  // from the current courier's variants so the chip selectors are
+  // populated from real data the user has already defined.
+  const flexDimChips = useMemo(() => {
+    const seen = new Set<string>();
+    const out: Array<{ label: string; l: number; w: number; h: number }> = [];
+    for (const v of variants) {
+      if (!v.length_cm && !v.width_cm && !v.height_cm) continue;
+      const key = `${v.length_cm}×${v.width_cm}×${v.height_cm}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({ label: key, l: v.length_cm, w: v.width_cm, h: v.height_cm });
+    }
+    return out;
+  }, [variants]);
+
+  const flexWeightChips = useMemo(() => {
+    // Always include common ladder + any distinct weights from variants.
+    const fixed = [100, 200, 500, 1000, 2000, 3000, 5000];
+    const extra = Array.from(new Set(
+      variants.map((v) => v.weight_g).filter((g) => g && !fixed.includes(g)),
+    )).sort((a, b) => a - b);
+    return [...fixed, ...extra];
+  }, [variants]);
+
+  const flexPkgChips = useMemo(() => {
+    const PRESET = ["Cover", "Poly Bag", "Small Box", "Medium Box", "Large Box", "Tube"];
+    const extra = Array.from(new Set(
+      variants.map((v) => (v.package_type || "").trim()).filter((p) => p && !PRESET.includes(p)),
+    ));
+    return [...PRESET, ...extra];
+  }, [variants]);
+
+  const flexCatChips = useMemo(() => {
+    const PRESET = ["Electronics", "Clothing", "Medical", "Documents", "Home Goods", "Other"];
+    const extra = Array.from(new Set(
+      variants.map((v) => (v.category || "").trim()).filter((c) => c && !PRESET.includes(c)),
+    ));
+    return [...PRESET, ...extra];
+  }, [variants]);
+
+  // Suggested rate = closest variant by weight (within flex basis).
+  const flexSuggestedRate = useMemo(() => {
+    if (!flexBasis || !flexWeightG || variants.length === 0) return null;
+    const sorted = [...variants]
+      .filter((v) => v.weight_g)
+      .sort((a, b) => Math.abs(a.weight_g - flexWeightG) - Math.abs(b.weight_g - flexWeightG));
+    const closest = sorted[0];
+    if (!closest) return null;
+    const rate = flexBasis === "within_state"
+      ? closest.within_state_rate : closest.outside_state_rate;
+    return rate
+      ? { rate, source: closest.variant_name, basis: flexBasis }
+      : null;
+  }, [flexBasis, flexWeightG, variants]);
+
+  // Apply a flex selection back into the form fields. Called whenever
+  // the user changes a flex chip — keeps the main inputs in sync so
+  // they can review / override before saving.
+  const syncFlexToForm = useCallback(() => {
+    if (!flexibleMode) return;
+    if (flexWeightG) {
+      setWeight(String(flexWeightG));
+      setWeightUnit("g");
+    }
+    if (flexDim) {
+      const m = /^([\d.]+)×([\d.]+)×([\d.]+)$/.exec(flexDim);
+      if (m) { setBoxL(m[1]); setBoxW(m[2]); setBoxH(m[3]); }
+    }
+    if (flexRate) {
+      setAmount(flexRate);
+    }
+  }, [flexibleMode, flexWeightG, flexDim, flexRate]);
+  useEffect(() => { syncFlexToForm(); }, [syncFlexToForm]);
 
   // Auto-fills the Order ID input ONLY when:
   //   - User is creating a NEW shipment (no edit_id)
@@ -923,16 +1011,24 @@ export default function AddShipment() {
           weight: weight.trim() ? `${weight.trim()} ${weightUnit}` : "",
           sheet_row_key: sheetRowKey,
           // Phase 2 — Variant snapshot (captured at save time).
-          variant_id: selectedVariant?.id || "",
-          variant_name: selectedVariant?.variant_name || "",
-          package_type: selectedVariant?.package_type || "",
-          category: selectedVariant?.category || "",
+          // Phase 2D — When Flexible Mode is on, we save the user's
+          // chip selections instead of a fixed variant id so reports
+          // still get the package_type / category / rate breakdown.
+          variant_id: flexibleMode ? "" : (selectedVariant?.id || ""),
+          variant_name: flexibleMode
+            ? `Flexible (${flexWeightG ? (flexWeightG >= 1000 ? `${flexWeightG / 1000}kg` : `${flexWeightG}g`) : "—"})`
+            : (selectedVariant?.variant_name || ""),
+          package_type: flexibleMode ? flexPkgType : (selectedVariant?.package_type || ""),
+          category: flexibleMode ? flexCategory : (selectedVariant?.category || ""),
           rate_applied: (() => {
+            if (flexibleMode) return parseFloat(flexRate) || 0;
             if (!selectedVariant) return 0;
             if (rateBasis === "within_state") return selectedVariant.within_state_rate || 0;
             return selectedVariant.outside_state_rate || 0;
           })(),
-          rate_basis: selectedVariant ? (rateBasis || "outside_state") : "",
+          rate_basis: flexibleMode
+            ? (flexBasis || "")
+            : (selectedVariant ? (rateBasis || "outside_state") : ""),
           custom_values: (() => {
             // Keep only values for fields that still exist + are enabled
             // + use per-shipment source. Trim empty strings.
@@ -1180,7 +1276,7 @@ export default function AddShipment() {
                   contentContainerStyle={{ gap: 8, paddingRight: 16, paddingVertical: 6 }}
                 >
                   {variants.map((v) => {
-                    const active = selectedVariant?.id === v.id;
+                    const active = !flexibleMode && selectedVariant?.id === v.id;
                     const currentRate =
                       rateBasis === "within_state" ? v.within_state_rate :
                       rateBasis === "outside_state" ? v.outside_state_rate :
@@ -1218,8 +1314,50 @@ export default function AddShipment() {
                       </TouchableOpacity>
                     );
                   })}
+                  {/* Phase 2D — Flexible card. Lets the user mix-and-match
+                      dims / weight / package / category / rate when none
+                      of the fixed variants matches the order exactly. */}
+                  <TouchableOpacity
+                    testID="variant-card-flexible"
+                    onPress={() => {
+                      const next = !flexibleMode;
+                      setFlexibleMode(next);
+                      if (next) setSelectedVariant(null);
+                      // Auto-pick basis from origin/destination if known.
+                      if (next && originState && state && !flexBasis) {
+                        setFlexBasis(
+                          originState.trim().toLowerCase() === state.trim().toLowerCase()
+                            ? "within_state" : "outside_state",
+                        );
+                      }
+                    }}
+                    style={[
+                      styles.variantCard,
+                      styles.flexCard,
+                      flexibleMode && styles.flexCardActive,
+                    ]}
+                  >
+                    <Text style={[
+                      styles.variantCardName,
+                      flexibleMode && { color: "#fff" },
+                    ]} numberOfLines={1}>
+                      ✨ Flexible
+                    </Text>
+                    <Text style={[
+                      styles.variantCardMeta,
+                      flexibleMode && { color: "#FCE7F3" },
+                    ]} numberOfLines={1}>
+                      Custom mix
+                    </Text>
+                    <Text style={[
+                      styles.variantCardRate,
+                      flexibleMode && { color: "#fff" },
+                    ]}>
+                      ₹—
+                    </Text>
+                  </TouchableOpacity>
                 </ScrollView>
-                {selectedVariant && (
+                {selectedVariant && !flexibleMode && (
                   <TouchableOpacity
                     onPress={() => setSelectedVariant(null)}
                     style={styles.clearVariantBtn}
@@ -1228,6 +1366,171 @@ export default function AddShipment() {
                     <Text style={styles.clearVariantTxt}>Clear variant</Text>
                   </TouchableOpacity>
                 )}
+
+                {/* Phase 2D — Flexible UI block. Chip-driven editor that
+                    populates dim / weight / package / category / rate
+                    from the courier's existing variants + fixed weight
+                    ladder. User confirms or overrides each value. */}
+                {flexibleMode && (
+                  <View style={styles.flexBlock}>
+                    {/* Dimensions */}
+                    <Text style={styles.flexLabel}>📏 Box Dimensions (cm)</Text>
+                    {flexDimChips.length === 0 ? (
+                      <Text style={styles.flexEmpty}>No dimension presets — define a Fixed Variant first.</Text>
+                    ) : (
+                      <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+                        <View style={{ flexDirection: "row", gap: 6 }}>
+                          {flexDimChips.map((d) => {
+                            const active = flexDim === d.label;
+                            return (
+                              <TouchableOpacity
+                                key={d.label}
+                                onPress={() => setFlexDim(active ? "" : d.label)}
+                                style={[styles.flexChip, active && styles.flexChipActive]}
+                              >
+                                <Text style={[
+                                  styles.flexChipTxt,
+                                  active && styles.flexChipTxtActive,
+                                ]}>
+                                  {d.label}
+                                </Text>
+                              </TouchableOpacity>
+                            );
+                          })}
+                        </View>
+                      </ScrollView>
+                    )}
+
+                    {/* Weight */}
+                    <Text style={[styles.flexLabel, { marginTop: 12 }]}>⚖️ Weight</Text>
+                    <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+                      <View style={{ flexDirection: "row", gap: 6 }}>
+                        {flexWeightChips.map((g) => {
+                          const active = flexWeightG === g;
+                          const lbl = g >= 1000 ? `${g / 1000}kg` : `${g}g`;
+                          return (
+                            <TouchableOpacity
+                              key={`w-${g}`}
+                              onPress={() => setFlexWeightG(active ? 0 : g)}
+                              style={[styles.flexChip, active && styles.flexChipActive]}
+                            >
+                              <Text style={[
+                                styles.flexChipTxt,
+                                active && styles.flexChipTxtActive,
+                              ]}>
+                                {lbl}
+                              </Text>
+                            </TouchableOpacity>
+                          );
+                        })}
+                      </View>
+                    </ScrollView>
+
+                    {/* Package Type */}
+                    <Text style={[styles.flexLabel, { marginTop: 12 }]}>📦 Package Type</Text>
+                    <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+                      <View style={{ flexDirection: "row", gap: 6 }}>
+                        {flexPkgChips.map((p) => {
+                          const active = flexPkgType === p;
+                          return (
+                            <TouchableOpacity
+                              key={`p-${p}`}
+                              onPress={() => setFlexPkgType(active ? "" : p)}
+                              style={[styles.flexChip, active && styles.flexChipActive]}
+                            >
+                              <Text style={[
+                                styles.flexChipTxt,
+                                active && styles.flexChipTxtActive,
+                              ]}>
+                                {p}
+                              </Text>
+                            </TouchableOpacity>
+                          );
+                        })}
+                      </View>
+                    </ScrollView>
+
+                    {/* Category */}
+                    <Text style={[styles.flexLabel, { marginTop: 12 }]}>🏷️ Category</Text>
+                    <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+                      <View style={{ flexDirection: "row", gap: 6 }}>
+                        {flexCatChips.map((c) => {
+                          const active = flexCategory === c;
+                          return (
+                            <TouchableOpacity
+                              key={`c-${c}`}
+                              onPress={() => setFlexCategory(active ? "" : c)}
+                              style={[styles.flexChip, active && styles.flexChipActive]}
+                            >
+                              <Text style={[
+                                styles.flexChipTxt,
+                                active && styles.flexChipTxtActive,
+                              ]}>
+                                {c}
+                              </Text>
+                            </TouchableOpacity>
+                          );
+                        })}
+                      </View>
+                    </ScrollView>
+
+                    {/* Delivery basis radio */}
+                    <Text style={[styles.flexLabel, { marginTop: 12 }]}>🚚 Delivery</Text>
+                    <View style={{ flexDirection: "row", gap: 8 }}>
+                      <TouchableOpacity
+                        onPress={() => setFlexBasis(flexBasis === "within_state" ? "" : "within_state")}
+                        style={[styles.flexRadio, flexBasis === "within_state" && styles.flexRadioActive]}
+                      >
+                        <Ionicons
+                          name={flexBasis === "within_state" ? "radio-button-on" : "radio-button-off"}
+                          size={16}
+                          color={flexBasis === "within_state" ? "#7C3AED" : "#9CA3AF"}
+                        />
+                        <Text style={styles.flexRadioTxt}>Within State</Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        onPress={() => setFlexBasis(flexBasis === "outside_state" ? "" : "outside_state")}
+                        style={[styles.flexRadio, flexBasis === "outside_state" && styles.flexRadioActive]}
+                      >
+                        <Ionicons
+                          name={flexBasis === "outside_state" ? "radio-button-on" : "radio-button-off"}
+                          size={16}
+                          color={flexBasis === "outside_state" ? "#7C3AED" : "#9CA3AF"}
+                        />
+                        <Text style={styles.flexRadioTxt}>Outside State</Text>
+                      </TouchableOpacity>
+                    </View>
+
+                    {/* Suggestion + manual rate */}
+                    {flexSuggestedRate && (
+                      <View style={styles.flexSuggestion}>
+                        <Ionicons name="bulb" size={14} color="#B45309" />
+                        <Text style={styles.flexSuggestionTxt}>
+                          Suggestion: ₹{flexSuggestedRate.rate}{" "}
+                          (from "{flexSuggestedRate.source}",{" "}
+                          {flexSuggestedRate.basis === "within_state" ? "within-state" : "outside-state"})
+                        </Text>
+                        <TouchableOpacity
+                          onPress={() => setFlexRate(String(flexSuggestedRate.rate))}
+                          style={styles.flexSuggestionBtn}
+                        >
+                          <Text style={styles.flexSuggestionBtnTxt}>Use</Text>
+                        </TouchableOpacity>
+                      </View>
+                    )}
+
+                    <Text style={[styles.flexLabel, { marginTop: 10 }]}>💰 Rate (₹) — confirm or change</Text>
+                    <TextInput
+                      value={flexRate}
+                      onChangeText={setFlexRate}
+                      keyboardType="decimal-pad"
+                      placeholder="Enter rate"
+                      placeholderTextColor="#9CA3AF"
+                      style={styles.flexRateInput}
+                    />
+                  </View>
+                )}
+
                 <TouchableOpacity
                   testID="manage-variants-link"
                   style={styles.manageVariantsLink}
@@ -2123,6 +2426,53 @@ const styles = StyleSheet.create({
   variantCardName: { fontSize: 13, fontWeight: "800", color: colors.text },
   variantCardMeta: { fontSize: 10.5, color: "#6B7280", marginTop: 3 },
   variantCardRate: { fontSize: 13, fontWeight: "800", color: "#1F4FBF", marginTop: 5 },
+
+  // Phase 2D — Flexible card + UI block
+  flexCard: {
+    backgroundColor: "#FDF4FF", borderColor: "#E9D5FF", borderStyle: "dashed",
+  },
+  flexCardActive: {
+    backgroundColor: "#A855F7", borderColor: "#A855F7", borderStyle: "solid",
+  },
+  flexBlock: {
+    marginTop: 10, padding: 12, borderRadius: 10,
+    backgroundColor: "#FAF5FF",
+    borderWidth: 1, borderColor: "#E9D5FF",
+  },
+  flexLabel: { fontSize: 12, fontWeight: "800", color: "#6B21A8", marginBottom: 6 },
+  flexEmpty: { fontSize: 11, color: "#9CA3AF", fontStyle: "italic" },
+  flexChip: {
+    paddingHorizontal: 11, paddingVertical: 7, borderRadius: 999,
+    backgroundColor: "#fff", borderWidth: 1, borderColor: "#D8B4FE",
+  },
+  flexChipActive: { backgroundColor: "#7C3AED", borderColor: "#7C3AED" },
+  flexChipTxt: { fontSize: 11.5, fontWeight: "700", color: "#6B21A8" },
+  flexChipTxtActive: { color: "#fff" },
+  flexRadio: {
+    flexDirection: "row", alignItems: "center", gap: 6,
+    paddingHorizontal: 12, paddingVertical: 9, borderRadius: 8,
+    backgroundColor: "#fff", borderWidth: 1, borderColor: "#E5E7EB",
+    flex: 1,
+  },
+  flexRadioActive: { borderColor: "#7C3AED", backgroundColor: "#F5F3FF" },
+  flexRadioTxt: { fontSize: 12, fontWeight: "700", color: "#374151" },
+  flexSuggestion: {
+    flexDirection: "row", alignItems: "center", gap: 6,
+    marginTop: 10, padding: 8, borderRadius: 8,
+    backgroundColor: "#FFFBEB", borderWidth: 1, borderColor: "#FDE68A",
+  },
+  flexSuggestionTxt: { flex: 1, fontSize: 11, fontWeight: "700", color: "#92400E" },
+  flexSuggestionBtn: {
+    paddingHorizontal: 10, paddingVertical: 5, borderRadius: 6,
+    backgroundColor: "#B45309",
+  },
+  flexSuggestionBtnTxt: { fontSize: 11, fontWeight: "800", color: "#fff" },
+  flexRateInput: {
+    borderWidth: 1, borderColor: "#D8B4FE", borderRadius: 8,
+    paddingHorizontal: 12, paddingVertical: 10,
+    fontSize: 14, fontWeight: "700", color: "#1F4FBF",
+    backgroundColor: "#fff",
+  },
   clearVariantBtn: {
     flexDirection: "row", alignItems: "center", gap: 4,
     alignSelf: "flex-start",

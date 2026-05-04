@@ -1503,6 +1503,95 @@ async def list_all_variants(
     }
 
 
+@api_router.post("/couriers/{courier_id}/variants/copy-from/{source_courier_id}")
+async def copy_variants_from_courier(
+    courier_id: str,
+    source_courier_id: str,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    """Bulk-clone all active variants from one courier to another. Plan
+    cap is honoured — if the source has more variants than the target's
+    remaining slots, only the first N are copied and the rest are
+    reported as `skipped`."""
+    if courier_id == source_courier_id:
+        raise HTTPException(status_code=400, detail="Source and target courier are the same")
+
+    target = await db.couriers.find_one(
+        {"id": courier_id, "user_id": current_user["id"]}, {"_id": 0, "id": 1, "name": 1},
+    )
+    if not target:
+        raise HTTPException(status_code=404, detail="Target courier not found")
+    source = await db.couriers.find_one(
+        {"id": source_courier_id, "user_id": current_user["id"]}, {"_id": 0, "id": 1, "name": 1},
+    )
+    if not source:
+        raise HTTPException(status_code=404, detail="Source courier not found")
+
+    src_variants = await db.courier_variants.find(
+        {"user_id": current_user["id"], "courier_id": source_courier_id, "active": True},
+        {"_id": 0},
+    ).sort("created_at", 1).to_list(100)
+    if not src_variants:
+        raise HTTPException(status_code=400, detail="Source courier has no variants to copy")
+
+    # Plan-cap math.
+    cap = _packing_variant_cap_for_user(current_user)
+    existing = await db.courier_variants.count_documents(
+        {"courier_id": courier_id, "user_id": current_user["id"]},
+    )
+    remaining = None if cap is None else max(0, cap - existing)
+    if remaining == 0:
+        raise HTTPException(
+            status_code=402,
+            detail=f"Target courier already at plan cap ({cap}). Upgrade or remove some variants.",
+        )
+
+    # Existing variant_names on the target — skip dupes so we don't
+    # create exact-name collisions.
+    existing_names = set(v["variant_name"].strip().lower() for v in await db.courier_variants.find(
+        {"courier_id": courier_id, "user_id": current_user["id"]},
+        {"variant_name": 1, "_id": 0},
+    ).to_list(200))
+
+    copied: List[Dict[str, Any]] = []
+    skipped_dupes: List[str] = []
+    skipped_cap: List[str] = []
+    for v in src_variants:
+        nm = v["variant_name"].strip()
+        if nm.lower() in existing_names:
+            skipped_dupes.append(nm)
+            continue
+        if remaining is not None and len(copied) >= remaining:
+            skipped_cap.append(nm)
+            continue
+        clone = CourierVariant(
+            user_id=current_user["id"],
+            courier_id=courier_id,
+            variant_name=nm,
+            package_type=v.get("package_type", ""),
+            category=v.get("category", ""),
+            length_cm=float(v.get("length_cm") or 0),
+            width_cm=float(v.get("width_cm") or 0),
+            height_cm=float(v.get("height_cm") or 0),
+            weight_g=float(v.get("weight_g") or 0),
+            within_state_rate=float(v.get("within_state_rate") or 0),
+            outside_state_rate=float(v.get("outside_state_rate") or 0),
+            active=True,
+        )
+        await db.courier_variants.insert_one(clone.model_dump())
+        copied.append(clone.model_dump())
+        existing_names.add(nm.lower())
+
+    return {
+        "ok": True,
+        "copied_count": len(copied),
+        "skipped_duplicates": skipped_dupes,
+        "skipped_cap_full": skipped_cap,
+        "source_courier_name": source["name"],
+        "target_courier_name": target["name"],
+    }
+
+
 # -------- Settings --------
 
 @api_router.get("/settings", response_model=Settings)

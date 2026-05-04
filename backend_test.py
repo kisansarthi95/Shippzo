@@ -1,324 +1,371 @@
-"""Phase 2B Backend Test — Shipment Create with Packing Variant snapshot fields.
+"""
+Backend test for Phase 2D — Bulk-clone variants endpoint:
+    POST /api/couriers/{courier_id}/variants/copy-from/{source_courier_id}
 
-Tests the NEW optional fields on Shipment/ShipmentCreate:
-  variant_id, variant_name, package_type, category, rate_applied, rate_basis
-and the /api/me/all-variants endpoint + ShipmentUpdate behavior.
+Tested against the public preview URL.
+Auth: user2@test.com (silver plan; temporarily bumped to gold via Mongo
+to allow creating a 2nd courier — reverted at the end).
 """
 
 import os
 import sys
-import json
-import uuid
+import asyncio
+from typing import Any, Dict, List, Tuple
+
 import requests
+from motor.motor_asyncio import AsyncIOMotorClient
+from dotenv import load_dotenv
 
-BACKEND_URL = "https://logistics-hub-740.preview.emergentagent.com"
-API = f"{BACKEND_URL}/api"
+ROOT = os.path.dirname(os.path.abspath(__file__))
+load_dotenv(os.path.join(ROOT, "backend", ".env"))
 
+BASE = "https://logistics-hub-740.preview.emergentagent.com/api"
 USER_EMAIL = "user2@test.com"
 USER_PASSWORD = "User@12345"
-ADMIN_EMAIL = "admin@test.com"
-ADMIN_PASSWORD = "Admin@12345"
 
-passed = []
-failed = []
+MONGO_URL = os.environ.get("MONGO_URL", "mongodb://localhost:27017")
+DB_NAME = os.environ.get("DB_NAME", "test_database")
 
-
-def p(ok, label, details=""):
-    if ok:
-        passed.append(label)
-        print(f"  PASS  {label}")
-    else:
-        failed.append((label, details))
-        print(f"  FAIL  {label}  | {details}")
+results: List[Tuple[str, bool, str]] = []
 
 
-def login(email, password):
-    r = requests.post(f"{API}/auth/login", json={"email": email, "password": password}, timeout=15)
-    assert r.status_code == 200, f"login failed: {r.status_code} {r.text}"
+def record(name: str, ok: bool, msg: str = ""):
+    results.append((name, ok, msg))
+    icon = "PASS" if ok else "FAIL"
+    print(f"[{icon}] {name}" + (f" — {msg}" if msg else ""))
+
+
+def login(email: str, password: str) -> str:
+    r = requests.post(f"{BASE}/auth/login", json={"email": email, "password": password}, timeout=15)
+    r.raise_for_status()
     return r.json()["token"]
 
 
-def auth_hdr(token):
+def H(token: str) -> Dict[str, str]:
     return {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
 
 
+async def set_plan(user_email: str, plan: str):
+    cli = AsyncIOMotorClient(MONGO_URL)
+    db = cli[DB_NAME]
+    res = await db.users.update_one({"email": user_email}, {"$set": {"plan": plan}})
+    cli.close()
+    return res.modified_count
+
+
+def cleanup_couriers(token: str, courier_ids: List[str]):
+    for cid in courier_ids:
+        try:
+            r = requests.get(f"{BASE}/couriers/{cid}/variants", headers=H(token), timeout=10)
+            if r.status_code == 200:
+                for v in r.json().get("variants", []):
+                    requests.delete(
+                        f"{BASE}/couriers/{cid}/variants/{v['id']}",
+                        headers=H(token), timeout=10,
+                    )
+            requests.delete(f"{BASE}/couriers/{cid}", headers=H(token), timeout=10)
+        except Exception as e:
+            print(f"  cleanup courier {cid}: {e}")
+
+
 def main():
-    print(f"=== Phase 2B Test against {API} ===")
+    print(f"\n=== Phase 2D Copy-Variants Endpoint Tests ===\nTarget: {BASE}\n")
 
-    # Try user2 first; fall back to admin if user2 is over cap for couriers.
-    token = login(USER_EMAIL, USER_PASSWORD)
-    who = "user2"
+    asyncio.run(set_plan(USER_EMAIL, "platinum"))
 
-    # Step 1: fetch couriers, create if none
-    r = requests.get(f"{API}/couriers", headers=auth_hdr(token), timeout=15)
-    p(r.status_code == 200, "1. GET /api/couriers returns 200", f"status={r.status_code} body={r.text[:200]}")
-    couriers = r.json() if r.status_code == 200 else []
-    print(f"  user2 has {len(couriers)} couriers")
-
-    courier = None
-    if couriers:
-        courier = couriers[0]
-    else:
-        # Create one
-        r2 = requests.post(f"{API}/couriers",
-                           headers=auth_hdr(token),
-                           json={"name": "TEST_COURIER_PV"},
-                           timeout=15)
-        if r2.status_code != 200:
-            # Might be plan cap — switch to admin
-            print(f"  user2 POST /couriers failed ({r2.status_code}: {r2.text[:120]}), switching to admin")
-            token = login(ADMIN_EMAIL, ADMIN_PASSWORD)
-            who = "admin"
-            r = requests.get(f"{API}/couriers", headers=auth_hdr(token), timeout=15)
-            couriers = r.json()
-            if couriers:
-                courier = couriers[0]
-            else:
-                r2 = requests.post(f"{API}/couriers",
-                                   headers=auth_hdr(token),
-                                   json={"name": "TEST_COURIER_PV"},
-                                   timeout=15)
-                p(r2.status_code == 200, "1a. POST /api/couriers (admin) 200", r2.text[:200])
-                courier = r2.json()
-        else:
-            p(True, "1a. POST /api/couriers created new courier")
-            courier = r2.json()
-
-    courier_id = courier["id"]
-    courier_name = courier["name"]
-    print(f"  Using courier: {courier_name} ({courier_id}) as {who}")
-
-    # Step 2: Create a packing variant
-    variant_body = {
-        "variant_name": f"ODC 320gm PV-{uuid.uuid4().hex[:4]}",
-        "package_type": "Cover",
-        "category": "Documents",
-        "length_cm": 25,
-        "width_cm": 18,
-        "height_cm": 2,
-        "weight_g": 320,
-        "within_state_rate": 30,
-        "outside_state_rate": 60,
-    }
-    r = requests.post(f"{API}/couriers/{courier_id}/variants",
-                      headers=auth_hdr(token),
-                      json=variant_body,
-                      timeout=15)
-    if r.status_code == 402:
-        # plan cap — fallback: list existing variants and reuse/create on admin
-        print(f"  POST variant hit plan cap: {r.text[:160]}")
-        # try listing
-        rl = requests.get(f"{API}/couriers/{courier_id}/variants", headers=auth_hdr(token), timeout=15)
-        existing = (rl.json() or {}).get("variants") or []
-        if existing:
-            variant = existing[0]
-            print(f"  Reusing existing variant on same plan: {variant['id']}")
-            # But test rate values may not match; patch them via PUT to satisfy assertions
-            upd = requests.put(f"{API}/couriers/{courier_id}/variants/{variant['id']}",
-                               headers=auth_hdr(token),
-                               json={"within_state_rate": 30, "outside_state_rate": 60,
-                                     "package_type": "Cover", "category": "Documents"},
-                               timeout=15)
-            if upd.status_code == 200:
-                variant = upd.json()
-            p(True, "2. variant available (existing, plan-capped)")
-        else:
-            # escalate to admin
-            print("  No existing variants — switching to admin to create one")
-            token = login(ADMIN_EMAIL, ADMIN_PASSWORD)
-            who = "admin"
-            # Need an admin courier
-            rc = requests.get(f"{API}/couriers", headers=auth_hdr(token), timeout=15)
-            adm_couriers = rc.json() or []
-            if not adm_couriers:
-                rc2 = requests.post(f"{API}/couriers", headers=auth_hdr(token),
-                                    json={"name": "TEST_COURIER_PV"}, timeout=15)
-                courier = rc2.json()
-            else:
-                courier = adm_couriers[0]
-            courier_id = courier["id"]
-            courier_name = courier["name"]
-            r = requests.post(f"{API}/couriers/{courier_id}/variants",
-                              headers=auth_hdr(token),
-                              json=variant_body, timeout=15)
-            p(r.status_code == 200, "2. POST /api/couriers/{id}/variants (admin) 200",
-              f"status={r.status_code} body={r.text[:200]}")
-            variant = r.json()
-    else:
-        p(r.status_code == 200, "2. POST /api/couriers/{id}/variants 200",
-          f"status={r.status_code} body={r.text[:200]}")
-        if r.status_code != 200:
-            print("Aborting — cannot create variant.")
-            print_summary()
-            sys.exit(1)
-        variant = r.json()
-
-    variant_id = variant["id"]
-    print(f"  Created variant id={variant_id} name={variant['variant_name']}")
-
-    # validate variant fields
-    p(variant.get("package_type") == "Cover", "2a. variant.package_type = 'Cover'", str(variant.get("package_type")))
-    p(variant.get("category") == "Documents", "2b. variant.category = 'Documents'", str(variant.get("category")))
-    p(abs(float(variant.get("within_state_rate") or 0) - 30) < 0.01, "2c. variant.within_state_rate = 30")
-    p(abs(float(variant.get("outside_state_rate") or 0) - 60) < 0.01, "2d. variant.outside_state_rate = 60")
-
-    # Step 3: Create shipment WITH variant fields
-    tracking_id = f"TST-PV-{uuid.uuid4().hex[:8].upper()}"
-    ship_body_with = {
-        "tracking_id": tracking_id,
-        "courier_id": courier_id,
-        "courier_name": courier_name,
-        "order_id": f"ORD-PV-{uuid.uuid4().hex[:6]}",
-        "customer_name": "Test Customer",
-        "customer_phone": "9876543210",
-        "address_line1": "Test address",
-        "city": "Ahmedabad",
-        "state": "Gujarat",
-        "pincode": "380001",
-        "payment_mode": "COD",
-        "amount": 60,
-        "variant_id": variant_id,
-        "variant_name": variant["variant_name"],
-        "package_type": "Cover",
-        "category": "Documents",
-        "rate_applied": 60,
-        "rate_basis": "outside_state",
-    }
-    r = requests.post(f"{API}/shipments", headers=auth_hdr(token), json=ship_body_with, timeout=30)
-    p(r.status_code == 200, "3. POST /api/shipments WITH variant fields 200",
-      f"status={r.status_code} body={r.text[:300]}")
-    if r.status_code != 200:
-        print_summary()
-        sys.exit(1)
-    ship_with = r.json()
-    print(f"  Created shipment id={ship_with['id']} tracking={ship_with['tracking_id']}")
-
-    # Verify returned shipment has the snapshot fields
-    p(ship_with.get("variant_id") == variant_id, "3a. response.variant_id matches",
-      f"got={ship_with.get('variant_id')!r} expected={variant_id!r}")
-    p(ship_with.get("variant_name") == variant["variant_name"], "3b. response.variant_name matches",
-      f"got={ship_with.get('variant_name')!r}")
-    p(ship_with.get("package_type") == "Cover", "3c. response.package_type == 'Cover'",
-      f"got={ship_with.get('package_type')!r}")
-    p(ship_with.get("category") == "Documents", "3d. response.category == 'Documents'",
-      f"got={ship_with.get('category')!r}")
-    p(abs(float(ship_with.get("rate_applied") or 0) - 60) < 0.01,
-      "3e. response.rate_applied == 60",
-      f"got={ship_with.get('rate_applied')!r}")
-    p(ship_with.get("rate_basis") == "outside_state", "3f. response.rate_basis == 'outside_state'",
-      f"got={ship_with.get('rate_basis')!r}")
-
-    # Step 4: Read back via GET /api/shipments
-    r = requests.get(f"{API}/shipments", headers=auth_hdr(token), timeout=30)
-    p(r.status_code == 200, "4. GET /api/shipments 200", f"status={r.status_code}")
-    shipments = r.json() if r.status_code == 200 else []
-    found = next((s for s in shipments if s.get("id") == ship_with["id"]), None)
-    p(found is not None, "4a. Created shipment found in list")
-    if found:
-        p(found.get("variant_id") == variant_id, "4b. list.variant_id matches",
-          f"got={found.get('variant_id')!r}")
-        p(found.get("variant_name") == variant["variant_name"], "4c. list.variant_name matches")
-        p(found.get("package_type") == "Cover", "4d. list.package_type == 'Cover'")
-        p(found.get("category") == "Documents", "4e. list.category == 'Documents'")
-        p(abs(float(found.get("rate_applied") or 0) - 60) < 0.01, "4f. list.rate_applied == 60")
-        p(found.get("rate_basis") == "outside_state", "4g. list.rate_basis == 'outside_state'")
-
-    # Step 5: Create shipment WITHOUT variant fields
-    tracking_id2 = f"TST-NV-{uuid.uuid4().hex[:8].upper()}"
-    ship_body_without = {
-        "tracking_id": tracking_id2,
-        "courier_id": courier_id,
-        "courier_name": courier_name,
-        "order_id": f"ORD-NV-{uuid.uuid4().hex[:6]}",
-        "customer_name": "Test NoVariant",
-        "customer_phone": "9876543211",
-        "address_line1": "Test address 2",
-        "city": "Ahmedabad",
-        "state": "Gujarat",
-        "pincode": "380001",
-        "payment_mode": "Prepaid",
-        "amount": 100,
-    }
-    r = requests.post(f"{API}/shipments", headers=auth_hdr(token), json=ship_body_without, timeout=30)
-    p(r.status_code == 200, "5. POST /api/shipments WITHOUT variant fields 200",
-      f"status={r.status_code} body={r.text[:300]}")
-    if r.status_code == 200:
-        ship_without = r.json()
-        p(ship_without.get("variant_id") == "", "5a. default variant_id == ''",
-          f"got={ship_without.get('variant_id')!r}")
-        p(ship_without.get("variant_name") == "", "5b. default variant_name == ''",
-          f"got={ship_without.get('variant_name')!r}")
-        p(float(ship_without.get("rate_applied") or 0) == 0.0, "5c. default rate_applied == 0",
-          f"got={ship_without.get('rate_applied')!r}")
-        p(ship_without.get("rate_basis") == "", "5d. default rate_basis == ''",
-          f"got={ship_without.get('rate_basis')!r}")
-    else:
-        ship_without = None
-
-    # Step 6: Update shipment with rate_applied/rate_basis
-    # ShipmentUpdate does NOT list these fields — report accordingly.
-    upd_body = {"rate_applied": 45, "rate_basis": "within_state"}
-    r = requests.put(f"{API}/shipments/{ship_with['id']}", headers=auth_hdr(token),
-                     json=upd_body, timeout=15)
-    print(f"  6. PUT /api/shipments/{{id}} with rate_applied/rate_basis → status={r.status_code}")
-    if r.status_code == 400 and "No fields to update" in r.text:
-        # Model silently drops unknown fields; Pydantic extras == ignore.
-        p(False, "6. PUT update accepts rate_applied/rate_basis",
-          "ShipmentUpdate does NOT list variant/rate fields — server responded 'No fields to update' "
-          "(fields silently ignored). Report: main agent should add rate_applied/rate_basis/variant_* "
-          "to ShipmentUpdate model if post-save edits are expected.")
-    elif r.status_code == 200:
-        body = r.json()
-        got_rate = float(body.get("rate_applied") or 0)
-        got_basis = body.get("rate_basis")
-        if abs(got_rate - 45) < 0.01 and got_basis == "within_state":
-            p(True, "6. PUT update accepts rate_applied/rate_basis and applies them")
-        else:
-            p(False, "6. PUT update applied rate fields",
-              f"values NOT updated — got rate_applied={got_rate} rate_basis={got_basis!r}. "
-              f"ShipmentUpdate model likely ignores unknown fields → Pydantic didn't set them.")
-    else:
-        p(False, "6. PUT update accepts rate_applied/rate_basis",
-          f"unexpected status={r.status_code} body={r.text[:200]}")
-
-    # Step 7: GET /api/me/all-variants
-    r = requests.get(f"{API}/me/all-variants", headers=auth_hdr(token), timeout=15)
-    p(r.status_code == 200, "7. GET /api/me/all-variants 200", f"status={r.status_code}")
-    if r.status_code == 200:
-        body = r.json()
-        by_courier = body.get("by_courier") or {}
-        p(courier_id in by_courier, "7a. by_courier[courier_id] present",
-          f"keys={list(by_courier.keys())[:5]}")
-        vlist = by_courier.get(courier_id) or []
-        variant_ids = [v.get("id") for v in vlist]
-        p(variant_id in variant_ids, "7b. created variant_id present in by_courier list",
-          f"got_ids={variant_ids}")
-
-    # cleanup attempt (non-fatal)
+    created_courier_ids: List[str] = []
+    token = None
     try:
-        if ship_with:
-            requests.delete(f"{API}/shipments/{ship_with['id']}", headers=auth_hdr(token), timeout=10)
-        if ship_without:
-            requests.delete(f"{API}/shipments/{ship_without['id']}", headers=auth_hdr(token), timeout=10)
-    except Exception:
-        pass
+        # 9. Auth check (no token).
+        r = requests.post(
+            f"{BASE}/couriers/00000000-0000-0000-0000-000000000000/variants/copy-from/11111111-1111-1111-1111-111111111111",
+            timeout=15,
+        )
+        record(
+            "9. Without token returns 401/403",
+            r.status_code in (401, 403),
+            f"got {r.status_code}",
+        )
 
-    print_summary()
+        token = login(USER_EMAIL, USER_PASSWORD)
 
+        # 1. Setup.
+        r = requests.get(f"{BASE}/couriers", headers=H(token), timeout=15)
+        r.raise_for_status()
+        couriers = r.json()
+        record("1a. GET /couriers OK", isinstance(couriers, list), f"got {len(couriers)} couriers")
 
-def print_summary():
-    print("\n=== SUMMARY ===")
-    print(f"PASSED: {len(passed)}")
-    print(f"FAILED: {len(failed)}")
-    if failed:
-        print("\nFailed assertions:")
-        for lbl, det in failed:
-            print(f"  - {lbl}")
-            if det:
-                print(f"      {det}")
-    print(f"\nTotal: {len(passed)}/{len(passed)+len(failed)}")
+        if len(couriers) < 2:
+            r = requests.post(
+                f"{BASE}/couriers", headers=H(token),
+                json={"name": "TARGET_COURIER_TEST", "series_prefix": "TGT", "number_padding": 5},
+                timeout=15,
+            )
+            record(
+                "1b. Created 2nd courier TARGET_COURIER_TEST",
+                r.status_code == 200,
+                f"status={r.status_code} body={r.text[:120]}",
+            )
+            if r.status_code == 200:
+                created_courier_ids.append(r.json()["id"])
+            else:
+                print("Cannot proceed — couldn't create 2nd courier.")
+                return
+            couriers = requests.get(f"{BASE}/couriers", headers=H(token), timeout=15).json()
+
+        source = next((c for c in couriers if c["name"] != "TARGET_COURIER_TEST"), couriers[0])
+        target = next((c for c in couriers if c["id"] != source["id"]), None)
+        if target is None:
+            record("1c. Need 2 distinct couriers", False, "only 1 found")
+            return
+        SRC_ID = source["id"]
+        TGT_ID = target["id"]
+        print(f"  SOURCE: {source['name']} ({SRC_ID})")
+        print(f"  TARGET: {target['name']} ({TGT_ID})")
+        record("1c. Have 2 distinct couriers", True, f"src={source['name']}, tgt={target['name']}")
+
+        # 2. Create source variants — clear first.
+        for cid in (SRC_ID, TGT_ID):
+            r = requests.get(f"{BASE}/couriers/{cid}/variants", headers=H(token), timeout=15)
+            for v in (r.json().get("variants", []) if r.status_code == 200 else []):
+                requests.delete(
+                    f"{BASE}/couriers/{cid}/variants/{v['id']}",
+                    headers=H(token), timeout=10,
+                )
+
+        v1 = {"variant_name": "ALPHA-100g", "weight_g": 100,
+              "within_state_rate": 25, "outside_state_rate": 50}
+        v2 = {"variant_name": "BETA-500g", "weight_g": 500,
+              "within_state_rate": 60, "outside_state_rate": 120}
+        for body, label in [(v1, "ALPHA-100g"), (v2, "BETA-500g")]:
+            r = requests.post(
+                f"{BASE}/couriers/{SRC_ID}/variants",
+                headers=H(token), json=body, timeout=15,
+            )
+            record(
+                f"2. Create source variant {label}",
+                r.status_code == 200,
+                f"status={r.status_code} {r.text[:100]}",
+            )
+
+        # 3. Self-copy.
+        r = requests.post(
+            f"{BASE}/couriers/{SRC_ID}/variants/copy-from/{SRC_ID}",
+            headers=H(token), timeout=15,
+        )
+        body = r.json() if r.headers.get("content-type", "").startswith("application/json") else {}
+        ok_self = r.status_code == 400 and "same" in (body.get("detail", "") or "").lower()
+        record(
+            "3. Self-copy returns 400 'Source and target courier are the same'",
+            ok_self,
+            f"status={r.status_code} detail={(body.get('detail',''))[:120]}",
+        )
+
+        # 4. 404 tests.
+        bogus = "00000000-0000-0000-0000-000000000000"
+        r = requests.post(
+            f"{BASE}/couriers/{TGT_ID}/variants/copy-from/{bogus}",
+            headers=H(token), timeout=15,
+        )
+        body = r.json() if r.headers.get("content-type", "").startswith("application/json") else {}
+        record(
+            "4a. Bogus source → 404 'Source courier not found'",
+            r.status_code == 404 and "source" in (body.get("detail", "") or "").lower(),
+            f"status={r.status_code} detail={body.get('detail','')[:120]}",
+        )
+
+        r = requests.post(
+            f"{BASE}/couriers/{bogus}/variants/copy-from/{SRC_ID}",
+            headers=H(token), timeout=15,
+        )
+        body = r.json() if r.headers.get("content-type", "").startswith("application/json") else {}
+        record(
+            "4b. Bogus target → 404 'Target courier not found'",
+            r.status_code == 404 and "target" in (body.get("detail", "") or "").lower(),
+            f"status={r.status_code} detail={body.get('detail','')[:120]}",
+        )
+
+        # 5. Successful copy.
+        r = requests.post(
+            f"{BASE}/couriers/{TGT_ID}/variants/copy-from/{SRC_ID}",
+            headers=H(token), timeout=15,
+        )
+        record(
+            "5a. Successful copy returns 200",
+            r.status_code == 200,
+            f"status={r.status_code} body={r.text[:200]}",
+        )
+        if r.status_code == 200:
+            j = r.json()
+            print(f"   response: {j}")
+            record("5b. ok==True",                     j.get("ok") is True, str(j.get("ok")))
+            record("5c. copied_count >= 1",            int(j.get("copied_count", 0)) >= 1, str(j.get("copied_count")))
+            record("5d. skipped_duplicates is []",     j.get("skipped_duplicates") == [], str(j.get("skipped_duplicates")))
+            record("5e. skipped_cap_full is list",     isinstance(j.get("skipped_cap_full"), list), str(j.get("skipped_cap_full")))
+            record("5f. source_courier_name correct",  j.get("source_courier_name") == source["name"], str(j.get("source_courier_name")))
+            record("5g. target_courier_name correct",  j.get("target_courier_name") == target["name"], str(j.get("target_courier_name")))
+
+            r2 = requests.get(f"{BASE}/couriers/{TGT_ID}/variants", headers=H(token), timeout=15)
+            tgt_vars = r2.json().get("variants", [])
+            tgt_names = sorted([v["variant_name"] for v in tgt_vars])
+            record(
+                "5h. GET /target/variants contains copied",
+                "ALPHA-100g" in tgt_names and "BETA-500g" in tgt_names,
+                f"names={tgt_names}",
+            )
+
+        # 6. Duplicate prevention.
+        r = requests.post(
+            f"{BASE}/couriers/{TGT_ID}/variants/copy-from/{SRC_ID}",
+            headers=H(token), timeout=15,
+        )
+        if r.status_code == 200:
+            j = r.json()
+            print(f"   re-run response: {j}")
+            record("6a. Re-run returns 200", True, "")
+            record(
+                "6b. copied_count == 0",
+                int(j.get("copied_count", -1)) == 0,
+                str(j.get("copied_count")),
+            )
+            sd = sorted(j.get("skipped_duplicates", []))
+            expected = sorted(["ALPHA-100g", "BETA-500g"])
+            record(
+                "6c. skipped_duplicates includes both names",
+                sd == expected,
+                f"got={sd}",
+            )
+        elif r.status_code == 402:
+            record(
+                "6a. Re-run returned 402 (target at cap; acceptable per spec step 8)",
+                True,
+                f"detail={r.json().get('detail','')[:120]}",
+            )
+        else:
+            record(
+                "6a. Re-run unexpected status",
+                False,
+                f"status={r.status_code} body={r.text[:200]}",
+            )
+
+        # 7. Empty source.
+        r = requests.post(
+            f"{BASE}/couriers", headers=H(token),
+            json={"name": "EMPTY_SRC_TEST", "series_prefix": "EMP", "number_padding": 5},
+            timeout=15,
+        )
+        if r.status_code == 200:
+            empty_src = r.json()
+            created_courier_ids.append(empty_src["id"])
+            ESID = empty_src["id"]
+            r2 = requests.post(
+                f"{BASE}/couriers/{TGT_ID}/variants/copy-from/{ESID}",
+                headers=H(token), timeout=15,
+            )
+            body = r2.json() if r2.headers.get("content-type", "").startswith("application/json") else {}
+            record(
+                "7. Empty source → 400 'Source courier has no variants to copy'",
+                r2.status_code == 400 and "no variants" in (body.get("detail", "") or "").lower(),
+                f"status={r2.status_code} detail={(body.get('detail',''))[:120]}",
+            )
+        else:
+            record(
+                "7. Could not create empty-source courier (plan-cap?)",
+                False,
+                f"status={r.status_code} body={r.text[:200]}",
+            )
+
+        # 8. Plan-cap behaviour.
+        r = requests.post(
+            f"{BASE}/couriers", headers=H(token),
+            json={"name": "CAP_TEST_SRC", "series_prefix": "CTS", "number_padding": 5},
+            timeout=15,
+        )
+        if r.status_code == 200:
+            cts = r.json()
+            created_courier_ids.append(cts["id"])
+            CTS_ID = cts["id"]
+            for nm, w in [("CAP-VAR-ONE", 100), ("CAP-VAR-TWO", 200)]:
+                requests.post(
+                    f"{BASE}/couriers/{CTS_ID}/variants",
+                    headers=H(token), json={"variant_name": nm, "weight_g": w}, timeout=10,
+                )
+            r3 = requests.get(f"{BASE}/couriers/{TGT_ID}/variants", headers=H(token), timeout=15).json()
+            cap = r3.get("cap")
+            cur = r3.get("current_count", 0)
+            needed = (int(cap) - int(cur)) if cap is not None else 0
+            for i in range(needed):
+                requests.post(
+                    f"{BASE}/couriers/{TGT_ID}/variants",
+                    headers=H(token),
+                    json={"variant_name": f"FILLER-{i}", "weight_g": 50 + i},
+                    timeout=10,
+                )
+            r4 = requests.get(f"{BASE}/couriers/{TGT_ID}/variants", headers=H(token), timeout=15).json()
+            record(
+                "8a. Target filled to cap",
+                cap is None or int(r4.get("current_count", 0)) >= int(cap),
+                f"current={r4.get('current_count')}/{cap}",
+            )
+            r5 = requests.post(
+                f"{BASE}/couriers/{TGT_ID}/variants/copy-from/{CTS_ID}",
+                headers=H(token), timeout=15,
+            )
+            print(f"   8b copy-when-at-cap status={r5.status_code} body={r5.text[:200]}")
+            if r5.status_code == 402:
+                record(
+                    "8b. Copy when target at cap → 402 (no copy possible — per spec)",
+                    True,
+                    f"detail={r5.json().get('detail','')[:120]}",
+                )
+            elif r5.status_code == 200:
+                j = r5.json()
+                ok8 = (
+                    int(j.get("copied_count", -1)) == 0 and
+                    sorted(j.get("skipped_cap_full", [])) ==
+                    sorted(["CAP-VAR-ONE", "CAP-VAR-TWO"])
+                )
+                record(
+                    "8b. Copy when target at cap → 200 with copied_count=0 + skipped_cap_full=[both]",
+                    ok8,
+                    f"copied={j.get('copied_count')} skipped_cap={j.get('skipped_cap_full')}",
+                )
+            else:
+                record(
+                    "8b. Plan-cap test unexpected status",
+                    False,
+                    f"status={r5.status_code} body={r5.text[:200]}",
+                )
+
+    finally:
+        try:
+            tok = login(USER_EMAIL, USER_PASSWORD)
+            r = requests.get(f"{BASE}/couriers", headers=H(tok), timeout=15)
+            if r.status_code == 200:
+                for c in r.json():
+                    rv = requests.get(f"{BASE}/couriers/{c['id']}/variants", headers=H(tok), timeout=15)
+                    if rv.status_code == 200:
+                        for v in rv.json().get("variants", []):
+                            requests.delete(
+                                f"{BASE}/couriers/{c['id']}/variants/{v['id']}",
+                                headers=H(tok), timeout=10,
+                            )
+            cleanup_couriers(tok, created_courier_ids)
+        except Exception as e:
+            print(f"  cleanup failed: {e}")
+        try:
+            asyncio.run(set_plan(USER_EMAIL, "silver"))
+            print("  Reverted user2 plan to silver.")
+        except Exception as e:
+            print(f"  could not revert plan: {e}")
+
+    passed = sum(1 for _, ok, _ in results if ok)
+    print(f"\n=== {passed}/{len(results)} assertions passed ===\n")
+    for n, ok, msg in results:
+        if not ok:
+            print(f"FAILED: {n} — {msg}")
+    sys.exit(0 if passed == len(results) else 1)
 
 
 if __name__ == "__main__":
     main()
-    sys.exit(0 if not failed else 1)

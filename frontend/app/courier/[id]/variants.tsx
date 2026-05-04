@@ -51,6 +51,18 @@ export default function CourierVariantsScreen() {
   const [packageTypes, setPackageTypes] = useState<string[]>([]);
   const [categories, setCategories]     = useState<string[]>([]);
 
+  // Phase 2D — "Copy from another courier" support. We keep a list of
+  // couriers that have at least one active variant so we can offer a
+  // one-tap clone when the user lands on a fresh courier with no
+  // variants.
+  const [copySources, setCopySources] = useState<Array<{
+    courier_id: string;
+    courier_name: string;
+    variant_count: number;
+  }>>([]);
+  const [copyPickerOpen, setCopyPickerOpen] = useState(false);
+  const [copying, setCopying] = useState(false);
+
   // Editor modal state
   const [editorOpen, setEditorOpen] = useState(false);
   const [editing, setEditing]       = useState<Variant | null>(null);
@@ -71,6 +83,28 @@ export default function CourierVariantsScreen() {
       setCap(r.cap);
       setPackageTypes(r.package_types);
       setCategories(r.categories);
+      // Phase 2D — Build the "copy from another courier" candidate
+      // list once we know how many variants this target already has.
+      try {
+        const all = await Api.listAllVariants();
+        const couriers = await Api.listCouriers();
+        const counts: Record<string, number> = {};
+        for (const v of (all.variants || [])) {
+          if (v.courier_id === courierId) continue; // skip self
+          counts[v.courier_id] = (counts[v.courier_id] || 0) + 1;
+        }
+        setCopySources(
+          (couriers || [])
+            .filter((c: any) => counts[c.id])
+            .map((c: any) => ({
+              courier_id: c.id,
+              courier_name: c.name,
+              variant_count: counts[c.id] || 0,
+            })),
+        );
+      } catch {
+        setCopySources([]);
+      }
     } catch (e: any) {
       Alert.alert("Error", e?.response?.data?.detail || e?.message || "Failed to load variants");
     } finally {
@@ -112,6 +146,55 @@ export default function CourierVariantsScreen() {
     setWithinRate(v.within_state_rate ? String(v.within_state_rate) : "");
     setOutsideRate(v.outside_state_rate ? String(v.outside_state_rate) : "");
     setEditorOpen(true);
+  };
+
+  // Phase 2D — Copy & Edit: clone the row's values into the editor in
+  // create mode (no id). Auto-suffix the name with "(Copy)" so the user
+  // doesn't accidentally save a same-named duplicate; backend will
+  // reject same-name copies but we want clearer affordance up-front.
+  const openCopy = (v: Variant) => {
+    if (cap !== null && variants.length >= cap) {
+      Alert.alert(
+        "Plan limit reached",
+        `Your plan allows ${cap} variant(s) per courier. Upgrade to copy more.`,
+      );
+      return;
+    }
+    setEditing(null);                                  // create mode
+    setName(`${v.variant_name} (Copy)`);
+    setPkgType(v.package_type);
+    setCategory(v.category);
+    setLengthCm(v.length_cm ? String(v.length_cm) : "");
+    setWidthCm(v.width_cm ? String(v.width_cm) : "");
+    setHeightCm(v.height_cm ? String(v.height_cm) : "");
+    setWeightG(v.weight_g ? String(v.weight_g) : "");
+    setWithinRate(v.within_state_rate ? String(v.within_state_rate) : "");
+    setOutsideRate(v.outside_state_rate ? String(v.outside_state_rate) : "");
+    setEditorOpen(true);
+  };
+
+  // Phase 2D — Bulk-clone all variants from another of the user's
+  // couriers in one shot. Plan cap + name dedup handled server-side.
+  const copyFromCourier = async (sourceCourierId: string, sourceCourierName: string) => {
+    setCopying(true);
+    try {
+      const r = await Api.copyVariantsFromCourier(courierId, sourceCourierId);
+      const lines: string[] = [];
+      lines.push(`Copied: ${r.copied_count} variant(s) from ${r.source_courier_name}`);
+      if (r.skipped_duplicates.length) {
+        lines.push(`Skipped duplicates: ${r.skipped_duplicates.join(", ")}`);
+      }
+      if (r.skipped_cap_full.length) {
+        lines.push(`Skipped (plan cap): ${r.skipped_cap_full.join(", ")}`);
+      }
+      Alert.alert("Copy complete", lines.join("\n"));
+      setCopyPickerOpen(false);
+      load();
+    } catch (e: any) {
+      Alert.alert("Copy failed", e?.response?.data?.detail || e?.message || "Try again");
+    } finally {
+      setCopying(false);
+    }
   };
 
   const save = async () => {
@@ -207,6 +290,18 @@ export default function CourierVariantsScreen() {
               and within-state vs outside-state rates so the New Shipment
               form auto-fills correctly.
             </Text>
+            {copySources.length > 0 && (
+              <TouchableOpacity
+                testID="copy-from-courier-cta"
+                style={styles.copyFromCta}
+                onPress={() => setCopyPickerOpen(true)}
+              >
+                <Ionicons name="copy" size={16} color="#fff" />
+                <Text style={styles.copyFromCtaTxt}>
+                  Copy variants from another courier
+                </Text>
+              </TouchableOpacity>
+            )}
           </View>
         ) : (
           variants.map((v) => (
@@ -219,6 +314,13 @@ export default function CourierVariantsScreen() {
                   </Text>
                 </View>
                 <View style={{ flexDirection: "row", gap: 6 }}>
+                  <TouchableOpacity
+                    testID={`variant-copy-${v.variant_name}`}
+                    onPress={() => openCopy(v)}
+                    style={styles.iconBtn}
+                  >
+                    <Ionicons name="copy-outline" size={18} color="#7C3AED" />
+                  </TouchableOpacity>
                   <TouchableOpacity onPress={() => openEdit(v)} style={styles.iconBtn}>
                     <Ionicons name="create-outline" size={18} color="#1F4FBF" />
                   </TouchableOpacity>
@@ -252,6 +354,55 @@ export default function CourierVariantsScreen() {
           <Text style={styles.addBtnTxt}>Add Variant</Text>
         </TouchableOpacity>
       </ScrollView>
+
+      {/* Phase 2D — Copy-from-courier picker. Tappable list of every
+          other courier the user owns that has at least one active
+          variant. One-tap clones the whole list (cap-aware). */}
+      <Modal
+        visible={copyPickerOpen}
+        transparent
+        animationType="slide"
+        onRequestClose={() => !copying && setCopyPickerOpen(false)}
+      >
+        <View style={styles.modalBg}>
+          <View style={styles.sheet}>
+            <View style={styles.sheetHeader}>
+              <Text style={styles.sheetTitle}>📋 Copy variants from…</Text>
+              <TouchableOpacity onPress={() => setCopyPickerOpen(false)} disabled={copying} hitSlop={10}>
+                <Ionicons name="close" size={22} color={colors.text} />
+              </TouchableOpacity>
+            </View>
+            {copying ? (
+              <View style={{ padding: 30, alignItems: "center" }}>
+                <ActivityIndicator color="#7C3AED" />
+                <Text style={{ marginTop: 10, color: "#6B7280" }}>Copying…</Text>
+              </View>
+            ) : copySources.length === 0 ? (
+              <Text style={[styles.emptySub, { padding: 20 }]}>
+                No other couriers have variants yet.
+              </Text>
+            ) : (
+              <ScrollView style={{ maxHeight: 360 }}>
+                {copySources.map((s) => (
+                  <TouchableOpacity
+                    key={s.courier_id}
+                    style={styles.sourceRow}
+                    onPress={() => copyFromCourier(s.courier_id, s.courier_name)}
+                  >
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.sourceName}>{s.courier_name}</Text>
+                      <Text style={styles.sourceCount}>
+                        {s.variant_count} variant(s) available
+                      </Text>
+                    </View>
+                    <Ionicons name="chevron-forward" size={18} color="#9CA3AF" />
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+            )}
+          </View>
+        </View>
+      </Modal>
 
       {/* Editor modal */}
       <Modal
@@ -436,6 +587,19 @@ const styles = StyleSheet.create({
   emptySub: {
     fontSize: 12, color: "#6B7280", textAlign: "center", marginTop: 6, lineHeight: 17,
   },
+  copyFromCta: {
+    flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6,
+    paddingVertical: 12, paddingHorizontal: 16, borderRadius: 10,
+    backgroundColor: "#7C3AED", marginTop: 16,
+  },
+  copyFromCtaTxt: { fontSize: 13, fontWeight: "800", color: "#fff" },
+  sourceRow: {
+    flexDirection: "row", alignItems: "center",
+    paddingVertical: 14, paddingHorizontal: 4,
+    borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: "#F3F4F6",
+  },
+  sourceName:  { fontSize: 14, fontWeight: "800", color: "#111827" },
+  sourceCount: { fontSize: 11.5, color: "#7C3AED", marginTop: 2 },
 
   variantCard: {
     backgroundColor: "#fff", borderRadius: 12, padding: 12,
