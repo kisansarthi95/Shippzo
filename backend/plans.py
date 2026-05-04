@@ -44,6 +44,12 @@ class PlanSpec:
     badge: Optional[str]       # "Most Popular" | "🚀" | None
     cta: str           # upgrade line under the card
     packing_variant_cap: int = 1  # max packing variants per courier (Phase 2)
+    # Phase A — Team Members (added 2026-05-04)
+    # `team_member_cap`     = number of team members included FREE in the plan
+    # `extra_member_price`  = monthly price (INR) when admin wants to add
+    #                         beyond the included quota. 0 disables extras.
+    team_member_cap: int = 0
+    extra_member_price_inr: int = 0
 
 
 PLANS: Dict[str, PlanSpec] = {
@@ -59,6 +65,8 @@ PLANS: Dict[str, PlanSpec] = {
         bulk_max=0,
         daily_cap=None,
         packing_variant_cap=1,
+        team_member_cap=0,
+        extra_member_price_inr=0,
         badge=None,
         cta="Upgrade to unlock full features",
     ),
@@ -76,6 +84,8 @@ PLANS: Dict[str, PlanSpec] = {
         badge=None,
         cta="Upgrade when your orders grow",
         packing_variant_cap=2,
+        team_member_cap=0,
+        extra_member_price_inr=200,
     ),
     "gold": PlanSpec(
         key="gold",
@@ -91,6 +101,8 @@ PLANS: Dict[str, PlanSpec] = {
         badge="Most Popular",
         cta="Upgrade for high-volume efficiency",
         packing_variant_cap=5,
+        team_member_cap=1,
+        extra_member_price_inr=200,
     ),
     "platinum": PlanSpec(
         key="platinum",
@@ -106,6 +118,8 @@ PLANS: Dict[str, PlanSpec] = {
         badge="🚀",
         cta="No delays. No limits feeling. Full control.",
         packing_variant_cap=8,
+        team_member_cap=2,
+        extra_member_price_inr=300,
     ),
 }
 
@@ -120,7 +134,8 @@ def plan_for(user: Dict[str, Any]) -> PlanSpec:
 # runtime WITHOUT a code deploy. Defaults above are the fallback when a
 # key isn't present in the override document.
 _OVERRIDABLE_FIELDS = ("label_cap", "bulk_max", "daily_cap",
-                       "price_inr", "trial_days", "packing_variant_cap")
+                       "price_inr", "trial_days", "packing_variant_cap",
+                       "team_member_cap", "extra_member_price_inr")
 
 
 async def _load_plan_overrides(db) -> Dict[str, Dict[str, Any]]:

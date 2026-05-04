@@ -1955,6 +1955,31 @@ export default function SettingsScreen() {
             </TouchableOpacity>
           </Section>
 
+          {/* Phase A — Team Members & Permissions
+              Lets the shop-owner add staff who'll receive SLA alert
+              WhatsApp messages now and (Phase C) get their own login
+              with the permissions you grant. */}
+          <Section title="👥 Team Members & Permissions" icon="people-outline">
+            <Text style={styles.toggleSub}>
+              Add staff with their name, phone & role. Assign per-feature
+              permissions — they'll only see what you allow when they get
+              their own login.{"\n"}
+              Free quota by plan: Gold = 1, Platinum = 2. Beyond that, buy
+              extra slots from your wallet or via Razorpay.
+            </Text>
+            <TouchableOpacity
+              testID="settings-hub-team-members"
+              onPress={() => router.push("/settings/team-members" as any)}
+              style={[
+                styles.saveBtn,
+                { marginTop: 12, backgroundColor: "#7C3AED" },
+              ]}
+            >
+              <Ionicons name="people" size={18} color="#fff" />
+              <Text style={styles.saveBtnText}>Manage Team Members</Text>
+            </TouchableOpacity>
+          </Section>
+
           {/* Phase F4 — Courier Rules editor extracted into its own
               standalone /courier-rules screen as part of the legacy
               dispatch/delivery cleanup. The bulk Delivery Check-in

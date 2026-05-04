@@ -6824,7 +6824,12 @@ _SLA_LAST_RUN: Dict[str, Any] = {
 }
 
 
-def _alert_to_public(doc: Dict[str, Any], *, fresh_phones: Optional[List[str]] = None) -> Dict[str, Any]:
+def _alert_to_public(
+    doc: Dict[str, Any],
+    *,
+    fresh_phones: Optional[List[str]] = None,
+    fresh_contacts: Optional[List[Dict[str, str]]] = None,
+) -> Dict[str, Any]:
     """Strip Mongo internals & PII for non-admin callers.
 
     If `fresh_phones` is provided we override the phones cached on the
@@ -6832,12 +6837,18 @@ def _alert_to_public(doc: Dict[str, Any], *, fresh_phones: Optional[List[str]] =
     way alerts always route to whatever number the admin most recently
     configured (rather than whatever was stored when the breach was
     first raised, which may be stale demo data).
+
+    `fresh_contacts` (Phase A) carries [{name, phone, role}] team
+    members. When non-empty the WhatsApp UI prefers it over the bare
+    phones array — falling back gracefully when no team is configured.
     """
     out = {k: v for k, v in doc.items() if k != "_id"}
     if "id" not in out and "_id" in doc:
         out["id"] = str(doc["_id"])
     if fresh_phones is not None:
         out["phones"] = list(fresh_phones)
+    if fresh_contacts is not None:
+        out["contacts"] = list(fresh_contacts)
     return out
 
 
@@ -6915,8 +6926,23 @@ async def admin_sla_alerts(
     # WhatsApp shortcuts always route to numbers they recognise.
     rules = await _load_stage_rules()
     fresh = _current_alert_phones(rules)
+    # Phase A — fetch staff contacts (per alert.user_id) for richer
+    # name+role+phone display in the SLA card buttons.
+    from routers.team_members import get_team_contacts
+    contacts_by_user: Dict[str, List[Dict[str, str]]] = {}
+    for r in rows:
+        uid = r.get("user_id")
+        if uid and uid not in contacts_by_user:
+            contacts_by_user[uid] = await get_team_contacts(db, uid)
     return {
-        "alerts": [_alert_to_public(r, fresh_phones=fresh) for r in rows],
+        "alerts": [
+            _alert_to_public(
+                r,
+                fresh_phones=fresh,
+                fresh_contacts=contacts_by_user.get(r.get("user_id") or "", []),
+            )
+            for r in rows
+        ],
         "stats":  _SLA_LAST_RUN,
     }
 
@@ -6992,8 +7018,14 @@ async def me_sla_alerts(
     )
     rows = await cursor.to_list(length=500)
     fresh = _current_alert_phones(rules)
+    # Phase A — staff contacts for richer name+role+phone display.
+    from routers.team_members import get_team_contacts
+    contacts = await get_team_contacts(db, current_user["id"])
     return {
-        "alerts":   [_alert_to_public(r, fresh_phones=fresh) for r in rows],
+        "alerts":   [
+            _alert_to_public(r, fresh_phones=fresh, fresh_contacts=contacts)
+            for r in rows
+        ],
         "channels": rules.get("display_channels"),
         "muted":    False,
     }
@@ -7037,6 +7069,28 @@ async def me_feature_flags(
     plans = await _get_plan_features_doc()
     allowed = plans.get(plan, plans.get("free_trial", []))
     return {"plan": plan, "features": list(allowed), "is_admin": False}
+
+
+@api_router.get("/me/feature-registry")
+async def me_feature_registry(
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    """Phase A — Used by the Team Members screen so the shop-owner can
+    pick which features each staff member can access. Returns the FULL
+    feature catalog plus the subset the current user actually has — the
+    UI then restricts the toggles so a user can't grant permissions
+    they don't themselves have."""
+    plan = (current_user.get("plan") or "free_trial").lower()
+    if current_user.get("is_admin"):
+        my = list(ALL_KEYS)
+    else:
+        plans = await _get_plan_features_doc()
+        my = list(plans.get(plan, plans.get("free_trial", [])))
+    return {
+        "registry":    get_registry_payload(),
+        "my_features": my,
+        "plan":        plan,
+    }
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -8075,6 +8129,16 @@ try:
     app.include_router(_reports_router)
 except Exception as _rep_exc:
     print(f"Failed to mount reports router: {_rep_exc!r}")
+
+# Phase A — Team Members (staff contacts + per-feature permissions
+# stored, plus plan-cap + extra-member purchase flow). The router
+# closes over `db` and `get_current_user` so it doesn't need to
+# circular-import them.
+try:
+    from routers.team_members import build_router as _build_team_members_router
+    app.include_router(_build_team_members_router(db, get_current_user))
+except Exception as _tm_exc:
+    logger.exception(f"Failed to mount team_members router: {_tm_exc}")
 
 app.include_router(api_router)
 app.include_router(auth_router)

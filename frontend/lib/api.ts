@@ -1304,6 +1304,60 @@ export const Api = {
     api.get<{ alerts: any[]; channels: any; muted: boolean }>(
       "/me/sla/alerts", { params },
     ).then((r) => r.data),
+
+  // ─── Phase A: Team Members (staff contacts + permissions) ───────
+  // Backend router lives at /api/me/team-members and enforces the
+  // plan-based free quota + extra-member purchase flow.
+  meTeamMembersList: () =>
+    api.get<{
+      members: Array<{
+        id: string; name: string; phone: string; role: string;
+        permissions: string[]; paid_extra: boolean; active: boolean;
+      }>;
+      free_cap: number;
+      free_used: number;
+      extra_used: number;
+      extra_member_price: number;
+      plan_key: string;
+      plan_name: string;
+      can_add_free: boolean;
+      can_buy_extra: boolean;
+    }>("/me/team-members").then((r) => r.data),
+
+  meTeamMemberCreate: (body: { name: string; phone: string; role?: string; permissions?: string[] }) =>
+    api.post("/me/team-members", body).then((r) => r.data),
+
+  meTeamMemberUpdate: (id: string, body: Partial<{
+    name: string; phone: string; role: string;
+    permissions: string[]; active: boolean;
+  }>) =>
+    api.put(`/me/team-members/${id}`, body).then((r) => r.data),
+
+  meTeamMemberDelete: (id: string) =>
+    api.delete(`/me/team-members/${id}`).then((r) => r.data),
+
+  meTeamMemberPayExtra: (method: "wallet" | "razorpay") =>
+    api.post<{
+      ok: boolean; slot_token: string; amount: number; method: string;
+      razorpay_order_id?: string;
+    }>("/me/team-members/pay-extra", { method }).then((r) => r.data),
+
+  meTeamMemberCreateWithExtra: (body: {
+    name: string; phone: string; role?: string;
+    permissions?: string[]; slot_token: string;
+  }) =>
+    api.post("/me/team-members/with-extra", body).then((r) => r.data),
+
+  /** Returns the feature catalog (categories → keys/labels) plus the
+   *  features the current user is entitled to. Used by the team
+   *  members screen to render permission toggles restricted to what
+   *  the parent user can actually grant. */
+  meFeatureRegistry: () =>
+    api.get<{
+      registry: { categories: Array<{ key: string; label: string }>; features: Array<{ key: string; label: string; description?: string; category: string }> };
+      my_features: string[];
+      plan: string;
+    }>("/me/feature-registry").then((r) => r.data),
   /**
    * Lookup an existing shipment by tracking_id. Returns null when no
    * match (HTTP 404) instead of throwing, so callers don't have to

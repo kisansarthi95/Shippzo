@@ -257,22 +257,50 @@ export default function SlaAlertsScreen() {
                     </Text>
                   </View>
                   <View style={styles.cardActions}>
-                    {(a.phones || []).slice(0, 2).map((p: string) => (
-                      <TouchableOpacity
-                        key={p}
-                        style={[styles.actionBtn, styles.waBtn]}
-                        onPress={() => openWhatsApp(p, a)}
-                      >
-                        <Ionicons name="logo-whatsapp" size={14} color="#fff" />
-                        <Text
-                          style={styles.actionBtnText}
-                          numberOfLines={1}
-                          allowFontScaling={false}
+                    {/* Phase A — prefer the staff contacts list (with
+                        name + role) when configured. Fall back to bare
+                        phones array for legacy alerts. */}
+                    {Array.isArray(a.contacts) && a.contacts.length > 0 ? (
+                      a.contacts.slice(0, 3).map((c: any) => (
+                        <TouchableOpacity
+                          key={c.phone}
+                          style={[styles.actionBtn, styles.waBtnRich]}
+                          onPress={() => openWhatsApp(c.phone, a)}
                         >
-                          {formatPhone(p)}
-                        </Text>
-                      </TouchableOpacity>
-                    ))}
+                          <Ionicons name="logo-whatsapp" size={16} color="#fff" />
+                          <View style={{ flexShrink: 1 }}>
+                            <Text style={styles.waName} numberOfLines={1}>
+                              {c.name || "Team"}
+                            </Text>
+                            {!!c.role && (
+                              <Text style={styles.waRole} numberOfLines={1}>
+                                {c.role}
+                              </Text>
+                            )}
+                            <Text style={styles.waPhone} numberOfLines={1}>
+                              {formatPhone(c.phone)}
+                            </Text>
+                          </View>
+                        </TouchableOpacity>
+                      ))
+                    ) : (
+                      (a.phones || []).slice(0, 2).map((p: string) => (
+                        <TouchableOpacity
+                          key={p}
+                          style={[styles.actionBtn, styles.waBtn]}
+                          onPress={() => openWhatsApp(p, a)}
+                        >
+                          <Ionicons name="logo-whatsapp" size={14} color="#fff" />
+                          <Text
+                            style={styles.actionBtnText}
+                            numberOfLines={1}
+                            allowFontScaling={false}
+                          >
+                            {formatPhone(p)}
+                          </Text>
+                        </TouchableOpacity>
+                      ))
+                    )}
                     {!a.dismissed && (
                       <TouchableOpacity
                         style={[styles.actionBtn, { backgroundColor: "#E5E7EB" }]}
@@ -357,5 +385,20 @@ const styles = StyleSheet.create({
     minWidth: 0,
     flexShrink: 1,
   },
+  // Phase A — Rich pill that surfaces Name + Role + Phone (3 lines).
+  // Used when the alert payload includes the new `contacts` array
+  // built from the user's Team Members configuration. Falls back to
+  // the plain `waBtn` for legacy alerts that only have phones[].
+  waBtnRich: {
+    backgroundColor: "#25D366",
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    flexShrink: 1,
+    flexBasis: "100%",        // stack vertically when many contacts
+    alignItems: "flex-start",
+  },
+  waName:  { color: "#fff", fontSize: 13, fontWeight: "800" },
+  waRole:  { color: "rgba(255,255,255,0.92)", fontSize: 11, fontWeight: "600", marginTop: 1 },
+  waPhone: { color: "rgba(255,255,255,0.92)", fontSize: 11, fontVariant: ["tabular-nums"], marginTop: 1 },
   actionBtnText: { color: "#fff", fontSize: 12, fontWeight: "800", letterSpacing: 0.2 },
 });
