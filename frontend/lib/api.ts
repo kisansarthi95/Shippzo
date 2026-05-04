@@ -42,6 +42,27 @@ export function registerUnauthorizedHandler(fn: () => void) {
 api.interceptors.response.use(
   (r) => r,
   async (err) => {
+    // Normalise Pydantic-422 array `detail` into a string so that the
+    // many `Alert.alert("X", e?.response?.data?.detail || …)` callsites
+    // across the app don't crash with "Value for message cannot be cast
+    // from ReadableNativeArray to String" on Android.
+    try {
+      const d = err?.response?.data?.detail;
+      if (Array.isArray(d)) {
+        err.response.data.detail = d
+          .map((it: any) =>
+            typeof it === "string"
+              ? it
+              : it?.msg
+                ? `${(it.loc || []).join(".")}: ${it.msg}`.trim()
+                : JSON.stringify(it),
+          )
+          .join("\n");
+      } else if (d && typeof d === "object") {
+        err.response.data.detail = JSON.stringify(d);
+      }
+    } catch { /* never let normalisation throw */ }
+
     const status = err?.response?.status;
     const url: string = err?.config?.url || "";
     // Don't auto-logout on the login/signup endpoints themselves — their

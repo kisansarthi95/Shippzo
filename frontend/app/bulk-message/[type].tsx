@@ -25,6 +25,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { Stack, useLocalSearchParams, router } from "expo-router";
 import { Api, Shipment } from "../../lib/api";
+import { errMsg } from "../../lib/errMsg";
 import {
   preflightBatchWhatsApp,
   openWhatsAppShare,
@@ -94,7 +95,7 @@ export default function BulkMessageScreen() {
         return keep;
       });
     } catch (e: any) {
-      Alert.alert("Error", e?.response?.data?.detail || e?.message || "Failed to load");
+      Alert.alert("Error", errMsg(e, "Failed to load"));
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -195,7 +196,7 @@ export default function BulkMessageScreen() {
       setSelected({});
       load();
     } catch (e: any) {
-      Alert.alert("Error", e?.response?.data?.detail || e?.message || "Failed");
+      Alert.alert("Error", errMsg(e, "Failed"));
     } finally {
       setBusy(false);
     }
