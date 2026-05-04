@@ -11106,3 +11106,71 @@ agent_communication:
         Main agent: please apply the fname_period sanitisation, then
         request a retest of just the custom-range case (test 6b). Do NOT
         re-touch the import or middleware fixes — those are good.
+
+---
+
+## Backend Test Run: Phase 2.5 Excel Download — Custom Range Unicode Fix Retest (2026-05-04 PM)
+
+backend:
+  - task: "Excel report download — custom range with cross-month label (UnicodeEncodeError fix)"
+    implemented: true
+    working: true
+    file: "/app/backend/routers/reports.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "testing"
+        -comment: |
+            UnicodeEncodeError fix verified on the custom-range Excel
+            download path against
+            https://logistics-hub-740.preview.emergentagent.com/api.
+
+            Test scenario (single-test review request):
+              1. POST /api/auth/login {email: user2@test.com,
+                 password: User@12345} → 200 with token.
+              2. GET /api/me/reports/courier-billing/excel
+                 ?range=custom&from=2026-01-01&to=2026-12-31&token=<jwt>
+
+            Result:
+              ✅ HTTP 200 (was 500 UnicodeEncodeError before fix).
+              ✅ Content-Type:
+                 application/vnd.openxmlformats-officedocument.spreadsheetml.sheet
+              ✅ Content-Disposition:
+                 attachment; filename="CourierBill_1_Jan_-_30_Dec_2026.xlsx"
+                 — en-dash U+2013 has been correctly replaced with ASCII
+                 hyphen "-", header is fully latin-1 safe.
+              ✅ Body starts with PK (valid XLSX magic bytes), 7238 bytes.
+
+            The fix on lines 383-384 of /app/backend/routers/reports.py
+            (replace en/em dashes with hyphens, then strip any remaining
+            non-ASCII to underscores, then replace spaces with
+            underscores) correctly sanitises the cross-month period
+            label "1 Jan – 30 Dec 2026" into "1_Jan_-_30_Dec_2026".
+
+            Starlette no longer raises UnicodeEncodeError when encoding
+            the Content-Disposition header. Custom range Excel downloads
+            now work end-to-end for any date range, including
+            cross-month spans.
+
+agent_communication:
+    -agent: "testing"
+    -message: |
+        Phase 2.5 Excel custom-range UnicodeEncodeError fix — VERIFIED.
+
+        The 1-line ASCII sanitisation applied at
+        /app/backend/routers/reports.py:383-384 fully resolves the
+        500 UnicodeEncodeError that occurred on cross-month period
+        labels containing en-dash U+2013.
+
+        Single test ran:
+          GET /api/me/reports/courier-billing/excel
+              ?range=custom&from=2026-01-01&to=2026-12-31&token=<jwt>
+          → 200, content-type=xlsx, body starts with PK.
+
+        No regressions to investigate — all other Excel paths were
+        verified in the previous run.
+
+        Main agent: please summarise & finish.
+

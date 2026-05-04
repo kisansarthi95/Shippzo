@@ -378,7 +378,10 @@ def _build_excel(payload: Dict[str, Any], current_user: Dict[str, Any]) -> Strea
     buf = io.BytesIO()
     wb.save(buf)
     buf.seek(0)
-    fname_period = payload["period"]["label"].replace(" ", "_")
+    # Latin-1 only allowed in Content-Disposition — strip Unicode dashes
+    # and any other non-ASCII so the period label is safe in the header.
+    raw = payload["period"]["label"].replace("–", "-").replace("—", "-")
+    fname_period = "".join(ch if ord(ch) < 128 else "_" for ch in raw).replace(" ", "_")
     return StreamingResponse(
         buf,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
