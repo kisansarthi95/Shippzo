@@ -12,21 +12,24 @@
 import React, { useCallback, useEffect, useState } from "react";
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity,
-  ActivityIndicator, Alert, RefreshControl, Linking, Share,
+  ActivityIndicator, Alert, RefreshControl, Linking, Share, Modal,
+  Platform,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Stack, router } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
+import DateTimePicker from "@react-native-community/datetimepicker";
 import { Api } from "../../lib/api";
 import { errMsg } from "../../lib/errMsg";
 
-type RangeKey = "this_week" | "last_week" | "this_month" | "last_month" | "last_30";
+type RangeKey = "this_week" | "last_week" | "this_month" | "last_month" | "last_30" | "custom";
 const RANGES: Array<[RangeKey, string]> = [
   ["this_week",  "This Week"],
   ["last_week",  "Last Week"],
   ["this_month", "This Month"],
   ["last_month", "Last Month"],
   ["last_30",    "Last 30 days"],
+  ["custom",     "Custom"],
 ];
 
 type Report = Awaited<ReturnType<typeof Api.courierBillingReport>>;
@@ -47,13 +50,41 @@ export default function CourierBillingReportScreen() {
   const [couriers, setCouriers]     = useState<Array<{ id: string; name: string }>>([]);
   const [expanded, setExpanded]     = useState<Record<string, boolean>>({});
 
+  // Phase 2.5b — Custom date / multi-month picker. Two modes:
+  //  • "range"  → pick FROM and TO dates (max 3-month span)
+  //  • "months" → multi-select up to 3 specific months (Jan, Feb, …)
+  // Once the user hits "Apply" we collapse the selection into a single
+  // custom-range request (the backend doesn't need to know which mode
+  // was used — just from/to).
+  const [customOpen, setCustomOpen]       = useState(false);
+  const [customMode, setCustomMode]       = useState<"range" | "months">("range");
+  const [customFrom, setCustomFrom]       = useState<Date | null>(null);
+  const [customTo, setCustomTo]           = useState<Date | null>(null);
+  const [pickerOpen, setPickerOpen]       = useState<"from" | "to" | null>(null);
+  const [selectedMonths, setSelectedMonths] = useState<string[]>([]); // ["2026-01", …]
+  const [appliedFrom, setAppliedFrom]     = useState<string | null>(null); // ISO date
+  const [appliedTo, setAppliedTo]         = useState<string | null>(null);
+  const [appliedLabel, setAppliedLabel]   = useState<string>("");
+
   const load = useCallback(async () => {
     try {
+      // Build query: custom mode forwards explicit from/to + label.
+      const params: any = {
+        courier_id: courierId === "all" ? undefined : courierId,
+      };
+      if (range === "custom" && appliedFrom && appliedTo) {
+        params.range = "custom";
+        params.from = appliedFrom;
+        params.to   = appliedTo;
+      } else if (range !== "custom") {
+        params.range = range;
+      } else {
+        // "custom" picked but nothing applied yet → silently fall back
+        // to this_month so the screen still has data to render.
+        params.range = "this_month";
+      }
       const [report, courierList] = await Promise.all([
-        Api.courierBillingReport({
-          range,
-          courier_id: courierId === "all" ? undefined : courierId,
-        }),
+        Api.courierBillingReport(params),
         couriers.length === 0 ? Api.listCouriers() : Promise.resolve(couriers),
       ]);
       setData(report);
@@ -68,20 +99,120 @@ export default function CourierBillingReportScreen() {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [range, courierId, couriers]);
+  }, [range, courierId, couriers, appliedFrom, appliedTo]);
 
   useEffect(() => { load(); }, [load]);
 
   const downloadExcel = async () => {
     try {
-      const url = await Api.courierBillingReportExcelUrl({
-        range,
+      const params: any = {
         courier_id: courierId === "all" ? undefined : courierId,
-      });
+      };
+      if (range === "custom" && appliedFrom && appliedTo) {
+        params.range = "custom";
+        params.from = appliedFrom;
+        params.to   = appliedTo;
+      } else {
+        params.range = range;
+      }
+      const url = await Api.courierBillingReportExcelUrl(params);
       await Linking.openURL(url);
     } catch (e: any) {
       Alert.alert("Couldn't open download", errMsg(e, "Try again"));
     }
+  };
+
+  // Phase 2.5b — Custom range / multi-month picker handlers ─────
+  const monthLabel = (ym: string) => {
+    const [y, m] = ym.split("-");
+    const d = new Date(parseInt(y), parseInt(m) - 1, 1);
+    return d.toLocaleDateString("en-US", { month: "short", year: "numeric" });
+  };
+
+  const buildMonthOptions = () => {
+    // Last 12 months going back from current month — newest first.
+    const out: string[] = [];
+    const d = new Date();
+    for (let i = 0; i < 12; i++) {
+      out.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`);
+      d.setMonth(d.getMonth() - 1);
+    }
+    return out;
+  };
+
+  const toggleMonth = (ym: string) => {
+    setSelectedMonths((cur) => {
+      if (cur.includes(ym)) return cur.filter((x) => x !== ym);
+      if (cur.length >= 3) {
+        Alert.alert(
+          "Limit reached",
+          "You can pick up to 3 months at a time. Deselect one to add another.",
+        );
+        return cur;
+      }
+      return [...cur, ym];
+    });
+  };
+
+  const applyCustom = () => {
+    if (customMode === "range") {
+      if (!customFrom || !customTo) {
+        Alert.alert("Pick both dates", "Please select FROM and TO dates first.");
+        return;
+      }
+      if (customFrom > customTo) {
+        Alert.alert("Invalid range", "FROM date must be before TO date.");
+        return;
+      }
+      const days = Math.ceil((customTo.getTime() - customFrom.getTime()) / (1000 * 60 * 60 * 24));
+      if (days > 92) {
+        Alert.alert(
+          "Range too long",
+          "Maximum custom range is 3 months (92 days). Pick a shorter window.",
+        );
+        return;
+      }
+      const fromIso = customFrom.toISOString().slice(0, 10);
+      // End-of-day to include full TO date in the window.
+      const toEnd = new Date(customTo);
+      toEnd.setHours(23, 59, 59, 999);
+      const toIso   = toEnd.toISOString();
+      setAppliedFrom(fromIso);
+      setAppliedTo(toIso);
+      setAppliedLabel(
+        `${customFrom.toLocaleDateString("en-GB")} – ${customTo.toLocaleDateString("en-GB")}`,
+      );
+    } else {
+      if (selectedMonths.length === 0) {
+        Alert.alert("Pick months", "Select at least one month.");
+        return;
+      }
+      // Sort months ascending and build a single contiguous range from
+      // earliest start → latest end. Backend then aggregates whatever
+      // shipments fall in that span.
+      const sorted = [...selectedMonths].sort();
+      const [fy, fm] = sorted[0].split("-").map(Number);
+      const [ly, lm] = sorted[sorted.length - 1].split("-").map(Number);
+      const start = new Date(fy, fm - 1, 1);
+      const end   = new Date(ly, lm, 0, 23, 59, 59, 999);  // last day of last month
+      setAppliedFrom(start.toISOString().slice(0, 10));
+      setAppliedTo(end.toISOString());
+      setAppliedLabel(sorted.map(monthLabel).join(" + "));
+    }
+    setRange("custom");
+    setCustomOpen(false);
+  };
+
+  // When user taps the "Custom" range chip, open the picker.
+  const onRangeChipPress = (key: RangeKey) => {
+    if (key === "custom") {
+      setCustomOpen(true);
+      return;
+    }
+    setRange(key);
+    setAppliedFrom(null);
+    setAppliedTo(null);
+    setAppliedLabel("");
   };
 
   const shareSummary = async () => {
@@ -137,9 +268,11 @@ export default function CourierBillingReportScreen() {
                   key={key}
                   testID={`range-${key}`}
                   style={[styles.chip, active && styles.chipActive]}
-                  onPress={() => setRange(key)}
+                  onPress={() => onRangeChipPress(key)}
                 >
-                  <Text style={[styles.chipTxt, active && { color: "#fff" }]}>{label}</Text>
+                  <Text style={[styles.chipTxt, active && { color: "#fff" }]}>
+                    {key === "custom" && appliedLabel ? `📅 ${appliedLabel}` : label}
+                  </Text>
                 </TouchableOpacity>
               );
             })}
@@ -318,6 +451,146 @@ export default function CourierBillingReportScreen() {
           })
         )}
       </ScrollView>
+
+      {/* Phase 2.5b — Custom date / multi-month modal */}
+      <Modal
+        visible={customOpen}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setCustomOpen(false)}
+      >
+        <View style={styles.modalBg}>
+          <View style={styles.sheet}>
+            <View style={styles.sheetHeader}>
+              <Text style={styles.sheetTitle}>📅 Custom Range</Text>
+              <TouchableOpacity onPress={() => setCustomOpen(false)} hitSlop={10}>
+                <Ionicons name="close" size={22} color="#374151" />
+              </TouchableOpacity>
+            </View>
+
+            {/* Mode tabs */}
+            <View style={styles.modeRow}>
+              <TouchableOpacity
+                style={[styles.modeBtn, customMode === "range" && styles.modeBtnActive]}
+                onPress={() => setCustomMode("range")}
+              >
+                <Text style={[styles.modeTxt, customMode === "range" && styles.modeTxtActive]}>
+                  Date Range
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.modeBtn, customMode === "months" && styles.modeBtnActive]}
+                onPress={() => setCustomMode("months")}
+              >
+                <Text style={[styles.modeTxt, customMode === "months" && styles.modeTxtActive]}>
+                  Multi-Month
+                </Text>
+              </TouchableOpacity>
+            </View>
+
+            {customMode === "range" ? (
+              <View style={{ marginTop: 12 }}>
+                <Text style={styles.fieldLabel}>FROM</Text>
+                <TouchableOpacity
+                  style={styles.dateBox}
+                  onPress={() => setPickerOpen("from")}
+                >
+                  <Ionicons name="calendar-outline" size={16} color="#1F4FBF" />
+                  <Text style={styles.dateTxt}>
+                    {customFrom ? customFrom.toLocaleDateString("en-GB") : "Pick start date"}
+                  </Text>
+                </TouchableOpacity>
+
+                <Text style={[styles.fieldLabel, { marginTop: 12 }]}>TO</Text>
+                <TouchableOpacity
+                  style={styles.dateBox}
+                  onPress={() => setPickerOpen("to")}
+                >
+                  <Ionicons name="calendar-outline" size={16} color="#1F4FBF" />
+                  <Text style={styles.dateTxt}>
+                    {customTo ? customTo.toLocaleDateString("en-GB") : "Pick end date"}
+                  </Text>
+                </TouchableOpacity>
+
+                <Text style={styles.helperTxt}>
+                  Maximum span: 3 months (92 days).
+                </Text>
+
+                {pickerOpen && (
+                  <DateTimePicker
+                    value={
+                      pickerOpen === "from"
+                        ? (customFrom || new Date())
+                        : (customTo || new Date())
+                    }
+                    mode="date"
+                    display={Platform.OS === "ios" ? "inline" : "default"}
+                    maximumDate={new Date()}
+                    onChange={(_e, d) => {
+                      if (Platform.OS !== "ios") setPickerOpen(null);
+                      if (d) {
+                        if (pickerOpen === "from") setCustomFrom(d);
+                        else                       setCustomTo(d);
+                      }
+                    }}
+                  />
+                )}
+                {Platform.OS === "ios" && pickerOpen && (
+                  <TouchableOpacity
+                    style={styles.iosDoneBtn}
+                    onPress={() => setPickerOpen(null)}
+                  >
+                    <Text style={styles.iosDoneTxt}>Done</Text>
+                  </TouchableOpacity>
+                )}
+              </View>
+            ) : (
+              <View style={{ marginTop: 12 }}>
+                <Text style={styles.helperTxt}>
+                  Tap up to 3 months (e.g. Jan + Feb + Mar). Selected:
+                  <Text style={{ fontWeight: "800", color: "#1F4FBF" }}>
+                    {" "}{selectedMonths.length}/3
+                  </Text>
+                </Text>
+                <View style={styles.monthGrid}>
+                  {buildMonthOptions().map((ym) => {
+                    const active = selectedMonths.includes(ym);
+                    return (
+                      <TouchableOpacity
+                        key={ym}
+                        onPress={() => toggleMonth(ym)}
+                        style={[styles.monthChip, active && styles.monthChipActive]}
+                      >
+                        <Text style={[
+                          styles.monthChipTxt,
+                          active && { color: "#fff" },
+                        ]}>
+                          {monthLabel(ym)}
+                        </Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+                {selectedMonths.length > 0 && (
+                  <TouchableOpacity
+                    onPress={() => setSelectedMonths([])}
+                    style={{ alignSelf: "flex-start", marginTop: 8 }}
+                  >
+                    <Text style={{ fontSize: 11, color: "#DC2626", textDecorationLine: "underline" }}>
+                      Clear selection
+                    </Text>
+                  </TouchableOpacity>
+                )}
+              </View>
+            )}
+
+            <TouchableOpacity style={styles.applyBtn} onPress={applyCustom}>
+              <Ionicons name="checkmark-circle" size={18} color="#fff" />
+              <Text style={styles.applyBtnTxt}>Apply</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
