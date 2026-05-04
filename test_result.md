@@ -10990,3 +10990,119 @@ agent_communication:
         No other regressions detected. Main agent: fix both bugs
         then request retest of the Excel route only.
 
+
+
+---
+
+## Backend Test Run: Phase 2.5 Excel Download — RETEST (2026-05-04)
+
+backend:
+  - task: "Excel report download — /api/me/reports/courier-billing/excel (Phase 2.5)"
+    implemented: true
+    working: false
+    file: "/app/backend/routers/reports.py, /app/backend/server.py"
+    stuck_count: 1
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: false
+        -agent: "testing"
+        -comment: |
+            Retest after the two prior bug fixes (decode_token import + auth_gate
+            middleware exemption). Ran /app/excel_retest.py against
+            https://logistics-hub-740.preview.emergentagent.com/api as
+            user2@test.com / User@12345.
+
+            ✅ PASSING (8/9 assertions):
+              1. Login as user2 — token issued (len=221).
+              2. Excel via Authorization header → 200, content-type
+                 application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,
+                 body starts with PK\x03\x04 (5221 bytes).
+              3. Excel via ?token= fallback (no Authorization header) → 200,
+                 same content-type, PK magic, 5221 bytes. Browser-style
+                 download path now works (the auth_gate exemption fix is
+                 confirmed).
+              4. No auth at all → 401, body {"detail":"Auth required"}.
+              5. Invalid ?token=garbage → 401, body {"detail":"Auth required"}.
+              6a. range=last_month → 200, PK xlsx, 7220 bytes.
+              7. courier_id filter (Demo Courier ddb2e7b1-…) → 200, PK xlsx.
+              8. JSON regression /api/me/reports/courier-billing → 200,
+                 valid shape (period.label="May 2026", grand_total present).
+
+            ❌ FAILING (1/9 assertions) — NEW CRITICAL BUG:
+              6b. Excel with range=custom&from=2026-01-01&to=2026-12-31&token=…
+                  → HTTP 500 Internal Server Error.
+
+                  Backend traceback (verified in /var/log/supervisor/backend.err.log):
+                    File "/app/backend/routers/reports.py", line 382, in _build_excel
+                      return StreamingResponse(...)
+                    File ".../starlette/responses.py", line 58, in <listcomp>
+                      (k.lower().encode("latin-1"), v.encode("latin-1"))
+                    UnicodeEncodeError: 'latin-1' codec can't encode character
+                    '\u2013' in position 40: ordinal not in range(256)
+
+                  RCA: _resolve_period() (lines 46–49) builds the period label
+                  as f"{start.strftime('%-d %b')} – {end.strftime('%-d %b %Y')}"
+                  using a UNICODE EN-DASH (–, U+2013) between dates. For the
+                  custom range that produces "1 Jan – 30 Dec 2026". This label
+                  is then injected into Content-Disposition by _build_excel:
+                    fname_period = payload["period"]["label"].replace(" ", "_")
+                    headers={"Content-Disposition":
+                      f'attachment; filename="CourierBill_{fname_period}.xlsx"'}
+                  HTTP headers must be latin-1 encodable per RFC 7230, and
+                  U+2013 is outside latin-1 (which only covers U+0000–U+00FF).
+                  Starlette raises UnicodeEncodeError → 500.
+
+                  The same-month / single-month buckets (this_month, last_month,
+                  last_30, etc.) use start.strftime("%B %Y") which produces
+                  pure ASCII ("May 2026", "April 2026"), so they work fine.
+                  The bug only fires for the **custom range** case (and any
+                  cross-month bucket that hits the f"{…} – {…}" branch).
+
+                  SUGGESTED FIX (one-liner in _build_excel, line 381):
+                    fname_period = (
+                      payload["period"]["label"]
+                        .replace(" ", "_")
+                        .replace("–", "-")           # en-dash  → ASCII hyphen
+                        .replace("—", "-")           # em-dash  → ASCII hyphen
+                        .encode("ascii", "ignore")   # belt-and-braces
+                        .decode("ascii")
+                    )
+                  OR change _resolve_period's fmt_label to use ASCII hyphen-
+                  minus directly: f"{start.strftime('%-d %b')} - {end…}".
+
+                  This is a HIGH-PRIORITY bug because:
+                    • The review contract (test 6) explicitly requires
+                      range=custom to return 200 + PK xlsx.
+                    • Any user using the "Custom range" chip in the UI will
+                      get a broken download with no error message.
+                    • Trivial 1-line fix.
+
+            FILES TOUCHED FOR TESTING ONLY:
+              - /app/excel_retest.py (new test harness — not part of app code).
+
+            NO CODE CHANGES APPLIED to backend by testing agent.
+
+agent_communication:
+    -agent: "testing"
+    -message: |
+        Phase 2.5 Excel download retest — 8/9 PASS, 1/9 FAIL.
+
+        ✅ Both prior bug fixes are confirmed working:
+            • decode_token import is now resolved (Authorization header path works).
+            • auth_gate middleware exemption for the excel route lets the
+              ?token= fallback do its own auth (browser download works).
+            • Negative paths (no auth, invalid token) correctly return 401.
+            • range=last_month + courier_id filter both return valid xlsx.
+            • JSON endpoint regression: still 200 with valid shape.
+
+        ❌ NEW CRITICAL BUG discovered by test 6 (range=custom):
+            UnicodeEncodeError on Content-Disposition header — the period
+            label uses en-dash U+2013 which is not latin-1 representable.
+            Fix is a 1-line ASCII sanitisation of `fname_period` in
+            /app/backend/routers/reports.py line 381 (full RCA + suggested
+            patch in the task status_history above).
+
+        Main agent: please apply the fname_period sanitisation, then
+        request a retest of just the custom-range case (test 6b). Do NOT
+        re-touch the import or middleware fixes — those are good.

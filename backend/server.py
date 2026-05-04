@@ -8079,6 +8079,11 @@ async def auth_gate(request, call_next):
         return await call_next(request)
     if any(path.startswith(p) for p in _AUTH_EXEMPT_PREFIXES):
         return await call_next(request)
+    # Phase 2.5 — Excel report download is initiated from a browser
+    # tab (Linking.openURL) which can't attach an Authorization header.
+    # Allow the route to handle its own auth via `?token=…` instead.
+    if path == "/api/me/reports/courier-billing/excel":
+        return await call_next(request)
     auth_hdr = request.headers.get("authorization") or request.headers.get("Authorization") or ""
     if not auth_hdr.lower().startswith("bearer "):
         return JSONResponse(

@@ -103,7 +103,7 @@ def init() -> None:
         Used as a fallback for the Excel route which the browser hits
         without an Authorization header."""
         try:
-            from auth import _decode_token  # type: ignore[attr-defined]
+            from auth import decode_token as _decode_token  # type: ignore[attr-defined]
             payload = _decode_token(token)
             uid = payload.get("sub") or payload.get("user_id") or payload.get("id")
             if not uid:
