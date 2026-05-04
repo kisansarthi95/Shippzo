@@ -1,231 +1,298 @@
-"""Backend tests for Phase 2D-update — User Custom Categories endpoints.
-
-Endpoints under test:
-  GET    /api/me/categories
-  POST   /api/me/categories
-  DELETE /api/me/categories/{name}
 """
+Backend test for bulk-message endpoints Body parameter fix (2026-04-30)
+Focus:
+  - POST /api/me/bulk-message/mark-sent
+  - POST /api/me/bulk-message/reset
+The bug: payload: BulkMarkSentRequest (nested Pydantic class inside init())
+was interpreted by FastAPI as a QUERY param → 422 "query.payload: Field required".
+Fix: added `= Body(...)` marker on both endpoints.
+"""
+import json
 import sys
-import urllib.parse
+
 import requests
 
 BASE = "https://logistics-hub-740.preview.emergentagent.com/api"
-EMAIL = "user2@test.com"
-PASSWORD = "User@12345"
-
-PRESETS = ["Electronics", "Clothing", "Medical", "Documents", "Home Goods", "Other"]
-
-passed = 0
-failed = 0
-failures = []
+USER_EMAIL = "user2@test.com"
+USER_PASSWORD = "User@12345"
 
 
-def assert_eq(label, actual, expected):
-    global passed, failed
-    if actual == expected:
-        passed += 1
-        print(f"  PASS: {label}")
+def _ok(label, cond, detail=""):
+    status = "PASS" if cond else "FAIL"
+    print(f"  [{status}] {label}" + (f" — {detail}" if detail else ""))
+    return cond
+
+
+results = {"passed": 0, "failed": 0, "failures": []}
+
+
+def check(label, cond, detail=""):
+    if _ok(label, cond, detail):
+        results["passed"] += 1
     else:
-        failed += 1
-        msg = f"  FAIL: {label} — expected {expected!r}, got {actual!r}"
-        print(msg)
-        failures.append(msg)
-
-
-def assert_true(label, cond, detail=""):
-    global passed, failed
-    if cond:
-        passed += 1
-        print(f"  PASS: {label}")
-    else:
-        failed += 1
-        msg = f"  FAIL: {label} {detail}"
-        print(msg)
-        failures.append(msg)
+        results["failed"] += 1
+        results["failures"].append(f"{label} :: {detail}")
 
 
 def login():
-    r = requests.post(f"{BASE}/auth/login", json={"email": EMAIL, "password": PASSWORD}, timeout=20)
-    r.raise_for_status()
-    return r.json()["token"]
+    r = requests.post(
+        f"{BASE}/auth/login",
+        json={"email": USER_EMAIL, "password": USER_PASSWORD},
+        timeout=30,
+    )
+    assert r.status_code == 200, f"login failed {r.status_code}: {r.text}"
+    tok = r.json().get("token")
+    assert tok, "no token returned"
+    return tok
+
+
+def headers(tok):
+    return {"Authorization": f"Bearer {tok}", "Content-Type": "application/json"}
 
 
 def main():
-    print("=" * 70)
-    print("Phase 2D-update — Custom Categories Tests")
-    print(f"BASE={BASE}  user={EMAIL}")
-    print("=" * 70)
+    print("=" * 78)
+    print("TEST 1: Auth — POST both endpoints without token → 401")
+    print("=" * 78)
+    r1 = requests.post(
+        f"{BASE}/me/bulk-message/mark-sent",
+        json={"ttype": "shipment_sent", "shipment_ids": ["x"]},
+        timeout=30,
+    )
+    check(
+        "mark-sent without token → 401/403",
+        r1.status_code in (401, 403),
+        f"got {r1.status_code}: {r1.text[:200]}",
+    )
+    r2 = requests.post(
+        f"{BASE}/me/bulk-message/reset",
+        json={"ttype": "shipment_sent", "shipment_ids": ["x"]},
+        timeout=30,
+    )
+    check(
+        "reset without token → 401/403",
+        r2.status_code in (401, 403),
+        f"got {r2.status_code}: {r2.text[:200]}",
+    )
 
-    token = login()
-    h = {"Authorization": f"Bearer {token}"}
-    print(f"\n[1] Logged in OK (token len={len(token)})")
+    print()
+    print("=" * 78)
+    print("TEST 2: Login user2@test.com")
+    print("=" * 78)
+    tok = login()
+    H = headers(tok)
+    check("login ok (token obtained)", bool(tok), f"token_len={len(tok)}")
 
-    # ----- TEST 1: Auth required ---------------------------------------
-    print("\n[TEST 1] Auth: missing token → 401/403")
-    r = requests.get(f"{BASE}/me/categories", timeout=20)
-    assert_true("GET without token rejects", r.status_code in (401, 403), f"status={r.status_code}")
-    r = requests.post(f"{BASE}/me/categories", json={"name": "X"}, timeout=20)
-    assert_true("POST without token rejects", r.status_code in (401, 403), f"status={r.status_code}")
-    r = requests.delete(f"{BASE}/me/categories/X", timeout=20)
-    assert_true("DELETE without token rejects", r.status_code in (401, 403), f"status={r.status_code}")
+    print()
+    print("=" * 78)
+    print("TEST 3: GET /me/bulk-message/eligible?ttype=shipment_sent")
+    print("=" * 78)
+    r3 = requests.get(
+        f"{BASE}/me/bulk-message/eligible?ttype=shipment_sent",
+        headers=H,
+        timeout=30,
+    )
+    check("eligible 200", r3.status_code == 200, f"{r3.status_code}: {r3.text[:200]}")
+    j3 = r3.json() if r3.status_code == 200 else {}
+    ships = j3.get("shipments") or []
+    check("eligible returns 'shipments' list", isinstance(ships, list),
+          f"type={type(ships).__name__}, count={len(ships)}")
+    print(f"  → {len(ships)} eligible shipment(s) returned, counts={j3.get('counts')}")
 
-    # ----- Cleanup any leftover test categories from previous runs -----
-    print("\n[CLEANUP] Removing leftover test categories if any")
-    r = requests.get(f"{BASE}/me/categories", headers=h, timeout=20)
-    if r.status_code == 200:
-        existing_custom = r.json().get("custom") or []
-        for nm in ("Toys", "Home Decor", "Kids", "Y" * 40):
-            if nm in existing_custom:
-                requests.delete(f"{BASE}/me/categories/{urllib.parse.quote(nm)}", headers=h, timeout=20)
-                print(f"  - removed '{nm[:20]}...'")
+    target_id = None
+    if ships:
+        target_id = ships[0].get("id")
+        print(f"  → target shipment id: {target_id}")
 
-    # ----- TEST 2: Initial state ---------------------------------------
-    print("\n[TEST 2] GET /me/categories initial state")
-    r = requests.get(f"{BASE}/me/categories", headers=h, timeout=20)
-    assert_eq("GET status 200", r.status_code, 200)
-    data = r.json()
-    assert_true("Response has 'presets' key", "presets" in data)
-    assert_true("Response has 'custom' key", "custom" in data)
-    assert_true("'presets' is a list", isinstance(data.get("presets"), list))
-    assert_true("'custom' is a list", isinstance(data.get("custom"), list))
-    presets = data.get("presets") or []
-    for p in PRESETS:
-        assert_true(f"Preset '{p}' present", p in presets)
-    print(f"  initial custom={data.get('custom')}")
+    print()
+    print("=" * 78)
+    print("TEST 4: CRITICAL — mark-sent happy path (was returning 422)")
+    print("=" * 78)
+    if not target_id:
+        # Fall back to the first shipment of any kind
+        rfallback = requests.get(f"{BASE}/shipments", headers=H, timeout=30)
+        if rfallback.status_code == 200:
+            items = rfallback.json()
+            if isinstance(items, list) and items:
+                target_id = items[0]["id"]
+                print(f"  ⚠ no eligible shipment_sent rows; using fallback shipment id={target_id}")
 
-    # ----- TEST 3: Add custom ------------------------------------------
-    print("\n[TEST 3] POST /me/categories {'name':'Toys'}")
-    r = requests.post(f"{BASE}/me/categories", headers=h, json={"name": "Toys"}, timeout=20)
-    assert_eq("POST Toys status 200", r.status_code, 200)
-    data = r.json()
-    assert_true("'Toys' in custom", "Toys" in (data.get("custom") or []))
-    assert_true("Presets still has 6 entries", len(data.get("presets") or []) == 6)
+    if not target_id:
+        check("mark-sent 200 (body param fix)", False,
+              "no shipment id available to test with")
+    else:
+        r4 = requests.post(
+            f"{BASE}/me/bulk-message/mark-sent",
+            headers=H,
+            json={"ttype": "shipment_sent", "shipment_ids": [target_id]},
+            timeout=30,
+        )
+        print(f"  raw: status={r4.status_code}, body={r4.text[:300]}")
+        check(
+            "mark-sent NOT 422 query.payload error (Body fix verified)",
+            r4.status_code != 422,
+            f"{r4.status_code}: {r4.text[:300]}",
+        )
+        check(
+            "mark-sent 200",
+            r4.status_code == 200,
+            f"{r4.status_code}: {r4.text[:300]}",
+        )
+        if r4.status_code == 200:
+            j4 = r4.json()
+            keys_ok = all(k in j4 for k in ("ttype", "updated", "skipped",
+                                            "updated_ids", "skipped_ids"))
+            check("mark-sent response has ttype/updated/skipped/updated_ids/skipped_ids",
+                  keys_ok, f"keys={list(j4.keys())}")
+            check("ttype echoed as shipment_sent",
+                  j4.get("ttype") == "shipment_sent",
+                  f"got {j4.get('ttype')}")
+            updated_first = j4.get("updated", -1)
+            skipped_first = j4.get("skipped", -1)
+            print(f"  → first call: updated={updated_first}, skipped={skipped_first}")
 
-    # ----- TEST 4: Idempotent add --------------------------------------
-    print("\n[TEST 4] POST Toys again → idempotent")
-    r = requests.post(f"{BASE}/me/categories", headers=h, json={"name": "Toys"}, timeout=20)
-    assert_eq("2nd POST Toys status 200", r.status_code, 200)
-    data = r.json()
-    custom = data.get("custom") or []
-    toys_count = sum(1 for c in custom if c == "Toys")
-    assert_eq("Exactly one 'Toys' in custom", toys_count, 1)
+            print()
+            print("=" * 78)
+            print("TEST 5: Idempotent repeat — same body → updated=0, skipped=1")
+            print("=" * 78)
+            r5 = requests.post(
+                f"{BASE}/me/bulk-message/mark-sent",
+                headers=H,
+                json={"ttype": "shipment_sent", "shipment_ids": [target_id]},
+                timeout=30,
+            )
+            check("repeat 200", r5.status_code == 200,
+                  f"{r5.status_code}: {r5.text[:200]}")
+            if r5.status_code == 200:
+                j5 = r5.json()
+                print(f"  → repeat: updated={j5.get('updated')}, skipped={j5.get('skipped')}")
+                # If first call itself had 0 updated (because no matching doc), skipped will also be 0
+                if updated_first >= 1:
+                    check("repeat updated=0", j5.get("updated") == 0,
+                          f"got updated={j5.get('updated')}")
+                    check("repeat skipped>=1 (idempotent same-day block)",
+                          j5.get("skipped") >= 1,
+                          f"got skipped={j5.get('skipped')}")
+                else:
+                    print("  ⚠ first call updated=0 (target not owned by user2 or wrong status); idempotency check SKIPPED")
 
-    # ----- TEST 5: Empty name ------------------------------------------
-    print("\n[TEST 5] POST empty/whitespace name → 400")
-    r = requests.post(f"{BASE}/me/categories", headers=h, json={"name": "   "}, timeout=20)
-    assert_eq("Empty name status 400", r.status_code, 400)
-    body = r.json()
-    assert_true("detail mentions 'required'",
-                "required" in (body.get("detail") or "").lower(),
-                f"detail={body.get('detail')!r}")
+    print()
+    print("=" * 78)
+    print("TEST 6: Bad ttype → 400 'Unknown bulk template type'")
+    print("=" * 78)
+    r6 = requests.post(
+        f"{BASE}/me/bulk-message/mark-sent",
+        headers=H,
+        json={"ttype": "wrong_type", "shipment_ids": ["x"]},
+        timeout=30,
+    )
+    check("bad ttype 400", r6.status_code == 400,
+          f"{r6.status_code}: {r6.text[:200]}")
+    if r6.status_code == 400:
+        detail = r6.json().get("detail") or ""
+        check("detail mentions 'Unknown bulk template type'",
+              "Unknown bulk template type" in detail,
+              f"detail={detail!r}")
 
-    # ----- TEST 6: Too long --------------------------------------------
-    print("\n[TEST 6] POST name > 40 chars → 400")
-    long_name = "X" * 41
-    r = requests.post(f"{BASE}/me/categories", headers=h, json={"name": long_name}, timeout=20)
-    assert_eq("Too-long name status 400", r.status_code, 400)
-    body = r.json()
-    assert_true("detail mentions 'too long' or '40'",
-                "too long" in (body.get("detail") or "").lower()
-                or "40" in (body.get("detail") or ""),
-                f"detail={body.get('detail')!r}")
+    print()
+    print("=" * 78)
+    print("TEST 7: Empty body {} → 422 validation error on ttype")
+    print("=" * 78)
+    r7 = requests.post(
+        f"{BASE}/me/bulk-message/mark-sent",
+        headers=H,
+        json={},
+        timeout=30,
+    )
+    check("empty body → 422", r7.status_code == 422,
+          f"{r7.status_code}: {r7.text[:200]}")
+    if r7.status_code == 422:
+        body = r7.json()
+        # Confirm error is on BODY not QUERY (the whole point of the fix)
+        loc_entries = []
+        for err in body.get("detail") or []:
+            loc = err.get("loc") or []
+            loc_entries.append(loc)
+        print(f"  → validation loc entries: {loc_entries}")
+        all_body = all(
+            (len(loc) > 0 and loc[0] == "body") for loc in loc_entries
+        )
+        check("422 error loc starts with 'body' (NOT 'query')",
+              all_body,
+              f"locs={loc_entries}")
 
-    # Boundary: exactly 40 chars should pass
-    print("\n[TEST 6b] POST name = 40 chars → 200 (boundary)")
-    boundary = "Y" * 40
-    r = requests.post(f"{BASE}/me/categories", headers=h, json={"name": boundary}, timeout=20)
-    assert_eq("40-char name status 200", r.status_code, 200)
-    if r.status_code == 200:
-        requests.delete(f"{BASE}/me/categories/{urllib.parse.quote(boundary)}", headers=h, timeout=20)
+    print()
+    print("=" * 78)
+    print("TEST 8: /reset endpoint — body accepted (not 422)")
+    print("=" * 78)
+    reset_id = target_id or "nonexistent-id"
+    r8 = requests.post(
+        f"{BASE}/me/bulk-message/reset",
+        headers=H,
+        json={"ttype": "shipment_sent", "shipment_ids": [reset_id]},
+        timeout=30,
+    )
+    print(f"  raw: status={r8.status_code}, body={r8.text[:300]}")
+    check("reset NOT 422 query.payload error (Body fix verified)",
+          r8.status_code != 422,
+          f"{r8.status_code}: {r8.text[:300]}")
+    check("reset 200", r8.status_code == 200,
+          f"{r8.status_code}: {r8.text[:300]}")
+    if r8.status_code == 200:
+        j8 = r8.json()
+        check("reset response has 'updated'", "updated" in j8,
+              f"keys={list(j8.keys())}")
 
-    # ----- TEST 7: Built-in collision ----------------------------------
-    print("\n[TEST 7] POST 'Electronics' (built-in) → 400")
-    r = requests.post(f"{BASE}/me/categories", headers=h, json={"name": "Electronics"}, timeout=20)
-    assert_eq("Electronics status 400", r.status_code, 400)
-    body = r.json()
-    assert_true("detail mentions 'built-in'",
-                "built-in" in (body.get("detail") or "").lower(),
-                f"detail={body.get('detail')!r}")
+    print()
+    print("=" * 78)
+    print("TEST 9: All 5 ttypes accepted by mark-sent (no 422)")
+    print("=" * 78)
+    sample_id = target_id or "nonexistent-id"
+    ttypes = ["shipment_sent", "dispatch_confirmation",
+              "delivery_confirmation", "delivery_done", "feedback_request"]
+    for tt in ttypes:
+        r = requests.post(
+            f"{BASE}/me/bulk-message/mark-sent",
+            headers=H,
+            json={"ttype": tt, "shipment_ids": [sample_id]},
+            timeout=30,
+        )
+        ok = r.status_code == 200
+        check(f"ttype={tt!r} → 200 (no 422)", ok,
+              f"{r.status_code}: {r.text[:150]}")
+        if ok:
+            j = r.json()
+            check(f"ttype={tt!r} response echoes ttype",
+                  j.get("ttype") == tt,
+                  f"got {j.get('ttype')}")
 
-    print("\n[TEST 7b] POST 'electronics' (lowercase) → 400 case-insensitive")
-    r = requests.post(f"{BASE}/me/categories", headers=h, json={"name": "electronics"}, timeout=20)
-    assert_eq("electronics status 400", r.status_code, 400)
-    body = r.json()
-    assert_true("detail mentions 'built-in' (lowercase)",
-                "built-in" in (body.get("detail") or "").lower(),
-                f"detail={body.get('detail')!r}")
+    print()
+    print("=" * 78)
+    print("TEST 10: Regression — eligible endpoint still works")
+    print("=" * 78)
+    r10 = requests.get(
+        f"{BASE}/me/bulk-message/eligible?ttype=shipment_sent",
+        headers=H,
+        timeout=30,
+    )
+    check("eligible regression 200", r10.status_code == 200,
+          f"{r10.status_code}: {r10.text[:200]}")
+    if r10.status_code == 200:
+        j10 = r10.json()
+        check("eligible shape keys present",
+              all(k in j10 for k in ("shipments", "counts", "ttype")),
+              f"keys={list(j10.keys())}")
 
-    print("\n[TEST 7c] POST 'HOME GOODS' (upper multi-word) → 400")
-    r = requests.post(f"{BASE}/me/categories", headers=h, json={"name": "HOME GOODS"}, timeout=20)
-    assert_eq("HOME GOODS status 400", r.status_code, 400)
-
-    # ----- TEST 8: Delete custom ---------------------------------------
-    print("\n[TEST 8] DELETE /me/categories/Toys")
-    r = requests.delete(f"{BASE}/me/categories/Toys", headers=h, timeout=20)
-    assert_eq("DELETE Toys status 200", r.status_code, 200)
-    data = r.json()
-    assert_true("'Toys' removed from custom",
-                "Toys" not in (data.get("custom") or []),
-                f"custom={data.get('custom')}")
-    assert_true("Presets still intact after delete",
-                all(p in (data.get("presets") or []) for p in PRESETS))
-
-    # ----- TEST 9: Delete non-existent (idempotent) --------------------
-    print("\n[TEST 9] DELETE /me/categories/DoesNotExist")
-    r = requests.delete(f"{BASE}/me/categories/DoesNotExist", headers=h, timeout=20)
-    assert_eq("DELETE non-existent status 200", r.status_code, 200)
-    data = r.json()
-    assert_true("Response has 'presets'", "presets" in data)
-    assert_true("Response has 'custom'", "custom" in data)
-
-    # ----- TEST 10: Multiple + URL-encoded delete ----------------------
-    print("\n[TEST 10] Multiple categories + URL-encoded delete")
-    r = requests.post(f"{BASE}/me/categories", headers=h, json={"name": "Home Decor"}, timeout=20)
-    assert_eq("POST 'Home Decor' status 200", r.status_code, 200)
-    r = requests.post(f"{BASE}/me/categories", headers=h, json={"name": "Kids"}, timeout=20)
-    assert_eq("POST 'Kids' status 200", r.status_code, 200)
-
-    r = requests.get(f"{BASE}/me/categories", headers=h, timeout=20)
-    assert_eq("GET after 2 adds status 200", r.status_code, 200)
-    custom = r.json().get("custom") or []
-    assert_true("'Home Decor' present", "Home Decor" in custom, f"custom={custom}")
-    assert_true("'Kids' present", "Kids" in custom, f"custom={custom}")
-
-    url_encoded = "Home%20Decor"
-    r = requests.delete(f"{BASE}/me/categories/{url_encoded}", headers=h, timeout=20)
-    assert_eq(f"DELETE {url_encoded} status 200", r.status_code, 200)
-    data = r.json()
-    custom = data.get("custom") or []
-    assert_true("'Home Decor' removed",
-                "Home Decor" not in custom, f"custom={custom}")
-    assert_true("'Kids' still present",
-                "Kids" in custom, f"custom={custom}")
-
-    # Final GET to verify persistence
-    r = requests.get(f"{BASE}/me/categories", headers=h, timeout=20)
-    data = r.json()
-    custom = data.get("custom") or []
-    assert_true("Final GET: 'Home Decor' absent",
-                "Home Decor" not in custom, f"custom={custom}")
-    assert_true("Final GET: 'Kids' present",
-                "Kids" in custom, f"custom={custom}")
-
-    # Cleanup "Kids"
-    print("\n[CLEANUP] Removing 'Kids'")
-    r = requests.delete(f"{BASE}/me/categories/Kids", headers=h, timeout=20)
-    assert_eq("DELETE Kids cleanup status 200", r.status_code, 200)
-
-    total = passed + failed
-    print("\n" + "=" * 70)
-    print(f"RESULT: {passed}/{total} assertions passed  ({failed} failed)")
-    print("=" * 70)
-    if failures:
-        print("\nFAILURES:")
-        for f in failures:
-            print(f)
-        sys.exit(1)
-    sys.exit(0)
+    print()
+    print("=" * 78)
+    print(f"RESULT: {results['passed']} passed, {results['failed']} failed")
+    print("=" * 78)
+    if results["failures"]:
+        print("FAILURES:")
+        for f in results["failures"]:
+            print(f"  - {f}")
+    return 0 if results["failed"] == 0 else 1
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

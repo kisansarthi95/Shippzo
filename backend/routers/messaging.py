@@ -31,7 +31,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Body, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 
@@ -1385,7 +1385,7 @@ def init() -> None:
 
     @messaging_router.post("/me/bulk-message/mark-sent")
     async def me_bulk_message_mark_sent(
-        payload: BulkMarkSentRequest,
+        payload: BulkMarkSentRequest = Body(...),
         current_user: Dict[str, Any] = Depends(_get_current_user),
     ):
         """Mark shipments as message-sent for the given template type.
@@ -1441,7 +1441,7 @@ def init() -> None:
 
     @messaging_router.post("/me/bulk-message/reset")
     async def me_bulk_message_reset(
-        payload: BulkMarkSentRequest,
+        payload: BulkMarkSentRequest = Body(...),
         current_user: Dict[str, Any] = Depends(_get_current_user),
     ):
         """Roll a per-type message status back to 'pending' for retries."""

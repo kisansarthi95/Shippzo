@@ -10441,3 +10441,141 @@ agent_communication:
           - 401/403 returned without bearer token on all three verbs
         No regressions, no minor issues. Ready for main agent to finish.
 
+
+---
+
+## Backend Test Run: Bulk-Message Body Parameter Fix Verification (2026-05-04)
+
+backend:
+  - task: "Bulk Message endpoints Body parameter fix (mark-sent + reset)"
+    implemented: true
+    working: false
+    file: "/app/backend/routers/messaging.py"
+    stuck_count: 1
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: |
+            Added `= Body(...)` marker to `payload: BulkMarkSentRequest`
+            on POST /api/me/bulk-message/mark-sent (line 1388) and
+            POST /api/me/bulk-message/reset (line 1444) to fix the
+            reported 422 error {"detail":[{"type":"missing",
+            "loc":["query","payload"],"msg":"Field required",…}]}.
+        -working: false
+        -agent: "testing"
+        -comment: |
+            INCOMPLETE FIX — 500 Internal Server Error now thrown on
+            every POST to both endpoints. 9/18 assertions passed via
+            /app/backend_test.py against the live preview backend.
+
+            ROOT CAUSE (from backend.err.log traceback):
+            ```
+            pydantic.errors.PydanticUserError:
+              `TypeAdapter[typing.Annotated[ForwardRef('BulkMarkSentRequest'),
+               Body(PydanticUndefined)]]` is not fully defined; you should
+               define `typing.Annotated[ForwardRef('BulkMarkSentRequest'),
+               Body(PydanticUndefined)]` and all referenced types, then
+               call `.rebuild()` on the instance.
+            ```
+            The class `BulkMarkSentRequest` is defined INSIDE
+            `init()` (nested at line 1382 of
+            /app/backend/routers/messaging.py). FastAPI captures it as
+            a ForwardRef, and while adding `Body(...)` eliminated the
+            query-param misinterpretation (confirmed: 422 with
+            loc=[query,payload] is GONE), Pydantic v2 now cannot
+            resolve the ForwardRef because the class is not at module
+            scope — raising PydanticUserError → 500.
+
+            WHAT WORKS:
+              • POST /me/bulk-message/mark-sent WITHOUT token → 401. ✅
+              • POST /me/bulk-message/reset WITHOUT token → 401. ✅
+              • Login as user2@test.com succeeds and returns a token. ✅
+              • GET /me/bulk-message/eligible?ttype=shipment_sent → 200
+                with {ttype, label, icon, min_days, statuses, shipments,
+                counts}. 1 shipment returned (DEMO1015,
+                id=6c490447-fcbe-4c97-b905-9d7dcc5ebf6d, status=Pending).
+                The original 422 "query.payload" error is GONE. ✅
+              • No regression in the GET /eligible endpoint. ✅
+
+            WHAT FAILS (500 Internal Server Error on every POST):
+              • mark-sent happy path → 500
+              • mark-sent bad ttype → 500 (should be 400)
+              • mark-sent empty body {} → 500 (should be 422)
+              • reset endpoint → 500
+              • All 5 ttypes → 500
+              • Idempotent repeat → 500 (never reached)
+
+            REQUIRED FIX (main-agent action):
+              Move the `BulkMarkSentRequest` class OUT of `init()` to
+              module scope, right next to the other request models
+              (DispatchBulkRequest, GenerateVariantsRequest, etc.,
+              which live at module scope and work correctly). Example:
+
+                # At module scope, ~line 214
+                class BulkMarkSentRequest(BaseModel):
+                    ttype: str
+                    shipment_ids: List[str] = Field(default_factory=list)
+
+                # Inside init() — delete the nested redeclaration at ~line 1382.
+
+              After the move, the `= Body(...)` marker can stay (it's
+              still correct and defensive). No other changes required.
+
+            OPTIONAL ALTERNATIVE FIX:
+              Keep the class nested but call
+              `BulkMarkSentRequest.model_rebuild()` immediately after
+              its definition. Less clean than moving to module scope
+              and does not match the pattern used by every other model
+              in this file.
+
+            ERROR DETAILS (from live run at 2026-05-04 ~05:43 UTC):
+              status=500, body="Internal Server Error"
+              backend traceback location:
+                File ".../fastapi/_compat.py", line 125, in validate
+                  self._type_adapter.validate_python(...)
+                File ".../pydantic/_internal/_mock_val_ser.py", line 100,
+                  in __getattr__
+                  raise PydanticUserError(...)
+
+            No cleanup needed — no documents were mutated because all
+            POSTs failed before reaching the handler body.
+
+agent_communication:
+    -agent: "testing"
+    -message: |
+        Bulk-Message Body fix — INCOMPLETE. The `Body(...)` marker did
+        eliminate the reported "query.payload: Field required" 422 bug
+        (verified via 401 auth test + the fact that empty-body POST no
+        longer returns 422 with query.payload loc). HOWEVER, every POST
+        to both endpoints now throws 500 Internal Server Error because
+        `BulkMarkSentRequest` is defined INSIDE the `init()` function
+        (nested class). Pydantic v2's TypeAdapter cannot resolve the
+        ForwardRef for a nested class, and raises PydanticUserError
+        ("class not fully defined").
+
+        One-line structural fix needed (main agent): move
+        `BulkMarkSentRequest` class to module scope — put it right
+        below the other request models at the top of
+        /app/backend/routers/messaging.py (near line 214 with
+        DispatchBulkRequest). Delete the nested redeclaration at
+        line 1382 inside init(). Keep the `= Body(...)` markers — they
+        are correct. No other logic changes required.
+
+        Test evidence:
+          - POST /api/me/bulk-message/mark-sent with a valid body →
+            500 "Internal Server Error"
+          - POST /api/me/bulk-message/reset with a valid body →
+            500 "Internal Server Error"
+          - POST with empty body {} → 500 (should be 422)
+          - GET /me/bulk-message/eligible → 200 (unaffected, no regression)
+
+        Backend log shows the exact Pydantic error: "TypeAdapter[...
+        BulkMarkSentRequest ...] is not fully defined". Once the class
+        is moved to module scope, all 10 test scenarios from the
+        review request should pass. Please apply that one-line fix
+        and no retest of the matching logic is required — just
+        re-verify the POST endpoints return 200/400/422 per the
+        review contract.
+
