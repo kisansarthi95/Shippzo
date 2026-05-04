@@ -107,6 +107,23 @@ export default function SlaAlertsScreen() {
     Linking.openURL(`https://wa.me/${cleaned}?text=${text}`);
   };
 
+  /** Format a raw phone string for display on the action button.
+   *  Strips non-digits, then groups Indian numbers as
+   *  "+91 98765 43210" so the admin can verify which of their
+   *  configured numbers a particular alert is targeting. Falls back
+   *  to "+<digits>" for non-Indian / unknown formats. */
+  const formatPhone = (raw: string) => {
+    const d = (raw || "").replace(/\D/g, "");
+    if (!d) return raw;
+    // 10-digit Indian mobile (e.g. 9876543210) → "+91 98765 43210"
+    if (d.length === 10) return `+91 ${d.slice(0, 5)} ${d.slice(5)}`;
+    // 91-prefixed 12-digit (e.g. 919876543210) → "+91 98765 43210"
+    if (d.length === 12 && d.startsWith("91")) {
+      return `+91 ${d.slice(2, 7)} ${d.slice(7)}`;
+    }
+    return `+${d}`;
+  };
+
   const stagesInList = useMemo(
     () => Array.from(new Set(alerts.map((a) => a.stage))),
     [alerts],
@@ -243,11 +260,17 @@ export default function SlaAlertsScreen() {
                     {(a.phones || []).slice(0, 2).map((p: string) => (
                       <TouchableOpacity
                         key={p}
-                        style={[styles.actionBtn, { backgroundColor: "#25D366" }]}
+                        style={[styles.actionBtn, styles.waBtn]}
                         onPress={() => openWhatsApp(p, a)}
                       >
                         <Ionicons name="logo-whatsapp" size={14} color="#fff" />
-                        <Text style={styles.actionBtnText}>{p.slice(-4)}</Text>
+                        <Text
+                          style={styles.actionBtnText}
+                          numberOfLines={1}
+                          allowFontScaling={false}
+                        >
+                          {formatPhone(p)}
+                        </Text>
                       </TouchableOpacity>
                     ))}
                     {!a.dismissed && (
@@ -324,8 +347,15 @@ const styles = StyleSheet.create({
   cardSub: { fontSize: 11.5, color: "#6B7280", marginTop: 2 },
   cardActions: { flexDirection: "row", gap: 6, marginTop: 10, flexWrap: "wrap" },
   actionBtn: {
-    flexDirection: "row", alignItems: "center", gap: 4,
-    paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8,
+    flexDirection: "row", alignItems: "center", gap: 6,
+    paddingHorizontal: 12, paddingVertical: 8, borderRadius: 8,
   },
-  actionBtnText: { color: "#fff", fontSize: 11, fontWeight: "800" },
+  // WhatsApp pill — green; widens to fit the full +91 XXXXX XXXXX number
+  // so the admin can verify it matches a configured contact.
+  waBtn: {
+    backgroundColor: "#25D366",
+    minWidth: 0,
+    flexShrink: 1,
+  },
+  actionBtnText: { color: "#fff", fontSize: 12, fontWeight: "800", letterSpacing: 0.2 },
 });

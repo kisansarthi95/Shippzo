@@ -6824,11 +6824,42 @@ _SLA_LAST_RUN: Dict[str, Any] = {
 }
 
 
-def _alert_to_public(doc: Dict[str, Any]) -> Dict[str, Any]:
-    """Strip Mongo internals & PII for non-admin callers."""
+def _alert_to_public(doc: Dict[str, Any], *, fresh_phones: Optional[List[str]] = None) -> Dict[str, Any]:
+    """Strip Mongo internals & PII for non-admin callers.
+
+    If `fresh_phones` is provided we override the phones cached on the
+    alert with the admin's CURRENT stage_rules contact numbers — this
+    way alerts always route to whatever number the admin most recently
+    configured (rather than whatever was stored when the breach was
+    first raised, which may be stale demo data).
+    """
     out = {k: v for k, v in doc.items() if k != "_id"}
     if "id" not in out and "_id" in doc:
         out["id"] = str(doc["_id"])
+    if fresh_phones is not None:
+        out["phones"] = list(fresh_phones)
+    return out
+
+
+def _current_alert_phones(rules: Dict[str, Any]) -> List[str]:
+    """Builds the admin's CURRENT contact list (admin number first,
+    then team numbers), de-duped and stripped — used to override
+    phones cached on older alert documents so the UI always shows
+    the latest configured numbers."""
+    phones: List[str] = []
+    admin_n = str(rules.get("alert_admin_number") or "").strip()
+    if admin_n:
+        phones.append(admin_n)
+    for n in (rules.get("alert_team_numbers") or []):
+        n = str(n or "").strip()
+        if n:
+            phones.append(n)
+    seen = set()
+    out: List[str] = []
+    for p in phones:
+        if p not in seen:
+            seen.add(p)
+            out.append(p)
     return out
 
 
@@ -6880,8 +6911,12 @@ async def admin_sla_alerts(
         .limit(max(1, min(500, int(limit or 100))))
     )
     rows = await cursor.to_list(length=500)
+    # Override stale phones with admin's CURRENT contact list so the
+    # WhatsApp shortcuts always route to numbers they recognise.
+    rules = await _load_stage_rules()
+    fresh = _current_alert_phones(rules)
     return {
-        "alerts": [_alert_to_public(r) for r in rows],
+        "alerts": [_alert_to_public(r, fresh_phones=fresh) for r in rows],
         "stats":  _SLA_LAST_RUN,
     }
 
@@ -6956,8 +6991,9 @@ async def me_sla_alerts(
         .limit(max(1, min(500, int(limit or 100))))
     )
     rows = await cursor.to_list(length=500)
+    fresh = _current_alert_phones(rules)
     return {
-        "alerts":   [_alert_to_public(r) for r in rows],
+        "alerts":   [_alert_to_public(r, fresh_phones=fresh) for r in rows],
         "channels": rules.get("display_channels"),
         "muted":    False,
     }
