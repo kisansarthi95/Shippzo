@@ -10579,3 +10579,88 @@ agent_communication:
         re-verify the POST endpoints return 200/400/422 per the
         review contract.
 
+
+---
+
+## Backend Retest: Bulk Message Body Parameter Fix (2026-05-04)
+
+backend:
+  - task: "Bulk Message endpoints — BulkMarkSentRequest module-scope fix"
+    implemented: true
+    working: true
+    file: "/app/backend/routers/messaging.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "testing"
+        -comment: |
+            FIX VERIFIED — all 44 assertions passed via /app/bulk_msg_test.py
+            against https://logistics-hub-740.preview.emergentagent.com/api
+            as user2@test.com (User@12345).
+
+            Re-tested every scenario from the review request:
+
+            STEP 2 — GET /api/me/bulk-message/eligible?ttype=shipment_sent
+              → 200 OK with shipments list (1 demo shipment found:
+                id=6c490447-fcbe-4c97-b905-9d7dcc5ebf6d, tracking=DEMO1015).
+              Response keys: [ttype, label, icon, min_days, statuses,
+                shipments, counts]. Counts dict present.
+
+            STEP 3 — POST /api/me/bulk-message/mark-sent
+              body = {"ttype":"shipment_sent","shipment_ids":["6c490447-…"]}
+              → 200 OK (NOT 500, NOT 422). Response:
+                {ttype:"shipment_sent", updated:1, skipped:0,
+                 updated_ids:["6c490447-…"], skipped_ids:[]}
+              All 5 expected fields present.
+
+            STEP 4 — Repeat the same POST (idempotent)
+              → 200 OK. Response:
+                {updated:0, skipped:1,
+                 updated_ids:[], skipped_ids:["6c490447-…"]}
+              Same-day duplicate detection working correctly.
+
+            STEP 5 — POST /api/me/bulk-message/reset (same body)
+              → 200 OK. Response: {"updated":1}
+              The shipment was rolled back to pending state.
+
+            STEP 6 — POST /api/me/bulk-message/mark-sent body={}
+              → 422 Unprocessable Entity (validation fired correctly).
+              Detail: [{"type":"missing","loc":["body","ttype"],
+                "msg":"Field required",...}]
+
+            STEP 7 — POST with body {ttype:"bad", shipment_ids:[]}
+              → 400 Bad Request. detail="Unknown bulk template type 'bad'"
+
+            STEP 8 — All 5 ttypes verified (no 500 on any):
+              shipment_sent          — GET 200, mark-sent 200, reset 200
+              dispatch_confirmation  — GET 200, mark-sent 200, reset 200
+              delivery_confirmation  — GET 200, mark-sent 200, reset 200
+              delivery_done          — GET 200, mark-sent 200, reset 200
+              feedback_request       — GET 200, mark-sent 200, reset 200
+
+            Backend logs after the fix show clean 200 / 422 / 400
+            responses on every bulk-message call. No more
+            "Internal Server Error" on these routes. The class
+            relocation to module scope (line 225 of messaging.py)
+            successfully resolved the Pydantic v2 TypeAdapter
+            ForwardRef issue. Stub class (BulkMarkSentRequest_UNUSED_STUB)
+            kept at original nested position to preserve file layout.
+
+agent_communication:
+    -agent: "testing"
+    -message: |
+        Bulk Message Body parameter fix VERIFIED. All 44 assertions
+        passed (10/10 scenarios from the review contract). The
+        previous 500 Internal Server Error issue is fully resolved
+        by moving BulkMarkSentRequest to module scope. POST
+        /me/bulk-message/mark-sent and /reset now correctly return
+        200 (success), 422 (missing required field), and 400
+        (invalid ttype) per the contract. All 5 template types
+        (shipment_sent, dispatch_confirmation, delivery_confirmation,
+        delivery_done, feedback_request) work without any 500s.
+        The end-to-end bulk message flow is now fully unblocked.
+        No further action needed on this task — main agent can
+        summarize and finish.
+

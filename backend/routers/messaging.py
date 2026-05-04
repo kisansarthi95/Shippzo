@@ -222,6 +222,15 @@ class DailyIncrementRequest(BaseModel):
     force: bool = False
 
 
+class BulkMarkSentRequest(BaseModel):
+    """Body shape for POST /me/bulk-message/mark-sent + /reset.
+    MUST live at module scope — Pydantic v2's TypeAdapter cannot resolve
+    ForwardRefs on classes defined inside `init()`, which caused every
+    POST to return 500."""
+    ttype: str
+    shipment_ids: List[str] = Field(default_factory=list)
+
+
 # ---------------------------------------------------------------------------
 # Late-binding init — pulls helpers from server.py once.
 # ---------------------------------------------------------------------------
@@ -1379,9 +1388,12 @@ def init() -> None:
             },
         }
 
-    class BulkMarkSentRequest(BaseModel):
-        ttype: str
-        shipment_ids: List[str] = Field(default_factory=list)
+    class BulkMarkSentRequest_UNUSED_STUB:
+        """Kept as a stub so the rest of the file's layout doesn't shift.
+        The real model now lives at module scope (above `init`) because
+        Pydantic v2 cannot build a TypeAdapter for classes defined inside
+        a function — that caused 500 on every POST /me/bulk-message/*."""
+        pass
 
     @messaging_router.post("/me/bulk-message/mark-sent")
     async def me_bulk_message_mark_sent(
