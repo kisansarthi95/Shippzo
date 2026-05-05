@@ -1358,6 +1358,19 @@ export const Api = {
       my_features: string[];
       plan: string;
     }>("/me/feature-registry").then((r) => r.data),
+
+  // ─── Phase 2.5 — Additional Reports ─────────────────────────────
+  // All four take the same period selector (range chips + custom from/to)
+  // and return JSON for the in-app screen + a separate /excel route for
+  // file downloads (handled via Linking.openURL with ?token= query).
+  meReturnAnalysis: (params: { range?: string; from?: string; to?: string } = {}) =>
+    api.get<any>("/me/reports/return-analysis", { params: { range: params.range || "this_month", ...params } }).then(r => r.data),
+  meWeightWise: (params: { range?: string; from?: string; to?: string } = {}) =>
+    api.get<any>("/me/reports/weight-wise",     { params: { range: params.range || "this_month", ...params } }).then(r => r.data),
+  mePartnerComparison: (params: { range?: string; from?: string; to?: string } = {}) =>
+    api.get<any>("/me/reports/partner-comparison", { params: { range: params.range || "this_month", ...params } }).then(r => r.data),
+  meReconciliation: (params: { range?: string; from?: string; to?: string } = {}) =>
+    api.get<any>("/me/reports/reconciliation",  { params: { range: params.range || "this_month", ...params } }).then(r => r.data),
   /**
    * Lookup an existing shipment by tracking_id. Returns null when no
    * match (HTTP 404) instead of throwing, so callers don't have to

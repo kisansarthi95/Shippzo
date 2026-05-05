@@ -87,6 +87,12 @@ def _bucket_payment(pm: Optional[str]) -> str:
     return "Other"
 
 
+# Phase 2.5 — Weight bucket ordering used by both the aggregator and
+# the Excel renderer; defined at module scope so the latter (which
+# lives outside the `init()` closure) can see it.
+_WEIGHT_ORDER = ["0–500 g", "500 g–1 kg", "1–2 kg", "2–5 kg", "5 kg+", "Unknown"]
+
+
 # ──────────────────────────────────────────────────────────────────
 # init() — server.py calls this on startup so we can close over the
 # late-bound `db` handle and the `get_current_user` dependency.
@@ -259,6 +265,380 @@ def init() -> None:
         )
         return _build_excel(payload, current_user)
 
+    # ──────────────────────────────────────────────────────────────
+    # Phase 2.5 — 3 additional reports share the same date-range
+    # selector + Excel download pattern. They each pull from the
+    # `shipments` collection but slice the data along a different
+    # dimension:
+    #   • returns        — focuses on status="Returned" rows.
+    #   • weight-wise    — buckets by parsed weight (g/kg).
+    #   • partner-comp   — side-by-side metrics across all couriers.
+    #   • reconciliation — expected vs received COD per courier.
+    # ──────────────────────────────────────────────────────────────
+
+    async def _fetch_shipments(
+        user_id: str, range_key: str,
+        from_iso: Optional[str], to_iso: Optional[str],
+    ):
+        period = _resolve_period(range_key, from_iso, to_iso)
+        match = {
+            "user_id":    user_id,
+            "deleted_at": {"$exists": False},
+            "created_at": {"$gte": period["from"], "$lt": period["to"]},
+        }
+        rows = await db.shipments.find(match, {
+            "_id": 0, "id": 1, "courier_id": 1, "courier_name": 1,
+            "tracking_id": 1, "order_id": 1, "customer_name": 1,
+            "customer_phone": 1, "city": 1, "state": 1, "weight": 1,
+            "amount": 1, "cod_amount": 1, "payment_mode": 1,
+            "status": 1, "created_at": 1, "delivered_at": 1,
+            "rate_applied": 1, "package_type": 1, "category": 1,
+            "return_reason": 1, "cod_received": 1, "payment_received": 1,
+        }).sort("created_at", 1).to_list(8000)
+        return period, rows
+
+    def _parse_weight_grams(raw) -> Optional[float]:
+        """Best-effort weight → grams. Accepts '500g', '1.5 kg', '2', etc."""
+        if raw is None:
+            return None
+        s = str(raw).strip().lower().replace(" ", "")
+        if not s:
+            return None
+        try:
+            if s.endswith("kg"):
+                return float(s[:-2]) * 1000.0
+            if s.endswith("g"):
+                return float(s[:-1])
+            # bare number → assume grams under 50, kg above
+            n = float(s)
+            return n * 1000.0 if n < 50 else n
+        except ValueError:
+            return None
+
+    def _weight_bucket(g: Optional[float]) -> str:
+        if g is None: return "Unknown"
+        if g <= 500:  return "0–500 g"
+        if g <= 1000: return "500 g–1 kg"
+        if g <= 2000: return "1–2 kg"
+        if g <= 5000: return "2–5 kg"
+        return "5 kg+"
+
+    _WEIGHT_ORDER = ["0–500 g", "500 g–1 kg", "1–2 kg", "2–5 kg", "5 kg+", "Unknown"]
+
+    # ─── Return Analysis ─────────────────────────────────────────
+    async def _returns_aggregate(user_id, range_key, from_iso, to_iso):
+        period, rows = await _fetch_shipments(user_id, range_key, from_iso, to_iso)
+        total = len(rows)
+        returns = [r for r in rows if (r.get("status") or "").lower() == "returned"]
+        return_rate = (len(returns) / total * 100.0) if total else 0.0
+
+        by_courier: Dict[str, Dict[str, Any]] = {}
+        by_reason:  Dict[str, int] = {}
+        by_customer: Dict[str, Dict[str, Any]] = {}
+        rows_out: List[Dict[str, Any]] = []
+        for r in rows:
+            cn = r.get("courier_name") or "Unknown"
+            b = by_courier.setdefault(cn, {"courier_name": cn, "total": 0, "returned": 0})
+            b["total"] += 1
+        for r in returns:
+            cn = r.get("courier_name") or "Unknown"
+            b = by_courier.setdefault(cn, {"courier_name": cn, "total": 0, "returned": 0})
+            b["returned"] += 1
+            reason = (r.get("return_reason") or "Not specified").strip() or "Not specified"
+            by_reason[reason] = by_reason.get(reason, 0) + 1
+            cust = r.get("customer_phone") or r.get("customer_name") or "Unknown"
+            cb = by_customer.setdefault(cust, {
+                "name": r.get("customer_name") or "—",
+                "phone": r.get("customer_phone") or "",
+                "count": 0,
+            })
+            cb["count"] += 1
+            rows_out.append({
+                "id": r.get("id"),
+                "tracking_id": r.get("tracking_id"),
+                "order_id": r.get("order_id"),
+                "customer": r.get("customer_name"),
+                "phone": r.get("customer_phone"),
+                "courier": r.get("courier_name"),
+                "city": r.get("city"),
+                "state": r.get("state"),
+                "amount": float(r.get("amount") or 0),
+                "payment_mode": (r.get("payment_mode") or "—").upper(),
+                "reason": reason,
+                "date": (r.get("created_at") or "")[:10],
+            })
+        couriers_out = []
+        for b in by_courier.values():
+            b["return_rate"] = round((b["returned"] / b["total"] * 100.0), 2) if b["total"] else 0.0
+            couriers_out.append(b)
+        couriers_out.sort(key=lambda x: x["returned"], reverse=True)
+        reasons_out = sorted(
+            [{"reason": k, "count": v} for k, v in by_reason.items()],
+            key=lambda x: x["count"], reverse=True,
+        )
+        repeat_customers = sorted(
+            [c for c in by_customer.values() if c["count"] >= 2],
+            key=lambda x: x["count"], reverse=True,
+        )[:25]
+        return {
+            "period":   period,
+            "summary":  {
+                "total_shipments":   total,
+                "total_returns":     len(returns),
+                "return_rate":       round(return_rate, 2),
+                "unique_customers":  len({(r.get("customer_phone") or r.get("customer_name") or "") for r in returns}),
+            },
+            "by_courier":      couriers_out,
+            "by_reason":       reasons_out,
+            "repeat_customers": repeat_customers,
+            "returns":          rows_out,
+        }
+
+    @reports_router.get("/me/reports/return-analysis")
+    async def return_analysis_report(
+        range_key: str = Query("this_month", alias="range"),
+        from_iso: Optional[str] = Query(None, alias="from"),
+        to_iso: Optional[str] = Query(None, alias="to"),
+        current_user: Dict[str, Any] = Depends(get_current_user),
+    ):
+        return await _returns_aggregate(current_user["id"], range_key, from_iso, to_iso)
+
+    @reports_router.get("/me/reports/return-analysis/excel")
+    async def return_analysis_excel(
+        request: "Request",  # noqa: F821
+        range_key: str = Query("this_month", alias="range"),
+        from_iso: Optional[str] = Query(None, alias="from"),
+        to_iso: Optional[str] = Query(None, alias="to"),
+        token: Optional[str] = Query(None),
+    ):
+        current_user = None
+        bearer = request.headers.get("authorization") or ""
+        if bearer.lower().startswith("bearer "):
+            current_user = await _resolve_token_user(bearer.split(" ", 1)[1])
+        if current_user is None and token:
+            current_user = await _resolve_token_user(token)
+        if current_user is None:
+            raise HTTPException(401, "Auth required")
+        payload = await _returns_aggregate(current_user["id"], range_key, from_iso, to_iso)
+        return _build_returns_excel(payload, current_user)
+
+    # ─── Weight-wise Breakup ─────────────────────────────────────
+    async def _weight_aggregate(user_id, range_key, from_iso, to_iso):
+        period, rows = await _fetch_shipments(user_id, range_key, from_iso, to_iso)
+        buckets: Dict[str, Dict[str, Any]] = {b: {
+            "bucket": b, "count": 0, "revenue": 0.0, "rate_total": 0.0,
+        } for b in _WEIGHT_ORDER}
+        by_courier_weight: Dict[str, Dict[str, int]] = {}
+        for r in rows:
+            g = _parse_weight_grams(r.get("weight"))
+            bk = _weight_bucket(g)
+            b = buckets[bk]
+            b["count"] += 1
+            b["revenue"] += float(r.get("amount") or 0)
+            b["rate_total"] += float(r.get("rate_applied") or 0)
+            cn = r.get("courier_name") or "Unknown"
+            by_courier_weight.setdefault(cn, {b: 0 for b in _WEIGHT_ORDER})
+            by_courier_weight[cn][bk] = by_courier_weight[cn].get(bk, 0) + 1
+        # avg rate per bucket
+        out_buckets = []
+        for b in _WEIGHT_ORDER:
+            row = buckets[b]
+            row["avg_cost"] = round(row["rate_total"] / row["count"], 2) if row["count"] else 0
+            out_buckets.append(row)
+        couriers_out = [
+            {"courier_name": k, "by_bucket": v, "total": sum(v.values())}
+            for k, v in by_courier_weight.items()
+        ]
+        couriers_out.sort(key=lambda x: x["total"], reverse=True)
+        return {
+            "period":   period,
+            "buckets":  out_buckets,
+            "couriers": couriers_out,
+            "total_shipments": len(rows),
+        }
+
+    @reports_router.get("/me/reports/weight-wise")
+    async def weight_wise_report(
+        range_key: str = Query("this_month", alias="range"),
+        from_iso: Optional[str] = Query(None, alias="from"),
+        to_iso: Optional[str] = Query(None, alias="to"),
+        current_user: Dict[str, Any] = Depends(get_current_user),
+    ):
+        return await _weight_aggregate(current_user["id"], range_key, from_iso, to_iso)
+
+    @reports_router.get("/me/reports/weight-wise/excel")
+    async def weight_wise_excel(
+        request: "Request",  # noqa: F821
+        range_key: str = Query("this_month", alias="range"),
+        from_iso: Optional[str] = Query(None, alias="from"),
+        to_iso: Optional[str] = Query(None, alias="to"),
+        token: Optional[str] = Query(None),
+    ):
+        current_user = None
+        bearer = request.headers.get("authorization") or ""
+        if bearer.lower().startswith("bearer "):
+            current_user = await _resolve_token_user(bearer.split(" ", 1)[1])
+        if current_user is None and token:
+            current_user = await _resolve_token_user(token)
+        if current_user is None:
+            raise HTTPException(401, "Auth required")
+        payload = await _weight_aggregate(current_user["id"], range_key, from_iso, to_iso)
+        return _build_weight_excel(payload, current_user)
+
+    # ─── Partner Comparison ──────────────────────────────────────
+    async def _partner_aggregate(user_id, range_key, from_iso, to_iso):
+        period, rows = await _fetch_shipments(user_id, range_key, from_iso, to_iso)
+        by: Dict[str, Dict[str, Any]] = {}
+        for r in rows:
+            cn = r.get("courier_name") or "Unknown"
+            b = by.setdefault(cn, {
+                "courier_name": cn, "total": 0, "delivered": 0, "returned": 0,
+                "pending": 0, "revenue": 0.0, "cost": 0.0, "cod": 0.0,
+            })
+            b["total"] += 1
+            st = (r.get("status") or "").lower()
+            if st == "delivered":   b["delivered"] += 1
+            elif st == "returned":  b["returned"] += 1
+            else:                   b["pending"]   += 1
+            b["revenue"] += float(r.get("amount") or 0)
+            b["cost"]    += float(r.get("rate_applied") or 0)
+            if (r.get("payment_mode") or "").upper() == "COD":
+                b["cod"] += float(r.get("cod_amount") or r.get("amount") or 0)
+        out = []
+        for b in by.values():
+            tot = b["total"] or 1
+            b["delivery_rate"] = round(b["delivered"] / tot * 100.0, 2)
+            b["return_rate"]   = round(b["returned"]  / tot * 100.0, 2)
+            b["avg_cost"]      = round(b["cost"] / tot, 2)
+            b["margin"]        = round(b["revenue"] - b["cost"], 2)
+            out.append(b)
+        out.sort(key=lambda x: x["total"], reverse=True)
+        # best/worst rankings (only when there's data)
+        ranks = {"best_delivery": None, "worst_delivery": None,
+                 "best_returns":  None, "worst_returns":  None,
+                 "cheapest":       None, "highest_revenue": None}
+        if out:
+            ranks["best_delivery"]   = max(out, key=lambda x: x["delivery_rate"])["courier_name"]
+            ranks["worst_delivery"]  = min(out, key=lambda x: x["delivery_rate"])["courier_name"]
+            ranks["best_returns"]    = min(out, key=lambda x: x["return_rate"])["courier_name"]
+            ranks["worst_returns"]   = max(out, key=lambda x: x["return_rate"])["courier_name"]
+            ranks["cheapest"]        = min(out, key=lambda x: x["avg_cost"] if x["avg_cost"] else 1e9)["courier_name"]
+            ranks["highest_revenue"] = max(out, key=lambda x: x["revenue"])["courier_name"]
+        return {
+            "period":   period,
+            "couriers": out,
+            "rankings": ranks,
+            "total_shipments": sum(c["total"] for c in out),
+        }
+
+    @reports_router.get("/me/reports/partner-comparison")
+    async def partner_comparison_report(
+        range_key: str = Query("this_month", alias="range"),
+        from_iso: Optional[str] = Query(None, alias="from"),
+        to_iso: Optional[str] = Query(None, alias="to"),
+        current_user: Dict[str, Any] = Depends(get_current_user),
+    ):
+        return await _partner_aggregate(current_user["id"], range_key, from_iso, to_iso)
+
+    @reports_router.get("/me/reports/partner-comparison/excel")
+    async def partner_comparison_excel(
+        request: "Request",  # noqa: F821
+        range_key: str = Query("this_month", alias="range"),
+        from_iso: Optional[str] = Query(None, alias="from"),
+        to_iso: Optional[str] = Query(None, alias="to"),
+        token: Optional[str] = Query(None),
+    ):
+        current_user = None
+        bearer = request.headers.get("authorization") or ""
+        if bearer.lower().startswith("bearer "):
+            current_user = await _resolve_token_user(bearer.split(" ", 1)[1])
+        if current_user is None and token:
+            current_user = await _resolve_token_user(token)
+        if current_user is None:
+            raise HTTPException(401, "Auth required")
+        payload = await _partner_aggregate(current_user["id"], range_key, from_iso, to_iso)
+        return _build_partner_excel(payload, current_user)
+
+    # ─── Reconciliation (COD) ───────────────────────────────────
+    async def _recon_aggregate(user_id, range_key, from_iso, to_iso):
+        period, rows = await _fetch_shipments(user_id, range_key, from_iso, to_iso)
+        by: Dict[str, Dict[str, Any]] = {}
+        delivered_cod_rows = []
+        for r in rows:
+            if (r.get("payment_mode") or "").upper() != "COD":
+                continue
+            st = (r.get("status") or "").lower()
+            cn = r.get("courier_name") or "Unknown"
+            amt = float(r.get("cod_amount") or r.get("amount") or 0)
+            b = by.setdefault(cn, {
+                "courier_name":     cn,
+                "delivered_count":  0, "delivered_amt":   0.0,
+                "received_count":   0, "received_amt":    0.0,
+                "pending_count":    0, "pending_amt":     0.0,
+            })
+            received = bool(r.get("cod_received") or r.get("payment_received"))
+            if st == "delivered":
+                b["delivered_count"] += 1
+                b["delivered_amt"]   += amt
+                if received:
+                    b["received_count"] += 1
+                    b["received_amt"]   += amt
+                else:
+                    b["pending_count"]  += 1
+                    b["pending_amt"]    += amt
+                    delivered_cod_rows.append({
+                        "id": r.get("id"),
+                        "tracking_id": r.get("tracking_id"),
+                        "order_id": r.get("order_id"),
+                        "customer": r.get("customer_name"),
+                        "courier": cn,
+                        "amount": amt,
+                        "delivered_at": (r.get("delivered_at") or r.get("created_at") or "")[:10],
+                    })
+        out = sorted(by.values(), key=lambda x: x["pending_amt"], reverse=True)
+        totals = {
+            "delivered_count": sum(b["delivered_count"] for b in out),
+            "delivered_amt":   round(sum(b["delivered_amt"]   for b in out), 2),
+            "received_count":  sum(b["received_count"]  for b in out),
+            "received_amt":    round(sum(b["received_amt"]    for b in out), 2),
+            "pending_count":   sum(b["pending_count"]   for b in out),
+            "pending_amt":     round(sum(b["pending_amt"]     for b in out), 2),
+        }
+        return {
+            "period":   period,
+            "couriers": out,
+            "totals":   totals,
+            "pending":  delivered_cod_rows[:200],
+        }
+
+    @reports_router.get("/me/reports/reconciliation")
+    async def reconciliation_report(
+        range_key: str = Query("this_month", alias="range"),
+        from_iso: Optional[str] = Query(None, alias="from"),
+        to_iso: Optional[str] = Query(None, alias="to"),
+        current_user: Dict[str, Any] = Depends(get_current_user),
+    ):
+        return await _recon_aggregate(current_user["id"], range_key, from_iso, to_iso)
+
+    @reports_router.get("/me/reports/reconciliation/excel")
+    async def reconciliation_excel(
+        request: "Request",  # noqa: F821
+        range_key: str = Query("this_month", alias="range"),
+        from_iso: Optional[str] = Query(None, alias="from"),
+        to_iso: Optional[str] = Query(None, alias="to"),
+        token: Optional[str] = Query(None),
+    ):
+        current_user = None
+        bearer = request.headers.get("authorization") or ""
+        if bearer.lower().startswith("bearer "):
+            current_user = await _resolve_token_user(bearer.split(" ", 1)[1])
+        if current_user is None and token:
+            current_user = await _resolve_token_user(token)
+        if current_user is None:
+            raise HTTPException(401, "Auth required")
+        payload = await _recon_aggregate(current_user["id"], range_key, from_iso, to_iso)
+        return _build_recon_excel(payload, current_user)
+
 
 def _build_excel(payload: Dict[str, Any], current_user: Dict[str, Any]) -> StreamingResponse:
     """Render the multi-sheet workbook from an aggregated payload.
@@ -389,3 +769,257 @@ def _build_excel(payload: Dict[str, Any], current_user: Dict[str, Any]) -> Strea
             "Content-Disposition": f'attachment; filename="CourierBill_{fname_period}.xlsx"',
         },
     )
+
+
+
+# ─── Phase 2.5 — Excel builders for the 4 additional reports ───────────
+# All four share the same chrome (header colours, period label, business
+# name, ascii-safe filename) so the workbooks feel like a coherent suite.
+
+def _xlsx_chrome():
+    """One-shot import + style-set used by every report workbook."""
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Font, PatternFill
+    from openpyxl.utils import get_column_letter
+    return {
+        "Workbook":         Workbook,
+        "Alignment":        Alignment,
+        "Font":             Font,
+        "PatternFill":      PatternFill,
+        "get_column_letter": get_column_letter,
+        "HEADER_FILL":      PatternFill("solid", fgColor="1F4FBF"),
+        "HEADER_FONT":      Font(bold=True, color="FFFFFF", size=11),
+        "TITLE_FONT":       Font(bold=True, size=14, color="1F4FBF"),
+        "LABEL_FONT":       Font(bold=True, size=10),
+        "CENTER":           Alignment(horizontal="center", vertical="center"),
+    }
+
+
+def _xlsx_response(buf, *, prefix: str, label: str) -> StreamingResponse:
+    raw = (label or "").replace("–", "-").replace("—", "-")
+    fname = "".join(ch if ord(ch) < 128 else "_" for ch in raw).replace(" ", "_")
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={
+            "Content-Disposition": f'attachment; filename="{prefix}_{fname}.xlsx"',
+        },
+    )
+
+
+def _build_returns_excel(payload, current_user) -> StreamingResponse:
+    c = _xlsx_chrome()
+    wb = c["Workbook"]()
+    biz = current_user.get("shop_name") or current_user.get("name") or "—"
+
+    s = wb.active
+    s.title = "Summary"
+    s["A1"] = f"Return Analysis — {payload['period']['label']}"
+    s["A1"].font = c["TITLE_FONT"]; s.merge_cells("A1:E1")
+    s["A2"] = f"Business: {biz}"; s["A2"].font = c["LABEL_FONT"]; s.merge_cells("A2:E2")
+    sm = payload["summary"]
+    s["A3"] = (f"Total: {sm['total_shipments']}    Returns: {sm['total_returns']}    "
+               f"Return rate: {sm['return_rate']}%    Unique customers: {sm['unique_customers']}")
+    s["A3"].font = c["LABEL_FONT"]; s.merge_cells("A3:E3")
+
+    # By courier
+    s["A5"] = "By Courier"; s["A5"].font = c["TITLE_FONT"]
+    for col, h in enumerate(["Courier", "Total", "Returned", "Return %"], 1):
+        cell = s.cell(row=6, column=col, value=h)
+        cell.fill, cell.font, cell.alignment = c["HEADER_FILL"], c["HEADER_FONT"], c["CENTER"]
+    for i, r in enumerate(payload["by_courier"], 1):
+        s.cell(row=6+i, column=1, value=r["courier_name"])
+        s.cell(row=6+i, column=2, value=r["total"])
+        s.cell(row=6+i, column=3, value=r["returned"])
+        s.cell(row=6+i, column=4, value=f"{r['return_rate']}%")
+
+    # By reason
+    base = 6 + len(payload["by_courier"]) + 3
+    s.cell(row=base-1, column=1, value="By Reason").font = c["TITLE_FONT"]
+    for col, h in enumerate(["Reason", "Count"], 1):
+        cell = s.cell(row=base, column=col, value=h)
+        cell.fill, cell.font, cell.alignment = c["HEADER_FILL"], c["HEADER_FONT"], c["CENTER"]
+    for i, r in enumerate(payload["by_reason"], 1):
+        s.cell(row=base+i, column=1, value=r["reason"])
+        s.cell(row=base+i, column=2, value=r["count"])
+    for col in range(1, 6):
+        s.column_dimensions[c["get_column_letter"](col)].width = 22
+
+    # Returned shipments detail sheet
+    if payload["returns"]:
+        ws = wb.create_sheet(title="Returned Shipments")
+        for col, h in enumerate(
+            ["Date", "Tracking ID", "Order ID", "Customer", "Phone",
+             "Courier", "City", "State", "Pay Mode", "Amount", "Reason"], 1):
+            cell = ws.cell(row=1, column=col, value=h)
+            cell.fill, cell.font, cell.alignment = c["HEADER_FILL"], c["HEADER_FONT"], c["CENTER"]
+        for i, r in enumerate(payload["returns"], 1):
+            row = i + 1
+            ws.cell(row=row, column=1, value=r.get("date"))
+            ws.cell(row=row, column=2, value=r.get("tracking_id"))
+            ws.cell(row=row, column=3, value=r.get("order_id"))
+            ws.cell(row=row, column=4, value=r.get("customer"))
+            ws.cell(row=row, column=5, value=r.get("phone"))
+            ws.cell(row=row, column=6, value=r.get("courier"))
+            ws.cell(row=row, column=7, value=r.get("city"))
+            ws.cell(row=row, column=8, value=r.get("state"))
+            ws.cell(row=row, column=9, value=r.get("payment_mode"))
+            ws.cell(row=row, column=10, value=round(r.get("amount") or 0))
+            ws.cell(row=row, column=11, value=r.get("reason"))
+        for col in range(1, 12):
+            ws.column_dimensions[c["get_column_letter"](col)].width = 15
+
+    buf = io.BytesIO(); wb.save(buf); buf.seek(0)
+    return _xlsx_response(buf, prefix="ReturnAnalysis", label=payload["period"]["label"])
+
+
+def _build_weight_excel(payload, current_user) -> StreamingResponse:
+    c = _xlsx_chrome()
+    wb = c["Workbook"]()
+    biz = current_user.get("shop_name") or current_user.get("name") or "—"
+
+    s = wb.active
+    s.title = "Weight Buckets"
+    s["A1"] = f"Weight-wise Breakup — {payload['period']['label']}"
+    s["A1"].font = c["TITLE_FONT"]; s.merge_cells("A1:E1")
+    s["A2"] = f"Business: {biz}    Total shipments: {payload['total_shipments']}"
+    s["A2"].font = c["LABEL_FONT"]; s.merge_cells("A2:E2")
+
+    for col, h in enumerate(["Weight Bucket", "Count", "Revenue ₹", "Avg Cost ₹"], 1):
+        cell = s.cell(row=4, column=col, value=h)
+        cell.fill, cell.font, cell.alignment = c["HEADER_FILL"], c["HEADER_FONT"], c["CENTER"]
+    for i, b in enumerate(payload["buckets"], 1):
+        s.cell(row=4+i, column=1, value=b["bucket"])
+        s.cell(row=4+i, column=2, value=b["count"])
+        s.cell(row=4+i, column=3, value=round(b["revenue"]))
+        s.cell(row=4+i, column=4, value=round(b["avg_cost"]))
+    for col in range(1, 5):
+        s.column_dimensions[c["get_column_letter"](col)].width = 18
+
+    # Per-courier sheet
+    ws = wb.create_sheet(title="By Courier")
+    cols_header = ["Courier"] + _WEIGHT_ORDER + ["Total"]
+    for col, h in enumerate(cols_header, 1):
+        cell = ws.cell(row=1, column=col, value=h)
+        cell.fill, cell.font, cell.alignment = c["HEADER_FILL"], c["HEADER_FONT"], c["CENTER"]
+    for i, row in enumerate(payload["couriers"], 1):
+        ws.cell(row=1+i, column=1, value=row["courier_name"])
+        for j, bk in enumerate(_WEIGHT_ORDER, 2):
+            ws.cell(row=1+i, column=j, value=row["by_bucket"].get(bk, 0))
+        ws.cell(row=1+i, column=len(cols_header), value=row["total"])
+    for col in range(1, len(cols_header) + 1):
+        ws.column_dimensions[c["get_column_letter"](col)].width = 14
+
+    buf = io.BytesIO(); wb.save(buf); buf.seek(0)
+    return _xlsx_response(buf, prefix="WeightBreakup", label=payload["period"]["label"])
+
+
+def _build_partner_excel(payload, current_user) -> StreamingResponse:
+    c = _xlsx_chrome()
+    wb = c["Workbook"]()
+    biz = current_user.get("shop_name") or current_user.get("name") or "—"
+
+    s = wb.active
+    s.title = "Comparison"
+    s["A1"] = f"Partner Comparison — {payload['period']['label']}"
+    s["A1"].font = c["TITLE_FONT"]; s.merge_cells("A1:H1")
+    s["A2"] = f"Business: {biz}    Total shipments: {payload['total_shipments']}"
+    s["A2"].font = c["LABEL_FONT"]; s.merge_cells("A2:H2")
+
+    for col, h in enumerate(
+        ["Courier", "Total", "Delivered", "Returned", "Pending",
+         "Delivery %", "Return %", "Avg Cost ₹", "Revenue ₹", "Margin ₹", "COD ₹"], 1):
+        cell = s.cell(row=4, column=col, value=h)
+        cell.fill, cell.font, cell.alignment = c["HEADER_FILL"], c["HEADER_FONT"], c["CENTER"]
+    for i, b in enumerate(payload["couriers"], 1):
+        r = 4 + i
+        s.cell(row=r, column=1,  value=b["courier_name"])
+        s.cell(row=r, column=2,  value=b["total"])
+        s.cell(row=r, column=3,  value=b["delivered"])
+        s.cell(row=r, column=4,  value=b["returned"])
+        s.cell(row=r, column=5,  value=b["pending"])
+        s.cell(row=r, column=6,  value=f"{b['delivery_rate']}%")
+        s.cell(row=r, column=7,  value=f"{b['return_rate']}%")
+        s.cell(row=r, column=8,  value=round(b["avg_cost"]))
+        s.cell(row=r, column=9,  value=round(b["revenue"]))
+        s.cell(row=r, column=10, value=round(b["margin"]))
+        s.cell(row=r, column=11, value=round(b["cod"]))
+    for col in range(1, 12):
+        s.column_dimensions[c["get_column_letter"](col)].width = 14
+
+    # Rankings summary
+    base = 5 + len(payload["couriers"]) + 1
+    s.cell(row=base, column=1, value="Rankings").font = c["TITLE_FONT"]
+    rk = payload["rankings"]
+    rows_meta = [
+        ("Best delivery rate",   rk["best_delivery"]),
+        ("Worst delivery rate",  rk["worst_delivery"]),
+        ("Lowest return rate",   rk["best_returns"]),
+        ("Highest return rate",  rk["worst_returns"]),
+        ("Cheapest courier",     rk["cheapest"]),
+        ("Highest revenue",      rk["highest_revenue"]),
+    ]
+    for i, (lbl, val) in enumerate(rows_meta, 1):
+        s.cell(row=base+i, column=1, value=lbl).font = c["LABEL_FONT"]
+        s.cell(row=base+i, column=2, value=val or "—")
+
+    buf = io.BytesIO(); wb.save(buf); buf.seek(0)
+    return _xlsx_response(buf, prefix="PartnerComparison", label=payload["period"]["label"])
+
+
+def _build_recon_excel(payload, current_user) -> StreamingResponse:
+    c = _xlsx_chrome()
+    wb = c["Workbook"]()
+    biz = current_user.get("shop_name") or current_user.get("name") or "—"
+
+    s = wb.active
+    s.title = "Reconciliation"
+    s["A1"] = f"COD Reconciliation — {payload['period']['label']}"
+    s["A1"].font = c["TITLE_FONT"]; s.merge_cells("A1:G1")
+    s["A2"] = f"Business: {biz}"
+    s["A2"].font = c["LABEL_FONT"]; s.merge_cells("A2:G2")
+
+    t = payload["totals"]
+    s["A3"] = (f"Delivered COD: {t['delivered_count']} (₹{t['delivered_amt']:.0f})    "
+               f"Received: {t['received_count']} (₹{t['received_amt']:.0f})    "
+               f"Pending: {t['pending_count']} (₹{t['pending_amt']:.0f})")
+    s["A3"].font = c["LABEL_FONT"]; s.merge_cells("A3:G3")
+
+    for col, h in enumerate(
+        ["Courier", "Delivered #", "Delivered ₹", "Received #", "Received ₹",
+         "Pending #", "Pending ₹"], 1):
+        cell = s.cell(row=5, column=col, value=h)
+        cell.fill, cell.font, cell.alignment = c["HEADER_FILL"], c["HEADER_FONT"], c["CENTER"]
+    for i, b in enumerate(payload["couriers"], 1):
+        r = 5 + i
+        s.cell(row=r, column=1, value=b["courier_name"])
+        s.cell(row=r, column=2, value=b["delivered_count"])
+        s.cell(row=r, column=3, value=round(b["delivered_amt"]))
+        s.cell(row=r, column=4, value=b["received_count"])
+        s.cell(row=r, column=5, value=round(b["received_amt"]))
+        s.cell(row=r, column=6, value=b["pending_count"])
+        s.cell(row=r, column=7, value=round(b["pending_amt"]))
+    for col in range(1, 8):
+        s.column_dimensions[c["get_column_letter"](col)].width = 16
+
+    # Pending COD list (delivered-but-not-received)
+    if payload["pending"]:
+        ws = wb.create_sheet(title="Pending COD")
+        for col, h in enumerate(
+            ["Delivered Date", "Tracking ID", "Order ID",
+             "Customer", "Courier", "Amount ₹"], 1):
+            cell = ws.cell(row=1, column=col, value=h)
+            cell.fill, cell.font, cell.alignment = c["HEADER_FILL"], c["HEADER_FONT"], c["CENTER"]
+        for i, r in enumerate(payload["pending"], 1):
+            row = 1 + i
+            ws.cell(row=row, column=1, value=r.get("delivered_at"))
+            ws.cell(row=row, column=2, value=r.get("tracking_id"))
+            ws.cell(row=row, column=3, value=r.get("order_id"))
+            ws.cell(row=row, column=4, value=r.get("customer"))
+            ws.cell(row=row, column=5, value=r.get("courier"))
+            ws.cell(row=row, column=6, value=round(r.get("amount") or 0))
+        for col in range(1, 7):
+            ws.column_dimensions[c["get_column_letter"](col)].width = 18
+
+    buf = io.BytesIO(); wb.save(buf); buf.seek(0)
+    return _xlsx_response(buf, prefix="Reconciliation", label=payload["period"]["label"])

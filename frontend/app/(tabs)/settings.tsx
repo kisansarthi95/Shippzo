@@ -1980,6 +1980,29 @@ export default function SettingsScreen() {
             </TouchableOpacity>
           </Section>
 
+          {/* Phase 2.5 — Reports Hub
+              Single entry point to 5 business reports with custom
+              date ranges and Excel download support. */}
+          <Section title="📊 Reports & Analytics" icon="bar-chart-outline">
+            <Text style={styles.toggleSub}>
+              5 business reports: Courier Billing, Return Analysis,
+              Weight-wise Breakup, Partner Comparison, COD Reconciliation.
+              Custom date ranges + Excel download included.
+            </Text>
+            <TouchableOpacity
+              testID="settings-hub-reports"
+              onPress={() => router.push("/reports" as any)}
+              style={[
+                styles.saveBtn,
+                { marginTop: 12, backgroundColor: "#0EA5E9" },
+              ]}
+            >
+              <Ionicons name="bar-chart" size={18} color="#fff" />
+              <Text style={styles.saveBtnText}>Open Reports Hub</Text>
+            </TouchableOpacity>
+          </Section>
+
+
           {/* Phase F4 — Courier Rules editor extracted into its own
               standalone /courier-rules screen as part of the legacy
               dispatch/delivery cleanup. The bulk Delivery Check-in
