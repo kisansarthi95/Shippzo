@@ -33,6 +33,7 @@ type AuthState = {
   /** True until we've tried to restore the session from AsyncStorage on boot. */
   loading: boolean;
   signIn: (email: string, password: string) => Promise<void>;
+  signInTeam: (email: string, password: string) => Promise<void>;
   signUp: (
     email: string, password: string, name: string, shop_name: string, phone: string,
   ) => Promise<{ trial_denied: boolean; trial_denied_reason: string }>;
@@ -104,6 +105,26 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     await persist(tok, userFields as User);
   }, [persist]);
 
+  /** Phase B+C — log in as a TEAM MEMBER (a sub-account under a shop
+   *  owner). The backend issues a token with kind="team" carrying the
+   *  member's permission set; that token is otherwise indistinguishable
+   *  from an owner token from the client's perspective except for the
+   *  `is_team_member` + `permissions` fields surfaced via
+   *  `/auth/context` (read by `PermissionsProvider`). */
+  const signInTeam = useCallback(async (email: string, password: string) => {
+    const r = await api.post<{ token: string }>("/team/login", { email, password });
+    const tok = r.data.token;
+    // The team member doesn't have its own User row, so we surface a
+    // synthetic stub. PermissionsProvider's `/auth/context` call will
+    // load the real shop-name + permissions immediately after.
+    const stub: User = {
+      id:    "team-session",
+      email, name: email.split("@")[0],
+      shop_name: "", phone: "",
+    } as any;
+    await persist(tok, stub);
+  }, [persist]);
+
   const signUp = useCallback(async (
     email: string, password: string, name: string, shop_name: string, phone: string,
   ) => {
@@ -172,7 +193,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     <AuthCtx.Provider
       value={{
         user, token, loading,
-        signIn, signUp, signInWithGoogleSession, signOut, refresh,
+        signIn, signInTeam, signUp, signInWithGoogleSession, signOut, refresh,
       }}
     >
       {children}

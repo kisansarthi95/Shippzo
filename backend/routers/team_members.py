@@ -19,19 +19,35 @@ admin's overrides via `resolve_plan(...)`. Beyond the cap a member can
 still be added but only after the user pays the extra-member fee
 (handled via /pay-extra-member, see below — wallet OR Razorpay).
 
-NOTE: Phase A does NOT implement separate login for team members.
-Phase C will add that on top of this CRUD.
+Phase B+C — Team-member auth: each row also persists `email` +
+`password_hash`. Members log in via `/api/team/login` which returns a
+JWT carrying parent_user_id + permissions, validated by the auth
+dependency on every request.
 """
 from __future__ import annotations
 import os
 import uuid
-from datetime import datetime, timezone
+import hashlib
+import hmac
+from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional
 
+import jwt
 from fastapi import APIRouter, Depends, HTTPException, Body
-from pydantic import BaseModel, Field
+from passlib.context import CryptContext
+from pydantic import BaseModel, EmailStr, Field
 
 from plans import resolve_plan
+
+
+# Lazy import to avoid circular reference. JWT_SECRET is shared with the
+# main user-token signer so a single auth dependency can decode both
+# owner and team-member tokens transparently.
+JWT_SECRET = os.environ.get("JWT_SECRET", "shippzo-dev-secret-change-me")
+JWT_ALG    = "HS256"
+TEAM_TOKEN_TTL_DAYS = 30
+
+_pwd_ctx = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 
 def _now() -> str:
@@ -52,6 +68,11 @@ class TeamMemberCreate(BaseModel):
     phone: str = Field(..., min_length=8, max_length=20)
     role: str = Field("", max_length=80)
     permissions: List[str] = Field(default_factory=list)
+    # Phase B+C — login credentials. Optional at create time so legacy
+    # callers (Phase A flow) keep working; when provided we hash and
+    # store, enabling the team member to /api/team/login.
+    email: Optional[EmailStr] = None
+    password: Optional[str] = Field(None, min_length=6, max_length=80)
 
 
 class TeamMemberUpdate(BaseModel):
@@ -60,6 +81,13 @@ class TeamMemberUpdate(BaseModel):
     role: Optional[str] = Field(None, max_length=80)
     permissions: Optional[List[str]] = None
     active: Optional[bool] = None
+    email: Optional[EmailStr] = None
+    password: Optional[str] = Field(None, min_length=6, max_length=80)
+
+
+class TeamLoginPayload(BaseModel):
+    email: EmailStr
+    password: str
 
 
 class PayExtraMemberPayload(BaseModel):
@@ -154,6 +182,17 @@ def build_router(db, get_current_user) -> APIRouter:
             "created_at":   _now(),
             "updated_at":   _now(),
         }
+        # Phase B+C — login credentials (optional). When provided we
+        # store a bcrypt hash so the team member can /api/team/login.
+        if body.email:
+            doc["email"] = body.email.lower().strip()
+            existing = await db.team_members.find_one({
+                "email": doc["email"], "active": {"$ne": False},
+            })
+            if existing:
+                raise HTTPException(409, "This email is already used by another team member")
+        if body.password:
+            doc["password_hash"] = _pwd_ctx.hash(body.password)
         await db.team_members.insert_one(doc)
         return _public(doc)
 
@@ -177,6 +216,10 @@ def build_router(db, get_current_user) -> APIRouter:
             setdoc["permissions"] = list(body.permissions)
         if body.active is not None:
             setdoc["active"] = bool(body.active)
+        if body.email is not None:
+            setdoc["email"] = body.email.lower().strip()
+        if body.password:
+            setdoc["password_hash"] = _pwd_ctx.hash(body.password)
         res = await db.team_members.update_one(
             {"id": member_id, "user_id": current_user["id"]},
             {"$set": setdoc},
@@ -289,6 +332,47 @@ def build_router(db, get_current_user) -> APIRouter:
             {"$set": {"consumed": True, "consumed_at": _now()}},
         )
         return _public(doc)
+
+    # ─── Phase B+C — team-member login ─────────────────────────────
+    @router.post("/team/login")
+    async def team_login(body: TeamLoginPayload = Body(...)):
+        """Authenticate a team member by email + password and issue
+        a JWT carrying parent_user_id + permissions. The main auth
+        dependency (server.get_current_user) detects the token kind
+        and merges the parent's user document with the member's
+        permission set so every existing endpoint keeps working
+        unchanged — except now it can call `require_permission(...)`."""
+        email = body.email.lower().strip()
+        member = await db.team_members.find_one({
+            "email": email, "active": {"$ne": False}, "password_hash": {"$exists": True},
+        })
+        if not member or not _pwd_ctx.verify(body.password, member["password_hash"]):
+            raise HTTPException(status_code=401, detail="Invalid email or password")
+        # Parent must still be active for the team session to be valid.
+        parent = await db.users.find_one({"id": member["user_id"]})
+        if not parent:
+            raise HTTPException(status_code=403, detail="Parent account no longer exists")
+        now = datetime.now(timezone.utc)
+        payload = {
+            "kind":           "team",
+            "team_member_id": member["id"],
+            "parent_user_id": member["user_id"],
+            "permissions":    list(member.get("permissions") or []),
+            "iat":            int(now.timestamp()),
+            "exp":            int((now + timedelta(days=TEAM_TOKEN_TTL_DAYS)).timestamp()),
+        }
+        token = jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALG)
+        return {
+            "token": token,
+            "kind":  "team",
+            "team_member": {
+                "id":          member["id"],
+                "name":        member.get("name"),
+                "role":        member.get("role"),
+                "permissions": member.get("permissions") or [],
+            },
+            "parent_business": parent.get("shop_name") or parent.get("name"),
+        }
 
     return router
 

@@ -8,6 +8,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { useFonts } from "expo-font";
 import { AuthProvider, useAuth } from "../lib/auth";
 import { FeatureFlagsProvider } from "../lib/feature_flags";
+import { PermissionsProvider } from "../lib/permissions";
 import ErrorBoundary from "../components/ErrorBoundary";
 import OfflineBanner from "../components/OfflineBanner";
 
@@ -86,7 +87,8 @@ export default function RootLayout() {
   return (
     <ErrorBoundary>
       <AuthProvider>
-        <FeatureFlagsProvider>
+        <PermissionsProvider>
+          <FeatureFlagsProvider>
           <SafeAreaProvider>
             <StatusBar style="dark" />
             <AuthGate>
@@ -123,6 +125,7 @@ export default function RootLayout() {
             </AuthGate>
           </SafeAreaProvider>
         </FeatureFlagsProvider>
+        </PermissionsProvider>
       </AuthProvider>
     </ErrorBoundary>
   );

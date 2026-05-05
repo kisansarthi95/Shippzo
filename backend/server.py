@@ -390,6 +390,27 @@ async def auth_me(current_user: Dict[str, Any] = Depends(get_current_user)):
     return user_public(current_user)
 
 
+@auth_router.get("/context")
+async def auth_context(current_user: Dict[str, Any] = Depends(get_current_user)):
+    """Phase B+C — returns whether the active session is an OWNER or a
+    TEAM-MEMBER and, in the latter case, which permission keys are
+    granted. The frontend reads this once at app boot and uses it to
+    drive UI gating (`<Gated permission="...">` / `usePermission`)."""
+    team = current_user.get("_team")
+    return {
+        "is_team_member":  bool(team),
+        "team_member":     team if team else None,
+        "user": {
+            "id":         current_user.get("id"),
+            "name":       current_user.get("name"),
+            "email":      current_user.get("email"),
+            "is_admin":   bool(current_user.get("is_admin")),
+            "plan":       current_user.get("plan"),
+            "shop_name":  current_user.get("shop_name"),
+        },
+    }
+
+
 @auth_router.post("/logout")
 async def auth_logout():
     # JWT is stateless; the client just drops the token. This endpoint
@@ -8176,7 +8197,16 @@ from starlette.responses import JSONResponse
 from auth import decode_token as _decode_token
 
 # Endpoints that are intentionally reachable without a token.
-_AUTH_EXEMPT_PREFIXES = ("/api/auth/", "/api/legal/")
+_AUTH_EXEMPT_PREFIXES = ("/api/auth/", "/api/legal/", "/api/team/login")
+# Phase 2.5 — Excel report endpoints accept ?token= query param instead
+# of header (browser cannot attach Authorization to <a href> downloads).
+_EXCEL_DOWNLOAD_PATHS = {
+    "/api/me/reports/courier-billing/excel",
+    "/api/me/reports/return-analysis/excel",
+    "/api/me/reports/weight-wise/excel",
+    "/api/me/reports/partner-comparison/excel",
+    "/api/me/reports/reconciliation/excel",
+}
 # Admin-only endpoints. For Phase-1a we keep this small; Phase-1b will
 # expand as we harden multi-tenancy.
 _ADMIN_ONLY_PATHS: set = set()
@@ -8189,10 +8219,10 @@ async def auth_gate(request, call_next):
         return await call_next(request)
     if any(path.startswith(p) for p in _AUTH_EXEMPT_PREFIXES):
         return await call_next(request)
-    # Phase 2.5 — Excel report download is initiated from a browser
-    # tab (Linking.openURL) which can't attach an Authorization header.
-    # Allow the route to handle its own auth via `?token=…` instead.
-    if path == "/api/me/reports/courier-billing/excel":
+    # Phase 2.5 — Excel report downloads accept token via ?token= so
+    # they can be opened with `Linking.openURL(...)` which cannot
+    # attach custom headers. Each endpoint enforces its own auth.
+    if path in _EXCEL_DOWNLOAD_PATHS:
         return await call_next(request)
     auth_hdr = request.headers.get("authorization") or request.headers.get("Authorization") or ""
     if not auth_hdr.lower().startswith("bearer "):

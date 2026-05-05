@@ -15,6 +15,7 @@ import { View, Text, StyleSheet, TouchableOpacity, ScrollView } from "react-nati
 import { Ionicons } from "@expo/vector-icons";
 import { Stack, router } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { usePermissions } from "../../lib/permissions";
 
 type Report = {
   key: string;
@@ -24,6 +25,10 @@ type Report = {
   color: string;
   bg: string;
   path: string;
+  // Phase B+C — permission key required when running as a team member.
+  // Owners always see everything; team members see only tiles whose
+  // permission is in their granted list.
+  permission: string;
 };
 
 const REPORTS: Report[] = [
@@ -35,6 +40,7 @@ const REPORTS: Report[] = [
     color: "#1F4FBF",
     bg:    "#EFF6FF",
     path:  "/reports/courier-billing",
+    permission: "reports_courier_billing",
   },
   {
     key:   "return-analysis",
@@ -44,6 +50,7 @@ const REPORTS: Report[] = [
     color: "#DC2626",
     bg:    "#FEF2F2",
     path:  "/reports/return-analysis",
+    permission: "reports_return_analysis",
   },
   {
     key:   "weight-wise",
@@ -53,6 +60,7 @@ const REPORTS: Report[] = [
     color: "#0EA5E9",
     bg:    "#F0F9FF",
     path:  "/reports/weight-wise",
+    permission: "reports_weight_wise",
   },
   {
     key:   "partner-comparison",
@@ -62,6 +70,7 @@ const REPORTS: Report[] = [
     color: "#7C3AED",
     bg:    "#F5F3FF",
     path:  "/reports/partner-comparison",
+    permission: "reports_partner_comparison",
   },
   {
     key:   "reconciliation",
@@ -71,10 +80,13 @@ const REPORTS: Report[] = [
     color: "#059669",
     bg:    "#ECFDF5",
     path:  "/reports/reconciliation",
+    permission: "reports_reconciliation",
   },
 ];
 
 export default function ReportsHubScreen() {
+  const { hasPerm, isTeamMember } = usePermissions();
+  const visible = REPORTS.filter((r) => hasPerm(r.permission));
   return (
     <SafeAreaView style={styles.safe} edges={["top"]}>
       <Stack.Screen options={{ title: "Reports" }} />
@@ -90,7 +102,28 @@ export default function ReportsHubScreen() {
       </View>
 
       <ScrollView contentContainerStyle={styles.scroll}>
-        {REPORTS.map((r) => (
+        {isTeamMember && visible.length < REPORTS.length && (
+          <View style={styles.permsBanner}>
+            <Ionicons name="information-circle" size={16} color="#1F4FBF" />
+            <Text style={styles.permsBannerTxt}>
+              You're seeing {visible.length} of {REPORTS.length} reports based on
+              your role permissions.
+            </Text>
+          </View>
+        )}
+
+        {visible.length === 0 ? (
+          <View style={[styles.tile, { backgroundColor: "#FEF3C7", justifyContent: "center" }]}>
+            <Ionicons name="lock-closed" size={22} color="#92400E" />
+            <View style={{ flex: 1, marginLeft: 8 }}>
+              <Text style={[styles.tileTitle, { color: "#92400E" }]}>No reports available</Text>
+              <Text style={styles.tileDesc}>
+                Your role doesn't have access to any reports. Ask the shop owner
+                to grant report permissions.
+              </Text>
+            </View>
+          </View>
+        ) : visible.map((r) => (
           <TouchableOpacity
             key={r.key}
             style={[styles.tile, { backgroundColor: r.bg }]}
@@ -143,6 +176,12 @@ const styles = StyleSheet.create({
   tileTitle: { fontSize: 15, fontWeight: "800" },
   tileDesc: { fontSize: 12, color: "#374151", marginTop: 2, lineHeight: 16 },
 
+  permsBanner: {
+    flexDirection: "row", alignItems: "center", gap: 8,
+    backgroundColor: "#EFF6FF", borderWidth: 1, borderColor: "#BFDBFE",
+    padding: 10, borderRadius: 10, marginBottom: 10,
+  },
+  permsBannerTxt: { flex: 1, fontSize: 11.5, color: "#1E40AF", lineHeight: 16 },
   footerNote: {
     flexDirection: "row", gap: 8, padding: 12,
     backgroundColor: "#fff", borderRadius: 10, marginTop: 8,

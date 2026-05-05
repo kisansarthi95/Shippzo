@@ -148,6 +148,12 @@ def get_current_user_factory(db):
         from auth import get_current_user_factory
         get_current_user = get_current_user_factory(db)
     in server.py at module level.
+
+    Phase B+C — also handles team-member tokens. When the JWT carries
+    `kind="team"` we resolve the *parent* user document and merge the
+    member's permission list into it under `_team` so endpoints can
+    `require_permission(...)`. Owner tokens behave identically to
+    before (the merged dict has no `_team` key).
     """
     async def _dep(
         creds: Optional[HTTPAuthorizationCredentials] = Depends(_bearer),
@@ -159,11 +165,74 @@ def get_current_user_factory(db):
                 headers={"WWW-Authenticate": "Bearer"},
             )
         payload = decode_token(creds.credentials)
+
+        # Team-member token? — load parent + decorate with permissions.
+        if payload.get("kind") == "team":
+            parent_id = payload.get("parent_user_id")
+            user = await db.users.find_one({"id": parent_id}, {"_id": 0})
+            if not user:
+                raise HTTPException(status_code=401, detail="Parent account not found")
+            member = await db.team_members.find_one(
+                {"id": payload.get("team_member_id"), "active": {"$ne": False}},
+                {"_id": 0},
+            )
+            if not member:
+                raise HTTPException(status_code=401, detail="Team member disabled")
+            user["_team"] = {
+                "id":          member["id"],
+                "name":        member.get("name"),
+                "role":        member.get("role"),
+                "permissions": list(member.get("permissions") or []),
+                "email":       member.get("email"),
+            }
+            return user
+
+        # Standard owner token — unchanged behaviour.
         user = await db.users.find_one({"id": payload.get("sub")}, {"_id": 0})
         if not user:
             raise HTTPException(status_code=401, detail="User not found")
         return user
 
+    return _dep
+
+
+def is_team_member(user: Dict[str, Any]) -> bool:
+    """Convenience for endpoints that branch on owner vs member."""
+    return bool(user.get("_team"))
+
+
+def has_permission(user: Dict[str, Any], key: str) -> bool:
+    """True for owners (full access) and for team members whose
+    permission list contains the given feature key."""
+    if not user.get("_team"):
+        return True
+    return key in (user["_team"].get("permissions") or [])
+
+
+def require_permission(key: str):
+    """FastAPI dependency factory. Use with Depends() on any endpoint
+    that should be hidden from team members lacking a feature:
+
+        @api_router.get("/me/reports/...")
+        async def report(_: Any = Depends(require_permission("reports.view")),
+                         current_user = Depends(get_current_user)):
+            ...
+    """
+    async def _dep(  # noqa: ANN001
+        creds: Optional[HTTPAuthorizationCredentials] = Depends(_bearer),
+    ):
+        if creds is None:
+            raise HTTPException(401, "Missing bearer token")
+        payload = decode_token(creds.credentials)
+        if payload.get("kind") != "team":
+            return True  # owners pass automatically
+        perms = payload.get("permissions") or []
+        if key not in perms:
+            raise HTTPException(
+                status_code=403,
+                detail=f"Permission '{key}' is not granted to your role.",
+            )
+        return True
     return _dep
 
 

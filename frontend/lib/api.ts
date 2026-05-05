@@ -1324,12 +1324,16 @@ export const Api = {
       can_buy_extra: boolean;
     }>("/me/team-members").then((r) => r.data),
 
-  meTeamMemberCreate: (body: { name: string; phone: string; role?: string; permissions?: string[] }) =>
+  meTeamMemberCreate: (body: {
+    name: string; phone: string; role?: string;
+    permissions?: string[]; email?: string; password?: string;
+  }) =>
     api.post("/me/team-members", body).then((r) => r.data),
 
   meTeamMemberUpdate: (id: string, body: Partial<{
     name: string; phone: string; role: string;
     permissions: string[]; active: boolean;
+    email: string; password: string;
   }>) =>
     api.put(`/me/team-members/${id}`, body).then((r) => r.data),
 
@@ -1358,6 +1362,30 @@ export const Api = {
       my_features: string[];
       plan: string;
     }>("/me/feature-registry").then((r) => r.data),
+
+  // ─── Phase B+C — Team-member auth & gating ─────────────────────
+  /** Logs in a team-member with email + password (NOT the owner's
+   *  account). Returned token is interchangeable with owner tokens
+   *  on every other endpoint — backend distinguishes via `kind` claim. */
+  teamLogin: (body: { email: string; password: string }) =>
+    api.post<{
+      token: string; kind: "team";
+      team_member: { id: string; name: string; role: string; permissions: string[] };
+      parent_business: string;
+    }>("/team/login", body).then((r) => r.data),
+
+  /** Read the active session's identity + permissions. Owners get
+   *  `is_team_member=false` and an empty permission set (they bypass
+   *  gating client-side). Team members get the granted permission keys. */
+  authContext: () =>
+    api.get<{
+      is_team_member: boolean;
+      team_member: {
+        id: string; name: string; role: string;
+        permissions: string[]; email: string;
+      } | null;
+      user: { id: string; name: string; email: string; is_admin: boolean; plan: string; shop_name?: string };
+    }>("/auth/context").then((r) => r.data),
 
   // ─── Phase 2.5 — Additional Reports ─────────────────────────────
   // All four take the same period selector (range chips + custom from/to)

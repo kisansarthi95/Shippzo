@@ -12,12 +12,16 @@ import GoogleSignInButton from "../../components/GoogleSignInButton";
 import BrandHeaderAnimator from "../../components/BrandHeaderAnimator";
 
 export default function LoginScreen() {
-  const { signIn } = useAuth();
+  const { signIn, signInTeam } = useAuth();
   const router = useRouter();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [showPwd, setShowPwd] = useState(false);
+  // Phase B+C — toggle between owner login (default) and team-member
+  // login. Both paths post to different endpoints; the rest of the
+  // form stays identical so we don't bloat the UI.
+  const [mode, setMode] = useState<"owner" | "team">("owner");
 
   const submit = async () => {
     const e = email.trim().toLowerCase();
@@ -27,7 +31,11 @@ export default function LoginScreen() {
     }
     setBusy(true);
     try {
-      await signIn(e, password);
+      if (mode === "team") {
+        await signInTeam(e, password);
+      } else {
+        await signIn(e, password);
+      }
     } catch (err: any) {
       Alert.alert(
         "Login failed",
@@ -50,6 +58,36 @@ export default function LoginScreen() {
           </View>
 
           <View style={styles.card}>
+            {/* Phase B+C — owner / team-member mode toggle */}
+            <View style={styles.modeRow}>
+              <TouchableOpacity
+                style={[styles.modeBtn, mode === "owner" && styles.modeBtnActive]}
+                onPress={() => setMode("owner")}
+              >
+                <Ionicons
+                  name="storefront"
+                  size={14}
+                  color={mode === "owner" ? "#fff" : "#1F4FBF"}
+                />
+                <Text style={[styles.modeBtnTxt, mode === "owner" && { color: "#fff" }]}>
+                  Owner / Admin
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.modeBtn, mode === "team" && styles.modeBtnActive]}
+                onPress={() => setMode("team")}
+              >
+                <Ionicons
+                  name="people"
+                  size={14}
+                  color={mode === "team" ? "#fff" : "#1F4FBF"}
+                />
+                <Text style={[styles.modeBtnTxt, mode === "team" && { color: "#fff" }]}>
+                  Team Member
+                </Text>
+              </TouchableOpacity>
+            </View>
+
             <Text style={styles.label}>Email</Text>
             <TextInput
               testID="login-email"
@@ -175,4 +213,25 @@ const styles = StyleSheet.create({
   dividerLine: { flex: 1, height: 1, backgroundColor: "#E5E7EB" },
   dividerText: { fontSize: 11, fontWeight: "800", color: "#94A3B8", letterSpacing: 2 },
   hint: { marginTop: 16, textAlign: "center", fontSize: 11.5, color: colors.textMuted, paddingHorizontal: 12 },
+
+  // Phase B+C — login mode toggle (owner vs team-member).
+  modeRow: {
+    flexDirection: "row",
+    backgroundColor: "#F3F4F6",
+    borderRadius: 10,
+    padding: 4,
+    marginBottom: 16,
+    gap: 4,
+  },
+  modeBtn: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    paddingVertical: 9,
+    borderRadius: 8,
+  },
+  modeBtnActive: { backgroundColor: "#1F4FBF" },
+  modeBtnTxt:    { fontSize: 12, fontWeight: "800", color: "#1F4FBF", letterSpacing: 0.3 },
 });

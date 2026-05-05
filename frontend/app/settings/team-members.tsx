@@ -87,7 +87,7 @@ export default function TeamMembersScreen() {
   // Add/edit modal
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState<Member | null>(null);
-  const [form, setForm] = useState({ name: "", phone: "", role: "" });
+  const [form, setForm] = useState({ name: "", phone: "", role: "", email: "", password: "" });
   const [perms, setPerms] = useState<Set<string>>(new Set());
   const [saving, setSaving] = useState(false);
   const [extraToken, setExtraToken] = useState<string | null>(null);
@@ -127,7 +127,7 @@ export default function TeamMembersScreen() {
 
   const openAdd = () => {
     setEditing(null);
-    setForm({ name: "", phone: "", role: "" });
+    setForm({ name: "", phone: "", role: "", email: "", password: "" });
     setPerms(new Set());
     setExtraToken(null);
     setModalOpen(true);
@@ -135,7 +135,7 @@ export default function TeamMembersScreen() {
 
   const openEdit = (m: Member) => {
     setEditing(m);
-    setForm({ name: m.name, phone: m.phone, role: m.role || "" });
+    setForm({ name: m.name, phone: m.phone, role: m.role || "", email: (m as any).email || "", password: "" });
     setPerms(new Set(m.permissions || []));
     setExtraToken(null);
     setModalOpen(true);
@@ -159,6 +159,8 @@ export default function TeamMembersScreen() {
         phone: form.phone.trim(),
         role: form.role.trim(),
         permissions: Array.from(perms),
+        ...(form.email.trim() ? { email: form.email.trim().toLowerCase() } : {}),
+        ...(form.password.trim() ? { password: form.password.trim() } : {}),
       };
       if (editing) {
         await Api.meTeamMemberUpdate(editing.id, payload);
@@ -421,6 +423,36 @@ export default function TeamMembersScreen() {
                 </Pressable>
               ))}
             </View>
+
+            {/* Phase B+C — login credentials. When provided the team
+                member can log in to the app via "Team Member" toggle. */}
+            <Text style={[styles.fieldLabel, { marginTop: 18 }]}>
+              LOGIN EMAIL (optional)
+            </Text>
+            <TextInput
+              style={styles.input}
+              placeholder="staff@example.com"
+              placeholderTextColor="#9CA3AF"
+              value={form.email}
+              onChangeText={(t) => setForm({ ...form, email: t })}
+              keyboardType="email-address"
+              autoCapitalize="none"
+            />
+            <Text style={[styles.fieldLabel, { marginTop: 12 }]}>
+              {editing ? "NEW PASSWORD (leave blank to keep)" : "PASSWORD (optional)"}
+            </Text>
+            <TextInput
+              style={styles.input}
+              placeholder="Min 6 characters"
+              placeholderTextColor="#9CA3AF"
+              value={form.password}
+              onChangeText={(t) => setForm({ ...form, password: t })}
+              secureTextEntry
+            />
+            <Text style={styles.permsHelper}>
+              Without email + password the staff member appears in SLA
+              alerts only. Add credentials to let them log in.
+            </Text>
 
             {/* Permissions */}
             <Text style={[styles.fieldLabel, { marginTop: 18 }]}>
