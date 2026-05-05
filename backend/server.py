@@ -1175,139 +1175,7 @@ def _next_tier_suggestion(plan_key: str) -> Optional[str]:
     return _PLAN_LABELS.get(nxt, "Gold")
 
 
-@api_router.get("/couriers", response_model=List[Courier])
-async def list_couriers(current_user: Dict[str, Any] = Depends(get_current_user)):
-    docs = await db.couriers.find({"user_id": current_user["id"]}, {"_id": 0}).sort("created_at", 1).to_list(200)
-    return [Courier(**d) for d in docs]
-
-
-@api_router.get("/couriers/limits")
-async def get_courier_limits(current_user: Dict[str, Any] = Depends(get_current_user)):
-    """Return the caller's current courier count + the cap dictated by
-    their plan. Used by the frontend to render `X / Y used` badges and
-    to swap the "Add Courier Partner" CTA for an upgrade prompt when
-    the cap is reached.
-
-    Admins always see `is_unlimited: true`.
-    """
-    plan_key = (current_user.get("plan") or "free_trial").lower()
-    is_admin = bool(current_user.get("is_admin"))
-    current_count = await db.couriers.count_documents({"user_id": current_user["id"]})
-    limit = None if is_admin else _courier_limit_for_plan(plan_key)
-    is_unlimited = limit is None
-    can_add = True if is_unlimited else (current_count < int(limit))
-    return {
-        "plan": plan_key,
-        "plan_label": _PLAN_LABELS.get(plan_key, plan_key.title()),
-        "is_admin": is_admin,
-        "limit": limit,                   # None means unlimited
-        "current_count": int(current_count),
-        "can_add": bool(can_add),
-        "is_unlimited": bool(is_unlimited),
-        "suggested_upgrade": None if is_admin else _next_tier_suggestion(plan_key),
-    }
-
-
-@api_router.post("/couriers", response_model=Courier)
-async def create_courier(
-    payload: CourierCreate,
-    current_user: Dict[str, Any] = Depends(get_current_user),
-):
-    # Enforce per-plan courier partner cap. Admins bypass the check so
-    # internal support accounts can set up demo data freely.
-    if not current_user.get("is_admin"):
-        plan_key = (current_user.get("plan") or "free_trial").lower()
-        limit = _courier_limit_for_plan(plan_key)
-        if limit is not None:
-            current_count = await db.couriers.count_documents(
-                {"user_id": current_user["id"]}
-            )
-            if current_count >= int(limit):
-                plan_label = _PLAN_LABELS.get(plan_key, plan_key.title())
-                suggest = _next_tier_suggestion(plan_key)
-                msg = (
-                    f"Your {plan_label} plan allows only {limit} "
-                    f"courier partner"
-                    + ("" if int(limit) == 1 else "s") + "."
-                )
-                if suggest:
-                    msg += f" Upgrade to {suggest} to add more."
-                else:
-                    # Already on top tier (Platinum). Give a supportive
-                    # message instead of an upgrade nudge.
-                    msg += " Please contact support if you need more."
-                raise HTTPException(status_code=403, detail=msg)
-    courier = Courier(**payload.model_dump())
-    doc = courier.model_dump()
-    doc["user_id"] = current_user["id"]
-    await db.couriers.insert_one(doc)
-    return courier
-
-
-@api_router.put("/couriers/{courier_id}", response_model=Courier)
-async def update_courier(
-    courier_id: str, payload: CourierUpdate,
-    current_user: Dict[str, Any] = Depends(get_current_user),
-):
-    update = {k: v for k, v in payload.model_dump().items() if v is not None}
-    if not update:
-        raise HTTPException(status_code=400, detail="No fields to update")
-    res = await db.couriers.find_one_and_update(
-        {"id": courier_id, "user_id": current_user["id"]}, {"$set": update}, return_document=True
-    )
-    if not res:
-        raise HTTPException(status_code=404, detail="Courier not found")
-    return Courier(**strip_id(res))
-
-
-@api_router.delete("/couriers/{courier_id}")
-async def delete_courier(
-    courier_id: str,
-    current_user: Dict[str, Any] = Depends(get_current_user),
-):
-    res = await db.couriers.delete_one({"id": courier_id, "user_id": current_user["id"]})
-    if res.deleted_count == 0:
-        raise HTTPException(status_code=404, detail="Courier not found")
-    return {"ok": True}
-
-
-@api_router.get("/couriers/{courier_id}", response_model=Courier)
-async def get_courier(
-    courier_id: str,
-    current_user: Dict[str, Any] = Depends(get_current_user),
-):
-    doc = await db.couriers.find_one({"id": courier_id, "user_id": current_user["id"]}, {"_id": 0})
-    if not doc:
-        raise HTTPException(status_code=404, detail="Courier not found")
-    return Courier(**doc)
-
-
-@api_router.get("/couriers/{courier_id}/next-tracking")
-async def peek_next_tracking(
-    courier_id: str,
-    current_user: Dict[str, Any] = Depends(get_current_user),
-):
-    doc = await db.couriers.find_one({"id": courier_id, "user_id": current_user["id"]}, {"_id": 0})
-    if not doc:
-        raise HTTPException(status_code=404, detail="Courier not found")
-    c = Courier(**doc)
-    num = str(c.next_number).zfill(c.number_padding)
-    return {"tracking_id": f"{c.series_prefix}{num}", "next_number": c.next_number}
-
-
-@api_router.post("/couriers/{courier_id}/consume-tracking")
-async def consume_tracking(
-    courier_id: str,
-    current_user: Dict[str, Any] = Depends(get_current_user),
-):
-    doc = await db.couriers.find_one({"id": courier_id, "user_id": current_user["id"]}, {"_id": 0})
-    if not doc:
-        raise HTTPException(status_code=404, detail="Courier not found")
-    c = Courier(**doc)
-    tid = f"{c.series_prefix}{str(c.next_number).zfill(c.number_padding)}"
-    await db.couriers.update_one({"id": courier_id, "user_id": current_user["id"]}, {"$inc": {"next_number": 1}})
-    return {"tracking_id": tid}
-
+# [refactor] Couriers CRUD + tracking helpers moved to routers/couriers.py
 
 # ──────────────────────────────────────────────────────────────────
 # Phase 2 — Courier Packing Variants & Rate Management
@@ -1376,153 +1244,7 @@ def _packing_variant_cap_for_user(user: Dict[str, Any]) -> Optional[int]:
     return int(spec.packing_variant_cap)
 
 
-@api_router.get("/couriers/{courier_id}/variants")
-async def list_courier_variants(
-    courier_id: str,
-    current_user: Dict[str, Any] = Depends(get_current_user),
-):
-    """List all variants for a given courier (own data only)."""
-    # Confirm courier ownership.
-    courier = await db.couriers.find_one(
-        {"id": courier_id, "user_id": current_user["id"]}, {"_id": 0, "id": 1, "name": 1},
-    )
-    if not courier:
-        raise HTTPException(status_code=404, detail="Courier not found")
-    rows = await db.courier_variants.find(
-        {"courier_id": courier_id, "user_id": current_user["id"]},
-        {"_id": 0},
-    ).sort("created_at", 1).to_list(50)
-    cap = _packing_variant_cap_for_user(current_user)
-    return {
-        "variants":         rows,
-        "cap":              cap,
-        "current_count":    len(rows),
-        "remaining":        None if cap is None else max(0, cap - len(rows)),
-        "package_types":    PACKAGE_TYPES,
-        "categories":       CATEGORIES,
-    }
-
-
-@api_router.post("/couriers/{courier_id}/variants", response_model=CourierVariant)
-async def create_courier_variant(
-    courier_id: str,
-    body: CourierVariantCreate,
-    current_user: Dict[str, Any] = Depends(get_current_user),
-):
-    """Create a new variant for a courier — enforces plan-wise cap."""
-    # Confirm courier ownership.
-    courier = await db.couriers.find_one(
-        {"id": courier_id, "user_id": current_user["id"]}, {"_id": 0, "id": 1},
-    )
-    if not courier:
-        raise HTTPException(status_code=404, detail="Courier not found")
-    if not (body.variant_name or "").strip():
-        raise HTTPException(status_code=400, detail="variant_name is required")
-
-    cap = _packing_variant_cap_for_user(current_user)
-    if cap is not None:
-        existing = await db.courier_variants.count_documents(
-            {"courier_id": courier_id, "user_id": current_user["id"]},
-        )
-        if existing >= cap:
-            raise HTTPException(
-                status_code=402,
-                detail=(
-                    f"Packing variant limit reached for your plan ({cap}). "
-                    "Upgrade to add more variants per courier."
-                ),
-            )
-
-    variant = CourierVariant(
-        user_id=current_user["id"],
-        courier_id=courier_id,
-        variant_name=body.variant_name.strip(),
-        package_type=(body.package_type or "").strip(),
-        category=(body.category or "").strip(),
-        length_cm=float(body.length_cm or 0),
-        width_cm=float(body.width_cm or 0),
-        height_cm=float(body.height_cm or 0),
-        weight_g=float(body.weight_g or 0),
-        within_state_rate=float(body.within_state_rate or 0),
-        outside_state_rate=float(body.outside_state_rate or 0),
-        active=bool(body.active if body.active is not None else True),
-    )
-    await db.courier_variants.insert_one(variant.model_dump())
-    return variant
-
-
-@api_router.put("/couriers/{courier_id}/variants/{variant_id}", response_model=CourierVariant)
-async def update_courier_variant(
-    courier_id: str,
-    variant_id: str,
-    body: CourierVariantUpdate,
-    current_user: Dict[str, Any] = Depends(get_current_user),
-):
-    update: Dict[str, Any] = {}
-    for field in (
-        "variant_name", "package_type", "category", "length_cm", "width_cm",
-        "height_cm", "weight_g", "within_state_rate", "outside_state_rate",
-        "active",
-    ):
-        v = getattr(body, field)
-        if v is not None:
-            update[field] = (
-                v.strip() if isinstance(v, str) else
-                bool(v) if field == "active" else
-                float(v) if field in (
-                    "length_cm", "width_cm", "height_cm", "weight_g",
-                    "within_state_rate", "outside_state_rate",
-                ) else v
-            )
-    if not update:
-        raise HTTPException(status_code=400, detail="No fields to update")
-    res = await db.courier_variants.find_one_and_update(
-        {"id": variant_id, "courier_id": courier_id, "user_id": current_user["id"]},
-        {"$set": update},
-        return_document=ReturnDocument.AFTER,
-        projection={"_id": 0},
-    )
-    if not res:
-        raise HTTPException(status_code=404, detail="Variant not found")
-    return CourierVariant(**res)
-
-
-@api_router.delete("/couriers/{courier_id}/variants/{variant_id}")
-async def delete_courier_variant(
-    courier_id: str,
-    variant_id: str,
-    current_user: Dict[str, Any] = Depends(get_current_user),
-):
-    res = await db.courier_variants.delete_one(
-        {"id": variant_id, "courier_id": courier_id, "user_id": current_user["id"]},
-    )
-    if res.deleted_count == 0:
-        raise HTTPException(status_code=404, detail="Variant not found")
-    return {"ok": True}
-
-
-@api_router.get("/me/all-variants")
-async def list_all_variants(
-    current_user: Dict[str, Any] = Depends(get_current_user),
-):
-    """Convenience: return ALL variants across the user's couriers — used
-    by the New Shipment form to pre-load the variant picker once on
-    open instead of fetching per-courier."""
-    rows = await db.courier_variants.find(
-        {"user_id": current_user["id"], "active": True},
-        {"_id": 0},
-    ).sort("created_at", 1).to_list(500)
-    # Group by courier_id so the UI can render sections cleanly.
-    by_courier: Dict[str, List[Dict[str, Any]]] = {}
-    for r in rows:
-        by_courier.setdefault(r["courier_id"], []).append(r)
-    return {
-        "variants":      rows,
-        "by_courier":    by_courier,
-        "package_types": PACKAGE_TYPES,
-        "categories":    CATEGORIES,
-    }
-
+# [refactor] Courier Variants + /me/all-variants moved to routers/couriers.py
 
 # ──────────────────────────────────────────────────────────────────
 # Phase 2D — User-defined custom Categories
@@ -1534,142 +1256,7 @@ async def list_all_variants(
 # ──────────────────────────────────────────────────────────────────
 
 
-@api_router.get("/me/categories")
-async def list_my_categories(
-    current_user: Dict[str, Any] = Depends(get_current_user),
-):
-    doc = await db.user_meta.find_one(
-        {"user_id": current_user["id"]}, {"_id": 0, "custom_categories": 1},
-    )
-    custom = sorted((doc or {}).get("custom_categories") or [])
-    return {"presets": CATEGORIES, "custom": custom}
-
-
-@api_router.post("/me/categories")
-async def add_my_category(
-    payload: Dict[str, Any] = Body(...),
-    current_user: Dict[str, Any] = Depends(get_current_user),
-):
-    name = (payload.get("name") or "").strip()
-    if not name:
-        raise HTTPException(status_code=400, detail="Category name required")
-    if len(name) > 40:
-        raise HTTPException(status_code=400, detail="Category name too long (40 chars max)")
-    # Reject built-ins (case-insensitive) — they're already available.
-    if name.lower() in {c.lower() for c in CATEGORIES}:
-        raise HTTPException(status_code=400, detail=f"'{name}' is already a built-in category")
-    await db.user_meta.update_one(
-        {"user_id": current_user["id"]},
-        {"$addToSet": {"custom_categories": name}, "$setOnInsert": {"user_id": current_user["id"]}},
-        upsert=True,
-    )
-    doc = await db.user_meta.find_one(
-        {"user_id": current_user["id"]}, {"_id": 0, "custom_categories": 1},
-    )
-    return {"presets": CATEGORIES, "custom": sorted((doc or {}).get("custom_categories") or [])}
-
-
-@api_router.delete("/me/categories/{name}")
-async def remove_my_category(
-    name: str,
-    current_user: Dict[str, Any] = Depends(get_current_user),
-):
-    await db.user_meta.update_one(
-        {"user_id": current_user["id"]}, {"$pull": {"custom_categories": name}},
-    )
-    doc = await db.user_meta.find_one(
-        {"user_id": current_user["id"]}, {"_id": 0, "custom_categories": 1},
-    )
-    return {"presets": CATEGORIES, "custom": sorted((doc or {}).get("custom_categories") or [])}
-
-
-@api_router.post("/couriers/{courier_id}/variants/copy-from/{source_courier_id}")
-async def copy_variants_from_courier(
-    courier_id: str,
-    source_courier_id: str,
-    current_user: Dict[str, Any] = Depends(get_current_user),
-):
-    """Bulk-clone all active variants from one courier to another. Plan
-    cap is honoured — if the source has more variants than the target's
-    remaining slots, only the first N are copied and the rest are
-    reported as `skipped`."""
-    if courier_id == source_courier_id:
-        raise HTTPException(status_code=400, detail="Source and target courier are the same")
-
-    target = await db.couriers.find_one(
-        {"id": courier_id, "user_id": current_user["id"]}, {"_id": 0, "id": 1, "name": 1},
-    )
-    if not target:
-        raise HTTPException(status_code=404, detail="Target courier not found")
-    source = await db.couriers.find_one(
-        {"id": source_courier_id, "user_id": current_user["id"]}, {"_id": 0, "id": 1, "name": 1},
-    )
-    if not source:
-        raise HTTPException(status_code=404, detail="Source courier not found")
-
-    src_variants = await db.courier_variants.find(
-        {"user_id": current_user["id"], "courier_id": source_courier_id, "active": True},
-        {"_id": 0},
-    ).sort("created_at", 1).to_list(100)
-    if not src_variants:
-        raise HTTPException(status_code=400, detail="Source courier has no variants to copy")
-
-    # Plan-cap math.
-    cap = _packing_variant_cap_for_user(current_user)
-    existing = await db.courier_variants.count_documents(
-        {"courier_id": courier_id, "user_id": current_user["id"]},
-    )
-    remaining = None if cap is None else max(0, cap - existing)
-    if remaining == 0:
-        raise HTTPException(
-            status_code=402,
-            detail=f"Target courier already at plan cap ({cap}). Upgrade or remove some variants.",
-        )
-
-    # Existing variant_names on the target — skip dupes so we don't
-    # create exact-name collisions.
-    existing_names = set(v["variant_name"].strip().lower() for v in await db.courier_variants.find(
-        {"courier_id": courier_id, "user_id": current_user["id"]},
-        {"variant_name": 1, "_id": 0},
-    ).to_list(200))
-
-    copied: List[Dict[str, Any]] = []
-    skipped_dupes: List[str] = []
-    skipped_cap: List[str] = []
-    for v in src_variants:
-        nm = v["variant_name"].strip()
-        if nm.lower() in existing_names:
-            skipped_dupes.append(nm)
-            continue
-        if remaining is not None and len(copied) >= remaining:
-            skipped_cap.append(nm)
-            continue
-        clone = CourierVariant(
-            user_id=current_user["id"],
-            courier_id=courier_id,
-            variant_name=nm,
-            package_type=v.get("package_type", ""),
-            category=v.get("category", ""),
-            length_cm=float(v.get("length_cm") or 0),
-            width_cm=float(v.get("width_cm") or 0),
-            height_cm=float(v.get("height_cm") or 0),
-            weight_g=float(v.get("weight_g") or 0),
-            within_state_rate=float(v.get("within_state_rate") or 0),
-            outside_state_rate=float(v.get("outside_state_rate") or 0),
-            active=True,
-        )
-        await db.courier_variants.insert_one(clone.model_dump())
-        copied.append(clone.model_dump())
-        existing_names.add(nm.lower())
-
-    return {
-        "ok": True,
-        "copied_count": len(copied),
-        "skipped_duplicates": skipped_dupes,
-        "skipped_cap_full": skipped_cap,
-        "source_courier_name": source["name"],
-        "target_courier_name": target["name"],
-    }
+# [refactor] /me/categories + variants/copy-from moved to routers/couriers.py
 
 
 # -------- Settings --------
@@ -5046,305 +4633,13 @@ async def _get_custom_field_limit(user: Dict[str, Any]) -> int:
     return CUSTOM_FIELD_DEFAULT_LIMITS.get(plan_key, 0)
 
 
-class CustomFieldCreate(BaseModel):
-    name: str
-    column_letter: str
-    field_type: str = "text"   # text | number | date
-    show_in_form: bool = True
-    show_in_smart_paste: bool = True
-    required: bool = False     # Phase-8: enforces non-empty at save
-    sort_order: int = 0
+# [refactor] CustomFieldCreate/Update models moved to routers/custom_fields.py
 
 
-class CustomFieldUpdate(BaseModel):
-    name: Optional[str] = None
-    column_letter: Optional[str] = None
-    field_type: Optional[str] = None
-    show_in_form: Optional[bool] = None
-    show_in_smart_paste: Optional[bool] = None
-    required: Optional[bool] = None
-    sort_order: Optional[int] = None
-    active: Optional[bool] = None
+# [refactor] Contact-Save Settings + VCF endpoints moved to routers/custom_fields.py
 
 
-# ───────── Phase-16: Contact Save Settings + VCF generation ──────────
-# Per-user preferences for building a native contact from a shipment.
-# Everything (categories, product → category mapping, placement) is
-# customizable; nothing is hardcoded. See /app/backend/contact_settings.py
-# for the pure builder/serialiser logic.
-
-class _ContactSaveSettingsUpsert(BaseModel):
-    name_format:    Optional[Dict[str, Any]] = None
-    field_mapping:  Optional[Dict[str, Any]] = None
-    category:       Optional[Dict[str, Any]] = None
-
-
-@api_router.get("/me/contact-settings")
-async def get_contact_settings(
-    current_user: Dict[str, Any] = Depends(get_current_user),
-):
-    doc = await db.contact_settings.find_one(
-        {"user_id": current_user["id"]}, {"_id": 0, "user_id": 0},
-    )
-    if not doc:
-        doc = contact_default_settings()
-    # Always echo through the Pydantic model so missing subkeys get
-    # filled with defaults — the UI can rely on every field existing.
-    return ContactSaveSettings(**doc).model_dump()
-
-
-@api_router.put("/me/contact-settings")
-async def put_contact_settings(
-    payload: _ContactSaveSettingsUpsert,
-    current_user: Dict[str, Any] = Depends(get_current_user),
-):
-    """Merge-save: only the sections the client sent are overwritten,
-    the rest remain untouched. Simpler than sending the full doc back
-    every time the user flips a single toggle."""
-    existing = await db.contact_settings.find_one(
-        {"user_id": current_user["id"]}, {"_id": 0, "user_id": 0},
-    ) or contact_default_settings()
-    merged = dict(existing)
-    if payload.name_format is not None:
-        merged["name_format"] = payload.name_format
-    if payload.field_mapping is not None:
-        merged["field_mapping"] = payload.field_mapping
-    if payload.category is not None:
-        merged["category"] = payload.category
-    # Validate shape, reject garbage values (Pydantic will raise 422).
-    validated = ContactSaveSettings(**merged).model_dump()
-    await db.contact_settings.update_one(
-        {"user_id": current_user["id"]},
-        {"$set": {**validated, "user_id": current_user["id"]}},
-        upsert=True,
-    )
-    return validated
-
-
-class _ContactBuildRequest(BaseModel):
-    shipment_id:       Optional[str] = None
-    # Inline shipment payload for preview-mode calls on the Settings
-    # screen (shows a live preview without persisting anything).
-    shipment:          Optional[Dict[str, Any]] = None
-    override_category: Optional[str] = ""
-
-
-@api_router.post("/contacts/build-one")
-async def build_one_contact(
-    payload: _ContactBuildRequest,
-    current_user: Dict[str, Any] = Depends(get_current_user),
-):
-    """Return the contact fields for ONE shipment (or an inline dict
-    used by the Settings live-preview). The native-intent launch
-    happens entirely on the client — we only compute the payload."""
-    settings = await get_contact_settings(current_user)  # type: ignore[arg-type]
-    ship: Dict[str, Any] = {}
-    if payload.shipment_id:
-        ship = await db.shipments.find_one(
-            {"id": payload.shipment_id, "user_id": current_user["id"]},
-            {"_id": 0},
-        ) or {}
-        if not ship:
-            raise HTTPException(status_code=404, detail="Shipment not found")
-    elif payload.shipment:
-        ship = payload.shipment
-    else:
-        raise HTTPException(status_code=400, detail="shipment_id or shipment required")
-    return contact_build(ship, settings, payload.override_category or "")
-
-
-class _ContactBulkRequest(BaseModel):
-    shipment_ids:      List[str]
-    override_category: Optional[str] = ""
-
-
-@api_router.post("/contacts/build-vcf")
-async def build_bulk_vcf(
-    payload: _ContactBulkRequest,
-    current_user: Dict[str, Any] = Depends(get_current_user),
-):
-    """Bulk export: return a text/vcard body with one VCARD per
-    shipment. Frontend turns this into a downloadable .vcf file.
-    When override_category is set, it wins over auto-assign for all
-    shipments (the "Apply category to all" popup flow)."""
-    if not payload.shipment_ids:
-        raise HTTPException(status_code=400, detail="shipment_ids empty")
-    settings = await get_contact_settings(current_user)  # type: ignore[arg-type]
-    rows = await db.shipments.find(
-        {"id": {"$in": payload.shipment_ids},
-         "user_id": current_user["id"]},
-        {"_id": 0},
-    ).to_list(len(payload.shipment_ids))
-    vcards: List[str] = []
-    skipped = 0
-    for s in rows:
-        c = contact_build(s, settings, payload.override_category or "")
-        if not c.get("phone"):
-            # No phone → useless contact; skip silently.
-            skipped += 1
-            continue
-        vcards.append(contact_to_vcard(c))
-    if not vcards:
-        raise HTTPException(
-            status_code=400,
-            detail="No contacts to export (all shipments missing phone)",
-        )
-    return {
-        "vcf":     "\r\n\r\n".join(vcards) + "\r\n",
-        "count":   len(vcards),
-        "skipped": skipped,
-    }
-
-
-@api_router.get("/me/custom-fields")
-async def list_my_custom_fields(
-    current_user: Dict[str, Any] = Depends(get_current_user),
-):
-    """Return the caller's custom fields + the plan-driven cap."""
-    limit = await _get_custom_field_limit(current_user)
-    feature_on = await user_has_feature(current_user, "custom_fields")
-    fields = await db.user_custom_fields.find(
-        {"user_id": current_user["id"]}, {"_id": 0},
-    ).sort("sort_order", 1).to_list(100)
-    return {
-        "fields": fields,
-        "limit": limit,
-        "used": len([f for f in fields if f.get("active", True)]),
-        "feature_enabled": bool(feature_on),
-        "plan": (current_user.get("plan") or "free_trial").lower(),
-        "is_admin": bool(current_user.get("is_admin")),
-    }
-
-
-@api_router.post("/me/custom-fields")
-async def create_my_custom_field(
-    payload: CustomFieldCreate,
-    current_user: Dict[str, Any] = Depends(get_current_user),
-):
-    # Per-plan admin kill-switch.
-    if not await user_has_feature(current_user, "custom_fields"):
-        raise HTTPException(
-            status_code=403,
-            detail="Custom fields are not available on your plan.",
-        )
-    limit = await _get_custom_field_limit(current_user)
-    existing = await db.user_custom_fields.count_documents(
-        {"user_id": current_user["id"], "active": {"$ne": False}},
-    )
-    if existing >= int(limit):
-        raise HTTPException(
-            status_code=403,
-            detail=(
-                f"You've reached your plan's custom-field cap ({limit}). "
-                "Upgrade or ask admin to raise the cap."
-            ),
-        )
-    name = (payload.name or "").strip()
-    col = (payload.column_letter or "").strip().upper()
-    if not name:
-        raise HTTPException(status_code=400, detail="Field name is required")
-    if not re.match(r"^[A-Z]{1,3}$", col):
-        raise HTTPException(
-            status_code=400,
-            detail="Column letter must be A–Z (up to 3 letters like AA).",
-        )
-    # Uniqueness: same user can't re-use a column letter.
-    dup = await db.user_custom_fields.find_one({
-        "user_id": current_user["id"],
-        "column_letter": col,
-        "active": {"$ne": False},
-    })
-    if dup:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Column {col} is already used by another custom field.",
-        )
-    doc = {
-        "id": str(uuid.uuid4()),
-        "user_id": current_user["id"],
-        "name": name,
-        "column_letter": col,
-        "field_type": (payload.field_type or "text").lower(),
-        "show_in_form": bool(payload.show_in_form),
-        "show_in_smart_paste": bool(payload.show_in_smart_paste),
-        "required": bool(payload.required),
-        "sort_order": int(payload.sort_order or 0),
-        "active": True,
-        "created_at": utcnow_iso(),
-    }
-    await db.user_custom_fields.insert_one(doc)
-    doc.pop("_id", None)
-    return doc
-
-
-@api_router.put("/me/custom-fields/{field_id}")
-async def update_my_custom_field(
-    field_id: str,
-    payload: CustomFieldUpdate,
-    current_user: Dict[str, Any] = Depends(get_current_user),
-):
-    existing = await db.user_custom_fields.find_one(
-        {"id": field_id, "user_id": current_user["id"]},
-        {"_id": 0},
-    )
-    if not existing:
-        raise HTTPException(status_code=404, detail="Custom field not found")
-    updates: Dict[str, Any] = {}
-    if payload.name is not None:
-        updates["name"] = payload.name.strip()
-    if payload.column_letter is not None:
-        col = payload.column_letter.strip().upper()
-        if not re.match(r"^[A-Z]{1,3}$", col):
-            raise HTTPException(status_code=400, detail="Invalid column letter")
-        # Uniqueness check if it's actually changing.
-        if col != existing.get("column_letter"):
-            dup = await db.user_custom_fields.find_one({
-                "user_id": current_user["id"],
-                "column_letter": col,
-                "active": {"$ne": False},
-                "id": {"$ne": field_id},
-            })
-            if dup:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Column {col} is already used.",
-                )
-        updates["column_letter"] = col
-    if payload.field_type is not None:
-        updates["field_type"] = payload.field_type.lower()
-    if payload.show_in_form is not None:
-        updates["show_in_form"] = bool(payload.show_in_form)
-    if payload.show_in_smart_paste is not None:
-        updates["show_in_smart_paste"] = bool(payload.show_in_smart_paste)
-    if payload.required is not None:
-        updates["required"] = bool(payload.required)
-    if payload.sort_order is not None:
-        updates["sort_order"] = int(payload.sort_order)
-    if payload.active is not None:
-        updates["active"] = bool(payload.active)
-    if not updates:
-        return {"ok": True, "noop": True}
-    updates["updated_at"] = utcnow_iso()
-    await db.user_custom_fields.update_one(
-        {"id": field_id, "user_id": current_user["id"]}, {"$set": updates},
-    )
-    doc = await db.user_custom_fields.find_one(
-        {"id": field_id}, {"_id": 0},
-    )
-    return doc
-
-
-@api_router.delete("/me/custom-fields/{field_id}")
-async def delete_my_custom_field(
-    field_id: str,
-    current_user: Dict[str, Any] = Depends(get_current_user),
-):
-    r = await db.user_custom_fields.delete_one(
-        {"id": field_id, "user_id": current_user["id"]},
-    )
-    if r.deleted_count == 0:
-        raise HTTPException(status_code=404, detail="Custom field not found")
-    return {"ok": True}
+# [refactor] Per-user Custom Fields CRUD moved to routers/custom_fields.py
 
 
 # --- Best-effort: write a shipment's custom-field values to the user's
@@ -5406,52 +4701,7 @@ async def _write_custom_values_to_user_sheet_bg(
         )
 
 
-# --- Admin knobs for custom-field caps ---
-class CustomFieldLimitsPayload(BaseModel):
-    # Plan → integer cap. Unknown plans are ignored.
-    free_trial: Optional[int] = None
-    silver: Optional[int] = None
-    gold: Optional[int] = None
-    platinum: Optional[int] = None
-
-
-@api_router.get("/admin/custom-field-limits")
-async def admin_get_custom_field_limits(
-    current_user: Dict[str, Any] = Depends(get_current_user),
-):
-    if not current_user.get("is_admin"):
-        raise HTTPException(status_code=403, detail="Admin only")
-    adm = await db.admin_config.find_one(
-        {"_id": "default"}, {"_id": 0, "custom_field_limits": 1},
-    ) or {}
-    return {
-        "limits": adm.get("custom_field_limits") or CUSTOM_FIELD_DEFAULT_LIMITS.copy(),
-        "defaults": CUSTOM_FIELD_DEFAULT_LIMITS,
-    }
-
-
-@api_router.put("/admin/custom-field-limits")
-async def admin_set_custom_field_limits(
-    payload: CustomFieldLimitsPayload,
-    current_user: Dict[str, Any] = Depends(get_current_user),
-):
-    if not current_user.get("is_admin"):
-        raise HTTPException(status_code=403, detail="Admin only")
-    limits: Dict[str, int] = {}
-    for k in ("free_trial", "silver", "gold", "platinum"):
-        v = getattr(payload, k, None)
-        if v is not None:
-            try:
-                iv = max(0, int(v))
-            except (TypeError, ValueError):
-                iv = CUSTOM_FIELD_DEFAULT_LIMITS[k]
-            limits[k] = iv
-    await db.admin_config.update_one(
-        {"_id": "default"},
-        {"$set": {"custom_field_limits": limits}},
-        upsert=True,
-    )
-    return {"ok": True, "limits": limits}
+# [refactor] Admin custom-field-limits moved to routers/custom_fields.py
 
 
 @api_router.get("/orders/pending", response_model=List[PendingOrder])
@@ -7087,41 +6337,7 @@ async def admin_sla_summary(
 
 
 
-@api_router.get("/me/feature-flags")
-async def me_feature_flags(
-    current_user: Dict[str, Any] = Depends(get_current_user)
-):
-    """Returns the list of feature keys the CURRENT user can use, based on
-    their plan. Admin users get every key automatically so they never lock
-    themselves out of the panel they administer."""
-    plan = (current_user.get("plan") or "free_trial").lower()
-    if current_user.get("is_admin"):
-        return {"plan": plan, "features": ALL_KEYS, "is_admin": True}
-    plans = await _get_plan_features_doc()
-    allowed = plans.get(plan, plans.get("free_trial", []))
-    return {"plan": plan, "features": list(allowed), "is_admin": False}
-
-
-@api_router.get("/me/feature-registry")
-async def me_feature_registry(
-    current_user: Dict[str, Any] = Depends(get_current_user)
-):
-    """Phase A — Used by the Team Members screen so the shop-owner can
-    pick which features each staff member can access. Returns the FULL
-    feature catalog plus the subset the current user actually has — the
-    UI then restricts the toggles so a user can't grant permissions
-    they don't themselves have."""
-    plan = (current_user.get("plan") or "free_trial").lower()
-    if current_user.get("is_admin"):
-        my = list(ALL_KEYS)
-    else:
-        plans = await _get_plan_features_doc()
-        my = list(plans.get(plan, plans.get("free_trial", [])))
-    return {
-        "registry":    get_registry_payload(),
-        "my_features": my,
-        "plan":        plan,
-    }
+# [refactor] Feature-flag endpoints moved to routers/feature_flags.py
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -8184,6 +7400,40 @@ try:
     app.include_router(_admin_router)
 except Exception as _adm_exc:
     logger.exception(f"Failed to mount admin router: {_adm_exc}")
+
+# Phase-3 modular: couriers + variants + categories.
+try:
+    from routers.couriers import (
+        couriers_router as _couriers_router,
+        init as _init_couriers_router,
+    )
+    _init_couriers_router()
+    app.include_router(_couriers_router)
+except Exception as _cou_exc:
+    logger.exception(f"Failed to mount couriers router: {_cou_exc}")
+
+# Phase-3 modular: per-user custom fields + contact-save settings +
+# admin custom-field caps.
+try:
+    from routers.custom_fields import (
+        custom_fields_router as _custom_fields_router,
+        init as _init_custom_fields_router,
+    )
+    _init_custom_fields_router()
+    app.include_router(_custom_fields_router)
+except Exception as _cf_exc:
+    logger.exception(f"Failed to mount custom_fields router: {_cf_exc}")
+
+# Phase-3 modular: feature-flag read-only endpoints.
+try:
+    from routers.feature_flags import (
+        feature_flags_router as _feature_flags_router,
+        init as _init_feature_flags_router,
+    )
+    _init_feature_flags_router()
+    app.include_router(_feature_flags_router)
+except Exception as _ff_exc:
+    logger.exception(f"Failed to mount feature_flags router: {_ff_exc}")
 
 
 # --------------------------------------------------------------------
