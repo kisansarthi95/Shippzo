@@ -462,6 +462,32 @@ export default function AdminPricingScreen() {
                     Plan Limits
                   </Text>
                 </View>
+
+                {/* Phase 2C+ — quick effective-values summary so the
+                    admin can scan all caps without expanding every
+                    field. Highlights values that differ from the
+                    hard-coded plan defaults. */}
+                <View style={styles.summaryRow}>
+                  {[
+                    { lbl: "Labels/mo", val: limits[key].label_cap, def: limitsDefaults[key].label_cap },
+                    { lbl: "Bulk", val: limits[key].bulk_max, def: limitsDefaults[key].bulk_max },
+                    { lbl: "Daily", val: limits[key].daily_cap === null ? "∞" : limits[key].daily_cap, def: limitsDefaults[key].daily_cap === null ? "∞" : limitsDefaults[key].daily_cap },
+                    { lbl: "Variants", val: limits[key].packing_variant_cap, def: limitsDefaults[key].packing_variant_cap },
+                    { lbl: "Team", val: limits[key].team_member_cap, def: limitsDefaults[key].team_member_cap },
+                    { lbl: "Extra", val: `₹${limits[key].extra_member_price_inr}`, def: `₹${limitsDefaults[key].extra_member_price_inr ?? 0}` },
+                  ].map((s, i) => {
+                    const diff = String(s.val) !== String(s.def);
+                    return (
+                      <View key={i} style={[styles.summaryChip, diff && styles.summaryChipDirty]}>
+                        <Text style={styles.summaryLbl}>{s.lbl}</Text>
+                        <Text style={[styles.summaryVal, diff && { color: "#B45309" }]}>{s.val}</Text>
+                      </View>
+                    );
+                  })}
+                </View>
+
+                {/* ── Group 1: Order Limits ── */}
+                <Text style={styles.groupHeader}>📦 Order Limits</Text>
                 <View style={styles.row2}>
                   <View style={{ flex: 1 }}>
                     <Text style={styles.label}>Labels / month</Text>
@@ -474,9 +500,16 @@ export default function AdminPricingScreen() {
                       style={styles.input}
                       placeholder={String(limitsDefaults[key].label_cap)}
                     />
-                    <Text style={styles.defaultHint}>
-                      Default: {limitsDefaults[key].label_cap}
-                    </Text>
+                    <View style={styles.hintRow}>
+                      <Text style={styles.defaultHint}>Default: {limitsDefaults[key].label_cap}</Text>
+                      <TouchableOpacity
+                        onPress={() => updateLimit(key, { label_cap: limitsDefaults[key].label_cap })}
+                        style={styles.resetBtn}
+                      >
+                        <Ionicons name="refresh" size={11} color="#6B7280" />
+                        <Text style={styles.resetBtnTxt}>Reset</Text>
+                      </TouchableOpacity>
+                    </View>
                   </View>
                   <View style={{ flex: 1 }}>
                     <Text style={styles.label}>Bulk print max</Text>
@@ -489,9 +522,16 @@ export default function AdminPricingScreen() {
                       style={styles.input}
                       placeholder={String(limitsDefaults[key].bulk_max)}
                     />
-                    <Text style={styles.defaultHint}>
-                      Default: {limitsDefaults[key].bulk_max} (0 = no bulk)
-                    </Text>
+                    <View style={styles.hintRow}>
+                      <Text style={styles.defaultHint}>Default: {limitsDefaults[key].bulk_max} (0 = no bulk)</Text>
+                      <TouchableOpacity
+                        onPress={() => updateLimit(key, { bulk_max: limitsDefaults[key].bulk_max })}
+                        style={styles.resetBtn}
+                      >
+                        <Ionicons name="refresh" size={11} color="#6B7280" />
+                        <Text style={styles.resetBtnTxt}>Reset</Text>
+                      </TouchableOpacity>
+                    </View>
                   </View>
                 </View>
                 <View style={{ marginTop: 10 }}>
@@ -518,21 +558,28 @@ export default function AdminPricingScreen() {
                         : String(limitsDefaults[key].daily_cap)
                     }
                   />
-                  <Text style={styles.defaultHint}>
-                    Default:{" "}
-                    {limitsDefaults[key].daily_cap === null ||
-                    limitsDefaults[key].daily_cap === undefined
-                      ? "no daily cap"
-                      : limitsDefaults[key].daily_cap}
-                    {" "}· Leave blank = no cap
-                  </Text>
+                  <View style={styles.hintRow}>
+                    <Text style={styles.defaultHint}>
+                      Default:{" "}
+                      {limitsDefaults[key].daily_cap === null ||
+                      limitsDefaults[key].daily_cap === undefined
+                        ? "no daily cap"
+                        : limitsDefaults[key].daily_cap}
+                      {" "}· Blank = unlimited
+                    </Text>
+                    <TouchableOpacity
+                      onPress={() => updateLimit(key, { daily_cap: limitsDefaults[key].daily_cap })}
+                      style={styles.resetBtn}
+                    >
+                      <Ionicons name="refresh" size={11} color="#6B7280" />
+                      <Text style={styles.resetBtnTxt}>Reset</Text>
+                    </TouchableOpacity>
+                  </View>
                 </View>
 
-                {/* Phase-2C — Packing Variants & Team Members per-plan
-                    quotas + extra-member pricing. Editing these here
-                    overrides the hardcoded defaults in plans.py for
-                    all users on the corresponding plan. */}
-                <View style={[styles.row2, { marginTop: 10 }]}>
+                {/* ── Group 2: Packing Variants & Team ── */}
+                <Text style={styles.groupHeader}>👥 Variants & Team</Text>
+                <View style={styles.row2}>
                   <View style={{ flex: 1 }}>
                     <Text style={styles.label}>Packing variants / courier</Text>
                     <TextInput
@@ -544,9 +591,16 @@ export default function AdminPricingScreen() {
                       style={styles.input}
                       placeholder={String(limitsDefaults[key].packing_variant_cap ?? 0)}
                     />
-                    <Text style={styles.defaultHint}>
-                      Default: {limitsDefaults[key].packing_variant_cap ?? 0}
-                    </Text>
+                    <View style={styles.hintRow}>
+                      <Text style={styles.defaultHint}>Default: {limitsDefaults[key].packing_variant_cap ?? 0}</Text>
+                      <TouchableOpacity
+                        onPress={() => updateLimit(key, { packing_variant_cap: limitsDefaults[key].packing_variant_cap ?? 0 })}
+                        style={styles.resetBtn}
+                      >
+                        <Ionicons name="refresh" size={11} color="#6B7280" />
+                        <Text style={styles.resetBtnTxt}>Reset</Text>
+                      </TouchableOpacity>
+                    </View>
                   </View>
                   <View style={{ flex: 1 }}>
                     <Text style={styles.label}>Team members (free)</Text>
@@ -559,9 +613,16 @@ export default function AdminPricingScreen() {
                       style={styles.input}
                       placeholder={String(limitsDefaults[key].team_member_cap ?? 0)}
                     />
-                    <Text style={styles.defaultHint}>
-                      Default: {limitsDefaults[key].team_member_cap ?? 0}
-                    </Text>
+                    <View style={styles.hintRow}>
+                      <Text style={styles.defaultHint}>Default: {limitsDefaults[key].team_member_cap ?? 0}</Text>
+                      <TouchableOpacity
+                        onPress={() => updateLimit(key, { team_member_cap: limitsDefaults[key].team_member_cap ?? 0 })}
+                        style={styles.resetBtn}
+                      >
+                        <Ionicons name="refresh" size={11} color="#6B7280" />
+                        <Text style={styles.resetBtnTxt}>Reset</Text>
+                      </TouchableOpacity>
+                    </View>
                   </View>
                 </View>
                 <View style={{ marginTop: 10 }}>
@@ -575,11 +636,18 @@ export default function AdminPricingScreen() {
                     style={styles.input}
                     placeholder={String(limitsDefaults[key].extra_member_price_inr ?? 0)}
                   />
-                  <Text style={styles.defaultHint}>
-                    Default: ₹{limitsDefaults[key].extra_member_price_inr ?? 0}/mo
-                    {" "}· Charged when the user buys an extra slot
-                    {" "}· 0 = disable extras
-                  </Text>
+                  <View style={styles.hintRow}>
+                    <Text style={styles.defaultHint}>
+                      Default: ₹{limitsDefaults[key].extra_member_price_inr ?? 0}/mo · 0 = disable extras
+                    </Text>
+                    <TouchableOpacity
+                      onPress={() => updateLimit(key, { extra_member_price_inr: limitsDefaults[key].extra_member_price_inr ?? 0 })}
+                      style={styles.resetBtn}
+                    >
+                      <Ionicons name="refresh" size={11} color="#6B7280" />
+                      <Text style={styles.resetBtnTxt}>Reset</Text>
+                    </TouchableOpacity>
+                  </View>
                 </View>
               </View>
             </View>

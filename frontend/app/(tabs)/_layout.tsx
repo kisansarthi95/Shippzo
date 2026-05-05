@@ -2,8 +2,13 @@ import { Tabs } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { colors } from "../../lib/theme";
 import { Platform, View } from "react-native";
+import { usePermissions } from "../../lib/permissions";
 
 export default function TabsLayout() {
+  // Phase B+C — hide tabs the active team-member doesn't have
+  // permission for. Owners pass through hasPerm() unconditionally.
+  const { hasPerm, isTeamMember } = usePermissions();
+  const canAdd = hasPerm("shipments_create");
   return (
     <Tabs
       screenOptions={{
@@ -47,6 +52,10 @@ export default function TabsLayout() {
         name="add"
         options={{
           title: "Ship",
+          // When the team member lacks shipments_create we strip the
+          // tab from the bar entirely (href:null) so they can't even
+          // see the Ship button. Owners get the normal centred FAB.
+          href: canAdd ? "/add" : null,
           tabBarIcon: ({ color }) => (
             <View
               style={{

@@ -26,6 +26,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { Stack, useLocalSearchParams, router } from "expo-router";
 import { Api, Shipment } from "../../lib/api";
 import { errMsg } from "../../lib/errMsg";
+import { usePermissions, Gated } from "../../lib/permissions";
 import {
   preflightBatchWhatsApp,
   openWhatsAppShare,
@@ -59,6 +60,11 @@ export default function BulkMessageScreen() {
   const params = useLocalSearchParams<{ type?: string }>();
   const ttype = String(params?.type || "");
   const isValid = VALID_TYPES.has(ttype);
+  // Phase B+C — gate the entire screen behind `bulk_message_send`.
+  // Owners always pass; team members lacking the permission see a
+  // friendly lock card explaining why and a "Go back" CTA.
+  const { hasPerm, isTeamMember, loading: permLoading } = usePermissions();
+  const allowed = hasPerm("bulk_message_send");
 
   const [loading, setLoading]       = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -270,6 +276,33 @@ export default function BulkMessageScreen() {
         <Text style={{ color: "#DC2626", fontSize: 14, fontWeight: "700" }}>
           Unknown bulk message type "{ttype}"
         </Text>
+        <TouchableOpacity onPress={() => router.back()} style={styles.backBtn}>
+          <Text style={styles.backBtnText}>← Go back</Text>
+        </TouchableOpacity>
+      </SafeAreaView>
+    );
+  }
+
+  // Phase B+C — gate the entire screen for team-members lacking
+  // the `bulk_message_send` permission.
+  if (!permLoading && isTeamMember && !allowed) {
+    return (
+      <SafeAreaView style={styles.center}>
+        <Stack.Screen options={{ title: "Bulk Message" }} />
+        <View style={{
+          backgroundColor: "#FEF3C7", padding: 24, borderRadius: 14,
+          borderWidth: 1, borderColor: "#FCD34D", alignItems: "center", maxWidth: 320,
+        }}>
+          <Ionicons name="lock-closed" size={36} color="#92400E" />
+          <Text style={{ fontSize: 16, fontWeight: "800", color: "#92400E", marginTop: 10 }}>
+            Bulk Message is locked
+          </Text>
+          <Text style={{ fontSize: 12.5, color: "#92400E", textAlign: "center", marginTop: 6, lineHeight: 18 }}>
+            Your role doesn't have the
+            {" "}<Text style={{ fontWeight: "800" }}>bulk_message_send</Text>{" "}
+            permission. Ask the shop owner to grant it.
+          </Text>
+        </View>
         <TouchableOpacity onPress={() => router.back()} style={styles.backBtn}>
           <Text style={styles.backBtnText}>← Go back</Text>
         </TouchableOpacity>

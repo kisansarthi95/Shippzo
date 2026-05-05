@@ -24,6 +24,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { useRouter, useFocusEffect, useLocalSearchParams, useNavigation } from "expo-router";
 import { Api, Courier, Settings as SettingsT, SenderAddress, SheetPreview, SHEET_FIELDS, api, PlanKey } from "../../lib/api";
 import { useFeatureFlag } from "../../lib/feature_flags";
+import { usePermissions } from "../../lib/permissions";
 import { colors } from "../../lib/theme";
 import { useAuth } from "../../lib/auth";
 import Constants from "expo-constants";
@@ -155,6 +156,11 @@ export default function SettingsScreen() {
   const router = useRouter();
   const navigation = useNavigation();
   const { user, signOut } = useAuth();
+  // Phase B+C — when the active session is a TEAM-MEMBER (sub-account),
+  // hide admin-only sections and the Team Members management entry
+  // even if the parent is an admin. Owners see everything.
+  const { isTeamMember, hasPerm } = usePermissions();
+  const isAdminUI = (user as any)?.is_admin && !isTeamMember;
   // Settings-section feature flags. We don't gate the Hub itself (admin
   // panel + accounts always show); we gate INTERNAL sections so users on
   // limited plans don't see knobs they can't actually use.
@@ -856,8 +862,8 @@ export default function SettingsScreen() {
                     <Ionicons name="chevron-forward" size={22} color="#9CA3AF" />
                   </TouchableOpacity>
                 ))}
-                {/* Admin Panel — only for is_admin users */}
-                {(user as any)?.is_admin ? (
+                {/* Admin Panel — only for is_admin users (and never for team-member sessions) */}
+                {isAdminUI ? (
                   <>
                     <TouchableOpacity
                       testID="settings-hub-admin"
@@ -1958,7 +1964,9 @@ export default function SettingsScreen() {
           {/* Phase A — Team Members & Permissions
               Lets the shop-owner add staff who'll receive SLA alert
               WhatsApp messages now and (Phase C) get their own login
-              with the permissions you grant. */}
+              with the permissions you grant.
+              Hidden for team-member sessions — only owners manage staff. */}
+          {!isTeamMember && (
           <Section title="👥 Team Members & Permissions" icon="people-outline">
             <Text style={styles.toggleSub}>
               Add staff with their name, phone & role. Assign per-feature
@@ -1979,6 +1987,7 @@ export default function SettingsScreen() {
               <Text style={styles.saveBtnText}>Manage Team Members</Text>
             </TouchableOpacity>
           </Section>
+          )}
 
           {/* Phase 2.5 — Reports Hub
               Single entry point to 5 business reports with custom
