@@ -6301,6 +6301,9 @@ class PlanLimitsRow(BaseModel):
     price_inr: Optional[int] = None
     trial_days: Optional[int] = None  # only meaningful for free_trial
     packing_variant_cap: Optional[int] = None  # Phase 2: max variants per courier
+    # Phase A — Team Members
+    team_member_cap: Optional[int] = None         # free included team members
+    extra_member_price_inr: Optional[int] = None  # ₹/month for an extra slot
 
 
 class PlanLimitsPayload(BaseModel):
@@ -6332,6 +6335,8 @@ async def admin_get_plan_limits(
             "trial_days": spec.trial_days,
             "period": spec.period,
             "packing_variant_cap": spec.packing_variant_cap,
+            "team_member_cap": spec.team_member_cap,
+            "extra_member_price_inr": spec.extra_member_price_inr,
         }
         # Merge the stored override (if any) on top so the UI shows
         # the EFFECTIVE current value — not the original default.
@@ -6343,6 +6348,8 @@ async def admin_get_plan_limits(
             "price_inr":  ov.get("price_inr",  spec.price_inr),
             "trial_days": ov.get("trial_days", spec.trial_days),
             "packing_variant_cap": ov.get("packing_variant_cap", spec.packing_variant_cap),
+            "team_member_cap": ov.get("team_member_cap", spec.team_member_cap),
+            "extra_member_price_inr": ov.get("extra_member_price_inr", spec.extra_member_price_inr),
         }
     return {
         "order": _PLAN_KEYS_ORDER,
@@ -6370,12 +6377,15 @@ async def admin_put_plan_limits(
         spec = PLAN_TABLE[plan_key]
         out: Dict[str, Any] = {}
 
-        # label_cap, bulk_max, price_inr, packing_variant_cap: non-negative int
+        # label_cap, bulk_max, price_inr, packing_variant_cap,
+        # team_member_cap, extra_member_price_inr — non-negative ints.
         for f, default_v in (
             ("label_cap",  spec.label_cap),
             ("bulk_max",   spec.bulk_max),
             ("price_inr",  spec.price_inr),
             ("packing_variant_cap", spec.packing_variant_cap),
+            ("team_member_cap", spec.team_member_cap),
+            ("extra_member_price_inr", spec.extra_member_price_inr),
         ):
             v = getattr(row, f)
             if v is None:

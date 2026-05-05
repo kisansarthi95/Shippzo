@@ -32,10 +32,16 @@ type Pricing = Record<PlanKey, PlanPricingEntry>;
 // Phase-13: Plan limit overrides (label_cap / bulk_max / daily_cap)
 // live alongside the pricing on this same screen so the admin sees
 // everything about a plan in one place — no separate screen.
+// Phase-2C extends this with packing_variant_cap, team_member_cap,
+// and extra_member_price_inr so every numeric quota per plan is
+// edited from this single panel.
 type PaidLimits = {
   label_cap: number;
   bulk_max: number;
   daily_cap: number | null;
+  packing_variant_cap: number;
+  team_member_cap: number;
+  extra_member_price_inr: number;
 };
 type LimitsState = Record<PaidPlanKey, PaidLimits>;
 type LimitsDefaults = Record<
@@ -104,16 +110,25 @@ export default function AdminPricingScreen() {
             label_cap: rLimits.data.current.silver?.label_cap ?? 50,
             bulk_max:  rLimits.data.current.silver?.bulk_max  ?? 0,
             daily_cap: rLimits.data.current.silver?.daily_cap ?? null,
+            packing_variant_cap:    rLimits.data.current.silver?.packing_variant_cap    ?? 2,
+            team_member_cap:        rLimits.data.current.silver?.team_member_cap        ?? 0,
+            extra_member_price_inr: rLimits.data.current.silver?.extra_member_price_inr ?? 200,
           },
           gold: {
             label_cap: rLimits.data.current.gold?.label_cap ?? 300,
             bulk_max:  rLimits.data.current.gold?.bulk_max  ?? 50,
             daily_cap: rLimits.data.current.gold?.daily_cap ?? null,
+            packing_variant_cap:    rLimits.data.current.gold?.packing_variant_cap    ?? 5,
+            team_member_cap:        rLimits.data.current.gold?.team_member_cap        ?? 1,
+            extra_member_price_inr: rLimits.data.current.gold?.extra_member_price_inr ?? 200,
           },
           platinum: {
             label_cap: rLimits.data.current.platinum?.label_cap ?? 1500,
             bulk_max:  rLimits.data.current.platinum?.bulk_max  ?? 100,
             daily_cap: rLimits.data.current.platinum?.daily_cap ?? 100,
+            packing_variant_cap:    rLimits.data.current.platinum?.packing_variant_cap    ?? 8,
+            team_member_cap:        rLimits.data.current.platinum?.team_member_cap        ?? 2,
+            extra_member_price_inr: rLimits.data.current.platinum?.extra_member_price_inr ?? 300,
           },
         };
         const nextDefaults: LimitsDefaults = {
@@ -510,6 +525,60 @@ export default function AdminPricingScreen() {
                       ? "no daily cap"
                       : limitsDefaults[key].daily_cap}
                     {" "}· Leave blank = no cap
+                  </Text>
+                </View>
+
+                {/* Phase-2C — Packing Variants & Team Members per-plan
+                    quotas + extra-member pricing. Editing these here
+                    overrides the hardcoded defaults in plans.py for
+                    all users on the corresponding plan. */}
+                <View style={[styles.row2, { marginTop: 10 }]}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.label}>Packing variants / courier</Text>
+                    <TextInput
+                      keyboardType="numeric"
+                      value={String(limits[key].packing_variant_cap)}
+                      onChangeText={(v) => updateLimit(key, {
+                        packing_variant_cap: Number(v.replace(/[^0-9]/g, "")) || 0,
+                      })}
+                      style={styles.input}
+                      placeholder={String(limitsDefaults[key].packing_variant_cap ?? 0)}
+                    />
+                    <Text style={styles.defaultHint}>
+                      Default: {limitsDefaults[key].packing_variant_cap ?? 0}
+                    </Text>
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.label}>Team members (free)</Text>
+                    <TextInput
+                      keyboardType="numeric"
+                      value={String(limits[key].team_member_cap)}
+                      onChangeText={(v) => updateLimit(key, {
+                        team_member_cap: Number(v.replace(/[^0-9]/g, "")) || 0,
+                      })}
+                      style={styles.input}
+                      placeholder={String(limitsDefaults[key].team_member_cap ?? 0)}
+                    />
+                    <Text style={styles.defaultHint}>
+                      Default: {limitsDefaults[key].team_member_cap ?? 0}
+                    </Text>
+                  </View>
+                </View>
+                <View style={{ marginTop: 10 }}>
+                  <Text style={styles.label}>Extra team-member price (₹/month)</Text>
+                  <TextInput
+                    keyboardType="numeric"
+                    value={String(limits[key].extra_member_price_inr)}
+                    onChangeText={(v) => updateLimit(key, {
+                      extra_member_price_inr: Number(v.replace(/[^0-9]/g, "")) || 0,
+                    })}
+                    style={styles.input}
+                    placeholder={String(limitsDefaults[key].extra_member_price_inr ?? 0)}
+                  />
+                  <Text style={styles.defaultHint}>
+                    Default: ₹{limitsDefaults[key].extra_member_price_inr ?? 0}/mo
+                    {" "}· Charged when the user buys an extra slot
+                    {" "}· 0 = disable extras
                   </Text>
                 </View>
               </View>
