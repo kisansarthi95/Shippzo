@@ -907,6 +907,8 @@ class Shipment(BaseModel):
     customer_name: str
     customer_phone: str = ""
     customer_alt_phone: str = ""   # secondary/alternative 10-digit number
+    customer_email: str = ""       # Phase-3: optional email for invoice / B2B
+    customer_gstin: str = ""       # Phase-3: optional 15-char GST number for B2B
     address_line1: str = ""
     address_line2: str = ""
     city: str = ""
@@ -977,6 +979,8 @@ class ShipmentCreate(BaseModel):
     customer_name: str
     customer_phone: Optional[str] = ""
     customer_alt_phone: Optional[str] = ""
+    customer_email: Optional[str] = ""        # Phase-3 Smart Paste enhancement
+    customer_gstin: Optional[str] = ""        # Phase-3 Smart Paste enhancement
     address_line1: Optional[str] = ""
     address_line2: Optional[str] = ""
     city: Optional[str] = ""
@@ -1010,6 +1014,8 @@ class ShipmentUpdate(BaseModel):
     customer_name: Optional[str] = None
     customer_phone: Optional[str] = None
     customer_alt_phone: Optional[str] = None
+    customer_email: Optional[str] = None
+    customer_gstin: Optional[str] = None
     address_line1: Optional[str] = None
     address_line2: Optional[str] = None
     city: Optional[str] = None
@@ -3173,6 +3179,8 @@ class PendingOrder(BaseModel):
     customer_name: str = ""
     customer_phone: str = ""
     customer_alt_phone: str = ""
+    customer_email: str = ""        # Phase-3 Smart Paste enhancement
+    customer_gstin: str = ""        # Phase-3 Smart Paste enhancement (B2B)
     address_line1: str = ""
     address_line2: str = ""
     city: str = ""
@@ -3285,6 +3293,10 @@ def parse_structured_paste(text: str) -> Dict[str, Any]:
     text = re.sub(r"(?i)\bpayment[\s\-]+mode(?=\s*:)", "PAYMENT_MODE", text)
     text = re.sub(r"(?i)\bcustomer[\s\-]+name(?=\s*:)", "CUSTOMER_NAME", text)
     text = re.sub(r"(?i)\baddress[\s\-]+(\d)(?=\s*:)", r"ADDRESS_\1", text)
+    # Phase-3 Smart Paste enhancement — multi-word GST/Email key variants.
+    text = re.sub(r"(?i)\bgst[\s\-]*(?:no|number|num|in)(?=\s*:)", "GSTIN", text)
+    text = re.sub(r"(?i)\be[\s\-]*mail(?=\s*:)", "EMAIL", text)
+    text = re.sub(r"(?i)\bemail[\s\-]+id(?=\s*:)", "EMAIL", text)
     result: Dict[str, str] = {}
     confidence: Dict[str, str] = {}
     warnings: List[str] = []
@@ -3326,6 +3338,11 @@ def parse_structured_paste(text: str) -> Dict[str, Any]:
         ("WT", "weight"),
         ("NOTES", "notes"),
         ("NOTE", "notes"),
+        # Phase-3 Smart Paste enhancement — B2B fields.
+        ("GSTIN", "customer_gstin"),
+        ("GST", "customer_gstin"),
+        ("EMAIL", "customer_email"),
+        ("MAIL", "customer_email"),
     ]
 
     # Build a regex that matches "(KEY):" boundaries.
@@ -3398,6 +3415,51 @@ def parse_structured_paste(text: str) -> Dict[str, Any]:
             confidence.setdefault(field, "high")
         else:
             confidence[field] = "missing"
+
+    # ── Phase-3 Smart Paste enhancement: GST + Email validation/opportunistic ──
+    # Indian GSTIN format: 15 chars = 2-digit state code, 5 letters PAN entity,
+    # 4-digit PAN serial, 1 letter PAN check, 1 entity number, "Z", 1 checksum.
+    GSTIN_RE = re.compile(
+        r"\b(\d{2}[A-Z]{5}\d{4}[A-Z][A-Z0-9]Z[A-Z0-9])\b"
+    )
+    EMAIL_RE = re.compile(
+        r"\b([A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,})\b"
+    )
+
+    if "customer_gstin" in result:
+        cleaned = re.sub(r"[^A-Za-z0-9]", "", result["customer_gstin"]).upper()
+        m = GSTIN_RE.search(cleaned)
+        if m:
+            result["customer_gstin"] = m.group(1)
+            confidence["customer_gstin"] = "high"
+        else:
+            # Bad GST shape — keep but flag low confidence.
+            result["customer_gstin"] = cleaned
+            confidence["customer_gstin"] = "low"
+            warnings.append("GSTIN doesn't match the standard 15-character format")
+    else:
+        # Opportunistic: scan free text for a GST number even when no
+        # explicit "GST:" label is present.
+        scan = re.sub(r"[^A-Za-z0-9\s]", " ", text).upper()
+        m = GSTIN_RE.search(scan)
+        if m:
+            result["customer_gstin"] = m.group(1)
+            confidence["customer_gstin"] = "high"
+
+    if "customer_email" in result:
+        m = EMAIL_RE.search(result["customer_email"])
+        if m:
+            result["customer_email"] = m.group(1).lower()
+            confidence["customer_email"] = "high"
+        else:
+            confidence["customer_email"] = "low"
+            warnings.append("Email address doesn't look valid")
+    else:
+        # Opportunistic: scan free text for an email even without a label.
+        m = EMAIL_RE.search(text)
+        if m:
+            result["customer_email"] = m.group(1).lower()
+            confidence["customer_email"] = "high"
 
     return {"fields": result, "confidence": confidence, "warnings": warnings}
 
@@ -3856,6 +3918,9 @@ _CHAT_LABEL = {
     "ORDER_ID": "Order ID",
     "WEIGHT": "Weight",
     "NOTES": "Notes",
+    # Phase-3 Smart Paste enhancement.
+    "EMAIL": "Email",
+    "GSTIN": "GSTIN",
 }
 
 
@@ -3884,6 +3949,9 @@ def _legacy_to_schema(legacy: Dict[str, Any]) -> Dict[str, str]:
         "ORDER_ID": legacy.get("order_id", "") or "",
         "WEIGHT": legacy.get("weight", "") or "",
         "NOTES": legacy.get("notes", "") or "",
+        # Phase-3 Smart Paste enhancement.
+        "EMAIL": legacy.get("customer_email", "") or "",
+        "GSTIN": legacy.get("customer_gstin", "") or "",
     }
 
 
@@ -4854,6 +4922,9 @@ async def ship_pending_order(
         "courier_name": courier.get("name", ""),
         "customer_name": get("customer_name"),
         "customer_phone": get("customer_phone"),
+        "customer_alt_phone": get("customer_alt_phone"),
+        "customer_email": get("customer_email"),
+        "customer_gstin": get("customer_gstin"),
         "address_line1": get("address_line1"),
         "address_line2": get("address_line2"),
         "city": get("city"),

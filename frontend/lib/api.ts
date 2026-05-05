@@ -197,6 +197,9 @@ export type Shipment = {
   order_id: string;
   customer_name: string;
   customer_phone: string;
+  customer_alt_phone?: string;
+  customer_email?: string;
+  customer_gstin?: string;
   address_line1: string;
   address_line2: string;
   city: string;

@@ -104,6 +104,9 @@ export default function AddShipment() {
   const [boxH, setBoxH] = useState("");
   const [shipmentNotes, setShipmentNotes] = useState("");
   const [customerAltPhone, setCustomerAltPhone] = useState("");
+  // Phase-3 Smart Paste enhancement: optional B2B fields
+  const [customerEmail, setCustomerEmail] = useState("");
+  const [customerGstin, setCustomerGstin] = useState("");
   // Label-field visibility toggles (synced from /api/settings → label_fields).
   // Controls which optional sections appear on this New Shipment form so the
   // form mirrors what will actually be printed.
@@ -602,6 +605,8 @@ export default function AddShipment() {
         setCustomerName(s.customer_name || "");
         setCustomerPhone(s.customer_phone || "");
         setCustomerAltPhone((s as any).customer_alt_phone || "");
+        setCustomerEmail((s as any).customer_email || "");
+        setCustomerGstin((s as any).customer_gstin || "");
         // Phase-9 unified-address (2026-04-30): use FULL address verbatim.
         // Supports the legacy `address_line1` + `address_line2` shape too
         // for old shipment docs that pre-date the migration.
@@ -678,6 +683,8 @@ export default function AddShipment() {
         setCustomerName(o.customer_name || "");
         setCustomerPhone(o.phone || "");
         setCustomerAltPhone(o.alt_phone || o.customer_alt_phone || "");
+        setCustomerEmail(o.customer_email || o.email || "");
+        setCustomerGstin(o.customer_gstin || o.gstin || o.gst || "");
         // Phase-9 unified-address (2026-04-30): use FULL address verbatim.
         // City / State / Pincode arrive as separate fields from upstream
         // (Smart Paste AI / Pending Orders / Sheet) and are NEVER parsed
@@ -1044,6 +1051,8 @@ export default function AddShipment() {
           customer_name: customerName.trim(),
           customer_phone: customerPhone.trim(),
           customer_alt_phone: customerAltPhone.trim(),
+          customer_email: customerEmail.trim(),
+          customer_gstin: customerGstin.trim().toUpperCase(),
           // Phase-6 single-address-field — line1 holds the entire
           // address; line2 is always blank under the new UX. Backend
           // schema kept for back-compat with old shipments.
@@ -1899,6 +1908,33 @@ export default function AddShipment() {
                 />
               </Field>
             )}
+            {/* Phase-3 Smart Paste enhancement: optional B2B fields. */}
+            <Field label="Email (optional)">
+              <TextInput
+                testID="customer-email-input"
+                value={customerEmail}
+                onChangeText={setCustomerEmail}
+                placeholder="customer@example.com"
+                placeholderTextColor="#9CA3AF"
+                keyboardType="email-address"
+                autoCapitalize="none"
+                autoCorrect={false}
+                style={styles.input}
+              />
+            </Field>
+            <Field label="GSTIN (optional, B2B)">
+              <TextInput
+                testID="customer-gstin-input"
+                value={customerGstin}
+                onChangeText={(t) => setCustomerGstin(t.toUpperCase())}
+                placeholder="15-character GST number"
+                placeholderTextColor="#9CA3AF"
+                autoCapitalize="characters"
+                autoCorrect={false}
+                maxLength={15}
+                style={styles.input}
+              />
+            </Field>
           </Section>
 
           {/* Address — single full-address field (Phase-6 2026-04-28).

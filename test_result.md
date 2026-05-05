@@ -11391,3 +11391,132 @@ agent_communication:
         as sent. No fix needed — endpoint works.
 
         Main agent: please summarise and finish. Refactor is verified safe.
+
+## Backend Test Run: Phase-3 Smart Paste Enhancements — GST + Email (2026-05-05)
+
+backend:
+  - task: "Phase-3 Smart Paste — add customer_email + customer_gstin to PendingOrder/Shipment models + parser"
+    implemented: true
+    working: "NA"
+    file: "/app/backend/server.py + /app/backend/smart_paste_ai.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: |
+            Added customer_email + customer_gstin end-to-end:
+              • Models: PendingOrder, Shipment, ShipmentCreate, ShipmentUpdate
+              • parse_structured_paste regex parser with GSTIN_RE +
+                EMAIL_RE validation + opportunistic free-text extraction
+              • DEFAULT_SHIPBOT_PROMPT expanded from 16 → 18 lines
+                including B2B example
+              • to_legacy_fields() + _legacy_to_schema() + _CHAT_LABEL
+                round-trip the new fields
+              • ship_pending_order carries fields Pending→Shipment
+
+agent_communication:
+    -agent: "main"
+    -message: |
+        Phase-3 Smart Paste enhancement complete. customer_email and
+        customer_gstin fields added end-to-end in backend + frontend.
+
+        Please verify:
+          1. POST /api/smart-paste/parse text="Email: foo@bar.com\nGST: 24ABCDE1234F1Z5"
+             → fields.customer_email + customer_gstin with confidence=high
+          2. POST /api/smart-paste/parse text="contact sales@acme.com or
+             GSTIN 27AAACI1681G1ZN" (no labels) → opportunistic detection finds both
+          3. POST /api/smart-paste/parse text="GST: NOT-A-VALID-NUMBER" →
+             confidence=low + warning
+          4. POST /api/shipments with customer_email + customer_gstin in body →
+             returned Shipment has both fields set.
+          5. Create PendingOrder via /api/smart-paste with B2B text →
+             POST /api/orders/pending/{id}/ship → returned Shipment carries
+             email + GSTIN from the source PendingOrder.
+          6. Existing Phase-3 refactor endpoints (28) — quick smoke test
+             to confirm no regressions.
+
+        Credentials: /app/memory/test_credentials.md
+          Owner: admin@test.com / Admin@12345
+
+
+---
+
+## Backend Test Run: Phase-3 Smart Paste Enhancements (customer_email + customer_gstin) — 2026-05-05
+
+backend:
+  - task: "Phase-3 Smart Paste — customer_email + customer_gstin extraction + persistence"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py, /app/backend/smart_paste_ai.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "testing"
+        -comment: |
+            All 36/36 assertions passed via /app/backend_test.py against
+            https://logistics-hub-740.preview.emergentagent.com/api
+            (admin@test.com / Admin@12345).
+
+            TEST 1 — /smart-paste/parse with explicit EMAIL: + GST: labels:
+              • HTTP 200
+              • fields.customer_email == "foo@bar.com"   (high)
+              • fields.customer_gstin == "24ABCDE1234F1Z5" (high)
+
+            TEST 2 — /smart-paste/parse opportunistic free-text (no labels):
+              • HTTP 200
+              • fields.customer_email == "sales@acme.com" (high)
+              • fields.customer_gstin == "27AAACI1681G1ZN" (high)
+
+            TEST 3 — /smart-paste/parse invalid GSTIN + malformed email:
+              • HTTP 200
+              • fields.customer_gstin populated (raw cleaned value)
+              • confidence.customer_gstin == "low"
+              • warnings includes
+                "GSTIN doesn't match the standard 15-character format"
+
+            TEST 4 — Direct POST /shipments with B2B fields:
+              • POST /shipments with customer_email="buyer@business.com" +
+                customer_gstin="29ABCDE1234F1Z5" → 200, response contains
+                both fields.
+              • GET /shipments/{id} → both fields persist.
+              • DELETE /shipments/{id} → 200 (cleanup).
+
+            TEST 5 — PendingOrder → Shipment promotion carries B2B fields:
+              • POST /smart-paste with EMAIL+GST labels → PendingOrder
+                has customer_email="promo@company.in" and
+                customer_gstin="27AAACI1681G1ZN".
+              • POST /orders/pending/{id}/ship with valid courier_id →
+                returned Shipment has both fields set correctly.
+              • Cleanup: DELETE shipment → 200.
+
+            TEST 6 — Phase-3 router smoke regression:
+              • GET /couriers → 200
+              • GET /me/feature-flags → 200
+              • GET /me/custom-fields → 200
+              • GET /me/contact-settings → 200
+
+            No 500s. No shape regressions. Response contract for
+            /smart-paste/parse still returns fields/confidence/warnings
+            (plus ai block). All B2B fields round-trip cleanly across
+            PendingOrder, Shipment, and direct shipment-create paths.
+
+agent_communication:
+    -agent: "testing"
+    -message: |
+        Phase-3 Smart Paste enhancements verified — all 6 test groups
+        (36/36 assertions) passed. customer_email + customer_gstin are
+        extracted via regex parser (both explicit labels and
+        opportunistic free-text scan), validated against the standard
+        GSTIN + email formats with correct confidence downgrade +
+        warnings for bad inputs, persist on PendingOrder, flow
+        correctly through POST /orders/pending/{id}/ship into the
+        resulting Shipment, and are accepted + persisted on the
+        direct POST /shipments path. Phase-3 routers
+        (/me/feature-flags, /me/custom-fields, /me/contact-settings)
+        unchanged. No regressions. Ready for main agent to summarise
+        and finish.
+

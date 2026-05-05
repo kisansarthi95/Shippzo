@@ -30,11 +30,14 @@ _MODEL = os.getenv("SMART_PASTE_MODEL", "gpt-4.1-nano")
 _PROVIDER = os.getenv("SMART_PASTE_PROVIDER", "openai")
 _TIMEOUT = float(os.getenv("SMART_PASTE_TIMEOUT", "6.0"))
 
-# The 16-line schema we ALWAYS return (hidden from users).
+# The 18-line schema we ALWAYS return (hidden from users).
+# Phase-3 Smart Paste enhancement added EMAIL + GSTIN at the tail so
+# the LLM doesn't have to re-learn the order — just two extra fields.
 SCHEMA_FIELDS: List[str] = [
     "NAME", "PHONE", "ALT_PHONE", "ADDRESS_1", "ADDRESS_2", "CITY", "STATE",
     "PINCODE", "ITEMS", "AMOUNT", "PAYMENT", "TOKEN",
     "COURIER", "ORDER_ID", "WEIGHT", "NOTES",
+    "EMAIL", "GSTIN",
 ]
 
 # Default ShipBot-style system prompt bundled with the app. Users can
@@ -42,7 +45,7 @@ SCHEMA_FIELDS: List[str] = [
 DEFAULT_SHIPBOT_PROMPT = """\
 You are "ShipBot" — a strict Shipment Data Parser for a courier app.
 You process WhatsApp messages in Gujarati / Hindi / English and extract
-shipment details into a fixed 15-line structured block.
+shipment details into a fixed 18-line structured block.
 
 CRITICAL: Every line must be a real parsed value OR a single dash `-`.
 NEVER output template placeholders like "<customer name>", "<phone>",
@@ -50,7 +53,7 @@ NEVER output template placeholders like "<customer name>", "<phone>",
 that starts with `(` and ends with `)`. Those are descriptions, NOT
 values. If the input text doesn't contain the info, write `-` only.
 
-OUTPUT FORMAT (STRICT) — return ONE code block with EXACTLY 16 lines,
+OUTPUT FORMAT (STRICT) — return ONE code block with EXACTLY 18 lines,
 in this exact order, with no emoji / no explanation / no extra lines.
 Each value MUST be the actual data from the input or `-`. The `<…>`
 placeholders below are descriptions only and MUST NEVER appear in
@@ -72,6 +75,8 @@ COURIER: <courier name or ->
 ORDER_ID: <order number or ->
 WEIGHT: <ALWAYS leave as `-`. NEVER infer parcel weight from item name.>
 NOTES: <special instruction or ->
+EMAIL: <customer email address (lowercase, no spaces) — only if a clear email is visible in the input, else ->
+GSTIN: <15-character Indian GST number (2 digits + 5 letters + 4 digits + 1 letter + 1 alphanumeric + Z + 1 alphanumeric) in UPPERCASE — only if explicitly present, else ->
 
 EXAMPLE of a GOOD response (for a Gujarati message):
 ```
@@ -91,6 +96,8 @@ COURIER: -
 ORDER_ID: -
 WEIGHT: -
 NOTES: -
+EMAIL: -
+GSTIN: -
 ```
 
 EXAMPLE of a GOOD response when NO payment info is mentioned (only
@@ -112,6 +119,8 @@ COURIER: -
 ORDER_ID: -
 WEIGHT: -
 NOTES: -
+EMAIL: -
+GSTIN: -
 ```
 
 EXAMPLE of a GOOD response when input has BOTH a COD amount AND a
@@ -133,6 +142,30 @@ COURIER: -
 ORDER_ID: -
 WEIGHT: -
 NOTES: -
+EMAIL: -
+GSTIN: -
+```
+
+EXAMPLE of a GOOD response for a B2B order with email + GSTIN:
+```
+NAME: Mahek Creations
+PHONE: 9988776655
+ALT_PHONE: -
+ADDRESS_1: Shop 12, Ratan Industrial Estate, Odhav, Ahmedabad, 382415 Gujarat
+ADDRESS_2: -
+CITY: Ahmedabad
+STATE: Gujarat
+PINCODE: 382415
+ITEMS: Cotton Sarees x 50
+AMOUNT: 75000
+PAYMENT: PAID
+TOKEN: -
+COURIER: -
+ORDER_ID: PO-2026-0042
+WEIGHT: -
+NOTES: -
+EMAIL: orders@mahekcreations.in
+GSTIN: 24ABCDE1234F1Z5
 ```
 
 RULES:
@@ -1284,6 +1317,9 @@ def to_legacy_fields(ai_fields: Dict[str, str]) -> Dict[str, str]:
         "order_id":       ai_fields.get("ORDER_ID", ""),
         "weight":         ai_fields.get("WEIGHT", ""),
         "notes":          ai_fields.get("NOTES", ""),
+        # Phase-3 Smart Paste enhancement.
+        "customer_email": (ai_fields.get("EMAIL", "") or "").strip().lower(),
+        "customer_gstin": (ai_fields.get("GSTIN", "") or "").strip().upper(),
     }
 
 

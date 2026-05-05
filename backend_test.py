@@ -1,594 +1,459 @@
 """
-Phase-3 server.py refactor regression test.
+Phase-3 Smart Paste enhancements verification
+=============================================
+Tests customer_email + customer_gstin extraction, persistence, and
+regression of Phase-3 routers.
 
-29 endpoints moved from server.py monolith into 3 new modular routers
-(/app/backend/routers/{couriers,custom_fields,feature_flags}.py). Public
-API surface is supposed to be 100% unchanged.
-
-Verifies all 28 endpoints continue to work identically.
+Target: https://logistics-hub-740.preview.emergentagent.com/api
+Auth  : admin@test.com / Admin@12345
 """
 from __future__ import annotations
 
 import json
 import os
+import sys
 import time
-import traceback
 from typing import Any, Dict, List, Optional
 
 import requests
 
-BASE = os.environ.get(
-    "BACKEND_BASE",
-    "https://logistics-hub-740.preview.emergentagent.com/api",
-)
-
+BASE_URL = "https://logistics-hub-740.preview.emergentagent.com/api"
 ADMIN_EMAIL = "admin@test.com"
-ADMIN_PASS = "Admin@12345"
+ADMIN_PASSWORD = "Admin@12345"
 
-_results: List[tuple] = []  # list[(label, ok, detail)]
-
-
-def record(label: str, ok: bool, detail: str = "") -> None:
-    _results.append((label, ok, detail))
-    status = "PASS" if ok else "FAIL"
-    extra = f" :: {detail}" if detail else ""
-    print(f"[{status}] {label}{extra}")
+PASS: List[str] = []
+FAIL: List[str] = []
 
 
-def login(email: str, password: str) -> Dict[str, Any]:
+def _log(tag: str, msg: str, *, ok: bool) -> None:
+    marker = "✅" if ok else "❌"
+    print(f"{marker} [{tag}] {msg}")
+    (PASS if ok else FAIL).append(f"[{tag}] {msg}")
+
+
+def ok(tag: str, msg: str) -> None:
+    _log(tag, msg, ok=True)
+
+
+def fail(tag: str, msg: str, resp: Optional[requests.Response] = None) -> None:
+    if resp is not None:
+        body = ""
+        try:
+            body = json.dumps(resp.json(), indent=2)[:800]
+        except Exception:
+            body = (resp.text or "")[:800]
+        msg = f"{msg}\n  HTTP {resp.status_code}\n  body: {body}"
+    _log(tag, msg, ok=False)
+
+
+def assert_true(tag: str, cond: bool, msg: str, resp: Optional[requests.Response] = None) -> bool:
+    if cond:
+        ok(tag, msg)
+        return True
+    fail(tag, msg, resp)
+    return False
+
+
+def login() -> str:
     r = requests.post(
-        f"{BASE}/auth/login",
-        json={"email": email, "password": password},
+        f"{BASE_URL}/auth/login",
+        json={"email": ADMIN_EMAIL, "password": ADMIN_PASSWORD},
         timeout=30,
     )
-    r.raise_for_status()
-    j = r.json()
-    return j
+    if r.status_code != 200:
+        print(f"LOGIN FAILED: HTTP {r.status_code} — {r.text[:400]}")
+        sys.exit(2)
+    tok = (r.json() or {}).get("token", "")
+    if not tok:
+        print(f"LOGIN missing token: {r.text[:400]}")
+        sys.exit(2)
+    print(f"✅ Logged in as {ADMIN_EMAIL}")
+    return tok
 
 
-def H(token: str) -> Dict[str, str]:
-    return {"Authorization": f"Bearer {token}"}
+def auth_headers(token: str) -> Dict[str, str]:
+    return {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
 
 
-# =====================================================================
-#  Test runner
-# =====================================================================
+# ─────────────────────────── TEST 1 ───────────────────────────
+def test_1_regex_explicit_labels(tok: str) -> None:
+    tag = "TEST1 regex explicit labels"
+    payload = {
+        "text": (
+            "NAME: Test User\n"
+            "PHONE: 9876543210\n"
+            "ADDRESS_1: 12 Test Lane, Mumbai 400001\n"
+            "EMAIL: foo@bar.com\n"
+            "GST: 24ABCDE1234F1Z5"
+        )
+    }
+    r = requests.post(
+        f"{BASE_URL}/smart-paste/parse",
+        headers=auth_headers(tok),
+        json=payload,
+        timeout=60,
+    )
+    if not assert_true(tag, r.status_code == 200, f"HTTP 200 (got {r.status_code})", r):
+        return
+    data = r.json() or {}
+    fields = data.get("fields") or {}
+    conf = data.get("confidence") or {}
 
-def main() -> int:
-    print(f"== Phase-3 refactor regression test ==")
-    print(f"BASE = {BASE}\n")
+    assert_true(
+        tag,
+        fields.get("customer_email") == "foo@bar.com",
+        f"fields.customer_email == 'foo@bar.com' (got {fields.get('customer_email')!r})",
+        r,
+    )
+    assert_true(
+        tag,
+        fields.get("customer_gstin") == "24ABCDE1234F1Z5",
+        f"fields.customer_gstin == '24ABCDE1234F1Z5' (got {fields.get('customer_gstin')!r})",
+        r,
+    )
+    assert_true(
+        tag,
+        conf.get("customer_email") == "high",
+        f"confidence.customer_email == 'high' (got {conf.get('customer_email')!r})",
+        r,
+    )
+    assert_true(
+        tag,
+        conf.get("customer_gstin") == "high",
+        f"confidence.customer_gstin == 'high' (got {conf.get('customer_gstin')!r})",
+        r,
+    )
 
-    # 1) login
-    try:
-        admin = login(ADMIN_EMAIL, ADMIN_PASS)
-        token = admin["token"]
-        record("auth/login admin", True, f"is_admin={admin.get('is_admin')}")
-    except Exception as e:
-        record("auth/login admin", False, repr(e))
-        return _summary()
 
-    headers = H(token)
+# ─────────────────────────── TEST 2 ───────────────────────────
+def test_2_regex_opportunistic_freetext(tok: str) -> None:
+    tag = "TEST2 regex opportunistic free-text"
+    payload = {
+        "text": (
+            "Hi, please ship to John Smith, 99 Park Road, Pune 411001, "
+            "contact us at sales@acme.com or our GSTIN 27AAACI1681G1ZN "
+            "if needed. Cash 1500."
+        )
+    }
+    r = requests.post(
+        f"{BASE_URL}/smart-paste/parse",
+        headers=auth_headers(tok),
+        json=payload,
+        timeout=60,
+    )
+    if not assert_true(tag, r.status_code == 200, f"HTTP 200 (got {r.status_code})", r):
+        return
+    data = r.json() or {}
+    fields = data.get("fields") or {}
+    conf = data.get("confidence") or {}
 
-    # ============================================================
-    #  COURIERS (1-8)
-    # ============================================================
+    em = fields.get("customer_email") or ""
+    assert_true(
+        tag,
+        em == "sales@acme.com" or "sales@acme.com" in em,
+        f"fields.customer_email contains 'sales@acme.com' (got {em!r})",
+        r,
+    )
+    assert_true(
+        tag,
+        fields.get("customer_gstin") == "27AAACI1681G1ZN",
+        f"fields.customer_gstin == '27AAACI1681G1ZN' (got {fields.get('customer_gstin')!r})",
+        r,
+    )
+    assert_true(
+        tag,
+        conf.get("customer_email") == "high",
+        f"confidence.customer_email == 'high' (got {conf.get('customer_email')!r})",
+        r,
+    )
+    assert_true(
+        tag,
+        conf.get("customer_gstin") == "high",
+        f"confidence.customer_gstin == 'high' (got {conf.get('customer_gstin')!r})",
+        r,
+    )
+
+
+# ─────────────────────────── TEST 3 ───────────────────────────
+def test_3_invalid_gstin(tok: str) -> None:
+    tag = "TEST3 invalid GSTIN"
+    payload = {"text": "GST: NOT-A-VALID-GST-NUM\nEMAIL: bad@@email"}
+    r = requests.post(
+        f"{BASE_URL}/smart-paste/parse",
+        headers=auth_headers(tok),
+        json=payload,
+        timeout=60,
+    )
+    if not assert_true(tag, r.status_code == 200, f"HTTP 200 (got {r.status_code})", r):
+        return
+    data = r.json() or {}
+    fields = data.get("fields") or {}
+    conf = data.get("confidence") or {}
+    warnings = data.get("warnings") or []
+
+    assert_true(
+        tag,
+        bool(fields.get("customer_gstin")),
+        f"fields.customer_gstin populated (got {fields.get('customer_gstin')!r})",
+        r,
+    )
+    assert_true(
+        tag,
+        conf.get("customer_gstin") == "low",
+        f"confidence.customer_gstin == 'low' (got {conf.get('customer_gstin')!r})",
+        r,
+    )
+    warning_hit = any(
+        "GSTIN doesn't match the standard 15-character format" in (w or "")
+        for w in warnings
+    )
+    assert_true(
+        tag,
+        warning_hit,
+        f"warnings contains standard GSTIN format msg (warnings={warnings})",
+        r,
+    )
+
+
+# ─────────────────────────── TEST 4 ───────────────────────────
+def test_4_direct_shipment_b2b(tok: str) -> None:
+    tag = "TEST4 direct shipment B2B fields"
+
+    # Get or create a courier.
+    r = requests.get(f"{BASE_URL}/couriers", headers=auth_headers(tok), timeout=30)
+    if not assert_true(tag, r.status_code == 200, f"GET /couriers 200 (got {r.status_code})", r):
+        return
+    couriers = r.json() or []
     courier_id: Optional[str] = None
-    try:
-        # 1) GET /couriers
-        r = requests.get(f"{BASE}/couriers", headers=headers, timeout=30)
-        ok = r.status_code == 200 and isinstance(r.json(), list)
-        record("1. GET /couriers", ok, f"status={r.status_code} count={len(r.json()) if ok else '-'}")
-
-        # 2) GET /couriers/limits
-        r = requests.get(f"{BASE}/couriers/limits", headers=headers, timeout=30)
-        ok = r.status_code == 200
-        if ok:
-            j = r.json()
-            keys_ok = all(k in j for k in ("plan", "is_admin", "limit", "current_count", "can_add", "is_unlimited"))
-            ok = keys_ok
-            detail = f"is_admin={j.get('is_admin')} limit={j.get('limit')} current_count={j.get('current_count')}"
-        else:
-            detail = f"status={r.status_code} body={r.text[:200]}"
-        record("2. GET /couriers/limits", ok, detail)
-
-        # 3) POST /couriers
-        ts = int(time.time())
-        payload = {
-            "name": f"Test Courier {ts}",
-            "series_prefix": "TST",
-            "next_number": 1,
-            "number_padding": 5,
-            "contact_phone": "9999000011",
-            "tracking_url_template": "https://example.com/track/{tracking_id}",
-        }
-        r = requests.post(f"{BASE}/couriers", headers=headers, json=payload, timeout=30)
-        ok = r.status_code == 200
-        if ok:
-            courier = r.json()
-            courier_id = courier.get("id")
-            ok = bool(courier_id) and courier.get("name") == payload["name"]
-            detail = f"id={courier_id} name={courier.get('name')}"
-        else:
-            detail = f"status={r.status_code} body={r.text[:300]}"
-        record("3. POST /couriers", ok, detail)
-        if not courier_id:
-            print("Cannot continue couriers tests without courier_id")
-            return _summary()
-
-        # 4) PUT /couriers/{id}
-        r = requests.put(
-            f"{BASE}/couriers/{courier_id}",
-            headers=headers,
-            json={"contact_phone": "9999111122", "name": f"Test Courier {ts} Renamed"},
-            timeout=30,
-        )
-        ok = r.status_code == 200
-        if ok:
-            j = r.json()
-            ok = j.get("contact_phone") == "9999111122"
-            detail = f"contact_phone={j.get('contact_phone')}"
-        else:
-            detail = f"status={r.status_code} body={r.text[:200]}"
-        record("4. PUT /couriers/{id}", ok, detail)
-
-        # 5) GET /couriers/{id}
-        r = requests.get(f"{BASE}/couriers/{courier_id}", headers=headers, timeout=30)
-        ok = r.status_code == 200 and r.json().get("id") == courier_id
-        record("5. GET /couriers/{id}", ok, f"status={r.status_code}")
-
-        # 6) GET /couriers/{id}/next-tracking
-        r = requests.get(
-            f"{BASE}/couriers/{courier_id}/next-tracking", headers=headers, timeout=30,
-        )
-        ok = r.status_code == 200
-        if ok:
-            j = r.json()
-            ok = "tracking_id" in j and "next_number" in j
-            detail = f"tracking_id={j.get('tracking_id')} next_number={j.get('next_number')}"
-        else:
-            detail = f"status={r.status_code} body={r.text[:200]}"
-        record("6. GET /couriers/{id}/next-tracking", ok, detail)
-
-        prev_next = r.json().get("next_number") if ok else None
-
-        # 7) POST /couriers/{id}/consume-tracking
-        r = requests.post(
-            f"{BASE}/couriers/{courier_id}/consume-tracking", headers=headers, timeout=30,
-        )
-        ok = r.status_code == 200
-        if ok:
-            j = r.json()
-            ok = "tracking_id" in j
-            detail = f"tracking_id={j.get('tracking_id')}"
-        else:
-            detail = f"status={r.status_code} body={r.text[:200]}"
-        record("7. POST /couriers/{id}/consume-tracking", ok, detail)
-
-        # Verify next-tracking incremented
-        if prev_next is not None:
-            r2 = requests.get(
-                f"{BASE}/couriers/{courier_id}/next-tracking", headers=headers, timeout=30,
-            )
-            if r2.status_code == 200:
-                new_next = r2.json().get("next_number")
-                if new_next == prev_next + 1:
-                    print(f"   [OK] next_number incremented: {prev_next} -> {new_next}")
-                else:
-                    print(f"   [WARN] next_number not incremented: {prev_next} -> {new_next}")
-
-        # ============================================================
-        #  VARIANTS (9-13)
-        # ============================================================
-        variant_id: Optional[str] = None
-
-        # 9) GET /couriers/{id}/variants
-        r = requests.get(
-            f"{BASE}/couriers/{courier_id}/variants", headers=headers, timeout=30,
-        )
-        ok = r.status_code == 200
-        if ok:
-            j = r.json()
-            need = ("variants", "cap", "current_count", "package_types", "categories")
-            ok = all(k in j for k in need)
-            detail = (
-                f"shape_ok={ok} cap={j.get('cap')} current_count={j.get('current_count')} "
-                f"types={len(j.get('package_types',[]))} cats={len(j.get('categories',[]))}"
-            )
-        else:
-            detail = f"status={r.status_code} body={r.text[:200]}"
-        record("9. GET /couriers/{id}/variants", ok, detail)
-
-        # 10) POST /couriers/{id}/variants
-        v_payload = {
-            "variant_name": f"Test Variant {ts}",
-            "package_type": "Box",
-            "category": "Apparel",
-            "length_cm": 25,
-            "width_cm": 18,
-            "height_cm": 5,
-            "weight_g": 250,
-            "within_state_rate": 60,
-            "outside_state_rate": 90,
-            "active": True,
-        }
-        r = requests.post(
-            f"{BASE}/couriers/{courier_id}/variants",
-            headers=headers,
-            json=v_payload,
-            timeout=30,
-        )
-        ok = r.status_code == 200
-        if ok:
-            j = r.json()
-            variant_id = j.get("id")
-            ok = bool(variant_id) and j.get("variant_name") == v_payload["variant_name"]
-            detail = f"id={variant_id} name={j.get('variant_name')} weight_g={j.get('weight_g')}"
-        else:
-            detail = f"status={r.status_code} body={r.text[:300]}"
-        record("10. POST /couriers/{id}/variants", ok, detail)
-
-        # 11) PUT variant
-        if variant_id:
-            r = requests.put(
-                f"{BASE}/couriers/{courier_id}/variants/{variant_id}",
-                headers=headers,
-                json={"weight_g": 300, "within_state_rate": 70},
-                timeout=30,
-            )
-            ok = r.status_code == 200
-            if ok:
-                j = r.json()
-                ok = float(j.get("weight_g") or 0) == 300.0
-                detail = f"weight_g={j.get('weight_g')} within={j.get('within_state_rate')}"
-            else:
-                detail = f"status={r.status_code} body={r.text[:200]}"
-            record("11. PUT /couriers/{id}/variants/{vid}", ok, detail)
-
-        # 13) GET /me/all-variants
-        r = requests.get(f"{BASE}/me/all-variants", headers=headers, timeout=30)
-        ok = r.status_code == 200
-        if ok:
-            j = r.json()
-            need = ("variants", "by_courier", "package_types", "categories")
-            ok = all(k in j for k in need)
-            detail = f"variants={len(j.get('variants',[]))} couriers_with_variants={len(j.get('by_courier',{}))}"
-        else:
-            detail = f"status={r.status_code} body={r.text[:200]}"
-        record("13. GET /me/all-variants", ok, detail)
-
-        # 12) DELETE variant (cleanup)
-        if variant_id:
-            r = requests.delete(
-                f"{BASE}/couriers/{courier_id}/variants/{variant_id}",
-                headers=headers, timeout=30,
-            )
-            ok = r.status_code == 200
-            record("12. DELETE /couriers/{id}/variants/{vid}", ok, f"status={r.status_code}")
-
-    except Exception as e:
-        record("Couriers/Variants block exception", False, repr(e))
-        traceback.print_exc()
-
-    # ============================================================
-    #  CATEGORIES (14-16)
-    # ============================================================
-    test_cat = f"TestCat{int(time.time())}"
-    try:
-        # 14) GET /me/categories
-        r = requests.get(f"{BASE}/me/categories", headers=headers, timeout=30)
-        ok = r.status_code == 200
-        if ok:
-            j = r.json()
-            ok = "presets" in j and "custom" in j
-            detail = f"presets={len(j.get('presets',[]))} custom={len(j.get('custom',[]))}"
-        else:
-            detail = f"status={r.status_code} body={r.text[:200]}"
-        record("14. GET /me/categories", ok, detail)
-
-        # 15) POST /me/categories
-        r = requests.post(
-            f"{BASE}/me/categories",
-            headers=headers,
-            json={"name": test_cat},
-            timeout=30,
-        )
-        ok = r.status_code == 200
-        if ok:
-            j = r.json()
-            ok = test_cat in j.get("custom", [])
-            detail = f"custom={j.get('custom',[])[:5]}"
-        else:
-            detail = f"status={r.status_code} body={r.text[:200]}"
-        record("15. POST /me/categories", ok, detail)
-
-        # 16) DELETE /me/categories/{name}
-        r = requests.delete(
-            f"{BASE}/me/categories/{test_cat}", headers=headers, timeout=30,
-        )
-        ok = r.status_code == 200
-        if ok:
-            j = r.json()
-            ok = test_cat not in j.get("custom", [])
-            detail = f"removed={ok}"
-        else:
-            detail = f"status={r.status_code} body={r.text[:200]}"
-        record("16. DELETE /me/categories/{name}", ok, detail)
-    except Exception as e:
-        record("Categories block exception", False, repr(e))
-
-    # ============================================================
-    #  CUSTOM FIELDS (17-20)
-    # ============================================================
-    cf_id: Optional[str] = None
-    try:
-        # 17) GET /me/custom-fields
-        r = requests.get(f"{BASE}/me/custom-fields", headers=headers, timeout=30)
-        ok = r.status_code == 200
-        if ok:
-            j = r.json()
-            need = ("fields", "limit", "used", "feature_enabled", "plan", "is_admin")
-            ok = all(k in j for k in need)
-            detail = (
-                f"fields={len(j.get('fields',[]))} limit={j.get('limit')} "
-                f"used={j.get('used')} feature_enabled={j.get('feature_enabled')} "
-                f"plan={j.get('plan')} is_admin={j.get('is_admin')}"
-            )
-        else:
-            detail = f"status={r.status_code} body={r.text[:200]}"
-        record("17. GET /me/custom-fields", ok, detail)
-
-        # 18) POST /me/custom-fields
-        # Use unique column letter to avoid collision (Z is in use sometimes)
-        # Try Z first; if dup or fails, try AA.
-        col_letter = "Z"
-        cf_payload = {
-            "name": f"Test Field {int(time.time())}",
-            "column_letter": col_letter,
-            "field_type": "text",
-        }
-        r = requests.post(
-            f"{BASE}/me/custom-fields", headers=headers, json=cf_payload, timeout=30,
-        )
-        if r.status_code == 400 and "already used" in r.text.lower():
-            # try a random letter
-            cf_payload["column_letter"] = "AB"
-            r = requests.post(
-                f"{BASE}/me/custom-fields", headers=headers, json=cf_payload, timeout=30,
-            )
-        ok = r.status_code == 200
-        if ok:
-            j = r.json()
-            cf_id = j.get("id")
-            ok = bool(cf_id) and j.get("column_letter") == cf_payload["column_letter"]
-            detail = f"id={cf_id} column={j.get('column_letter')} name={j.get('name')}"
-        else:
-            detail = f"status={r.status_code} body={r.text[:300]}"
-        record("18. POST /me/custom-fields", ok, detail)
-
-        # 19) PUT /me/custom-fields/{id}
-        if cf_id:
-            r = requests.put(
-                f"{BASE}/me/custom-fields/{cf_id}",
-                headers=headers,
-                json={"name": "Test Field RENAMED"},
-                timeout=30,
-            )
-            ok = r.status_code == 200
-            if ok:
-                j = r.json()
-                ok = j.get("name") == "Test Field RENAMED"
-                detail = f"name={j.get('name')}"
-            else:
-                detail = f"status={r.status_code} body={r.text[:200]}"
-            record("19. PUT /me/custom-fields/{id}", ok, detail)
-
-        # 20) DELETE /me/custom-fields/{id}  (cleanup)
-        if cf_id:
-            r = requests.delete(
-                f"{BASE}/me/custom-fields/{cf_id}", headers=headers, timeout=30,
-            )
-            ok = r.status_code == 200
-            record("20. DELETE /me/custom-fields/{id}", ok, f"status={r.status_code}")
-    except Exception as e:
-        record("Custom Fields block exception", False, repr(e))
-        traceback.print_exc()
-
-    # ============================================================
-    #  CONTACT SETTINGS + VCF (21-24)
-    # ============================================================
-    try:
-        # 21) GET /me/contact-settings
-        r = requests.get(f"{BASE}/me/contact-settings", headers=headers, timeout=30)
-        ok = r.status_code == 200
-        if ok:
-            j = r.json()
-            ok = isinstance(j, dict) and (
-                "name_format" in j or "field_mapping" in j or "category" in j
-            )
-            detail = f"keys={list(j.keys())[:6]}"
-        else:
-            detail = f"status={r.status_code} body={r.text[:200]}"
-        record("21. GET /me/contact-settings", ok, detail)
-
-        # 22) PUT /me/contact-settings
-        r = requests.put(
-            f"{BASE}/me/contact-settings",
-            headers=headers,
-            json={"category": {"mode": "fixed", "value": "Customers"}},
-            timeout=30,
-        )
-        ok = r.status_code == 200
-        if ok:
-            j = r.json()
-            cat = j.get("category", {})
-            ok = isinstance(cat, dict) and cat.get("value") == "Customers"
-            detail = f"category={cat}"
-        else:
-            detail = f"status={r.status_code} body={r.text[:300]}"
-        record("22. PUT /me/contact-settings", ok, detail)
-
-        # 23) POST /contacts/build-one (inline shipment preview mode)
-        r = requests.post(
-            f"{BASE}/contacts/build-one",
-            headers=headers,
+    if isinstance(couriers, list) and couriers:
+        courier_id = couriers[0].get("id")
+    if not courier_id:
+        cr = requests.post(
+            f"{BASE_URL}/couriers",
+            headers=auth_headers(tok),
             json={
-                "shipment": {
-                    "customer_name": "Aarav Patel",
-                    "customer_phone": "9876543210",
-                    "customer_city": "Ahmedabad",
-                }
+                "name": "Phase3 Test Courier",
+                "series_prefix": "P3",
+                "next_number": 1,
+                "number_padding": 5,
             },
             timeout=30,
         )
-        ok = r.status_code == 200
-        if ok:
-            j = r.json()
-            ok = isinstance(j, dict) and j.get("phone")
-            detail = f"name={j.get('first_name') or j.get('full_name')} phone={j.get('phone')}"
-        else:
-            detail = f"status={r.status_code} body={r.text[:300]}"
-        record("23. POST /contacts/build-one", ok, detail)
+        if cr.status_code not in (200, 201):
+            fail(tag, "Could not create courier", cr)
+            return
+        courier_id = (cr.json() or {}).get("id")
+    assert_true(tag, bool(courier_id), f"Have courier_id={courier_id}")
 
-        # 24) POST /contacts/build-vcf - need an existing shipment id
-        # find one from /shipments
-        r = requests.get(f"{BASE}/shipments", headers=headers, timeout=30)
-        ship_id: Optional[str] = None
-        if r.status_code == 200:
-            ships = r.json()
-            for s in ships:
-                if s.get("customer_phone"):
-                    ship_id = s.get("id")
-                    break
-        if ship_id:
-            r = requests.post(
-                f"{BASE}/contacts/build-vcf",
-                headers=headers,
-                json={"shipment_ids": [ship_id]},
-                timeout=30,
-            )
-            ok = r.status_code == 200
-            if ok:
-                j = r.json()
-                ok = "vcf" in j and j.get("count", 0) >= 1
-                detail = f"count={j.get('count')} skipped={j.get('skipped')} vcf_len={len(j.get('vcf',''))}"
-            else:
-                detail = f"status={r.status_code} body={r.text[:300]}"
-            record("24. POST /contacts/build-vcf", ok, detail)
-        else:
-            record("24. POST /contacts/build-vcf", False, "No shipment with phone available to test")
-    except Exception as e:
-        record("Contact-settings block exception", False, repr(e))
-        traceback.print_exc()
+    # Create shipment with B2B fields.
+    ship_payload = {
+        "tracking_id": f"P3TEST{int(time.time())}",
+        "courier_id": courier_id,
+        "customer_name": "B2B Buyer Ltd",
+        "customer_phone": "9988776655",
+        "customer_email": "buyer@business.com",
+        "customer_gstin": "29ABCDE1234F1Z5",
+        "address_line1": "Warehouse 7, Industrial Area",
+        "city": "Bengaluru",
+        "state": "Karnataka",
+        "pincode": "560001",
+        "payment_mode": "Prepaid",
+        "amount": 12500,
+    }
+    cr = requests.post(
+        f"{BASE_URL}/shipments",
+        headers=auth_headers(tok),
+        json=ship_payload,
+        timeout=60,
+    )
+    if not assert_true(
+        tag, cr.status_code in (200, 201), f"POST /shipments 200/201 (got {cr.status_code})", cr,
+    ):
+        return
+    created = cr.json() or {}
+    ship_id = created.get("id")
+    assert_true(tag, bool(ship_id), f"created shipment has id (got {ship_id})", cr)
+    assert_true(
+        tag,
+        created.get("customer_email") == "buyer@business.com",
+        f"POST response customer_email (got {created.get('customer_email')!r})",
+        cr,
+    )
+    assert_true(
+        tag,
+        created.get("customer_gstin") == "29ABCDE1234F1Z5",
+        f"POST response customer_gstin (got {created.get('customer_gstin')!r})",
+        cr,
+    )
 
-    # ============================================================
-    #  ADMIN custom-field-limits (25-26)
-    # ============================================================
-    try:
-        # Snapshot current limits to restore later
-        r = requests.get(f"{BASE}/admin/custom-field-limits", headers=headers, timeout=30)
-        prev_limits = None
-        ok = r.status_code == 200
-        if ok:
-            j = r.json()
-            ok = "limits" in j and "defaults" in j
-            prev_limits = j.get("limits") or j.get("defaults")
-            detail = f"limits={j.get('limits')} defaults={j.get('defaults')}"
-        else:
-            detail = f"status={r.status_code} body={r.text[:200]}"
-        record("25. GET /admin/custom-field-limits", ok, detail)
+    # GET the shipment and verify fields persist.
+    gr = requests.get(
+        f"{BASE_URL}/shipments/{ship_id}", headers=auth_headers(tok), timeout=30,
+    )
+    if not assert_true(tag, gr.status_code == 200, f"GET /shipments/{{id}} 200", gr):
+        return
+    got = gr.json() or {}
+    assert_true(
+        tag,
+        got.get("customer_email") == "buyer@business.com",
+        f"GET customer_email (got {got.get('customer_email')!r})",
+        gr,
+    )
+    assert_true(
+        tag,
+        got.get("customer_gstin") == "29ABCDE1234F1Z5",
+        f"GET customer_gstin (got {got.get('customer_gstin')!r})",
+        gr,
+    )
 
-        # 26) PUT - set then verify, then restore.
-        new_limits = {"free_trial": 1, "silver": 5, "gold": 10, "platinum": 20}
-        r = requests.put(
-            f"{BASE}/admin/custom-field-limits",
-            headers=headers,
-            json=new_limits,
+    # Cleanup
+    dr = requests.delete(
+        f"{BASE_URL}/shipments/{ship_id}", headers=auth_headers(tok), timeout=30,
+    )
+    assert_true(
+        tag, dr.status_code in (200, 204), f"DELETE /shipments/{{id}} (got {dr.status_code})", dr,
+    )
+
+
+# ─────────────────────────── TEST 5 ───────────────────────────
+def test_5_pending_to_shipment_promotion(tok: str) -> None:
+    tag = "TEST5 pending→shipment carries email+gstin"
+
+    sp_payload = {
+        "text": (
+            "NAME: Promotion Tester\n"
+            "PHONE: 9123450011\n"
+            "ADDRESS_1: 5 Commerce Plaza, Mumbai\n"
+            "CITY: Mumbai\n"
+            "STATE: Maharashtra\n"
+            "PINCODE: 400013\n"
+            "AMOUNT: 4500\n"
+            "PAYMENT: COD\n"
+            "EMAIL: promo@company.in\n"
+            "GST: 27AAACI1681G1ZN\n"
+        ),
+        "use_ai": False,
+        "skip_llm": True,
+    }
+    r = requests.post(
+        f"{BASE_URL}/smart-paste",
+        headers=auth_headers(tok),
+        json=sp_payload,
+        timeout=60,
+    )
+    if not assert_true(
+        tag, r.status_code == 200, f"POST /smart-paste 200 (got {r.status_code})", r,
+    ):
+        return
+    pending = r.json() or {}
+    pending_id = pending.get("id")
+    assert_true(tag, bool(pending_id), f"pending has id (got {pending_id})", r)
+    assert_true(
+        tag,
+        pending.get("customer_email") == "promo@company.in",
+        f"PendingOrder.customer_email set (got {pending.get('customer_email')!r})",
+        r,
+    )
+    assert_true(
+        tag,
+        pending.get("customer_gstin") == "27AAACI1681G1ZN",
+        f"PendingOrder.customer_gstin set (got {pending.get('customer_gstin')!r})",
+        r,
+    )
+
+    # Resolve a courier_id
+    cr = requests.get(f"{BASE_URL}/couriers", headers=auth_headers(tok), timeout=30)
+    couriers = cr.json() if cr.status_code == 200 else []
+    courier_id = couriers[0]["id"] if couriers else None
+    if not courier_id:
+        fail(tag, "No courier available for shipping test")
+        return
+
+    # Promote
+    pr = requests.post(
+        f"{BASE_URL}/orders/pending/{pending_id}/ship",
+        headers=auth_headers(tok),
+        json={"courier_id": courier_id},
+        timeout=60,
+    )
+    if not assert_true(
+        tag,
+        pr.status_code in (200, 201),
+        f"POST /orders/pending/{{id}}/ship 200/201 (got {pr.status_code})",
+        pr,
+    ):
+        # Try to cleanup pending
+        requests.delete(
+            f"{BASE_URL}/orders/pending/{pending_id}",
+            headers=auth_headers(tok),
             timeout=30,
         )
-        ok = r.status_code == 200
-        if ok:
-            j = r.json()
-            persisted = j.get("limits") or {}
-            ok = all(persisted.get(k) == v for k, v in new_limits.items())
-            detail = f"persisted={persisted}"
-        else:
-            detail = f"status={r.status_code} body={r.text[:300]}"
-        record("26. PUT /admin/custom-field-limits", ok, detail)
+        return
+    shipment = pr.json() or {}
+    ship_id = shipment.get("id")
+    assert_true(
+        tag,
+        shipment.get("customer_email") == "promo@company.in",
+        f"Shipment.customer_email after ship (got {shipment.get('customer_email')!r})",
+        pr,
+    )
+    assert_true(
+        tag,
+        shipment.get("customer_gstin") == "27AAACI1681G1ZN",
+        f"Shipment.customer_gstin after ship (got {shipment.get('customer_gstin')!r})",
+        pr,
+    )
 
-        # restore
-        if prev_limits:
-            try:
-                requests.put(
-                    f"{BASE}/admin/custom-field-limits",
-                    headers=headers,
-                    json=prev_limits,
-                    timeout=30,
-                )
-            except Exception:
-                pass
-    except Exception as e:
-        record("Admin custom-field-limits block exception", False, repr(e))
-
-    # ============================================================
-    #  FEATURE FLAGS (27-28)
-    # ============================================================
-    try:
-        r = requests.get(f"{BASE}/me/feature-flags", headers=headers, timeout=30)
-        ok = r.status_code == 200
-        if ok:
-            j = r.json()
-            ok = (
-                "plan" in j
-                and isinstance(j.get("features"), list)
-                and "is_admin" in j
-            )
-            detail = f"plan={j.get('plan')} feature_count={len(j.get('features',[]))} is_admin={j.get('is_admin')}"
-        else:
-            detail = f"status={r.status_code} body={r.text[:200]}"
-        record("27. GET /me/feature-flags", ok, detail)
-
-        r = requests.get(f"{BASE}/me/feature-registry", headers=headers, timeout=30)
-        ok = r.status_code == 200
-        if ok:
-            j = r.json()
-            ok = "registry" in j and "my_features" in j and "plan" in j
-            reg = j.get("registry")
-            detail = f"plan={j.get('plan')} my_features={len(j.get('my_features',[]))} registry_type={type(reg).__name__}"
-        else:
-            detail = f"status={r.status_code} body={r.text[:300]}"
-        record("28. GET /me/feature-registry", ok, detail)
-    except Exception as e:
-        record("Feature flags block exception", False, repr(e))
-
-    # ============================================================
-    #  DELETE COURIER (cleanup) — endpoint 8
-    # ============================================================
-    if courier_id:
-        try:
-            r = requests.delete(
-                f"{BASE}/couriers/{courier_id}", headers=headers, timeout=30,
-            )
-            ok = r.status_code == 200
-            record("8. DELETE /couriers/{id} (cleanup)", ok, f"status={r.status_code}")
-        except Exception as e:
-            record("8. DELETE /couriers/{id}", False, repr(e))
-
-    return _summary()
+    # Cleanup
+    if ship_id:
+        dr = requests.delete(
+            f"{BASE_URL}/shipments/{ship_id}",
+            headers=auth_headers(tok),
+            timeout=30,
+        )
+        assert_true(
+            tag,
+            dr.status_code in (200, 204),
+            f"cleanup DELETE shipment (got {dr.status_code})",
+            dr,
+        )
 
 
-def _summary() -> int:
-    print("\n" + "=" * 60)
-    print("SUMMARY")
-    print("=" * 60)
-    passed = sum(1 for _, ok, _ in _results if ok)
-    failed = sum(1 for _, ok, _ in _results if not ok)
-    for label, ok, detail in _results:
-        status = "PASS" if ok else "FAIL"
-        print(f"  [{status}] {label}" + (f" :: {detail}" if detail else ""))
-    print("-" * 60)
-    print(f"  TOTAL: {passed} passed, {failed} failed (out of {len(_results)})")
-    return 0 if failed == 0 else 1
+# ─────────────────────────── TEST 6 ───────────────────────────
+def test_6_smoke_regression(tok: str) -> None:
+    tag = "TEST6 smoke regression"
+    for path in (
+        "/couriers",
+        "/me/feature-flags",
+        "/me/custom-fields",
+        "/me/contact-settings",
+    ):
+        r = requests.get(f"{BASE_URL}{path}", headers=auth_headers(tok), timeout=30)
+        assert_true(tag, r.status_code == 200, f"GET {path} 200 (got {r.status_code})", r)
+
+
+# ─────────────────────────── MAIN ───────────────────────────
+def main() -> int:
+    print("=" * 72)
+    print("Phase-3 Smart Paste enhancements — backend verification")
+    print("=" * 72)
+    tok = login()
+    test_1_regex_explicit_labels(tok)
+    test_2_regex_opportunistic_freetext(tok)
+    test_3_invalid_gstin(tok)
+    test_4_direct_shipment_b2b(tok)
+    test_5_pending_to_shipment_promotion(tok)
+    test_6_smoke_regression(tok)
+
+    print("\n" + "=" * 72)
+    print(f"RESULTS: {len(PASS)} passed, {len(FAIL)} failed")
+    print("=" * 72)
+    if FAIL:
+        print("\nFAILURES:")
+        for f in FAIL:
+            print(f"  - {f}")
+    return 0 if not FAIL else 1
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    sys.exit(main())
