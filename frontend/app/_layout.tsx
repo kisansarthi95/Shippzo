@@ -5,7 +5,7 @@ import { StatusBar } from "expo-status-bar";
 import { Platform, View, ActivityIndicator, Text, LogBox } from "react-native";
 import * as SplashScreen from "expo-splash-screen";
 import { Ionicons } from "@expo/vector-icons";
-import * as Font from "expo-font";
+import { useFonts } from "expo-font";
 import { AuthProvider, useAuth } from "../lib/auth";
 import { FeatureFlagsProvider } from "../lib/feature_flags";
 import ErrorBoundary from "../components/ErrorBoundary";
@@ -63,50 +63,23 @@ if (typeof globalThis !== "undefined") {
 }
 
 export default function RootLayout() {
-  const [ready, setReady] = useState(false);
+  // Official Expo pattern — useFonts hook loads icon fonts through
+  // the expo-font pipeline and blocks render until ready. Using the
+  // `...Ionicons.font` spread ensures all icon sets ship together
+  // and avoids the `Font file for ionicons is empty` crash that
+  // happens when different code paths try to load the same asset.
+  const [fontsLoaded] = useFonts({
+    ...Ionicons.font,
+  });
 
   useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        // Preload icon fonts so screens don't jitter.
-        // We load through `expo-font.loadAsync` first because it uses
-        // a different code path than Ionicons.loadFont() and is more
-        // resilient when the icon-font asset has been corrupted in
-        // Expo Go's local cache (the cause of the recurring
-        // "Font file for ionicons is empty" crash). Fall back to
-        // Ionicons.loadFont() if that fails.
-        try {
-          await Font.loadAsync({
-            // eslint-disable-next-line @typescript-eslint/no-var-requires
-            Ionicons: require("@expo/vector-icons/build/vendor/react-native-vector-icons/Fonts/Ionicons.ttf"),
-          });
-        } catch {
-          /* swallow — try the icon's own loader next */
-        }
-        const fontLoad = Ionicons.loadFont();
-        if (Platform.OS === "web") {
-          await Promise.race([
-            fontLoad,
-            new Promise((resolve) => setTimeout(resolve, 1500)),
-          ]);
-        } else {
-          await fontLoad;
-        }
-      } catch {
-        // ignore – we still want the app to render
-      } finally {
-        if (!cancelled) setReady(true);
-        SplashScreen.hideAsync().catch(() => {});
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+    if (fontsLoaded) {
+      SplashScreen.hideAsync().catch(() => {});
+    }
+  }, [fontsLoaded]);
 
-  if (!ready) {
-    // Minimal placeholder while warming up – avoids white flashes
+  if (!fontsLoaded) {
+    // Minimal placeholder while warming up – avoids white flashes.
     return <View style={{ flex: 1, backgroundColor: "#F4F5F7" }} />;
   }
 
