@@ -5084,14 +5084,7 @@ async def pending_orders_count(current_user: Dict[str, Any] = Depends(get_curren
 # ---------------------- Phase-3a Plans & Usage ----------------------
 
 
-@api_router.get("/plans")
-async def list_plans(current_user: Dict[str, Any] = Depends(get_current_user)):
-    """Return the 4-tier plan catalogue plus a hint about which plan the
-    caller is currently on (so the Plans screen can badge it)."""
-    return {
-        "plans": await public_plan_list(db),
-        "current": current_user.get("plan") or "free_trial",
-    }
+# [refactor Phase-4a-extra] @api_router.get("/plans") → routers/plans_coupons.py
 
 
 @api_router.get("/me/usage")
@@ -6541,190 +6534,25 @@ async def rzp_create_plan_order(
 # every other admin endpoint that calls it without `await`.
 
 
-@api_router.get("/admin/coupons")
-async def admin_list_coupons(
-    current_user: Dict[str, Any] = Depends(get_current_user),
-):
-    _require_admin(current_user)
-    cur = db.coupons.find({}, {"_id": 0}).sort("created_at", -1)
-    out: List[Dict[str, Any]] = []
-    async for c in cur:
-        out.append(coupon_to_api(c))
-    return {"coupons": out}
+# [refactor Phase-4a-extra] @api_router.get("/admin/coupons") → routers/plans_coupons.py
 
 
-@api_router.post("/admin/coupons")
-async def admin_create_coupon(
-    payload: CouponCreate,
-    current_user: Dict[str, Any] = Depends(get_current_user),
-):
-    _require_admin(current_user)
-    existing = await db.coupons.find_one({"code": payload.code})
-    if existing:
-        raise HTTPException(status_code=409, detail=f"Coupon '{payload.code}' already exists")
-    doc = new_coupon_doc(payload)
-    await db.coupons.insert_one(doc)
-    return {"ok": True, "coupon": coupon_to_api(doc)}
+# [refactor Phase-4a-extra] @api_router.post("/admin/coupons") → routers/plans_coupons.py
 
 
-@api_router.put("/admin/coupons/{coupon_id}")
-async def admin_update_coupon(
-    coupon_id: str,
-    payload: CouponUpdate,
-    current_user: Dict[str, Any] = Depends(get_current_user),
-):
-    _require_admin(current_user)
-    update_fields: Dict[str, Any] = {}
-    raw = payload.model_dump(exclude_unset=True)
-    for k, v in raw.items():
-        update_fields[k] = v
-    if not update_fields:
-        raise HTTPException(status_code=400, detail="No fields to update")
-    update_fields["updated_at"] = datetime.utcnow().replace(tzinfo=timezone.utc).isoformat()
-    res = await db.coupons.find_one_and_update(
-        {"id": coupon_id},
-        {"$set": update_fields},
-        return_document=True,
-    )
-    if not res:
-        raise HTTPException(status_code=404, detail="Coupon not found")
-    return {"ok": True, "coupon": coupon_to_api(res)}
+# [refactor Phase-4a-extra] @api_router.put("/admin/coupons/{coupon_id}") → routers/plans_coupons.py
 
 
-@api_router.delete("/admin/coupons/{coupon_id}")
-async def admin_delete_coupon(
-    coupon_id: str,
-    current_user: Dict[str, Any] = Depends(get_current_user),
-):
-    _require_admin(current_user)
-    res = await db.coupons.delete_one({"id": coupon_id})
-    if res.deleted_count == 0:
-        raise HTTPException(status_code=404, detail="Coupon not found")
-    return {"ok": True, "deleted": coupon_id}
+# [refactor Phase-4a-extra] @api_router.delete("/admin/coupons/{coupon_id}") → routers/plans_coupons.py
 
 
-@api_router.get("/admin/coupons/analytics")
-async def admin_coupon_analytics(
-    current_user: Dict[str, Any] = Depends(get_current_user),
-):
-    """Usage analytics dashboard for coupons. Aggregates from
-    `razorpay_orders` (status==paid AND coupon_code set) to produce:
-      • Total redemptions across all coupons
-      • Total discount amount given to customers (₹)
-      • Per-coupon breakdown: redemptions, total discount, plan mix
-      • Top-5 most-redeemed coupons
-    The numbers are computed live from Mongo so they stay honest
-    without a separate events table.
-    """
-    _require_admin(current_user)
-    # Fetch all coupons to join their metadata (discount_type/value)
-    coupons: List[Dict[str, Any]] = []
-    async for c in db.coupons.find({}, {"_id": 0}):
-        coupons.append(c)
-    code_to_coupon = {c.get("code"): c for c in coupons}
-
-    # Aggregate over successful paid Razorpay orders. `verified_at` is
-    # set only after signature+payment_captured/authorized.
-    pipeline = [
-        {"$match": {
-            "purpose": "plan_subscription",
-            "status": {"$in": ["paid", "captured"]},
-            "coupon_code": {"$exists": True, "$nin": [None, ""]},
-        }},
-        {"$group": {
-            "_id": "$coupon_code",
-            "redemptions":    {"$sum": 1},
-            "total_discount": {"$sum": {"$ifNull": ["$coupon_discount", 0]}},
-            "total_revenue":  {"$sum": {"$ifNull": ["$amount_inr", 0]}},
-            "plans":          {"$addToSet": "$plan_key"},
-            "cycles":         {"$addToSet": "$billing_cycle"},
-            "last_redeemed":  {"$max": "$created_at"},
-        }},
-        {"$sort": {"redemptions": -1}},
-    ]
-    per_coupon: List[Dict[str, Any]] = []
-    totals = {"redemptions": 0, "total_discount": 0, "total_revenue": 0}
-    async for row in db.razorpay_orders.aggregate(pipeline):
-        code = row.get("_id")
-        meta = code_to_coupon.get(code, {})
-        per_coupon.append({
-            "code":           code,
-            "discount_type":  meta.get("discount_type"),
-            "discount_value": meta.get("discount_value"),
-            "redemptions":    int(row.get("redemptions") or 0),
-            "total_discount": int(row.get("total_discount") or 0),
-            "total_revenue":  int(row.get("total_revenue") or 0),
-            "plans":          sorted([p for p in (row.get("plans") or []) if p]),
-            "cycles":         sorted([c for c in (row.get("cycles") or []) if c]),
-            "last_redeemed":  row.get("last_redeemed"),
-            "status": (coupon_to_api(meta).get("status") if meta else "deleted"),
-        })
-        totals["redemptions"]    += int(row.get("redemptions") or 0)
-        totals["total_discount"] += int(row.get("total_discount") or 0)
-        totals["total_revenue"]  += int(row.get("total_revenue") or 0)
-
-    # Count coupons by live status (from registry serializer)
-    status_counts = {"active": 0, "paused": 0, "scheduled": 0, "expired": 0, "exhausted": 0}
-    for c in coupons:
-        s = coupon_to_api(c).get("status", "active")
-        status_counts[s] = status_counts.get(s, 0) + 1
-
-    return {
-        "totals":     totals,
-        "coupons":    per_coupon,
-        "top5":       per_coupon[:5],
-        "total_coupons": len(coupons),
-        "status_counts": status_counts,
-    }
+# [refactor Phase-4a-extra] @api_router.get("/admin/coupons/analytics") → routers/plans_coupons.py
 
 
-class CouponValidateRequest(BaseModel):
-    code: str
-    plan_key: str           # silver | gold | platinum
-    billing_cycle: str      # monthly | yearly
+# [refactor Phase-4a-extra] class CouponValidateRequest → routers/plans_coupons.py
 
 
-@api_router.post("/coupons/validate")
-async def coupon_validate(
-    payload: CouponValidateRequest,
-    current_user: Dict[str, Any] = Depends(get_current_user),
-):
-    """User-side: check whether a coupon applies to a plan/cycle and
-    return the discounted total. No DB writes happen here — the actual
-    consumption (used_count++) only fires on successful payment-verify.
-    """
-    code = ensure_code_valid(payload.code)
-    if payload.plan_key not in ("silver", "gold", "platinum"):
-        raise HTTPException(status_code=400, detail="Invalid plan_key")
-    if payload.billing_cycle not in ("monthly", "yearly"):
-        raise HTTPException(status_code=400, detail="Invalid billing_cycle")
-    cfg = await _get_admin_config()
-    meta = _plan_billing_meta(cfg["plan_pricing"], payload.plan_key, payload.billing_cycle)
-    base_inr = int(meta["price_inr"])
-    coupon = await db.coupons.find_one({"code": code})
-    ok, reason, discount, final_inr = validate_coupon(
-        coupon, payload.plan_key, payload.billing_cycle, base_inr,
-        user_email=current_user.get("email"),
-    )
-    # For percent coupons, surface the admin's *configured* percentage
-    # directly (e.g. 25) rather than back-computing from the floored
-    # discount (which would be 24 for base=1791, discount=447). For
-    # flat coupons we still compute from the actual money savings.
-    savings_pct = 0
-    if ok and base_inr > 0:
-        if coupon and coupon.get("discount_type") == "percent":
-            savings_pct = int(coupon.get("discount_value") or 0)
-        else:
-            savings_pct = int((discount / base_inr) * 100)
-    return {
-        "ok":         ok,
-        "reason":     reason,
-        "code":       code,
-        "base_inr":   base_inr,
-        "discount":   discount,
-        "final_inr":  final_inr,
-        "savings_pct": savings_pct,
-    }
+# [refactor Phase-4a-extra] @api_router.post("/coupons/validate") → routers/plans_coupons.py
 
 
 def _extend_plan_expiry(
@@ -7056,36 +6884,13 @@ async def admin_put_global_config(
     return await _get_admin_config()
 
 
-@api_router.get("/plans-pricing")
-async def get_plans_pricing_public(
-    current_user: Dict[str, Any] = Depends(get_current_user),
-):
-    """Public read of plan_pricing + countdown for the Plans screen.
-    Available to every logged-in user (not just admins)."""
-    cfg = await _get_admin_config()
-    return {
-        "plan_pricing": cfg["plan_pricing"],
-        "countdown": cfg["countdown"],
-    }
+# [refactor Phase-4a-extra] @api_router.get("/plans-pricing") → routers/plans_coupons.py
 
 
-@api_router.get("/credit-packages")
-async def get_credit_packages_public(
-    current_user: Dict[str, Any] = Depends(get_current_user),
-):
-    """Read-only list every logged-in user can fetch for the Wallet Top-up screen."""
-    cfg = await _get_admin_config()
-    return {"packages": cfg["credit_packages"]}
+# [refactor Phase-4a-extra] @api_router.get("/credit-packages") → routers/plans_coupons.py
 
 
-@api_router.get("/me/ai-rates")
-async def me_ai_rates(
-    current_user: Dict[str, Any] = Depends(get_current_user),
-):
-    """Read-only: rates the user will be charged for Smart Paste calls.
-    These are admin-controlled now; per-user overrides are no longer used."""
-    cfg = await _get_admin_config()
-    return cfg["global_ai_rates"]
+# [refactor Phase-4a-extra] @api_router.get("/me/ai-rates") → routers/plans_coupons.py
 
 
 # ---------------------- App setup ----------------------
@@ -7187,6 +6992,20 @@ except Exception as _w_exc:
     import logging as _lg
     _lg.getLogger("server.bootstrap").exception(
         f"Failed to mount wallet router: {_w_exc}",
+    )
+
+# Phase-4a-extra modular: plan catalogue + coupon system.
+try:
+    from routers.plans_coupons import (
+        plans_coupons_router as _plans_coupons_router,
+        init as _init_plans_coupons_router,
+    )
+    _init_plans_coupons_router()
+    app.include_router(_plans_coupons_router)
+except Exception as _pc_exc:
+    import logging as _lg
+    _lg.getLogger("server.bootstrap").exception(
+        f"Failed to mount plans_coupons router: {_pc_exc}",
     )
 
 

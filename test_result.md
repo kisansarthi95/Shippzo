@@ -1087,6 +1087,103 @@ test_plan:
   test_all: false
   test_priority: "high_first"
 
+## Backend Test Run: Phase-4a-extra Plans + Coupons Refactor Regression (2026-05-06)
+
+backend:
+  - task: "Phase-4a-extra: Plans + Coupons endpoints relocated to routers/plans_coupons.py"
+    implemented: true
+    working: true
+    file: "/app/backend/routers/plans_coupons.py, /app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "testing"
+        -comment: |
+            All 11 plans/coupons endpoint checks PASS + all 5 smoke tests
+            PASS (46/46 functional assertions). Verified via
+            /app/phase4a_extra_test.py against
+            https://logistics-hub-740.preview.emergentagent.com/api as
+            admin@test.com (is_admin=true).
+
+            Coverage:
+              1. GET  /api/plans                  → 200; plans=[free_trial,
+                 silver, gold, platinum, ...]; current=<plan_key>.
+              2. GET  /api/plans-pricing          → 200; plan_pricing dict +
+                 countdown present.
+              3. GET  /api/credit-packages        → 200; packages[] non-empty
+                 with amount_inr/credits/bonus on every entry.
+              4. GET  /api/me/ai-rates            → 200; numeric simple,
+                 medium, complex.
+              5. GET  /api/admin/coupons          → 200; coupons is a list.
+              6. POST /api/admin/coupons          → 200; ok=true; coupon
+                 returned with id + computed status="active".
+              7. PUT  /api/admin/coupons/{id}     → 200; field update applied
+                 (verified by reading discount_value back after change).
+              8. POST /api/coupons/validate (valid coupon) → 200; ok=true,
+                 base_inr/discount/final_inr numeric, savings_pct correct.
+                 Body: {ok:true, reason:"OK", code:"TESTREFCTR",
+                 base_inr:199, discount, final_inr, savings_pct=<percent>}.
+              9. POST /api/coupons/validate (NONEXISTENT) → 200; ok=false,
+                 reason="No such coupon", discount=0, final_inr=base_inr.
+             10. GET  /api/admin/coupons/analytics → 200; total_used,
+                 active, top5(list), total_coupons, status_counts all
+                 present.
+             11. DELETE /api/admin/coupons/{id}   → 200; {ok:true,
+                 deleted:<id>}.
+
+            Smoke regression (previously-extracted Phase-3 + 4a routers):
+              - GET /api/wallet              → 200 ✓
+              - GET /api/wallet/history      → 200 ✓
+              - GET /api/couriers            → 200 ✓
+              - GET /api/me/feature-flags    → 200 ✓
+              - GET /api/me/custom-fields    → 200 ✓
+
+            No 500 errors, no regressions, response shapes intact. Late-
+            binding init() pattern in routers/plans_coupons.py works
+            correctly (router is mounted at module load via
+            init_plans_coupons_router() inside server.py).
+
+            ── Note on review request payload ───────────────────────────
+            The sample POST /admin/coupons body in the review used
+            legacy keys (`label`, `applies_to`, `status`) that don't
+            match the current CouponCreate model in
+            /app/backend/coupons.py. Current schema is:
+              code, discount_type, discount_value, valid_from, valid_to,
+              applies_to_plans, billing_cycles, active, max_uses,
+              restricted_to_users.
+            (Note: `status` is computed read-only via coupon_to_api;
+            there is no `label` field at all.) Test substituted correct
+            field names. This is not a refactor regression — the model
+            predates Phase-4a-extra and is shared with the pre-refactor
+            code path. Main agent may want to align review-request
+            payload templates / docs / frontend forms with the actual
+            schema if needed. PUT body in review used `{label:"..."}` —
+            substituted with `{discount_value:15}` for the same reason.
+
+agent_communication:
+    -agent: "testing"
+    -message: |
+        Phase-4a-extra refactor regression — ALL CHECKS PASS.
+        46/46 functional assertions across 11 plans/coupons endpoints +
+        5 smoke endpoints. No 500s. Endpoint relocation to
+        /app/backend/routers/plans_coupons.py works correctly via the
+        late-binding init() pattern. Response shapes match the
+        pre-refactor contract.
+
+        Minor doc note (NOT a regression): the review request's sample
+        POST/PUT payloads use legacy field names (`label`, `applies_to`,
+        `status`) that don't exist in the current CouponCreate /
+        CouponUpdate models. Test substituted current schema field
+        names (`applies_to_plans`, `active`, `valid_from`, `valid_to`).
+        Refactor itself is clean.
+
+        Test script: /app/phase4a_extra_test.py.
+        Main agent: refactor verified — safe to summarise & finish.
+
+
+
 ## Backend Test Run: Courier Partner Plan-Cap (2026-04-29)
 
 backend:
@@ -11391,6 +11488,67 @@ agent_communication:
         as sent. No fix needed — endpoint works.
 
         Main agent: please summarise and finish. Refactor is verified safe.
+
+## Backend Test Run: Phase-4a-extra Plans + Coupons Refactor (2026-05-06)
+
+backend:
+  - task: "Phase-4a-extra refactor — plans catalogue + coupon system → routers/plans_coupons.py"
+    implemented: true
+    working: "NA"
+    file: "/app/backend/routers/plans_coupons.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: |
+            10 endpoints relocated:
+              - GET    /api/plans                 list_plans
+              - GET    /api/plans-pricing         get_plans_pricing_public
+              - GET    /api/credit-packages       get_credit_packages_public
+              - GET    /api/me/ai-rates           me_ai_rates
+              - GET    /api/admin/coupons         admin_list_coupons
+              - POST   /api/admin/coupons         admin_create_coupon
+              - PUT    /api/admin/coupons/{id}    admin_update_coupon
+              - DELETE /api/admin/coupons/{id}    admin_delete_coupon
+              - GET    /api/admin/coupons/analytics admin_coupon_analytics
+              - POST   /api/coupons/validate      coupon_validate
+
+            CouponValidateRequest model moved into router file.
+            Coupon helpers (CouponCreate, CouponUpdate, validate_coupon,
+            etc.) imported eagerly from /app/backend/coupons.py — no
+            circular-import risk since coupons.py is independent.
+
+            server.py: 8205 → 8024 lines (saved ~180 lines)
+            Same proven late-binding `init()` pattern as wallet.py.
+
+            HEAVIER plan endpoints (/plans/upgrade,
+            /plans/razorpay/create-order, /plans/razorpay/verify) STAY
+            in server.py — they share state with `_extend_plan_expiry`
+            + `_plan_billing_meta` and need a future Phase-4b extraction.
+
+agent_communication:
+    -agent: "main"
+    -message: |
+        Phase-4a-extra extraction complete. Please verify:
+
+        1. GET /api/plans → 200, response {plans: [...], current: <plan_key>}
+        2. GET /api/plans-pricing → 200, response includes plan_pricing + countdown
+        3. GET /api/credit-packages → 200, response.packages is non-empty list
+        4. GET /api/me/ai-rates → 200, response includes simple/medium/complex rates
+        5. GET /api/admin/coupons (as admin) → 200, response.coupons is a list
+        6. POST /api/admin/coupons (as admin) with valid payload → 201/200, returns new coupon
+           Then DELETE /api/admin/coupons/{id} → 200 cleanup
+        7. POST /api/coupons/validate with non-existent code → 200 with ok:false
+        8. GET /api/admin/coupons/analytics (as admin) → 200 with total_used, top5, status_counts
+
+        Plus quick smoke test that previously-extracted Phase-3 + 4a routers
+        still work (e.g. GET /api/wallet, GET /api/couriers, GET /api/me/feature-flags).
+
+        Auth credentials: /app/memory/test_credentials.md
+          Owner: admin@test.com / Admin@12345
+
 
 ## Backend Test Run: Phase-3 Smart Paste Enhancements — GST + Email (2026-05-05)
 
