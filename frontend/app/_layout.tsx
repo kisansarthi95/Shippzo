@@ -35,7 +35,7 @@ try {
 // mobile networks (the ngrok tunnel in dev), asset downloads for icon
 // fonts / keep-awake sometimes time out — those are non-fatal; the
 // app still works (icons render once fonts cache).
-const _BENIGN_RX = /Network Error|AxiosError|timeout|Unauthorized|Request failed|ExpoAsset|downloadAsync|Unable to download|keep awake|CodedError|Unable to activate/i;
+const _BENIGN_RX = /Network Error|AxiosError|timeout|Unauthorized|Request failed|ExpoAsset|downloadAsync|Unable to download|keep awake|CodedError|Unable to activate|ExpoFontLoader|Font file.*empty|loadAsync.*rejected/i;
 if (typeof globalThis !== "undefined") {
   // React Native ErrorUtils-style handler
   const g: any = globalThis as any;
