@@ -4,7 +4,6 @@ import { SafeAreaProvider } from "react-native-safe-area-context";
 import { StatusBar } from "expo-status-bar";
 import { Platform, View, ActivityIndicator, Text, LogBox } from "react-native";
 import * as SplashScreen from "expo-splash-screen";
-import { useFonts } from "expo-font";
 import { AuthProvider, useAuth } from "../lib/auth";
 import { FeatureFlagsProvider } from "../lib/feature_flags";
 import { PermissionsProvider } from "../lib/permissions";
@@ -63,45 +62,19 @@ if (typeof globalThis !== "undefined") {
 }
 
 export default function RootLayout() {
-  // Official Expo pattern — useFonts hook loads icon fonts through
-  // the expo-font pipeline and blocks render until ready.
+  // 2026-05-06 — FIXED: Removed manual useFonts() for Ionicons.
+  // @expo/vector-icons manages its own font loading internally via
+  // createIconSet → Font.loadAsync on first render; calling useFonts()
+  // at the app root created a conflict that left Android Expo Go
+  // stuck with blank icon glyphs. The package's internal loader is
+  // the source of truth — let it do its job.
   //
-  // 2026-05-06: Android Expo Go (SDK 54) intermittently fails to
-  // resolve the Ionicons.ttf bundled inside node_modules/@expo/
-  // vector-icons on first cold launch — user sees blank squares /
-  // orange tiles where icons should be. The documented workaround
-  // (https://docs.expo.dev/guides/icons/) is to copy the .ttf into
-  // ./assets/fonts/ and load it with an explicit require() path so
-  // Metro bundles the asset through the regular asset pipeline
-  // instead of the node_modules traversal that sometimes fails on
-  // Android. The icon family name MUST be lowercase `ionicons` to
-  // match createIconSet(glyphMap, 'ionicons', font).
-  const [fontsLoaded] = useFonts({
-    ionicons: require("../assets/fonts/Ionicons.ttf"),
-  });
-
-  // 5-second timeout fallback — if the icon font asset download stalls
-  // (slow ngrok tunnel, flaky CDN, etc.) we don't want the app to hang
-  // on the splash forever. After 5 s we proceed without fonts; icons
-  // render as their codepoint glyphs which still ship as placeholders.
-  const [fontTimeout, setFontTimeout] = useState(false);
+  // Splash is hidden immediately on mount; the first icon-render
+  // triggers the family-specific font download, and until it lands
+  // the icon renders a blank glyph (perfectly acceptable fallback).
   useEffect(() => {
-    const t = setTimeout(() => setFontTimeout(true), 5000);
-    return () => clearTimeout(t);
+    SplashScreen.hideAsync().catch(() => {});
   }, []);
-
-  const fontsReady = fontsLoaded || fontTimeout;
-
-  useEffect(() => {
-    if (fontsReady) {
-      SplashScreen.hideAsync().catch(() => {});
-    }
-  }, [fontsReady]);
-
-  if (!fontsReady) {
-    // Minimal placeholder while warming up – avoids white flashes.
-    return <View style={{ flex: 1, backgroundColor: "#F4F5F7" }} />;
-  }
 
   return (
     <ErrorBoundary>
