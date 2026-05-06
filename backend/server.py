@@ -4259,40 +4259,10 @@ async def cancel_subscription(
     }
 
 
-class UpgradePlanRequest(BaseModel):
-    plan: str  # one of free_trial | silver | gold | platinum
+# [refactor Phase-5c-1] class UpgradePlanRequest → routers/plans_billing.py
 
 
-@api_router.post("/plans/upgrade")
-async def upgrade_plan(
-    payload: UpgradePlanRequest,
-    current_user: Dict[str, Any] = Depends(get_current_user),
-):
-    """MOCK upgrade flow for Phase-3a. Razorpay payment will be added in
-    Phase-4. For now this simply switches the user's plan record and
-    restarts the relevant validity window (trial_expires_at for
-    free_trial, open-ended for paid tiers). No money changes hands.
-
-    SECURITY: Downgrading to free_trial after it's been consumed does
-    NOT reset the lifetime trial counter — the user will still hit the
-    10-label cap immediately. This prevents "reset-abuse".
-    """
-    key = (payload.plan or "").strip().lower()
-    if key not in PLAN_TABLE:
-        raise HTTPException(status_code=400, detail=f"Unknown plan '{payload.plan}'")
-    set_payload = plan_start_payload(key)
-    # Stamp a flag so the UI can display "Upgrade mocked — Razorpay in Phase 4".
-    set_payload["plan_mocked"] = True
-    await db.users.update_one({"id": current_user["id"]}, {"$set": set_payload})
-    fresh = await db.users.find_one({"id": current_user["id"]}, {"_id": 0})
-    return {
-        "ok": True,
-        "mocked": True,
-        "plan": key,
-        "plan_started_at": set_payload["plan_started_at"],
-        "plan_expires_at": set_payload.get("plan_expires_at"),
-        "user": user_public(fresh or {}),
-    }
+# [refactor Phase-5c-1] @api_router.post("/plans/upgrade") → routers/plans_billing.py
 
 
 # ---------------------- Phase-4a Credit Wallet ----------------------
@@ -5297,13 +5267,7 @@ _rzp_client = (
 # it. Both models are tiny, identical request schemas — the duplication
 # is intentional and harmless. When /plans/razorpay/verify itself
 # moves out of server.py, this duplicate can disappear.
-class RazorpayVerifyRequest(BaseModel):
-    """Three values returned by Razorpay Checkout on success that we
-    need to verify against our server-side secret before crediting the
-    wallet."""
-    razorpay_order_id: str
-    razorpay_payment_id: str
-    razorpay_signature: str
+# [refactor Phase-5c-1] class RazorpayVerifyRequest → routers/plans_billing.py
 # [refactor Phase-4a] class RazorpayVerifyRequest → routers/wallet.py
 
 
@@ -5326,11 +5290,7 @@ class RazorpayVerifyRequest(BaseModel):
 # can change prices any time (the source of truth is the same as the
 # /plans-pricing payload the frontend reads).
 
-class PlanRazorpayCreateOrderRequest(BaseModel):
-    """Body for /api/plans/razorpay/create-order."""
-    plan_key: str           # silver | gold | platinum
-    billing_cycle: str      # monthly | yearly
-    coupon_code: Optional[str] = None  # 2026-04-30: optional discount code
+# [refactor Phase-5c-1] class PlanRazorpayCreateOrderRequest → routers/plans_billing.py
 
 
 def _plan_billing_meta(
@@ -5366,144 +5326,7 @@ def _plan_billing_meta(
     }
 
 
-@api_router.post("/plans/razorpay/create-order")
-async def rzp_create_plan_order(
-    payload: PlanRazorpayCreateOrderRequest,
-    current_user: Dict[str, Any] = Depends(get_current_user),
-):
-    """Step 1 of Plan Subscription Razorpay flow.
-
-    Creates a Razorpay order keyed to a plan/cycle and persists the
-    intent so the verify endpoint can extend the user's plan validity
-    correctly on success.
-    """
-    if not _rzp_client:
-        raise HTTPException(
-            status_code=503, detail="Razorpay is not configured on the server.",
-        )
-    if payload.plan_key not in PLAN_TABLE:
-        raise HTTPException(status_code=400, detail=f"Unknown plan '{payload.plan_key}'")
-
-    cfg = await _get_admin_config()
-    meta = _plan_billing_meta(cfg["plan_pricing"], payload.plan_key, payload.billing_cycle)
-    base_inr = int(meta["price_inr"])
-
-    # ── 2026-04-30 — Apply coupon discount before creating Razorpay order ──
-    coupon_doc = None
-    coupon_meta = {"applied": False}
-    if payload.coupon_code:
-        code = ensure_code_valid(payload.coupon_code)
-        coupon_doc = await db.coupons.find_one({"code": code})
-        ok, reason, discount, final_inr = validate_coupon(
-            coupon_doc, payload.plan_key, payload.billing_cycle, base_inr,
-            user_email=current_user.get("email"),
-        )
-        if not ok:
-            raise HTTPException(status_code=400, detail=f"Coupon: {reason}")
-        coupon_meta = {
-            "applied":   True,
-            "code":      code,
-            "discount":  discount,
-            "base_inr":  base_inr,
-            "final_inr": final_inr,
-        }
-        inr = final_inr
-    else:
-        inr = base_inr
-
-    # Razorpay receipt: 40-char limit. Encode plan + cycle for ops debugging.
-    cycle_short = "y" if payload.billing_cycle == "yearly" else "m"
-    receipt = f"plan-{payload.plan_key[:6]}-{cycle_short}-{current_user['id'][:6]}-{int(datetime.utcnow().timestamp())}"
-    receipt = receipt[:40]
-
-    try:
-        rzp_order = _rzp_client.order.create({
-            "amount": inr * 100,  # paise
-            "currency": "INR",
-            "receipt": receipt,
-            "payment_capture": 1,
-            "notes": {
-                "user_id": current_user["id"],
-                "user_email": current_user.get("email", ""),
-                "purpose": "plan_subscription",
-                "plan_key": payload.plan_key,
-                "billing_cycle": payload.billing_cycle,
-                "months": meta["months"],
-                "bonus_months": meta["bonus_months"],
-            },
-        })
-    except Exception as e:
-        logger.exception("rzp create plan order failed")
-        raise HTTPException(status_code=502, detail=f"Razorpay error: {e}")
-
-    await db.razorpay_orders.insert_one({
-        "id": str(uuid.uuid4()),
-        "user_id": current_user["id"],
-        "razorpay_order_id": rzp_order["id"],
-        "amount_inr": inr,
-        "amount_paise": inr * 100,
-        "purpose": "plan_subscription",
-        "plan_key": payload.plan_key,
-        "billing_cycle": payload.billing_cycle,
-        "months": meta["months"],
-        "bonus_months": meta["bonus_months"],
-        "status": "created",
-        "created_at": datetime.utcnow().isoformat() + "+00:00",
-        # Coupon trail (consumed on verify if payment succeeds)
-        "coupon_code":     coupon_meta.get("code"),
-        "coupon_discount": coupon_meta.get("discount") or 0,
-        "coupon_base_inr": base_inr,
-    })
-
-    plan_meta = PLAN_TABLE.get(payload.plan_key)
-    return {
-        "key_id":   _RZP_KEY_ID,
-        "order_id": rzp_order["id"],
-        "amount_paise": rzp_order["amount"],
-        "amount_inr":   inr,
-        "currency":     rzp_order["currency"],
-        "receipt":      rzp_order["receipt"],
-        "purpose":      "plan_subscription",
-        "plan_key":     payload.plan_key,
-        "plan_name":    getattr(plan_meta, "name", payload.plan_key.title()) if plan_meta else payload.plan_key.title(),
-        "billing_cycle": payload.billing_cycle,
-        "months":       meta["months"],
-        "bonus_months": meta["bonus_months"],
-        "user_email":   current_user.get("email", ""),
-        "user_name":    current_user.get("name", current_user.get("email", "User")),
-        # 2026-04-30 — coupon echo so the client UI can show the savings
-        "coupon": coupon_meta,
-        "base_inr": base_inr,
-    }
-
-
-# ════════════════════════════════════════════════════════════════════════
-# Coupon system (2026-04-30) — admin CRUD + user validation
-# ════════════════════════════════════════════════════════════════════════
-# Note: `_require_admin(current_user)` is defined earlier (sync). Do NOT
-# redefine it here — Python would shadow the first definition and break
-# every other admin endpoint that calls it without `await`.
-
-
-# [refactor Phase-4a-extra] @api_router.get("/admin/coupons") → routers/plans_coupons.py
-
-
-# [refactor Phase-4a-extra] @api_router.post("/admin/coupons") → routers/plans_coupons.py
-
-
-# [refactor Phase-4a-extra] @api_router.put("/admin/coupons/{coupon_id}") → routers/plans_coupons.py
-
-
-# [refactor Phase-4a-extra] @api_router.delete("/admin/coupons/{coupon_id}") → routers/plans_coupons.py
-
-
-# [refactor Phase-4a-extra] @api_router.get("/admin/coupons/analytics") → routers/plans_coupons.py
-
-
-# [refactor Phase-4a-extra] class CouponValidateRequest → routers/plans_coupons.py
-
-
-# [refactor Phase-4a-extra] @api_router.post("/coupons/validate") → routers/plans_coupons.py
+# [refactor Phase-5c-1] @api_router.post("/plans/razorpay/create-order") → routers/plans_billing.py
 
 
 def _extend_plan_expiry(
@@ -5531,118 +5354,7 @@ def _extend_plan_expiry(
     return new_expiry.isoformat()
 
 
-@api_router.post("/plans/razorpay/verify")
-async def rzp_verify_plan_subscription(
-    payload: RazorpayVerifyRequest,
-    current_user: Dict[str, Any] = Depends(get_current_user),
-):
-    """Step 2 of Plan Subscription Razorpay flow.
-
-    Verifies the payment signature, switches the user's plan, and
-    extends plan_expires_at by (months + bonus_months) — carrying over
-    any unused validity if the user is already on a paid plan.
-    """
-    if not _rzp_client:
-        raise HTTPException(status_code=503, detail="Razorpay not configured")
-
-    order = await db.razorpay_orders.find_one({
-        "razorpay_order_id": payload.razorpay_order_id,
-        "user_id": current_user["id"],
-    })
-    if not order:
-        raise HTTPException(status_code=404, detail="Order not found for this user")
-    if order.get("purpose") != "plan_subscription":
-        raise HTTPException(
-            status_code=400,
-            detail="This order isn't a plan subscription. Use /wallet/razorpay/verify for top-ups.",
-        )
-
-    # Idempotency
-    if order.get("status") == "paid":
-        fresh = await db.users.find_one({"id": current_user["id"]}, {"_id": 0})
-        return {
-            "ok": True,
-            "already_credited": True,
-            "plan": order.get("plan_key"),
-            "billing_cycle": order.get("billing_cycle"),
-            "plan_expires_at": (fresh or {}).get("plan_expires_at"),
-        }
-
-    # Verify signature
-    try:
-        _rzp_client.utility.verify_payment_signature({
-            "razorpay_order_id":   payload.razorpay_order_id,
-            "razorpay_payment_id": payload.razorpay_payment_id,
-            "razorpay_signature":  payload.razorpay_signature,
-        })
-    except Exception as e:
-        await db.razorpay_orders.update_one(
-            {"_id": order["_id"]},
-            {"$set": {
-                "status": "verify_failed",
-                "error": str(e),
-                "razorpay_payment_id": payload.razorpay_payment_id,
-            }},
-        )
-        raise HTTPException(status_code=400, detail=f"Payment verification failed: {e}")
-
-    # Switch the plan + extend validity
-    plan_key = order.get("plan_key")
-    months = int(order.get("months", 1))
-    bonus_months = int(order.get("bonus_months", 0))
-    fresh = await db.users.find_one({"id": current_user["id"]}, {"_id": 0}) or {}
-    same_plan = (fresh.get("plan") == plan_key)
-    new_expiry = _extend_plan_expiry(
-        fresh.get("plan_expires_at") if same_plan else None,
-        months, bonus_months,
-    )
-
-    set_payload = {
-        "plan": plan_key,
-        "plan_started_at": fresh.get("plan_started_at") if same_plan else (datetime.utcnow().isoformat() + "+00:00"),
-        "plan_expires_at": new_expiry,
-        "plan_billing_cycle": order.get("billing_cycle"),
-        "plan_mocked": False,
-        "last_paid_payment_id": payload.razorpay_payment_id,
-        "last_paid_at": datetime.utcnow().isoformat() + "+00:00",
-    }
-    await db.users.update_one({"id": current_user["id"]}, {"$set": set_payload})
-
-    # 2026-04-30 — Coupon consumption: bump used_count atomically on
-    # successful payment. We never block the user response if this
-    # write fails (the payment is already complete).
-    coupon_code = (order.get("coupon_code") or "").strip()
-    if coupon_code:
-        try:
-            await db.coupons.update_one(
-                {"code": coupon_code},
-                {"$inc": {"used_count": 1},
-                 "$set": {"updated_at": datetime.utcnow().replace(tzinfo=timezone.utc).isoformat()}},
-            )
-        except Exception:
-            logger.exception("Coupon used_count bump failed for code=%s", coupon_code)
-
-    await db.razorpay_orders.update_one(
-        {"_id": order["_id"]},
-        {"$set": {
-            "status": "paid",
-            "razorpay_payment_id": payload.razorpay_payment_id,
-            "razorpay_signature":  payload.razorpay_signature,
-            "paid_at": datetime.utcnow().isoformat() + "+00:00",
-            "applied_expires_at": new_expiry,
-        }},
-    )
-
-    return {
-        "ok": True,
-        "already_credited": False,
-        "plan": plan_key,
-        "billing_cycle": order.get("billing_cycle"),
-        "amount_inr": int(order.get("amount_inr", 0)),
-        "months": months,
-        "bonus_months": bonus_months,
-        "plan_expires_at": new_expiry,
-    }
+# [refactor Phase-5c-1] @api_router.post("/plans/razorpay/verify") → routers/plans_billing.py
 
 
 DEFAULT_CREDIT_PACKAGES = [
@@ -6004,6 +5716,20 @@ except Exception as _po_exc:
     import logging as _lg
     _lg.getLogger("server.bootstrap").exception(
         f"Failed to mount pending_orders router: {_po_exc}",
+    )
+
+# Phase-5c-1 modular: plan upgrade + Razorpay subscription endpoints.
+try:
+    from routers.plans_billing import (
+        plans_billing_router as _plans_billing_router,
+        init as _init_plans_billing_router,
+    )
+    _init_plans_billing_router()
+    app.include_router(_plans_billing_router)
+except Exception as _pb_exc:
+    import logging as _lg
+    _lg.getLogger("server.bootstrap").exception(
+        f"Failed to mount plans_billing router: {_pb_exc}",
     )
 
 # Phase-4c modular: read-only shipments + lookup endpoints.
