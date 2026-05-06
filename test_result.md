@@ -1087,6 +1087,120 @@ test_plan:
   test_all: false
   test_priority: "high_first"
 
+## Backend Test Run: Phase-4b Smart Paste Router Refactor Regression (2026-05-06)
+
+backend:
+  - task: "Phase-4b: Smart Paste preview/dry-run + Master Order ID counter + Sheets-sync-from-master endpoints relocated to routers/smart_paste.py"
+    implemented: true
+    working: true
+    file: "/app/backend/routers/smart_paste.py, /app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "testing"
+        -comment: |
+            All 8 review assertions PASS + 6 smoke tests PASS
+            (44/44 total assertions). Verified via
+            /app/phase4b_smart_paste_test.py against
+            https://logistics-hub-740.preview.emergentagent.com/api as
+            admin@test.com.
+
+            Coverage of relocated endpoints (late-binding init() pattern):
+              1. GET  /api/smart-paste/default-prompt    → 200; keys
+                 [default_prompt, user_instructions, ai_enabled].
+                 default_prompt is a multi-line string (15506 chars),
+                 ai_enabled is bool.
+              2. POST /api/smart-paste/parse (use_ai default true) →
+                 200; fields={customer_name="Test User",
+                 customer_phone="9876543210", address_line1="12 Park
+                 Lane", city="Mumbai", state="Maharashtra",
+                 pincode="400001", amount=500.0, payment_mode="COD"};
+                 ai={used:true, complexity:"medium", source:"llm"}.
+              3. POST /api/smart-paste/parse (use_ai=false) → 200;
+                 ai={used:false, source:"regex"} as expected (regex-only
+                 path skips LLM).
+              4. POST /api/smart-paste/check-duplicate → 200; response
+                 contains fields, confidence, warnings (list),
+                 duplicates (array, empty for fresh phone), ai block.
+              5. GET  /api/orders/master-id-counter → 200;
+                 current_seq=2289 (int), next_seq=2290 (int),
+                 next_master_order_id="26050602290" (string ending
+                 with 5 zero-padded digits).
+              6. GET  /api/orders/peek-master-id → 200;
+                 master_order_id="26050602290",
+                 auto_generate=true, autofill_in_new_shipment=true.
+              7. POST /api/orders/master-id-counter (safe no-op
+                 seq=2289=current) → 200; counter unchanged. Bonus:
+                 attempted lowering to 2288 without force → 409 with
+                 "Counter is currently at 2289. Lowering to 2288 would
+                 risk duplicate Master Order IDs. Pass force=true to
+                 override." Counter still at 2289 after the 409
+                 (verified via re-GET).
+              8. POST /api/sheets/sync-from-master {overwrite:true} →
+                 200 (admin has linked sheet); response={ok:true,
+                 rows_synced:712, master_total_rows:846,
+                 tab:"All Master Data", sheet_id:"1troW3K7P_…",
+                 mode:"overwrite"}. Real Service Account write path
+                 — NOT mocked.
+
+            Smoke regression on previously-extracted routers:
+              ✅ GET /api/wallet           → 200 (total_credits, etc.)
+              ✅ GET /api/plans            → 200 (plans + current)
+              ✅ GET /api/admin/coupons    → 200 (list)
+              ✅ GET /api/couriers         → 200 (Nandan Courier seeded)
+              ✅ GET /api/me/feature-flags → 200 (plan=silver, features)
+              ✅ GET /api/me/custom-fields → 200 (fields, limit, used)
+
+            No 500 errors observed; response shapes unchanged from the
+            pre-refactor server.py monolith. Late-binding init()
+            pattern is wired correctly — every helper/model
+            (db, get_current_user, DEFAULT_SHIPBOT_PROMPT,
+            parse_paste_via_llm, parse_structured_paste,
+            _legacy_with_pincode_enrich, _legacy_with_pincode_enrich_v2,
+            find_duplicate_matches, peek_next_master_order_id,
+            sheet_sync_master_to_user) is imported from server after
+            initialisation. Pydantic models SmartPasteRequest,
+            _SyncFromMasterPayload, _CounterSetPayload now live in
+            the router file with no duplicate definitions in server.py.
+
+agent_communication:
+    -agent: "testing"
+    -message: |
+        Phase-4b smart_paste router refactor — ALL 8 review assertions
+        PASS + ALL 6 smoke regression checks PASS (44/44 total).
+        No 500 errors. Response shapes match the pre-refactor contract
+        byte-for-byte:
+          • default-prompt returns the expected 3-key shape with a
+            multi-line prompt string
+          • parse honours use_ai=false (returns ai.used=false,
+            source=regex) and uses LLM by default (ai.used=true,
+            source=llm)
+          • check-duplicate returns fields/confidence/warnings/
+            duplicates/ai, all of the right types
+          • master-id-counter GET/POST work (POST no-op + 409 on
+            lower-without-force both correct)
+          • peek-master-id returns the right 3-key shape
+          • sync-from-master executed a real overwrite sync against
+            the admin's linked sheet (rows_synced=712 of 846 master
+            rows after user_id filter — Service Account path live)
+
+        Counter was NOT mutated (POST used current_seq=2289 as a
+        no-op; the 409 attempt did not change anything; final GET
+        confirmed seq=2289 still). Safe for production.
+
+        Smoke regression: wallet, plans, admin/coupons, couriers,
+        feature-flags, custom-fields all return 200 — previously-
+        extracted routers (Phase-3 + Phase-4a) are unaffected.
+
+        Recommendation: ready to ship. No follow-up testing needed
+        unless main agent moves the heavier endpoints
+        (/smart-paste/chat, /smart-paste/photo, /smart-paste create)
+        in a future phase.
+
+
+
 ## Backend Test Run: Phase-4a-extra Plans + Coupons Refactor Regression (2026-05-06)
 
 backend:
