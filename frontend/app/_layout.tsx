@@ -73,13 +73,25 @@ export default function RootLayout() {
     ...Ionicons.font,
   });
 
+  // 5-second timeout fallback — if the icon font asset download stalls
+  // (slow ngrok tunnel, flaky CDN, etc.) we don't want the app to hang
+  // on the splash forever. After 5 s we proceed without fonts; icons
+  // render as their codepoint glyphs which still ship as placeholders.
+  const [fontTimeout, setFontTimeout] = useState(false);
   useEffect(() => {
-    if (fontsLoaded) {
+    const t = setTimeout(() => setFontTimeout(true), 5000);
+    return () => clearTimeout(t);
+  }, []);
+
+  const fontsReady = fontsLoaded || fontTimeout;
+
+  useEffect(() => {
+    if (fontsReady) {
       SplashScreen.hideAsync().catch(() => {});
     }
-  }, [fontsLoaded]);
+  }, [fontsReady]);
 
-  if (!fontsLoaded) {
+  if (!fontsReady) {
     // Minimal placeholder while warming up – avoids white flashes.
     return <View style={{ flex: 1, backgroundColor: "#F4F5F7" }} />;
   }
