@@ -790,10 +790,7 @@ const styles = StyleSheet.create({
   },
   modeBtnActive: {
     backgroundColor: "#fff",
-    shadowColor: "#000",
-    shadowOpacity: 0.06,
-    shadowRadius: 3,
-    shadowOffset: { width: 0, height: 1 },
+    boxShadow: "0px 1px 3px rgba(0, 0, 0, 0.06)",
     elevation: 1,
   },
   modeTxt: {

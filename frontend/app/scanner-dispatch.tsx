@@ -768,10 +768,7 @@ const styles = StyleSheet.create({
     right: "6%",
     height: 2,
     backgroundColor: "#EF4444",
-    shadowColor: "#EF4444",
-    shadowOffset: { width: 0, height: 0 },
-    shadowOpacity: 0.9,
-    shadowRadius: 6,
+    boxShadow: "0px 0px 6px rgba(239, 68, 68, 0.9)",
     elevation: 6,
   },
   framePlaceholder: {

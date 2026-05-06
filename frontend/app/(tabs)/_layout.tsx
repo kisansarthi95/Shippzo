@@ -66,10 +66,7 @@ export default function TabsLayout() {
                 justifyContent: "center",
                 alignItems: "center",
                 marginBottom: 4,
-                shadowColor: colors.primary,
-                shadowOpacity: 0.35,
-                shadowRadius: 8,
-                shadowOffset: { width: 0, height: 4 },
+                boxShadow: `0px 4px 8px ${colors.primary}59`,
                 elevation: 6,
               }}
             >

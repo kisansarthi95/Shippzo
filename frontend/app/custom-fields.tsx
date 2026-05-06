@@ -443,10 +443,7 @@ const styles = StyleSheet.create({
     // overlay on both iOS and Android.
     ...Platform.select({
       ios: {
-        shadowColor: "#000",
-        shadowOffset: { width: 0, height: -4 },
-        shadowOpacity: 0.15,
-        shadowRadius: 12,
+        boxShadow: "0px -4px 12px rgba(0, 0, 0, 0.15)",
       },
       android: {
         elevation: 12,

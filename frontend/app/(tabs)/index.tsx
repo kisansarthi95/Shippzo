@@ -2935,10 +2935,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     borderRadius: 10,
     marginBottom: 8,
-    shadowColor: "#10B981",
-    shadowOpacity: 0.25,
-    shadowRadius: 6,
-    shadowOffset: { width: 0, height: 2 },
+    boxShadow: "0px 2px 6px rgba(16, 185, 129, 0.25)",
     elevation: 2,
   },
   chatSaveNowText: {
