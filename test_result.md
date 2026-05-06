@@ -11904,3 +11904,108 @@ agent_communication:
         No 500 errors observed. No breaking changes in response shapes.
         Ready for main agent to summarise and finish.
 
+
+---
+
+## Backend Test Run: Phase-4c Read-only Shipments + Lookup Router Refactor (2026-05-06)
+
+backend:
+  - task: "Phase-4c: Read-only Shipments + Lookup endpoints relocated to routers/shipments_read.py"
+    implemented: true
+    working: true
+    file: "/app/backend/routers/shipments_read.py, /app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "testing"
+        -comment: |
+            All 15 review assertions PASS + 8 smoke regression tests PASS
+            (38/38 total assertions on /app/phase4c_shipments_read_test.py
+            against https://logistics-hub-740.preview.emergentagent.com/api
+            as admin@test.com). No 500 errors. No 404 surprises. Response
+            shapes match the pre-refactor monolith implementation.
+
+            9 relocated endpoints (late-binding init() pattern) — all green:
+              T1.  GET  /api/shipments → 200, returned 54 shipments (array).
+              T2.  GET  /api/shipments?status=Delivered → 200, returned 4
+                   items, all with status="Delivered" (filter applied).
+              T3.  GET  /api/shipments?search=test&limit=5 → 200, returned
+                   exactly 5 items (limit honoured).
+              T4.  GET  /api/shipments/stats → 200 with all 10 expected
+                   keys (total=54, delivered=4, pending=40, dispatch=1,
+                   shipped=2, cod_total=13149.0, cod_count=22,
+                   prepaid_total=22155.32, prepaid_count=29,
+                   revenue_total=35304.32). All numeric.
+              T5.  GET  /api/shipments/export/csv → 200,
+                   Content-Type=text/csv; charset=utf-8, body starts with
+                   "Tracking ID,Courier,Order ID,Customer,Phone,..."
+                   (header row intact, all 17 columns present).
+              T6.  GET  /api/shipments/by-tracking/NONEXISTENT_TRACKING_99999
+                   → 404 (correct).
+              T7.  POST /api/shipments/bulk-fetch {"ids":[]} → 200, [].
+              T8.  POST /api/shipments/bulk-fetch
+                   {"ids":["nonexistent-id-12345"]} → 200, [] (no rows match).
+              T9.  GET  /api/customers/by-phone/9999999999 → 200,
+                   {found: false, customer: null, count: 0} (proper shape).
+              T10. GET  /api/customers/by-phone/123 → 200,
+                   {found: false, customer: null, count: 0} (early-return
+                   for <10 digits works).
+              T11. GET  /api/lookup/by-city?q=Surat → 200, ok=true,
+                   city="Surat", state="Gujarat" (India Post data loaded
+                   correctly), state_confidence present, suggestions array
+                   present, count present.
+              T12. GET  /api/lookup/by-city?q=Su → 200,
+                   {ok: true, suggestions: [], count: 0} (3-char minimum
+                   guard works).
+              T13. GET  /api/lookup/by-pincode/395003 → 200, ok=true,
+                   pincode="395003", state="Gujarat", district="Surat",
+                   office="Aganovad".
+              T14. GET  /api/lookup/by-pincode/INVALID → 404 (correct).
+              T15. GET  /api/shipments/nonexistent-id-99 → 404 (correct;
+                   route registration order — single-id GET registered AFTER
+                   literal-prefix routes — works as designed).
+
+            Smoke regression — 8/8 previously-extracted routers all 200:
+              S1. GET /api/wallet                       → 200
+              S2. GET /api/plans                        → 200
+              S3. GET /api/smart-paste/default-prompt   → 200
+              S4. GET /api/orders/master-id-counter     → 200
+              S5. GET /api/couriers                     → 200
+              S6. GET /api/admin/coupons                → 200
+              S7. GET /api/me/feature-flags             → 200
+              S8. GET /api/me/custom-fields             → 200
+
+            No regressions. The 9 read-leaning shipments + lookup
+            endpoints, and the 3 Pydantic types they consume (Shipment,
+            resolve_city / resolve_pincode helpers via late-bind) work
+            end-to-end against real data (admin@test.com workspace,
+            54 existing shipments, India Post pincode db loaded).
+            server.py is now ~270 lines lighter (7730 → 7459) with no
+            behaviour changes detected.
+
+agent_communication:
+    -agent: "testing"
+    -message: |
+        Phase-4c read-only shipments + lookup router refactor regression
+        — ALL PASS (38/38 assertions: 15 review tests + 8 smoke regression
+        + supporting sub-assertions). 9 endpoints relocated from
+        server.py to /app/backend/routers/shipments_read.py respond
+        identically to the old monolithic implementation:
+
+          ✅ GET  /api/shipments                       (filter/search/limit OK)
+          ✅ GET  /api/shipments/stats                 (10 keys, all numeric)
+          ✅ GET  /api/shipments/export/csv            (text/csv + 17-col header)
+          ✅ GET  /api/shipments/by-tracking/{tid}     (404 on miss)
+          ✅ POST /api/shipments/bulk-fetch            (empty + nonexistent)
+          ✅ GET  /api/customers/by-phone/{phone}      (10-digit guard works)
+          ✅ GET  /api/lookup/by-city                  (Surat→Gujarat, 3-char guard)
+          ✅ GET  /api/lookup/by-pincode/{pincode}     (resolves + 404 on invalid)
+          ✅ GET  /api/shipments/{id}                  (404 on miss; route order OK)
+
+        Smoke regression — all 8 previously-extracted router endpoints
+        still 200. No 500 errors anywhere. No response-shape changes.
+        Test artifact: /app/phase4c_shipments_read_test.py.
+        Ready for main agent to summarise and finish.
+
