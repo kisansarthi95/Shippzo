@@ -4,7 +4,6 @@ import { SafeAreaProvider } from "react-native-safe-area-context";
 import { StatusBar } from "expo-status-bar";
 import { Platform, View, ActivityIndicator, Text, LogBox } from "react-native";
 import * as SplashScreen from "expo-splash-screen";
-import { Ionicons } from "@expo/vector-icons";
 import { useFonts } from "expo-font";
 import { AuthProvider, useAuth } from "../lib/auth";
 import { FeatureFlagsProvider } from "../lib/feature_flags";
@@ -65,12 +64,20 @@ if (typeof globalThis !== "undefined") {
 
 export default function RootLayout() {
   // Official Expo pattern — useFonts hook loads icon fonts through
-  // the expo-font pipeline and blocks render until ready. Using the
-  // `...Ionicons.font` spread ensures all icon sets ship together
-  // and avoids the `Font file for ionicons is empty` crash that
-  // happens when different code paths try to load the same asset.
+  // the expo-font pipeline and blocks render until ready.
+  //
+  // 2026-05-06: Android Expo Go (SDK 54) intermittently fails to
+  // resolve the Ionicons.ttf bundled inside node_modules/@expo/
+  // vector-icons on first cold launch — user sees blank squares /
+  // orange tiles where icons should be. The documented workaround
+  // (https://docs.expo.dev/guides/icons/) is to copy the .ttf into
+  // ./assets/fonts/ and load it with an explicit require() path so
+  // Metro bundles the asset through the regular asset pipeline
+  // instead of the node_modules traversal that sometimes fails on
+  // Android. The icon family name MUST be lowercase `ionicons` to
+  // match createIconSet(glyphMap, 'ionicons', font).
   const [fontsLoaded] = useFonts({
-    ...Ionicons.font,
+    ionicons: require("../assets/fonts/Ionicons.ttf"),
   });
 
   // 5-second timeout fallback — if the icon font asset download stalls
