@@ -11520,3 +11520,115 @@ agent_communication:
         unchanged. No regressions. Ready for main agent to summarise
         and finish.
 
+
+
+---
+
+## Backend Test Run: Phase-4a Wallet + Razorpay Router Refactor — 2026-05-06
+
+backend:
+  - task: "Phase-4a Wallet + Razorpay router extraction (routers/wallet.py)"
+    implemented: true
+    working: true
+    file: "/app/backend/routers/wallet.py, /app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "testing"
+        -comment: |
+            All 15/15 assertions passed via /app/backend_test.py against
+            https://logistics-hub-740.preview.emergentagent.com/api
+            (admin@test.com / Admin@12345).
+
+            7 relocated endpoints all working, response shapes unchanged,
+            no 500 errors:
+
+            1. GET /api/wallet → 200, keys present:
+                 {total_credits, used_credits, remaining_credits, updated_at}
+            2. GET /api/wallet/history → 200, body:
+                 {entries: [...], count: 100}
+            3. POST /api/wallet/purchase {amount_inr:100} → 200:
+                 {ok:true, mocked:true, amount_inr:100, credits_added:100,
+                  bonus:0, balance:<n>, history_id:<uuid>}
+                 Balance confirmed INCREASED by 100 on follow-up GET /wallet.
+            4. POST /api/wallet/purchase {amount_inr:5} → 400,
+                 detail="Top-up must be between ₹10 and ₹1,00,000" ✅
+            5. GET /api/wallet/quote?address=Sample address Mumbai 400001
+                 → 200, keys:
+                 {plan, wallet_balance, total, can_afford, ai_complexity,
+                  ai_credits, shipment_credits, ai_rates, ai_reason,
+                  ai_applies, plan_has_room, trial_expired, daily_blocked}
+                 plan=silver, ai_complexity=simple, total=0.5, can_afford=true.
+            6. POST /api/wallet/razorpay/create-order {amount_inr:100}
+                 → RAZORPAY IS CONFIGURED on this server → 200 with
+                 {key_id: "rzp_test_SiZG8C…", order_id: "order_Sm2BEa…",
+                  amount_paise:10000, currency:"INR", receipt, credits_to_grant,
+                  bonus_credits, user_email, user_name}. Razorpay SDK call
+                 succeeded (real signed order from Razorpay test env).
+            7. POST /api/wallet/razorpay/verify with bogus payload
+                 {razorpay_order_id:"x", razorpay_payment_id:"y",
+                  razorpay_signature:"z"}
+                 → 404, detail="Order not found for this user" ✅
+                 (signature verification is gated by the local-order lookup,
+                 so the contract correctly returns 404 before ever invoking
+                 Razorpay's utility.verify_payment_signature).
+            8. POST /api/wallet/razorpay/webhook (empty body, no x-razorpay-
+                 signature) → 200, body={"ok":true,
+                 "skipped":"webhook not configured"} ✅
+                 (RAZORPAY_WEBHOOK_SECRET is empty in server env, so the
+                 short-circuit branch is correctly taken).
+
+            NOTE on webhook auth: the global auth middleware
+            (server.py line 7219) requires a Bearer token on every
+            /api/* route except /api/auth/, /api/legal/, /api/team/login.
+            The webhook endpoint is therefore only reachable with a valid
+            token today — this is PRE-EXISTING behaviour and unchanged
+            by this refactor (the old monolithic route had the same
+            constraint). In production Razorpay cannot attach a Bearer
+            token, so for webhook to actually be callable by Razorpay
+            the /api/wallet/razorpay/webhook path would need to be added
+            to _AUTH_EXEMPT_PREFIXES in server.py — but that is out of
+            scope for this refactor test and was explicitly the same
+            behavior before the move.
+
+            PHASE-3 SMOKE REGRESSION (5/5):
+              ✅ GET /api/couriers → 200
+              ✅ GET /api/me/feature-flags → 200
+              ✅ GET /api/me/custom-fields → 200
+              ✅ GET /api/me/contact-settings → 200
+              ✅ GET /api/me/categories → 200
+
+            Conclusion: the Phase-4a router extraction is clean. Public
+            API contract 100% preserved. The late-binding init() pattern
+            (same as admin.py / couriers.py / custom_fields.py) wires up
+            all 7 routes correctly without circular-import issues.
+            PurchaseCreditsRequest, RazorpayCreateOrderRequest, and
+            RazorpayVerifyRequest Pydantic models were successfully
+            relocated from server.py into routers/wallet.py.
+
+agent_communication:
+    -agent: "testing"
+    -message: |
+        Phase-4a wallet router refactor regression test — ALL PASS
+        (15/15 assertions). 7 endpoints + 3 Pydantic models relocated
+        from server.py monolith into /app/backend/routers/wallet.py
+        respond identically to the old monolithic implementation:
+
+          ✅ GET  /api/wallet                      200, shape intact
+          ✅ GET  /api/wallet/history              200, {entries, count}
+          ✅ POST /api/wallet/purchase (valid)     200, credits added + balance up
+          ✅ POST /api/wallet/purchase (below min) 400, correct detail
+          ✅ GET  /api/wallet/quote                200, all 8 req. keys present
+          ✅ POST /api/wallet/razorpay/create-order 200 (Razorpay IS configured,
+                  real signed order returned)
+          ✅ POST /api/wallet/razorpay/verify       404 (bogus payload correctly
+                  rejected before signature check)
+          ✅ POST /api/wallet/razorpay/webhook      200 (no webhook secret in env
+                  → correctly short-circuits with skipped msg)
+
+        Phase-3 router smoke regression all 5 endpoints still 200.
+        No 500 errors observed. No breaking changes in response shapes.
+        Ready for main agent to summarise and finish.
+
