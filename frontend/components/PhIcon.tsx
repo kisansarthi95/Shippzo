@@ -164,6 +164,26 @@ const ICON_MAP: Record<string, React.ComponentType<any>> = {
   stop:                    Ph.Stop,
   repeat:                  Ph.Repeat,
   index:                   Ph.House,                 // tab fallback
+
+  // Phase 5e-2 — additions discovered via prop-based icon usages
+  // (e.g. <StatCard icon="trending-up" />). These are passed as the
+  // `name` value through the same shim, so missing entries previously
+  // rendered as the Question fallback (the "?" tiles users reported).
+  "trending-up":           Ph.TrendUp,
+  business:                Ph.Briefcase,
+  car:                     Ph.Truck,                 // courier context
+  chatbubbles:             Ph.ChatsCircle,
+  enter:                   Ph.SignIn,
+  "help-buoy":             Ph.LifeBuoy,              // help/support
+  location:                Ph.MapPin,
+  "log-in":                Ph.SignIn,                // alias for login
+  "phone-portrait":        Ph.DeviceMobile,
+
+  // Phase 5e-3 — runtime-discovered (caught from the [PhIcon]
+  // unmapped-icon console warnings on real device traffic).
+  "checkbox":              Ph.CheckSquare,           // ticked checkbox
+  "checkmark-done-circle": Ph.SealCheck,             // success badge
+  happy:                   Ph.Smiley,                // emoji-style mood
 };
 
 // Aliases for less obvious mappings — the kebab-case key is the

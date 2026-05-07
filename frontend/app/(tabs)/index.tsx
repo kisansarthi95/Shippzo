@@ -1793,7 +1793,7 @@ export default function Dashboard() {
                   <ActionPill
                     testID="quick-admin-sla-alerts"
                     icon="alert-circle"
-                    label="🚨 SLA Alerts Console"
+                    label="SLA Alerts Console"
                     onPress={() => router.push("/admin/sla-alerts" as any)}
                     tone="warning"
                     chevron
@@ -1801,7 +1801,7 @@ export default function Dashboard() {
                   <ActionPill
                     testID="quick-admin-stage-rules"
                     icon="settings"
-                    label="⚙️ Stage Rules + SLA Engine"
+                    label="Stage Rules + SLA Engine"
                     onPress={() => router.push("/admin/stage-rules" as any)}
                     tone="neutral"
                     chevron
