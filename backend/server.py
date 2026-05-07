@@ -3581,6 +3581,14 @@ def _coerce_notif_prefs(raw: Optional[Dict[str, Any]]) -> Dict[str, bool]:
 # [refactor Phase-5d] notification-prefs GET/PUT + NotificationPrefsRequest → routers/notifications.py
 
 # [refactor Phase-5d] PushTokenRequest model + 4 push-token endpoints → routers/notifications.py
+# `_push_event` helper STAYS here because the SLA cron worker calls
+# it. The push_sender module-level import that used to live next to
+# the (now-relocated) push-token endpoints needs to stay reachable
+# at module scope — otherwise this helper raises NameError
+# `_push_sender is not defined` on every SLA scan. (Caught by the
+# Phase-5d regression test on 2026-05-07.)
+import push_sender as _push_sender  # noqa: E402
+
 # Helper used by SLA engine + cron jobs to send a push only when the
 # user opted in to that event type. Centralized here so we have one
 # place to add throttling / digest logic later.
