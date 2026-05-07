@@ -98,6 +98,161 @@
 
 
 
+
+## Frontend Test Run: Phase D "Buy Extra Team-Member Slot via Razorpay" (2026-05-07)
+
+frontend:
+  - task: "Phase D: Buy Extra Team-Member Slot via Razorpay"
+    implemented: true
+    working: "PARTIAL"
+    file: "/app/frontend/app/settings/team-members.tsx, /app/frontend/app/checkout.tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: "NA"
+        -agent: "testing"
+        -comment: |
+            PHASE D END-TO-END FLOW TEST (iPhone 12: 390x844)
+            
+            TEST ENVIRONMENT:
+            - URL: http://localhost:3000
+            - Credentials: admin@test.com / Admin@12345
+            - User Plan: Silver (2/99 free + 1 extra team members)
+            
+            ✅ STEP 1: LOGIN FLOW - PASS
+            - Login page renders correctly with all UI elements visible
+            - Icons visible: briefcase (Owner/Admin tab), eye icon (password field), Google G logo
+            - Email and password fields functional
+            - Login button clickable (required JavaScript evaluation due to React Native Web rendering)
+            - Successfully authenticated and redirected to dashboard
+            - No console errors during login
+            
+            ✅ STEP 2: TEAM MEMBERS SCREEN - PASS
+            - Successfully navigated to /settings/team-members
+            - Header shows quota badge: "Silver plan · 2/99 free + 1 extra"
+            - Existing team members render correctly:
+              * Harsh Modi (Operations Manager) - 1 permission granted
+              * Test Staff (Sales Executive) - 1 permission granted
+              * T T (with "EXTRA" badge) - 0 permissions granted
+            - All icons render correctly (Ionicons loaded):
+              * Avatar circles with initials
+              * Edit icons (pencil)
+              * Delete icons (trash)
+            - "Add Team Member (Free)" button visible at bottom (blue button)
+            - Screen layout clean and mobile-optimized
+            
+            ⚠️ STEP 3: BUY-EXTRA FLOW - NOT FULLY TESTED
+            - Could not trigger the buy-extra sheet in automated test
+            - Reason: User has free quota available (2/99 used), so "Add Team Member (Free)" button is shown instead of "Buy Extra Member"
+            - To test the buy-extra flow, the free quota would need to be exhausted first
+            - Manual verification required: add members until free quota is full (99 members for Silver plan)
+            
+            ❌ STEP 4-8: RAZORPAY CHECKOUT FLOW - NOT TESTED
+            - Could not proceed with Razorpay checkout test because buy-extra sheet was not triggered
+            - The following steps were not executed:
+              * Opening buy-extra sheet with Wallet/Razorpay buttons
+              * Clicking "Pay via Razorpay"
+              * Verifying navigation to /checkout?mode=team_extra_member
+              * Verifying Razorpay WebView loads
+              * Testing cancel/back navigation
+              * Testing wallet path (insufficient balance error)
+            
+            CONSOLE LOGS ANALYSIS:
+            - No critical errors during the test
+            - Expected 401 errors before login (auth/context, settings, shipments, etc.)
+            - No Razorpay-related errors (flow not reached)
+            - No font/icon-loading errors (Ionicons loaded correctly)
+            - No shadow* deprecation warnings
+            - React Native Web warnings present but non-blocking:
+              * "props.pointerEvents is deprecated. Use style.pointerEvents"
+            
+            CODE REVIEW FINDINGS:
+            ✅ Implementation appears correct based on code inspection:
+            - /app/frontend/app/settings/team-members.tsx:
+              * Buy-extra sheet has TWO buttons: "Pay from Wallet" (green) and "Pay via Razorpay" (blue)
+              * Razorpay button navigates to /checkout?mode=team_extra_member (line 242)
+              * After successful payment, picks up slot_token from URL params (lines 102-121)
+              * Opens add-member modal with pre-paid slot
+            - /app/frontend/app/checkout.tsx:
+              * Supports team_extra_member mode (lines 9-14, 42, 99-108)
+              * Calls Api.meTeamMemberPayExtra("razorpay") to create Razorpay order
+              * Renders WebView with Razorpay Checkout JS
+              * On success, calls Api.meTeamMemberRzpVerify() and routes back with slot_token (lines 237-248)
+              * Header shows "Razorpay Payment" title (line 309)
+              * Close button in header for cancel (lines 318-321)
+            
+            SCREENSHOTS CAPTURED:
+            1. phase-d-01-after-login.png - Dashboard after successful login
+            2. phase-d-02-settings.png - Settings hub with all sections visible
+            3. phase-d-02-team-members.png - Team Members screen showing quota and members
+            4. phase-d-04-after-click.png - State after clicking Add Member button
+            5. phase-d-05-payment-sheet.png - (not captured - flow not reached)
+            6. phase-d-06-checkout-*.png - (not captured - flow not reached)
+            7. phase-d-07-after-cancel.png - (not captured - flow not reached)
+            8. phase-d-08-wallet.png - (not captured - flow not reached)
+            
+            MOBILE RESPONSIVENESS:
+            ✅ All tested screens render correctly in iPhone 12 dimensions (390x844)
+            ✅ Touch targets are appropriately sized
+            ✅ Text is readable without zooming
+            ✅ No horizontal scrolling required
+            ✅ Bottom navigation tabs visible and functional
+            
+            CRITICAL ISSUE FOUND:
+            ❌ CANNOT TEST PHASE D FLOW WITH CURRENT USER STATE
+            - The admin@test.com user has only 3 team members (2 free + 1 extra)
+            - Silver plan allows 99 free team members
+            - The "Buy Extra Member" button only appears when free quota is FULL
+            - To properly test Phase D, either:
+              1. Add 96 more team members to exhaust free quota, OR
+              2. Use a different test user with a plan that has lower free quota (e.g., Gold plan with 1 free member), OR
+              3. Manually modify the quota in the database for testing purposes
+            
+            RECOMMENDATION:
+            The Phase D implementation appears correct based on code review, but CANNOT BE VERIFIED via automated testing with the current user state. Manual testing is required with a user who has exhausted their free team-member quota.
+            
+            NEXT STEPS FOR MAIN AGENT:
+            1. Create a test user with Gold plan (1 free team member) to enable easier testing of buy-extra flow
+            2. OR: Add a test mode / admin override to force the buy-extra sheet to appear
+            3. OR: Provide instructions for manual testing with the current admin user after adding 96 more members
+            4. Once buy-extra flow is accessible, re-run this test to verify:
+               - Buy-extra sheet renders with both payment buttons
+               - Razorpay button navigates to checkout correctly
+               - Checkout WebView loads Razorpay without errors
+               - Cancel/back navigation works gracefully
+               - Wallet path shows appropriate error for insufficient balance
+
+agent_communication:
+    -agent: "testing"
+    -message: |
+        Phase D "Buy Extra Team-Member Slot via Razorpay" test PARTIALLY COMPLETE.
+        
+        ✅ WORKING:
+        - Login flow
+        - Team Members screen UI (quota badge, member cards, icons, buttons)
+        - Mobile responsiveness (iPhone 12 dimensions)
+        
+        ⚠️ CANNOT TEST:
+        - Buy-extra sheet (user has 97 free slots remaining)
+        - Razorpay checkout flow
+        - Wallet path
+        
+        🔍 CODE REVIEW: Implementation appears correct based on inspection of:
+        - /app/frontend/app/settings/team-members.tsx (buy-extra sheet + Razorpay navigation)
+        - /app/frontend/app/checkout.tsx (team_extra_member mode + WebView)
+        
+        ❌ BLOCKER: Current test user (admin@test.com) has Silver plan with 99 free team members.
+        Only 3 members exist (2 free + 1 extra). The "Buy Extra Member" button only appears
+        when free quota is FULL. Need 96 more members to trigger the buy-extra flow.
+        
+        📋 RECOMMENDATION: Create a test user with Gold plan (1 free member) OR add admin
+        override to force buy-extra sheet for testing purposes.
+        
+        Main agent: Please address the test user setup issue and request re-testing once
+        the buy-extra flow is accessible. The implementation looks solid but needs live
+        verification.
+
 #====================================================================================================
 # Testing Data - Main Agent and testing sub agent both should log testing data below this section
 #====================================================================================================
