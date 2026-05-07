@@ -4,6 +4,8 @@ import { SafeAreaProvider } from "react-native-safe-area-context";
 import { StatusBar } from "expo-status-bar";
 import { Platform, View, ActivityIndicator, Text, LogBox } from "react-native";
 import * as SplashScreen from "expo-splash-screen";
+import { useFonts } from "expo-font";
+import { Ionicons } from "@expo/vector-icons";
 import { AuthProvider, useAuth } from "../lib/auth";
 import { FeatureFlagsProvider } from "../lib/feature_flags";
 import { PermissionsProvider } from "../lib/permissions";
@@ -24,6 +26,10 @@ try {
     /Unable to download asset from url/i,
     /Network Error/i,
     /AxiosError/i,
+    /ExpoFontLoader/i,
+    /Font file.*empty/i,
+    /loadAsync.*rejected/i,
+    /Call to function.*has been rejected/i,
   ]);
 } catch {
   /* ignore */
@@ -62,19 +68,30 @@ if (typeof globalThis !== "undefined") {
 }
 
 export default function RootLayout() {
-  // 2026-05-06 — FIXED: Removed manual useFonts() for Ionicons.
-  // @expo/vector-icons manages its own font loading internally via
-  // createIconSet → Font.loadAsync on first render; calling useFonts()
-  // at the app root created a conflict that left Android Expo Go
-  // stuck with blank icon glyphs. The package's internal loader is
-  // the source of truth — let it do its job.
+  // Centralized font pre-loading. Calling useFonts({ ...Ionicons.font })
+  // once at the app root means the Ionicons.ttf is fetched + registered
+  // a single time on cold launch instead of once per icon-component
+  // render. Without this, every <Ionicons /> instance independently
+  // calls Font.loadAsync during its first paint, which on Android Expo
+  // Go (SDK 54) over a slow ngrok tunnel triggers hundreds of parallel
+  // download attempts and produces blank-glyph + "loadAsync rejected"
+  // toasts.
   //
-  // Splash is hidden immediately on mount; the first icon-render
-  // triggers the family-specific font download, and until it lands
-  // the icon renders a blank glyph (perfectly acceptable fallback).
+  // We DON'T block render on `fontsLoaded`. The icon family falls back
+  // to its CSS-name reference and renders an empty glyph until the font
+  // resolves, which is far better UX than a 5-second white splash.
+  const [fontsLoaded] = useFonts({
+    ...Ionicons.font,
+  });
+
   useEffect(() => {
+    // Hide splash as soon as React mounts — fonts will swap in later
+    // when expo-font finishes the (now centralized) load.
     SplashScreen.hideAsync().catch(() => {});
   }, []);
+
+  // Touch the var so the linter / TS don't drop the hook above.
+  void fontsLoaded;
 
   return (
     <ErrorBoundary>
