@@ -30,6 +30,9 @@ try {
     /Font file.*empty/i,
     /loadAsync.*rejected/i,
     /Call to function.*has been rejected/i,
+    /Uncaught \(in promise/i,
+    /fontFamily.*not loaded/i,
+    /Could not find.*font/i,
   ]);
 } catch {
   /* ignore */
@@ -40,7 +43,7 @@ try {
 // mobile networks (the ngrok tunnel in dev), asset downloads for icon
 // fonts / keep-awake sometimes time out — those are non-fatal; the
 // app still works (icons render once fonts cache).
-const _BENIGN_RX = /Network Error|AxiosError|timeout|Unauthorized|Request failed|ExpoAsset|downloadAsync|Unable to download|keep awake|CodedError|Unable to activate|ExpoFontLoader|Font file.*empty|loadAsync.*rejected/i;
+const _BENIGN_RX = /Network Error|AxiosError|timeout|Unauthorized|Request failed|ExpoAsset|downloadAsync|Unable to download|keep awake|CodedError|Unable to activate|ExpoFontLoader|Font file.*empty|loadAsync.*rejected|Uncaught.*in promise|fontFamily.*not loaded|Could not find.*font/i;
 if (typeof globalThis !== "undefined") {
   // React Native ErrorUtils-style handler
   const g: any = globalThis as any;
@@ -84,14 +87,24 @@ export default function RootLayout() {
     ...Ionicons.font,
   });
 
+  // Fallback: reveal the app after 3 s even if fonts haven't finished
+  // loading (e.g. slow ngrok tunnel on Android). Icons will use system
+  // fallback glyphs briefly, then swap in once the font resolves.
+  const [fontTimeout, setFontTimeout] = useState(false);
   useEffect(() => {
-    // Hide splash as soon as React mounts — fonts will swap in later
-    // when expo-font finishes the (now centralized) load.
-    SplashScreen.hideAsync().catch(() => {});
+    const t = setTimeout(() => setFontTimeout(true), 3000);
+    return () => clearTimeout(t);
   }, []);
 
-  // Touch the var so the linter / TS don't drop the hook above.
-  void fontsLoaded;
+  useEffect(() => {
+    if (fontsLoaded || fontTimeout) {
+      SplashScreen.hideAsync().catch(() => {});
+    }
+  }, [fontsLoaded, fontTimeout]);
+
+  if (!fontsLoaded && !fontTimeout) {
+    return null;
+  }
 
   return (
     <ErrorBoundary>
