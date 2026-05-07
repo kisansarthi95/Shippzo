@@ -23,7 +23,7 @@ import {
   KeyboardAvoidingView, Platform, Pressable,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
-import { Stack, router } from "expo-router";
+import { Stack, router, useLocalSearchParams } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Api } from "../../lib/api";
 
@@ -95,6 +95,30 @@ export default function TeamMembersScreen() {
   // Buy-extra sheet
   const [buyOpen, setBuyOpen] = useState(false);
   const [buying, setBuying] = useState(false);
+
+  // Phase D — pick up the slot_token returned by checkout.tsx after a
+  // successful Razorpay payment for an extra team-member slot. We use
+  // a one-shot ref-style flag in state so re-renders don't re-trigger.
+  const params = useLocalSearchParams<{
+    slot_token?: string; paid_amount?: string;
+  }>();
+  const [pickedUpToken, setPickedUpToken] = useState<string | null>(null);
+  useEffect(() => {
+    const tok = String(params.slot_token || "");
+    if (!tok || pickedUpToken === tok) return;
+    setPickedUpToken(tok);
+    setExtraToken(tok);
+    setEditing(null);
+    setForm({ name: "", phone: "", role: "", email: "", password: "" });
+    setPerms(new Set());
+    setModalOpen(true);
+    Alert.alert(
+      "Payment successful 🎉",
+      `₹${params.paid_amount || ""} paid via Razorpay. Now fill in the team member's details.`,
+    );
+    // Clean the URL params so a refresh / back-nav doesn't replay.
+    router.setParams({ slot_token: "", paid_amount: "" });
+  }, [params.slot_token, params.paid_amount, pickedUpToken]);
 
   const load = useCallback(async () => {
     try {
@@ -209,24 +233,27 @@ export default function TeamMembersScreen() {
   };
 
   const buyExtra = async (method: "wallet" | "razorpay") => {
+    if (method === "razorpay") {
+      // Phase D — REAL Razorpay flow. Push the user to the central
+      // checkout.tsx screen with mode=team_extra_member; on successful
+      // signature verification it routes back here with the paid
+      // slot_token in query params (handled by the useEffect above).
+      setBuyOpen(false);
+      router.push("/checkout?mode=team_extra_member");
+      return;
+    }
     setBuying(true);
     try {
-      const res = await Api.meTeamMemberPayExtra(method);
-      // For both methods we just use the slot token to create the next member.
-      // Razorpay flow is MOCKED — real integration in Phase B/C.
+      const res = await Api.meTeamMemberPayExtra("wallet");
+      // Wallet path: backend already deducted + the slot token is
+      // pre-paid. Just open the member-detail modal.
       setExtraToken(res.slot_token);
       setBuyOpen(false);
-      // Re-open the add-member modal to capture name/phone for the
-      // newly-purchased slot.
       setEditing(null);
-      setForm({ name: "", phone: "", role: "" });
+      setForm({ name: "", phone: "", role: "", email: "", password: "" });
       setPerms(new Set());
       setModalOpen(true);
-      Alert.alert(
-        method === "wallet"
-          ? `₹${res.amount} deducted from wallet`
-          : `Mock Razorpay order created (₹${res.amount}). Fill details to add member.`,
-      );
+      Alert.alert("Wallet charged", `₹${res.amount} deducted from wallet.`);
     } catch (e: any) {
       Alert.alert("Purchase failed", e?.response?.data?.detail || e?.message || "Unknown error");
     } finally {

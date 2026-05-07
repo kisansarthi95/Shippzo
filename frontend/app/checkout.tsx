@@ -1,13 +1,19 @@
 /**
- * Razorpay Checkout screen (Phase-4c / 4d).
+ * Razorpay Checkout screen (Phase-4c / 4d / Phase-D).
  *
- * Supports TWO modes via query params:
+ * Supports THREE modes via query params:
  *   • mode=wallet  (default) — query: amount=<INR>
  *       Tops up the user's credit wallet by the given INR amount.
  *   • mode=plan — query: plan=<plan_key>&cycle=<monthly|yearly>
  *       Buys a plan subscription. plan_key ∈ silver | gold | platinum.
+ *   • mode=team_extra_member — Phase-D: buys ONE extra team-member
+ *       slot beyond the plan's free quota. No extra params required —
+ *       price + plan are resolved server-side from the user's plan.
+ *       On success, navigates to `/settings/team-members?slot_token=<t>`
+ *       so the team-members screen can resume the add-member modal
+ *       with the newly-paid slot.
  *
- * Flow:
+ * Flow (all modes):
  *   1. Compute mode from params.
  *   2. Hit the appropriate /create-order endpoint.
  *   3. Render a WebView pointing at an inline HTML page that loads
@@ -33,14 +39,16 @@ import { Api, PlanKey } from "../lib/api";
 import { colors } from "../lib/theme";
 import { useAuth } from "../lib/auth";
 
-type CheckoutMode = "wallet" | "plan";
+type CheckoutMode = "wallet" | "plan" | "team_extra_member";
 
 type WalletOrder = Awaited<ReturnType<typeof Api.rzpCreateOrder>>;
 type PlanOrder   = Awaited<ReturnType<typeof Api.rzpCreatePlanOrder>>;
+type TeamExtraOrder = Awaited<ReturnType<typeof Api.meTeamMemberPayExtra>>;
 
 type AnyOrder =
-  | (WalletOrder & { mode: "wallet" })
-  | (PlanOrder   & { mode: "plan" });
+  | (WalletOrder     & { mode: "wallet" })
+  | (PlanOrder       & { mode: "plan" })
+  | (TeamExtraOrder  & { mode: "team_extra_member" });
 
 export default function CheckoutScreen() {
   const params = useLocalSearchParams<{
@@ -53,7 +61,10 @@ export default function CheckoutScreen() {
   const router = useRouter();
   const { refresh } = useAuth();
 
-  const mode: CheckoutMode = (params.mode === "plan" ? "plan" : "wallet");
+  const mode: CheckoutMode =
+    params.mode === "plan" ? "plan"
+      : params.mode === "team_extra_member" ? "team_extra_member"
+        : "wallet";
   const amount = useMemo(
     () => Math.max(0, Number(params.amount || 0)),
     [params.amount],
@@ -77,13 +88,23 @@ export default function CheckoutScreen() {
           const r = await Api.rzpCreateOrder(amount);
           if (cancelled) return;
           setOrder({ ...r, mode: "wallet" });
-        } else {
+        } else if (mode === "plan") {
           if (!planKey || !["silver", "gold", "platinum"].includes(planKey)) {
             throw new Error("Invalid plan selected");
           }
           const r = await Api.rzpCreatePlanOrder(planKey, cycle, couponCode || undefined);
           if (cancelled) return;
           setOrder({ ...r, mode: "plan" });
+        } else {
+          // team_extra_member — server resolves price + plan from user
+          const r = await Api.meTeamMemberPayExtra("razorpay");
+          if (cancelled) return;
+          if (!r.razorpay_order_id || !r.key_id) {
+            throw new Error(
+              "Razorpay is not configured for extra team-member purchases.",
+            );
+          }
+          setOrder({ ...r, mode: "team_extra_member" });
         }
       } catch (e: any) {
         setError(e?.response?.data?.detail || e?.message || "Could not start payment");
@@ -99,10 +120,12 @@ export default function CheckoutScreen() {
     const description =
       order.mode === "wallet"
         ? `${order.credits_to_grant} credits top-up`
-        : `${order.plan_name} ${order.billing_cycle === "yearly" ? "Yearly" : "Monthly"} subscription`;
+        : order.mode === "plan"
+          ? `${order.plan_name} ${order.billing_cycle === "yearly" ? "Yearly" : "Monthly"} subscription`
+          : `Extra team-member slot (₹${order.amount})`;
     const payload = {
       key: order.key_id,
-      order_id: order.order_id,
+      order_id: order.mode === "team_extra_member" ? order.razorpay_order_id : order.order_id,
       amount: order.amount_paise,
       currency: order.currency,
       name: "Courier Manager",
@@ -211,6 +234,18 @@ export default function CheckoutScreen() {
             `Welcome to ${planLabel} (${cycleLabel}). Valid until ${expiry}.`,
           );
           router.back();
+        } else if (order?.mode === "team_extra_member") {
+          const v = await Api.meTeamMemberRzpVerify(
+            msg.razorpay_order_id,
+            msg.razorpay_payment_id,
+            msg.razorpay_signature,
+          );
+          // Hand the paid slot_token back to the team-members screen
+          // so it can resume the add-member modal flow.
+          router.replace({
+            pathname: "/settings/team-members",
+            params: { slot_token: v.slot_token, paid_amount: String(v.amount) },
+          });
         } else {
           const v = await Api.rzpVerify(
             msg.razorpay_order_id,

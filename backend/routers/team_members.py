@@ -102,6 +102,15 @@ class CreateExtraMemberPayload(BaseModel):
     slot_token: str
 
 
+# Phase D — Razorpay verify payload (module-level so FastAPI/Pydantic v2
+# can resolve the schema at app boot; nested-class definitions inside
+# `build_router` produced ForwardRef errors at request time).
+class _TMRzpVerifyPayload(BaseModel):
+    razorpay_order_id:   str
+    razorpay_payment_id: str
+    razorpay_signature:  str
+
+
 def _public(doc: Dict[str, Any]) -> Dict[str, Any]:
     return {k: v for k, v in doc.items() if k != "_id"}
 
@@ -247,13 +256,23 @@ def build_router(db, get_current_user) -> APIRouter:
         body: PayExtraMemberPayload = Body(...),
         current_user: Dict[str, Any] = Depends(get_current_user),
     ):
-        """Unlock ONE extra-member slot. wallet → real deduction;
-        razorpay → MOCKED order id (real integration in later phase)."""
+        """Unlock ONE extra-member slot.
+
+        Phase D (2026-05-07): Razorpay path is now REAL — we create a
+        signed Razorpay order and persist it under
+        ``db.razorpay_orders`` with ``purpose="team_extra_member"``.
+        The slot token is created in **unconsumed + unpaid** state; it
+        is marked paid only after ``/me/team-members/razorpay/verify``
+        successfully validates the signature returned by Razorpay
+        Checkout. Wallet path stays unchanged — wallet has no signature
+        round-trip so the slot token is paid immediately.
+        """
         plan = await resolve_plan(db, current_user)
         price = int(plan.extra_member_price_inr or 0)
         if price <= 0:
             raise HTTPException(status_code=400, detail="Extra members are not enabled for your plan")
 
+        # ── Wallet path (real deduction, unchanged) ───────────────
         if body.method == "wallet":
             wal = await db.wallets.find_one({"user_id": current_user["id"]}) or {"balance": 0}
             bal = int(wal.get("balance") or 0)
@@ -276,24 +295,198 @@ def build_router(db, get_current_user) -> APIRouter:
                 "created_at": _now(),
             })
 
+            token = str(uuid.uuid4())
+            await db.team_extra_tokens.insert_one({
+                "id":         token,
+                "user_id":    current_user["id"],
+                "method":     "wallet",
+                "amount":     price,
+                "consumed":   False,
+                "paid":       True,            # wallet → already paid
+                "created_at": _now(),
+            })
+            return {
+                "ok":         True,
+                "slot_token": token,
+                "amount":     price,
+                "method":     "wallet",
+                "razorpay_order_id": None,
+            }
+
+        # ── Razorpay path (REAL, Phase D) ─────────────────────────
+        # Late-import the configured client + public key from server.py
+        # so this router stays decoupled from server bootstrap order.
+        try:
+            from server import _rzp_client, _RZP_KEY_ID  # noqa: WPS433
+        except Exception:
+            _rzp_client = None
+            _RZP_KEY_ID = ""
+
+        if not _rzp_client or not _RZP_KEY_ID:
+            raise HTTPException(
+                status_code=503,
+                detail="Razorpay is not configured on the server.",
+            )
+
+        # Create the unpaid slot token first so we can stamp it onto
+        # the Razorpay order's `notes` for webhook traceability.
         token = str(uuid.uuid4())
+        receipt = f"team-{current_user['id'][:8]}-{int(datetime.now(timezone.utc).timestamp())}"
+        try:
+            rzp_order = _rzp_client.order.create({
+                "amount":          price * 100,   # paise
+                "currency":        "INR",
+                "receipt":         receipt,
+                "payment_capture": 1,
+                "notes": {
+                    "user_id":     current_user["id"],
+                    "user_email":  current_user.get("email", ""),
+                    "purpose":     "team_extra_member",
+                    "slot_token":  token,
+                    "plan":        plan.name,
+                },
+            })
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"Razorpay error: {e}")
+
         await db.team_extra_tokens.insert_one({
-            "id":         token,
-            "user_id":    current_user["id"],
-            "method":     body.method,
-            "amount":     price,
-            "consumed":   False,
-            "created_at": _now(),
+            "id":                token,
+            "user_id":           current_user["id"],
+            "method":            "razorpay",
+            "amount":            price,
+            "consumed":          False,
+            "paid":              False,           # flipped on /verify
+            "razorpay_order_id": rzp_order["id"],
+            "created_at":        _now(),
         })
+
+        # Mirror into the central razorpay_orders ledger so all
+        # purchase types (wallet, plan, team-extra) share one audit log.
+        await db.razorpay_orders.insert_one({
+            "id":                str(uuid.uuid4()),
+            "user_id":           current_user["id"],
+            "razorpay_order_id": rzp_order["id"],
+            "amount_inr":        price,
+            "amount_paise":      price * 100,
+            "purpose":           "team_extra_member",
+            "slot_token":        token,
+            "status":            "created",
+            "created_at":        _now(),
+        })
+
         return {
-            "ok":         True,
-            "slot_token": token,
-            "amount":     price,
-            "method":     body.method,
-            "razorpay_order_id": (
-                f"order_mock_{token[:8]}" if body.method == "razorpay" else None
+            "ok":               True,
+            "slot_token":       token,
+            "amount":           price,
+            "method":           "razorpay",
+            # Razorpay Checkout payload (matches /wallet/razorpay/create-order shape)
+            "razorpay_order_id": rzp_order["id"],
+            "key_id":           _RZP_KEY_ID,
+            "amount_paise":     rzp_order["amount"],
+            "currency":         rzp_order["currency"],
+            "receipt":          rzp_order["receipt"],
+            "user_email":       current_user.get("email", ""),
+            "user_name":        current_user.get(
+                "name", current_user.get("email", "User"),
             ),
         }
+
+    # ── Phase D — verify Razorpay payment for team-extra-member slot ──
+    @router.post("/me/team-members/razorpay/verify")
+    async def rzp_verify_team_extra(
+        payload: _TMRzpVerifyPayload = Body(...),
+        current_user: Dict[str, Any] = Depends(get_current_user),
+    ):
+        """Step 2 of the Razorpay flow for buying an extra team-member
+        slot.
+
+        Razorpay Checkout posts back the three signed values; we verify
+        them server-side against our key secret, then flip the slot
+        token's ``paid`` flag. The frontend then calls
+        ``/me/team-members/with-extra`` with the (now paid) slot_token
+        to actually create the team-member row. Idempotent on
+        ``razorpay_payment_id``."""
+        try:
+            from server import _rzp_client  # noqa: WPS433
+        except Exception:
+            _rzp_client = None
+
+        if not _rzp_client:
+            raise HTTPException(status_code=503, detail="Razorpay not configured")
+
+        order = await db.razorpay_orders.find_one({
+            "razorpay_order_id": payload.razorpay_order_id,
+            "user_id": current_user["id"],
+        })
+        if not order:
+            raise HTTPException(status_code=404, detail="Order not found for this user")
+        if (order.get("purpose") or "") != "team_extra_member":
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "This order isn't a team-member slot. Use "
+                    "/wallet/razorpay/verify or /plans/razorpay/verify."
+                ),
+            )
+
+        # Idempotency
+        if order.get("status") == "paid":
+            tok = await db.team_extra_tokens.find_one(
+                {"id": order.get("slot_token"), "user_id": current_user["id"]},
+            )
+            return {
+                "ok":               True,
+                "already_credited": True,
+                "slot_token":       order.get("slot_token"),
+                "amount":           int(order.get("amount_inr") or 0),
+                "consumed":         bool((tok or {}).get("consumed", False)),
+            }
+
+        # Signature verification
+        try:
+            _rzp_client.utility.verify_payment_signature({
+                "razorpay_order_id":   payload.razorpay_order_id,
+                "razorpay_payment_id": payload.razorpay_payment_id,
+                "razorpay_signature":  payload.razorpay_signature,
+            })
+        except Exception as e:
+            await db.razorpay_orders.update_one(
+                {"_id": order["_id"]},
+                {"$set": {
+                    "status":              "verify_failed",
+                    "error":               str(e),
+                    "razorpay_payment_id": payload.razorpay_payment_id,
+                }},
+            )
+            raise HTTPException(status_code=400, detail=f"Payment verification failed: {e}")
+
+        # Flip slot token to paid + record payment id
+        slot_token = order.get("slot_token")
+        await db.team_extra_tokens.update_one(
+            {"id": slot_token, "user_id": current_user["id"]},
+            {"$set": {
+                "paid":                True,
+                "paid_at":              _now(),
+                "razorpay_payment_id": payload.razorpay_payment_id,
+            }},
+        )
+        await db.razorpay_orders.update_one(
+            {"_id": order["_id"]},
+            {"$set": {
+                "status":              "paid",
+                "razorpay_payment_id": payload.razorpay_payment_id,
+                "razorpay_signature":  payload.razorpay_signature,
+                "paid_at":             _now(),
+            }},
+        )
+
+        return {
+            "ok":               True,
+            "already_credited": False,
+            "slot_token":       slot_token,
+            "amount":           int(order.get("amount_inr") or 0),
+        }
+
 
     @router.post("/me/team-members/with-extra")
     async def create_extra_team_member(
@@ -305,6 +498,20 @@ def build_router(db, get_current_user) -> APIRouter:
         })
         if not tok:
             raise HTTPException(status_code=400, detail="Invalid or already-used slot token")
+        # Phase D — every slot token must be paid before it can be
+        # consumed. Wallet tokens are stamped paid=True at creation
+        # time; Razorpay tokens are flipped to paid=True only after
+        # /me/team-members/razorpay/verify succeeds. Tokens predating
+        # Phase D didn't carry the field, so we treat missing as paid
+        # (true) to keep wallet-flow backwards-compatible.
+        if tok.get("paid", True) is False:
+            raise HTTPException(
+                status_code=402,
+                detail=(
+                    "This slot token has not been paid for. Complete the "
+                    "Razorpay payment first."
+                ),
+            )
         phone = _normalise_phone(body.phone)
         if not phone or len(phone) < 10:
             raise HTTPException(status_code=400, detail="Invalid phone number")

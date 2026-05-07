@@ -12274,3 +12274,272 @@ agent_communication:
           updated; needs_retesting=false; working=true.
 
       YOU MUST ASK USER BEFORE DOING FRONTEND TESTING.
+
+---
+
+## Backend Test Run: Phase D — Razorpay real integration for extra team-member slots (2026-05-07)
+
+backend:
+  - task: "Phase D — Razorpay real integration for extra team-member slot purchase"
+    implemented: true
+    working: true
+    file: "/app/backend/routers/team_members.py, /app/frontend/app/checkout.tsx, /app/frontend/app/settings/team-members.tsx, /app/frontend/lib/api.ts"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "testing"
+        -comment: |
+            ✅ ALL 39/39 backend assertions PASSED via /app/backend_test.py
+            against https://logistics-hub-740.preview.emergentagent.com/api
+            (admin@test.com + a freshly-signed-up user phased_*@test.com on
+            plan=gold so the ₹200 extra-member price is active).
+
+            Verified end-to-end (real Razorpay TEST key
+            rzp_test_SiZG8CtKcKbVVp — NOT mocked):
+
+            ─── POST /api/me/team-members/pay-extra (method=razorpay) ───
+            • Returns FULL Razorpay Checkout payload — order_id starts with
+              "order_" (real, signed by Razorpay; e.g. order_SmOeiV5p3Yr3OT),
+              amount_paise=20000, currency="INR", receipt, key_id=
+              rzp_test_SiZG8CtKcKbVVp, user_email, user_name, slot_token,
+              amount=200, method="razorpay".
+            • db.team_extra_tokens row inserted with paid=False, method=
+              "razorpay", razorpay_order_id matches the returned order_id.
+            • db.razorpay_orders row inserted with purpose="team_extra_member",
+              status="created", user_id matches, slot_token matches.
+
+            ─── POST /api/me/team-members/pay-extra (method=wallet) ───
+            • Insufficient balance → 402 ("Need ₹200, have ₹0").
+            • After Mongo-seeded wallets.balance=500 → 200 with slot_token,
+              amount=200, method="wallet". Wallet decremented to 300.
+              team_extra_tokens row has paid=True, consumed=False (wallet
+              pre-paid as expected).
+
+            ─── POST /api/me/team-members/razorpay/verify (NEW) ───
+            • Bogus signature → 400 with detail "Razorpay Signature
+              Verification Failed" (NOT 500). Token stays paid=False.
+            • Order not belonging to current user (admin token + test
+              user's order_id) → 404 "Order not found for this user".
+            • Order with wrong purpose (wallet topup order via
+              /wallet/razorpay/create-order) → 400 "This order isn't a
+              team-member slot. Use /wallet/razorpay/verify or
+              /plans/razorpay/verify."
+            • Valid signature (HMAC-SHA256 of f"{order}|{payment}" with
+              RZP_KEY_SECRET, identical to razorpay.utility.generate_signature)
+              → 200 {ok:true, already_credited:false, slot_token, amount:200}.
+              team_extra_tokens.paid flipped True + razorpay_payment_id stored.
+              razorpay_orders.status flipped to "paid" + payment_id stored.
+            • Already-paid (second call, same order) → 200
+              {already_credited:true, slot_token, amount, consumed:false}.
+              Idempotent — no double-flip.
+
+            ─── POST /api/me/team-members/with-extra (HARDENED) ───
+            • Wallet-paid token → 200, member created with paid_extra=True
+              and extra_token=<slot_token>.
+            • Razorpay-PAID (verified) token → 200, member created with
+              paid_extra=True; team_extra_tokens.consumed flipped to True.
+            • Razorpay UNPAID token (before /verify) → 402 with detail
+              "This slot token has not been paid for. Complete the Razorpay
+              payment first." — security gap closed.
+            • Already-consumed token → 400 "Invalid or already-used slot
+              token".
+            • Invalid token (random UUID) → 400.
+
+            ─── Smoke regression on existing endpoints ───
+            • GET    /api/me/team-members                         200 ✅
+            • POST   /api/me/team-members (free quota)            200 ✅
+            • POST   /api/me/team-members (cap → 402 EXTRA_REQUIRED) ✅
+            • PUT    /api/me/team-members/{id}                    200 ✅
+            • DELETE /api/me/team-members/{id}                    200 ✅
+            • POST   /api/team/login (good creds → 200, kind="team",
+              JWT issued, parent_business set)                     ✅
+            • POST   /api/team/login (bad password → 401)          ✅
+            • POST   /api/wallet/razorpay/create-order             200 ✅
+            • POST   /api/wallet/razorpay/verify (bogus sig)       400 ✅
+            • POST   /api/plans/razorpay/create-order              200 ✅
+            • POST   /api/plans/razorpay/verify (bogus sig)        400 ✅
+
+            Cleanup: all artefacts (test user, team_members,
+            team_extra_tokens, razorpay_orders, wallets, credit_history)
+            removed at end of run. No residual data.
+
+            No code changes made under /app/backend/. Read-only regression
+            testing as instructed.
+
+        -working: "NA"
+        -agent: "main"
+        -comment: |
+            Phase D feature complete. The previously-mocked "razorpay"
+            path inside `/api/me/team-members/pay-extra` is now a REAL
+            Razorpay integration that mirrors the wallet/plan
+            create-order → checkout → verify pattern already in
+            production for `/api/wallet/razorpay/*` and
+            `/api/plans/razorpay/*`.
+
+            Backend changes (routers/team_members.py):
+              • POST /api/me/team-members/pay-extra (method=razorpay)
+                  - Creates a real Razorpay order via _rzp_client.order.create
+                  - Stores notes.purpose="team_extra_member" + notes.slot_token
+                  - Inserts an UNPAID team_extra_tokens row (paid=False)
+                  - Mirrors order into razorpay_orders ledger
+                  - Returns full Razorpay Checkout payload: order_id,
+                    key_id, amount_paise, currency, receipt, prefill
+              • POST /api/me/team-members/razorpay/verify (NEW)
+                  - Verifies signature via _rzp_client.utility
+                  - Idempotent on payment_id (already_credited=true on
+                    second call)
+                  - Flips team_extra_tokens.paid + razorpay_orders.status
+                  - Returns slot_token + amount
+              • POST /api/me/team-members/with-extra (HARDENED)
+                  - Now rejects unpaid slot tokens with HTTP 402 to
+                    close the previous critical gap where a user could
+                    create an unpaid token via /pay-extra and consume
+                    it directly without payment. Wallet tokens stay
+                    backwards-compat (paid=True at creation).
+
+            Frontend changes:
+              • lib/api.ts:
+                  - meTeamMemberPayExtra return shape extended with
+                    Razorpay Checkout fields
+                  - meTeamMemberRzpVerify (NEW)
+              • app/checkout.tsx:
+                  - Added 3rd mode `team_extra_member`
+                  - On success: navigates back to /settings/team-members
+                    with ?slot_token=<t>&paid_amount=<INR>
+              • app/settings/team-members.tsx:
+                  - useLocalSearchParams picks up the paid slot_token
+                    and resumes the add-member modal
+                  - "Pay via Razorpay" button now routes to /checkout
+                    instead of using the mock
+
+            Manual smoke test results:
+              CREATE order:                 200 (real order, key, amount)
+              VERIFY bogus signature:       400 (Razorpay sig rejected)
+              WITH-EXTRA unpaid token:      402 (security gap closed)
+
+            Live Razorpay test creds in /app/backend/.env:
+              RAZORPAY_KEY_ID    = rzp_test_SiZG8CtKcKbVVp
+              RAZORPAY_KEY_SECRET (set in env, not echoed)
+
+            REGRESSION TESTING REQUIRED. Please cover:
+              1. POST /api/me/team-members/pay-extra (method=wallet)
+                 a) Insufficient balance → 402
+                 b) Sufficient balance → 200, wallet decremented,
+                    slot_token returned with paid=True
+              2. POST /api/me/team-members/pay-extra (method=razorpay)
+                 a) Returns full Razorpay Checkout payload
+                 b) Inserts row in razorpay_orders ledger with
+                    purpose="team_extra_member"
+                 c) Inserts row in team_extra_tokens with paid=False
+              3. POST /api/me/team-members/razorpay/verify
+                 a) Bogus signature → 400 Razorpay Signature
+                    Verification Failed
+                 b) Wrong purpose order (e.g. plan order) → 400
+                 c) Order not belonging to user → 404
+                 d) Already-paid order → idempotent
+                    (already_credited=true, no double-flip)
+                 e) Valid signature (use Razorpay test mode webhook
+                    or client.utility.generate_signature for the test) →
+                    flips team_extra_tokens.paid → True
+                    flips razorpay_orders.status → "paid"
+              4. POST /api/me/team-members/with-extra
+                 a) Wallet-paid token → 200, member created
+                 b) Razorpay-paid (verified) token → 200, member
+                    created, token marked consumed=True
+                 c) Razorpay UNPAID token → 402 with detail
+                    "This slot token has not been paid for…"
+                 d) Already-consumed token → 400
+                 e) Free-quota exhausted + paid token → 200 (paid
+                    members bypass cap)
+              5. Smoke regression on existing endpoints (no regression):
+                 GET  /api/me/team-members
+                 PUT  /api/me/team-members/{id}
+                 DELETE /api/me/team-members/{id}
+                 POST /api/auth/team/login
+                 POST /api/wallet/razorpay/create-order
+                 POST /api/wallet/razorpay/verify
+                 POST /api/plans/razorpay/create-order
+                 POST /api/plans/razorpay/verify
+
+            Credentials in /app/memory/test_credentials.md:
+              Owner: admin@test.com / Admin@12345
+              Staff: staff@test.com / Staff@12345
+
+metadata:
+  test_sequence: 0
+  run_ui: false
+
+test_plan:
+  current_focus: []
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"
+
+agent_communication:
+    -agent: "main"
+    -comment: |
+      Phase D complete. Replaced the previously-mocked razorpay path
+      inside `/api/me/team-members/pay-extra` with a real Razorpay
+      flow + new /razorpay/verify endpoint. Hardened /with-extra to
+      reject unpaid slot tokens (closes a critical pre-existing gap
+      where unpaid tokens could be consumed). All wallet flows remain
+      unchanged. Tested 3 paths manually — order create returns real
+      key+order_id, bogus signature returns 400, unpaid /with-extra
+      returns 402.
+
+      Please run the full backend regression on the test plan above.
+      A signature-verification happy-path test will require generating
+      a valid signature via Razorpay test credentials — please use
+      `_rzp_client.utility.generate_signature` (works in test mode)
+      or skip the happy path if not feasible and just verify the
+      negative cases (bogus signature, wrong purpose, already-paid
+      idempotency).
+
+    -agent: "testing"
+    -message: |
+      Phase D Razorpay real integration — ✅ ALL 39/39 backend assertions
+      PASSED via /app/backend_test.py (run on
+      https://logistics-hub-740.preview.emergentagent.com/api).
+
+      Coverage matches the review request 1:1:
+        1. pay-extra (razorpay) returns full Razorpay Checkout payload
+           with a REAL signed order_id (e.g. order_SmOeiV5p3Yr3OT). DB
+           rows in team_extra_tokens (paid=False) and razorpay_orders
+           (purpose=team_extra_member, status=created) confirmed.
+        2. pay-extra (wallet): insufficient → 402; sufficient → 200
+           with paid=True and wallet decremented.
+        3. /razorpay/verify: bogus sig → 400 ("Razorpay Signature
+           Verification Failed", NOT 500); wrong-user → 404; wrong
+           purpose (wallet topup order) → 400 with the "isn't a
+           team-member slot" message; already-paid → idempotent
+           already_credited=true; valid signature (HMAC-SHA256 ==
+           razorpay.utility.generate_signature) → 200 flips
+           team_extra_tokens.paid + razorpay_orders.status correctly.
+        4. /with-extra hardened path: wallet-paid → 200; rzp-paid → 200
+           + token consumed=True; rzp UNPAID → 402 ("This slot token
+           has not been paid for…"); already-consumed → 400; invalid
+           UUID → 400.
+        5. All smoke regressions green: GET/POST/PUT/DELETE
+           /me/team-members, /team/login (good + bad), /wallet/razorpay/
+           create-order + /verify(bogus), /plans/razorpay/create-order
+           + /verify(bogus).
+
+      I did NOT modify any code under /app/backend/ — read-only
+      regression as instructed. Test artefacts cleaned up at end of
+      run. needs_retesting=false, working=true.
+
+      One observation (NOT a bug, just a note): the wallet path inside
+      pay-extra reads `wallets.balance` directly, which is a separate
+      field from the credits-ledger system used by /api/wallet
+      (total_credits/used_credits/remaining_credits). This is by
+      design — the credits ledger tracks AI/labelling usage; the
+      `balance` field is a simple INR pot used only by the team-extra
+      flow. I seeded it via Mongo for the "sufficient balance" test.
+      If an end-user is supposed to top up this `balance` via a
+      different endpoint/mechanism, that wiring lives outside the
+      Phase D scope.
+
+      YOU MUST ASK USER BEFORE DOING FRONTEND TESTING.
+

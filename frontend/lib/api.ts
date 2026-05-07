@@ -1346,8 +1346,36 @@ export const Api = {
   meTeamMemberPayExtra: (method: "wallet" | "razorpay") =>
     api.post<{
       ok: boolean; slot_token: string; amount: number; method: string;
+      // Razorpay-only fields (Phase D real integration)
       razorpay_order_id?: string;
+      key_id?: string;
+      amount_paise?: number;
+      currency?: string;
+      receipt?: string;
+      user_email?: string;
+      user_name?: string;
     }>("/me/team-members/pay-extra", { method }).then((r) => r.data),
+
+  /** Phase D — verify the Razorpay payment that purchased an extra
+   *  team-member slot. Returns the (now paid) slot_token, which the
+   *  caller passes to `/me/team-members/with-extra` to actually create
+   *  the team-member row. Idempotent on razorpay_payment_id. */
+  meTeamMemberRzpVerify: (
+    razorpay_order_id: string,
+    razorpay_payment_id: string,
+    razorpay_signature: string,
+  ) =>
+    api.post<{
+      ok: boolean;
+      already_credited: boolean;
+      slot_token: string;
+      amount: number;
+      consumed?: boolean;
+    }>("/me/team-members/razorpay/verify", {
+      razorpay_order_id,
+      razorpay_payment_id,
+      razorpay_signature,
+    }).then((r) => r.data),
 
   meTeamMemberCreateWithExtra: (body: {
     name: string; phone: string; role?: string;
