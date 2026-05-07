@@ -17,12 +17,12 @@
  *     Wallet / Razorpay buttons (real-wallet, mock-razorpay).
  */
 import React, { useCallback, useEffect, useMemo, useState } from "react";
+import PhIcon from "../../components/PhIcon";
 import {
   View, Text, StyleSheet, TouchableOpacity, ScrollView, Modal,
   ActivityIndicator, RefreshControl, TextInput, Alert, Switch,
   KeyboardAvoidingView, Platform, Pressable,
 } from "react-native";
-import { Ionicons } from "@expo/vector-icons";
 import { Stack, router, useLocalSearchParams } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Api } from "../../lib/api";
@@ -293,7 +293,7 @@ export default function TeamMembersScreen() {
 
       <View style={styles.headerRow}>
         <TouchableOpacity onPress={() => router.back()} style={styles.backBtn}>
-          <Ionicons name="chevron-back" size={22} color="#111827" />
+          <PhIcon name="chevron-back" size={22} color="#111827" />
         </TouchableOpacity>
         <View style={{ flex: 1 }}>
           <Text style={styles.title}>Team Members</Text>
@@ -311,7 +311,7 @@ export default function TeamMembersScreen() {
       >
         {members.length === 0 ? (
           <View style={styles.emptyCard}>
-            <Ionicons name="people-outline" size={48} color="#9CA3AF" />
+            <PhIcon name="people-outline" size={48} color="#9CA3AF" />
             <Text style={styles.emptyTitle}>No team members yet</Text>
             <Text style={styles.emptyTxt}>
               Add staff with their name, phone & role. They'll receive SLA alert
@@ -344,10 +344,10 @@ export default function TeamMembersScreen() {
               </View>
               <View style={{ gap: 8 }}>
                 <TouchableOpacity onPress={() => openEdit(m)} style={styles.iconBtn}>
-                  <Ionicons name="create-outline" size={18} color="#1F4FBF" />
+                  <PhIcon name="create-outline" size={18} color="#1F4FBF" />
                 </TouchableOpacity>
                 <TouchableOpacity onPress={() => handleDelete(m)} style={styles.iconBtn}>
-                  <Ionicons name="trash-outline" size={18} color="#DC2626" />
+                  <PhIcon name="trash-outline" size={18} color="#DC2626" />
                 </TouchableOpacity>
               </View>
             </View>
@@ -357,19 +357,19 @@ export default function TeamMembersScreen() {
         {/* Quota CTA */}
         {quota.can_add_free ? (
           <TouchableOpacity style={styles.addBtn} onPress={openAdd}>
-            <Ionicons name="add-circle" size={20} color="#fff" />
+            <PhIcon name="add-circle" size={20} color="#fff" />
             <Text style={styles.addBtnTxt}>Add Team Member (Free)</Text>
           </TouchableOpacity>
         ) : quota.can_buy_extra ? (
           <TouchableOpacity style={styles.buyBtn} onPress={() => setBuyOpen(true)}>
-            <Ionicons name="cart" size={20} color="#fff" />
+            <PhIcon name="cart" size={20} color="#fff" />
             <Text style={styles.addBtnTxt}>
               Buy Extra Member · ₹{quota.extra_member_price}/mo
             </Text>
           </TouchableOpacity>
         ) : (
           <View style={styles.upgradeCard}>
-            <Ionicons name="lock-closed" size={20} color="#92400E" />
+            <PhIcon name="lock-closed" size={20} color="#92400E" />
             <Text style={styles.upgradeTxt}>
               Your {quota.plan_name} plan doesn't include team members.
               Upgrade to Gold or Platinum to add staff.
@@ -400,7 +400,7 @@ export default function TeamMembersScreen() {
               {editing ? "Edit Member" : extraToken ? "Add Extra Member" : "Add Team Member"}
             </Text>
             <TouchableOpacity onPress={() => setModalOpen(false)}>
-              <Ionicons name="close" size={26} color="#111827" />
+              <PhIcon name="close" size={26} color="#111827" />
             </TouchableOpacity>
           </View>
 
@@ -545,7 +545,7 @@ export default function TeamMembersScreen() {
             <View style={styles.sheetHeader}>
               <Text style={styles.sheetTitle}>Buy Extra Member</Text>
               <TouchableOpacity onPress={() => setBuyOpen(false)}>
-                <Ionicons name="close" size={26} color="#111827" />
+                <PhIcon name="close" size={26} color="#111827" />
               </TouchableOpacity>
             </View>
             <Text style={styles.sheetDesc}>
@@ -558,7 +558,7 @@ export default function TeamMembersScreen() {
               disabled={buying}
               onPress={() => buyExtra("wallet")}
             >
-              <Ionicons name="wallet" size={20} color="#fff" />
+              <PhIcon name="wallet" size={20} color="#fff" />
               <View style={{ flex: 1 }}>
                 <Text style={styles.payBtnTitle}>Pay from Wallet</Text>
                 <Text style={styles.payBtnDesc}>Instant — deducted now</Text>
@@ -571,7 +571,7 @@ export default function TeamMembersScreen() {
               disabled={buying}
               onPress={() => buyExtra("razorpay")}
             >
-              <Ionicons name="card" size={20} color="#fff" />
+              <PhIcon name="card" size={20} color="#fff" />
               <View style={{ flex: 1 }}>
                 <Text style={styles.payBtnTitle}>Pay via Razorpay</Text>
                 <Text style={styles.payBtnDesc}>UPI / Card / Netbanking</Text>

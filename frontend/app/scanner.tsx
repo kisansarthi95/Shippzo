@@ -1,10 +1,10 @@
 import React, { useEffect, useRef, useState } from "react";
+import PhIcon from "../components/PhIcon";
 import {
   View, Text, StyleSheet, TouchableOpacity, ActivityIndicator,
   Alert, Platform, TextInput,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { Ionicons } from "@expo/vector-icons";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { CameraView, useCameraPermissions } from "expo-camera";
 import AsyncStorage from "@react-native-async-storage/async-storage";
@@ -254,7 +254,7 @@ export default function ScannerModal() {
     <SafeAreaView style={styles.safe}>
       <View style={styles.header}>
         <TouchableOpacity testID="scanner-close" onPress={() => router.back()} style={styles.closeBtn}>
-          <Ionicons name="close" size={22} color="#fff" />
+          <PhIcon name="close" size={22} color="#fff" />
         </TouchableOpacity>
         <Text style={styles.title}>Scan Tracking ID</Text>
         <View style={{ flexDirection: "row", gap: 6 }}>
@@ -265,7 +265,7 @@ export default function ScannerModal() {
             style={[styles.closeBtn, doubleConfirm && styles.closeBtnActive]}
             accessibilityLabel={doubleConfirm ? "Double-confirm scan ON" : "Double-confirm scan OFF"}
           >
-            <Ionicons
+            <PhIcon
               name={doubleConfirm ? "shield-checkmark" : "shield-outline"}
               size={20}
               color="#fff"
@@ -279,7 +279,7 @@ export default function ScannerModal() {
             style={styles.closeBtn}
             accessibilityLabel={soundOn ? "Mute scan beep" : "Unmute scan beep"}
           >
-            <Ionicons
+            <PhIcon
               name={soundOn ? "volume-high" : "volume-mute"}
               size={22}
               color="#fff"
@@ -291,7 +291,7 @@ export default function ScannerModal() {
 
       {isWeb ? (
         <View style={styles.webBox}>
-          <Ionicons name="barcode-outline" size={48} color="#fff" />
+          <PhIcon name="barcode-outline" size={48} color="#fff" />
           <Text style={styles.webText}>
             Camera scanning works on the Expo Go mobile app. {flagManualEntry ? "On web, enter manually below:" : ""}
           </Text>
@@ -323,7 +323,7 @@ export default function ScannerModal() {
         </View>
       ) : noPermission ? (
         <View style={styles.center}>
-          <Ionicons name="camera-outline" size={48} color="#fff" />
+          <PhIcon name="camera-outline" size={48} color="#fff" />
           <Text style={styles.webText}>
             Camera access needed to scan tracking barcodes.
           </Text>
@@ -391,7 +391,7 @@ export default function ScannerModal() {
             {scannedValue && !errorHint && !pendingValue && <Text style={styles.scannedText}>✓ {scannedValue}</Text>}
             {errorHint ? (
               <View style={styles.errorBanner}>
-                <Ionicons name="close-circle" size={18} color="#fff" />
+                <PhIcon name="close-circle" size={18} color="#fff" />
                 <Text style={styles.errorBannerTxt}>{errorHint}</Text>
               </View>
             ) : null}

@@ -10,12 +10,12 @@
  * and stays private to that user).
  */
 import React, { useEffect, useMemo, useState } from "react";
+import PhIcon from "../../components/PhIcon";
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity, TextInput,
   ActivityIndicator, Alert, Platform,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import { api } from "../../lib/api";
 import { useAuth } from "../../lib/auth";
@@ -152,7 +152,7 @@ export default function AdminMasterSheetScreen() {
     <SafeAreaView style={styles.wrap}>
       <View style={styles.header}>
         <TouchableOpacity onPress={() => router.back()} hitSlop={10}>
-          <Ionicons name="chevron-back" size={24} color={colors.text} />
+          <PhIcon name="chevron-back" size={24} color={colors.text} />
         </TouchableOpacity>
         <Text style={styles.title}>Master Sheet (Admin)</Text>
         <View style={{ width: 24 }} />
@@ -163,7 +163,7 @@ export default function AdminMasterSheetScreen() {
         {saEmail ? (
           <View style={styles.saBox}>
             <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-              <Ionicons name="shield-checkmark" size={14} color="#1E40AF" />
+              <PhIcon name="shield-checkmark" size={14} color="#1E40AF" />
               <Text style={styles.saTitle}>Service Account email</Text>
             </View>
             <Text style={styles.saSub}>
@@ -221,7 +221,7 @@ export default function AdminMasterSheetScreen() {
               <ActivityIndicator size="small" color="#7C3AED" />
             ) : (
               <>
-                <Ionicons name="checkmark-circle-outline" size={16} color="#7C3AED" />
+                <PhIcon name="checkmark-circle-outline" size={16} color="#7C3AED" />
                 <Text style={styles.btnGhostTxt}>Test Connection</Text>
               </>
             )}
@@ -237,7 +237,7 @@ export default function AdminMasterSheetScreen() {
               <ActivityIndicator size="small" color="#fff" />
             ) : (
               <>
-                <Ionicons name="save-outline" size={16} color="#fff" />
+                <PhIcon name="save-outline" size={16} color="#fff" />
                 <Text style={styles.btnPrimaryTxt}>Save</Text>
               </>
             )}
@@ -247,7 +247,7 @@ export default function AdminMasterSheetScreen() {
         {/* Info card */}
         <View style={styles.infoCard}>
           <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-            <Ionicons name="information-circle" size={16} color="#1E3A8A" />
+            <PhIcon name="information-circle" size={16} color="#1E3A8A" />
             <Text style={styles.infoTitle}>How dual-write works</Text>
           </View>
           <Text style={styles.infoBody}>

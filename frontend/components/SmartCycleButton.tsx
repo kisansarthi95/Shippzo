@@ -20,13 +20,12 @@
  * generative AI feature.
  */
 import React, { useEffect, useMemo, useRef, useState, useCallback } from "react";
+import PhIcon from "./PhIcon";
 import {
   View, Text, StyleSheet, Pressable, Animated, Easing,
 } from "react-native";
-import { Ionicons } from "@expo/vector-icons";
-
 type StateDef = {
-  icon: keyof typeof Ionicons.glyphMap;
+  icon: string;
   label: string;
   bg: string;
   border: string;
@@ -143,7 +142,7 @@ export default function SmartCycleButton({ onPress, busy, testID }: Props) {
         ]}
       >
         <Animated.View style={[styles.row, { opacity: fade }]}>
-          <Ionicons name={current.icon} size={16} color="#fff" />
+          <PhIcon name={current.icon} size={16} color="#fff" />
           <Text
             style={styles.label}
             numberOfLines={1}

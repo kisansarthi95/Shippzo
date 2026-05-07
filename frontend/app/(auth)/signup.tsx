@@ -1,11 +1,11 @@
 import React, { useState } from "react";
+import PhIcon from "../../components/PhIcon";
 import {
   View, Text, TextInput, TouchableOpacity, StyleSheet,
   KeyboardAvoidingView, Platform, ScrollView, ActivityIndicator, Alert,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
-import { Ionicons } from "@expo/vector-icons";
 import { useAuth } from "../../lib/auth";
 import { colors } from "../../lib/theme";
 import GoogleSignInButton from "../../components/GoogleSignInButton";
@@ -81,7 +81,7 @@ export default function SignupScreen() {
       >
         <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
           <View style={styles.brand}>
-            <Ionicons name="cube-outline" size={36} color={colors.primary} />
+            <PhIcon name="cube-outline" size={36} color={colors.primary} />
             <Text style={styles.brandTitle}>Create account</Text>
             <Text style={styles.brandSub}>Start shipping in minutes — 15 demo orders included</Text>
           </View>
@@ -149,7 +149,7 @@ export default function SignupScreen() {
                 placeholderTextColor="#94A3B8"
               />
               <TouchableOpacity style={styles.eyeBtn} onPress={() => setShowPwd((v) => !v)}>
-                <Ionicons name={showPwd ? "eye-off" : "eye"} size={20} color="#64748B" />
+                <PhIcon name={showPwd ? "eye-off" : "eye"} size={20} color="#64748B" />
               </TouchableOpacity>
             </View>
 
@@ -177,7 +177,7 @@ export default function SignupScreen() {
             >
               <View style={[styles.checkbox, policyAccepted && styles.checkboxOn]}>
                 {policyAccepted ? (
-                  <Ionicons name="checkmark" size={14} color="#fff" />
+                  <PhIcon name="checkmark" size={14} color="#fff" />
                 ) : null}
               </View>
               <Text style={styles.policyText}>

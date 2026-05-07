@@ -1,5 +1,5 @@
 import { Tabs } from "expo-router";
-import { Ionicons } from "@expo/vector-icons";
+import PhIcon from "../../components/PhIcon";
 import { colors } from "../../lib/theme";
 import { Platform, View } from "react-native";
 import { usePermissions } from "../../lib/permissions";
@@ -23,6 +23,7 @@ export default function TabsLayout() {
           paddingTop: 8,
           paddingBottom: Platform.OS === "ios" ? 34 : 18,
         },
+        tabBarIconStyle: { marginBottom: -2 },
         tabBarLabelStyle: {
           fontSize: 11,
           fontWeight: "700",
@@ -35,7 +36,7 @@ export default function TabsLayout() {
         options={{
           title: "Home",
           tabBarIcon: ({ color, size }) => (
-            <Ionicons name="home" size={size} color={color} />
+            <PhIcon name="home" size={26} color={color} />
           ),
         }}
       />
@@ -44,7 +45,7 @@ export default function TabsLayout() {
         options={{
           title: "Orders",
           tabBarIcon: ({ color, size }) => (
-            <Ionicons name="list" size={size} color={color} />
+            <PhIcon name="list" size={26} color={color} />
           ),
         }}
       />
@@ -70,7 +71,7 @@ export default function TabsLayout() {
                 elevation: 6,
               }}
             >
-              <Ionicons name="add" size={32} color="#fff" />
+              <PhIcon name="add" size={32} color="#fff" />
             </View>
           ),
           tabBarLabel: () => null,
@@ -81,7 +82,7 @@ export default function TabsLayout() {
         options={{
           title: "Shipments",
           tabBarIcon: ({ color, size }) => (
-            <Ionicons name="cube" size={size} color={color} />
+            <PhIcon name="cube" size={26} color={color} />
           ),
         }}
       />
@@ -90,7 +91,7 @@ export default function TabsLayout() {
         options={{
           title: "Settings",
           tabBarIcon: ({ color, size }) => (
-            <Ionicons name="settings-sharp" size={size} color={color} />
+            <PhIcon name="settings-sharp" size={26} color={color} />
           ),
         }}
       />

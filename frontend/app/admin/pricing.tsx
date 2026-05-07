@@ -9,12 +9,12 @@
  * The label on the Plans screen uses these fields to compute the display.
  */
 import React, { useEffect, useMemo, useState } from "react";
+import PhIcon from "../../components/PhIcon";
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity, TextInput,
   Switch, ActivityIndicator, Alert, Platform,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import { api, PlanKey, PlanPricingEntry, CountdownConfig } from "../../lib/api";
 import { useAuth } from "../../lib/auth";
@@ -271,7 +271,7 @@ export default function AdminPricingScreen() {
     <SafeAreaView style={styles.safe} edges={["top"]}>
       <View style={styles.header}>
         <TouchableOpacity onPress={handleBack} hitSlop={10} style={{ marginRight: 8 }}>
-          <Ionicons name="chevron-back" size={26} color={colors.text} />
+          <PhIcon name="chevron-back" size={26} color={colors.text} />
         </TouchableOpacity>
         <View style={{ flex: 1 }}>
           <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
@@ -289,7 +289,7 @@ export default function AdminPricingScreen() {
 
       <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: 16, paddingBottom: 130 }}>
         <View style={styles.infoBox}>
-          <Ionicons name="information-circle" size={18} color="#0EA5E9" />
+          <PhIcon name="information-circle" size={18} color="#0EA5E9" />
           <Text style={styles.infoTxt}>
             Anchor (strikethrough) is the "original" price shown crossed out. The display price
             is what users actually pay. Yearly auto-suggest = 12× monthly × 0.75.
@@ -312,7 +312,7 @@ export default function AdminPricingScreen() {
               re-activation codes — all managed here.
             </Text>
           </View>
-          <Ionicons name="chevron-forward" size={20} color={colors.primary} />
+          <PhIcon name="chevron-forward" size={20} color={colors.primary} />
         </TouchableOpacity>
 
         {/* ---- Plan price cards ---- */}
@@ -364,7 +364,7 @@ export default function AdminPricingScreen() {
               <View style={styles.row2}>
                 <Text style={styles.sectionLbl}>Yearly</Text>
                 <TouchableOpacity onPress={() => autoCalcYearly(key)} style={styles.miniBtn}>
-                  <Ionicons name="flash" size={12} color={colors.primary} />
+                  <PhIcon name="flash" size={12} color={colors.primary} />
                   <Text style={styles.miniBtnTxt}>Auto-calc (×12 × 0.75)</Text>
                 </TouchableOpacity>
               </View>
@@ -457,7 +457,7 @@ export default function AdminPricingScreen() {
                   sync to /admin/plan-limits on Save. */}
               <View style={styles.limitsSection}>
                 <View style={styles.limitsHeader}>
-                  <Ionicons name="options-outline" size={15} color={tone} />
+                  <PhIcon name="options-outline" size={15} color={tone} />
                   <Text style={[styles.limitsTitle, { color: tone }]}>
                     Plan Limits
                   </Text>
@@ -506,7 +506,7 @@ export default function AdminPricingScreen() {
                         onPress={() => updateLimit(key, { label_cap: limitsDefaults[key].label_cap })}
                         style={styles.resetBtn}
                       >
-                        <Ionicons name="refresh" size={11} color="#6B7280" />
+                        <PhIcon name="refresh" size={11} color="#6B7280" />
                         <Text style={styles.resetBtnTxt}>Reset</Text>
                       </TouchableOpacity>
                     </View>
@@ -528,7 +528,7 @@ export default function AdminPricingScreen() {
                         onPress={() => updateLimit(key, { bulk_max: limitsDefaults[key].bulk_max })}
                         style={styles.resetBtn}
                       >
-                        <Ionicons name="refresh" size={11} color="#6B7280" />
+                        <PhIcon name="refresh" size={11} color="#6B7280" />
                         <Text style={styles.resetBtnTxt}>Reset</Text>
                       </TouchableOpacity>
                     </View>
@@ -571,7 +571,7 @@ export default function AdminPricingScreen() {
                       onPress={() => updateLimit(key, { daily_cap: limitsDefaults[key].daily_cap })}
                       style={styles.resetBtn}
                     >
-                      <Ionicons name="refresh" size={11} color="#6B7280" />
+                      <PhIcon name="refresh" size={11} color="#6B7280" />
                       <Text style={styles.resetBtnTxt}>Reset</Text>
                     </TouchableOpacity>
                   </View>
@@ -597,7 +597,7 @@ export default function AdminPricingScreen() {
                         onPress={() => updateLimit(key, { packing_variant_cap: limitsDefaults[key].packing_variant_cap ?? 0 })}
                         style={styles.resetBtn}
                       >
-                        <Ionicons name="refresh" size={11} color="#6B7280" />
+                        <PhIcon name="refresh" size={11} color="#6B7280" />
                         <Text style={styles.resetBtnTxt}>Reset</Text>
                       </TouchableOpacity>
                     </View>
@@ -619,7 +619,7 @@ export default function AdminPricingScreen() {
                         onPress={() => updateLimit(key, { team_member_cap: limitsDefaults[key].team_member_cap ?? 0 })}
                         style={styles.resetBtn}
                       >
-                        <Ionicons name="refresh" size={11} color="#6B7280" />
+                        <PhIcon name="refresh" size={11} color="#6B7280" />
                         <Text style={styles.resetBtnTxt}>Reset</Text>
                       </TouchableOpacity>
                     </View>
@@ -644,7 +644,7 @@ export default function AdminPricingScreen() {
                       onPress={() => updateLimit(key, { extra_member_price_inr: limitsDefaults[key].extra_member_price_inr ?? 0 })}
                       style={styles.resetBtn}
                     >
-                      <Ionicons name="refresh" size={11} color="#6B7280" />
+                      <PhIcon name="refresh" size={11} color="#6B7280" />
                       <Text style={styles.resetBtnTxt}>Reset</Text>
                     </TouchableOpacity>
                   </View>
@@ -754,7 +754,7 @@ export default function AdminPricingScreen() {
         >
           {saving ? <ActivityIndicator color="#fff" /> : (
             <>
-              <Ionicons name="save" size={18} color="#fff" />
+              <PhIcon name="save" size={18} color="#fff" />
               <Text style={styles.saveTxt}>{isDirty ? "Save pricing" : "No changes"}</Text>
             </>
           )}

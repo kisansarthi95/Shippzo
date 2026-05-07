@@ -11,6 +11,7 @@
  * just shows the rate up-front so the operator can decide.
  */
 import React, { useEffect, useMemo, useState } from "react";
+import PhIcon from "./PhIcon";
 import {
   Modal,
   View,
@@ -24,7 +25,6 @@ import {
   KeyboardAvoidingView,
   Platform,
 } from "react-native";
-import { Ionicons } from "@expo/vector-icons";
 import { Api } from "../lib/api";
 import { TEMPLATE_VARIABLES, VARIABLE_GROUPS } from "../lib/templateVariables";
 
@@ -232,7 +232,7 @@ export default function AiTemplateGenerator({
               </Text>
             </View>
             <TouchableOpacity style={styles.closeBtn} onPress={onClose} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-              <Ionicons name="close" size={22} color="#374151" />
+              <PhIcon name="close" size={22} color="#374151" />
             </TouchableOpacity>
           </View>
 
@@ -284,7 +284,7 @@ export default function AiTemplateGenerator({
             {/* Cost preview */}
             {pricingLoaded && (
               <View style={styles.costBox}>
-                <Ionicons name="wallet-outline" size={16} color="#92400E" />
+                <PhIcon name="wallet-outline" size={16} color="#92400E" />
                 <Text style={styles.costText}>
                   Cost: {aiCost.toFixed(2)} credit{aiCost === 1 ? "" : "s"} per generation
                   {walletBalance !== null
@@ -304,7 +304,7 @@ export default function AiTemplateGenerator({
                 <ActivityIndicator color="#fff" />
               ) : (
                 <>
-                  <Ionicons name="sparkles" size={16} color="#fff" />
+                  <PhIcon name="sparkles" size={16} color="#fff" />
                   <Text style={styles.generateBtnText}>
                     {hasVariants ? "Regenerate Templates" : "Generate Templates"}
                   </Text>
@@ -415,7 +415,7 @@ export default function AiTemplateGenerator({
           {/* Sticky bottom action bar */}
           <View style={styles.bottomBar}>
             <TouchableOpacity style={styles.resetBtn} onPress={handleReset}>
-              <Ionicons name="refresh" size={14} color="#374151" />
+              <PhIcon name="refresh" size={14} color="#374151" />
               <Text style={styles.resetBtnText}>Reset</Text>
             </TouchableOpacity>
             <TouchableOpacity
@@ -427,7 +427,7 @@ export default function AiTemplateGenerator({
                 <ActivityIndicator color="#fff" />
               ) : (
                 <>
-                  <Ionicons name="save-outline" size={15} color="#fff" />
+                  <PhIcon name="save-outline" size={15} color="#fff" />
                   <Text style={styles.saveBtnText}>Save All</Text>
                 </>
               )}

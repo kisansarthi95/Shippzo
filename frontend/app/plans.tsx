@@ -13,6 +13,7 @@
  * NO GST, NO USD — INR-inclusive on user's request.
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import PhIcon from "../components/PhIcon";
 import {
   View,
   Text,
@@ -26,7 +27,6 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Stack, useRouter, useFocusEffect } from "expo-router";
-import { Ionicons } from "@expo/vector-icons";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import {
   Api,
@@ -315,7 +315,7 @@ export default function PlansScreen() {
   const headerRight = useMemo(
     () => () => (
       <TouchableOpacity onPress={() => router.back()} hitSlop={10}>
-        <Ionicons name="close" size={24} color={colors.text} />
+        <PhIcon name="close" size={24} color={colors.text} />
       </TouchableOpacity>
     ),
     [router],
@@ -339,7 +339,7 @@ export default function PlansScreen() {
         {showOffer ? (
           <View style={styles.countdownBanner} testID="countdown-banner">
             <View style={styles.countdownIconBox}>
-              <Ionicons name="flame" size={20} color="#fff" />
+              <PhIcon name="flame" size={20} color="#fff" />
             </View>
             <View style={{ flex: 1 }}>
               <Text style={styles.countdownHead}>{countdown?.headline || "Limited time offer"}</Text>
@@ -350,7 +350,7 @@ export default function PlansScreen() {
 
         {/* Razorpay live-payments banner */}
         <View style={styles.mockBanner}>
-          <Ionicons name="shield-checkmark" size={16} color="#065F46" />
+          <PhIcon name="shield-checkmark" size={16} color="#065F46" />
           <Text style={styles.mockBannerTxt}>
             Secure payments by Razorpay · Cards, UPI, Netbanking & Wallets
           </Text>
@@ -364,7 +364,7 @@ export default function PlansScreen() {
           style={styles.walletCard}
         >
           <View style={styles.walletIconBox}>
-            <Ionicons name="wallet" size={22} color="#fff" />
+            <PhIcon name="wallet" size={22} color="#fff" />
           </View>
           <View style={{ flex: 1 }}>
             <Text style={styles.walletLbl}>Wallet balance</Text>
@@ -373,7 +373,7 @@ export default function PlansScreen() {
               <Text style={styles.walletUnit}> credits</Text>
             </Text>
           </View>
-          <Ionicons name="chevron-forward" size={20} color="#CBD5E1" />
+          <PhIcon name="chevron-forward" size={20} color="#CBD5E1" />
         </TouchableOpacity>
 
         {/* Usage summary */}
@@ -407,7 +407,7 @@ export default function PlansScreen() {
                     ? styles.validityWarn
                     : styles.validityOk,
               ]}>
-                <Ionicons
+                <PhIcon
                   name={usage.plan_expired ? "alert-circle" : "calendar-outline"}
                   size={14}
                   color={
@@ -471,7 +471,7 @@ export default function PlansScreen() {
         <View style={styles.couponBox}>
           {appliedCoupon ? (
             <View style={styles.couponAppliedRow}>
-              <Ionicons name="checkmark-circle" size={18} color="#15803D" />
+              <PhIcon name="checkmark-circle" size={18} color="#15803D" />
               <View style={{ flex: 1 }}>
                 <Text style={styles.couponAppliedTitle}>
                   Coupon applied: {appliedCoupon.code}
@@ -483,12 +483,12 @@ export default function PlansScreen() {
                 </Text>
               </View>
               <TouchableOpacity onPress={handleClearCoupon} testID="clear-coupon-btn">
-                <Ionicons name="close-circle" size={20} color="#94A3B8" />
+                <PhIcon name="close-circle" size={20} color="#94A3B8" />
               </TouchableOpacity>
             </View>
           ) : (
             <View style={styles.couponEntryRow}>
-              <Ionicons name="pricetag-outline" size={16} color="#475569" />
+              <PhIcon name="pricetag-outline" size={16} color="#475569" />
               <TextInput
                 testID="coupon-input"
                 value={couponInput}
@@ -653,7 +653,7 @@ function PlanCard({
         <View style={[styles.badge, { backgroundColor: pal.chipBg }]}>
           {plan.badge === "Most Popular" ? (
             <>
-              <Ionicons name="star" size={11} color="#fff" />
+              <PhIcon name="star" size={11} color="#fff" />
               <Text style={styles.badgeTxt}>Most Popular</Text>
             </>
           ) : (
@@ -663,7 +663,7 @@ function PlanCard({
       )}
       {isCurrent && (
         <View style={[styles.currentPill, isRenewable && (planExpired ? styles.currentPillDanger : styles.currentPillWarn)]}>
-          <Ionicons
+          <PhIcon
             name={isRenewable ? (planExpired ? "alert-circle" : "calendar-outline") : "checkmark-circle"}
             size={12}
             color={isRenewable ? (planExpired ? "#7F1D1D" : "#78350F") : "#065F46"}
@@ -701,7 +701,7 @@ function PlanCard({
             ₹{anchorPrice.toLocaleString("en-IN")}
           </Text>
           <View style={styles.savingsTag}>
-            <Ionicons name="pricetag" size={10} color="#047857" />
+            <PhIcon name="pricetag" size={10} color="#047857" />
             <Text style={styles.savingsTxt}>
               SAVE ₹{savingsAmt.toLocaleString("en-IN")} ({savingsPct}% off)
             </Text>
@@ -712,7 +712,7 @@ function PlanCard({
       {/* Yearly bonus sticker */}
       {!isFree && billing === "yearly" && pricing && pricing.yearly_bonus_months > 0 ? (
         <View style={styles.bonusRow}>
-          <Ionicons name="gift" size={13} color="#B45309" />
+          <PhIcon name="gift" size={13} color="#B45309" />
           <Text style={styles.bonusTxt}>
             {pricing.yearly_base_months} + {pricing.yearly_bonus_months} months FREE
           </Text>
@@ -734,7 +734,7 @@ function PlanCard({
 
       {bullets.map((b, i) => (
         <View key={i} style={styles.bulletRow}>
-          <Ionicons name={b.icon as any} size={16} color={b.positive ? "#047857" : "#94A3B8"} />
+          <PhIcon name={b.icon as any} size={16} color={b.positive ? "#047857" : "#94A3B8"} />
           <Text style={[styles.bulletTxt, !b.positive && styles.bulletTxtMuted]}>{b.text}</Text>
         </View>
       ))}

@@ -12,8 +12,8 @@
  * SyncQueue subscribe hook).
  */
 import React, { useEffect, useState, useCallback } from "react";
+import PhIcon from "./PhIcon";
 import { View, Text, StyleSheet, TouchableOpacity, Alert } from "react-native";
-import { Ionicons } from "@expo/vector-icons";
 import { SyncQueue, QueueItem } from "../lib/syncQueue";
 import { colors } from "../lib/theme";
 
@@ -92,7 +92,7 @@ export default function PendingSyncPanel() {
   if (items.length === 0) {
     return (
       <View style={styles.emptyBox} testID="pending-sync-empty">
-        <Ionicons name="cloud-done-outline" size={16} color="#16A34A" />
+        <PhIcon name="cloud-done-outline" size={16} color="#16A34A" />
         <Text style={styles.emptyTxt}>All synced — no pending items</Text>
       </View>
     );
@@ -116,7 +116,7 @@ export default function PendingSyncPanel() {
             disabled={busy || pendingCount === 0}
             style={[styles.btn, (busy || pendingCount === 0) && styles.btnDisabled]}
           >
-            <Ionicons name="refresh" size={13} color="#fff" />
+            <PhIcon name="refresh" size={13} color="#fff" />
             <Text style={styles.btnTxt}>{busy ? "Syncing…" : "Retry all"}</Text>
           </TouchableOpacity>
           {erroredCount > 0 && (
@@ -125,7 +125,7 @@ export default function PendingSyncPanel() {
               onPress={onClearErrored}
               style={[styles.btn, styles.btnGhost]}
             >
-              <Ionicons name="trash-outline" size={13} color="#DC2626" />
+              <PhIcon name="trash-outline" size={13} color="#DC2626" />
               <Text style={[styles.btnTxt, { color: "#DC2626" }]}>Clear errors</Text>
             </TouchableOpacity>
           )}
@@ -142,7 +142,7 @@ export default function PendingSyncPanel() {
             testID={`pending-item-${item.id}`}
           >
             <View style={[styles.typePill, { backgroundColor: meta.bg }]}>
-              <Ionicons name={meta.icon as any} size={11} color={meta.tint} />
+              <PhIcon name={meta.icon as any} size={11} color={meta.tint} />
               <Text style={[styles.typePillTxt, { color: meta.tint }]}>{meta.label}</Text>
             </View>
             <View style={{ flex: 1 }}>
@@ -162,7 +162,7 @@ export default function PendingSyncPanel() {
               style={styles.removeBtn}
               testID={`pending-remove-${item.id}`}
             >
-              <Ionicons name="close-circle" size={18} color="#94A3B8" />
+              <PhIcon name="close-circle" size={18} color="#94A3B8" />
             </TouchableOpacity>
           </View>
         );

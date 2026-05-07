@@ -4,11 +4,11 @@
  * period-chip UX, custom-date modal & Excel-download button consistent.
  */
 import React, { useState } from "react";
+import PhIcon from "./PhIcon";
 import {
   View, Text, StyleSheet, TouchableOpacity, Modal, Pressable,
   Platform, ActivityIndicator, Alert, Linking,
 } from "react-native";
-import { Ionicons } from "@expo/vector-icons";
 import DateTimePicker from "@react-native-community/datetimepicker";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
@@ -77,11 +77,11 @@ export function PeriodPicker({
         style={[styles.customBtn, range === "custom" && styles.customBtnActive]}
         onPress={() => setOpen(true)}
       >
-        <Ionicons name="calendar" size={16} color={range === "custom" ? "#fff" : "#1F4FBF"} />
+        <PhIcon name="calendar" size={16} color={range === "custom" ? "#fff" : "#1F4FBF"} />
         <Text style={[styles.customBtnTxt, range === "custom" && { color: "#fff" }]}>
           {range === "custom" && appliedLabel ? appliedLabel : "Custom Date Range (up to 3 months)"}
         </Text>
-        <Ionicons name="chevron-forward" size={14} color={range === "custom" ? "#fff" : "#9CA3AF"} />
+        <PhIcon name="chevron-forward" size={14} color={range === "custom" ? "#fff" : "#9CA3AF"} />
       </TouchableOpacity>
 
       <Modal visible={open} animationType="slide" transparent onRequestClose={() => setOpen(false)}>
@@ -90,13 +90,13 @@ export function PeriodPicker({
             <View style={styles.sheetHeader}>
               <Text style={styles.sheetTitle}>Pick Custom Date Range</Text>
               <TouchableOpacity onPress={() => setOpen(false)}>
-                <Ionicons name="close" size={24} color="#111827" />
+                <PhIcon name="close" size={24} color="#111827" />
               </TouchableOpacity>
             </View>
 
             <Text style={styles.fieldLabel}>FROM</Text>
             <TouchableOpacity style={styles.dateBox} onPress={() => setShowFromPicker(true)}>
-              <Ionicons name="calendar-outline" size={16} color="#1F4FBF" />
+              <PhIcon name="calendar-outline" size={16} color="#1F4FBF" />
               <Text style={styles.dateTxt}>{customFrom ? customFrom.toDateString() : "Select start date"}</Text>
             </TouchableOpacity>
             {showFromPicker && (
@@ -110,7 +110,7 @@ export function PeriodPicker({
 
             <Text style={[styles.fieldLabel, { marginTop: 14 }]}>TO</Text>
             <TouchableOpacity style={styles.dateBox} onPress={() => setShowToPicker(true)}>
-              <Ionicons name="calendar-outline" size={16} color="#1F4FBF" />
+              <PhIcon name="calendar-outline" size={16} color="#1F4FBF" />
               <Text style={styles.dateTxt}>{customTo ? customTo.toDateString() : "Select end date"}</Text>
             </TouchableOpacity>
             {showToPicker && (
@@ -124,7 +124,7 @@ export function PeriodPicker({
 
             <Text style={styles.helperTxt}>Maximum span: 3 months (92 days)</Text>
             <TouchableOpacity style={styles.applyBtn} onPress={apply}>
-              <Ionicons name="checkmark" size={18} color="#fff" />
+              <PhIcon name="checkmark" size={18} color="#fff" />
               <Text style={styles.applyBtnTxt}>Apply</Text>
             </TouchableOpacity>
           </Pressable>

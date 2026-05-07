@@ -14,6 +14,7 @@
  * background screens stop polling.
  */
 import React, { useEffect, useState, useCallback } from "react";
+import PhIcon from "./PhIcon";
 import {
   View,
   Text,
@@ -21,7 +22,6 @@ import {
   TouchableOpacity,
   ActivityIndicator,
 } from "react-native";
-import { Ionicons } from "@expo/vector-icons";
 import { Api } from "../lib/api";
 
 type Status = {
@@ -94,7 +94,7 @@ export default function DailyLimitBanner({
   if (variant === "strip") {
     return (
       <View style={[styles.strip, { backgroundColor: bg, borderColor: border }]}>
-        <Ionicons name={icon} size={16} color={fg} />
+        <PhIcon name={icon} size={16} color={fg} />
         <Text style={[styles.stripText, { color: fg }]} numberOfLines={2}>
           WhatsApp today: {status.sent_today} / {status.limit}{extra}
         </Text>
@@ -108,7 +108,7 @@ export default function DailyLimitBanner({
       onPress={fetchStatus}
       style={[styles.pill, { backgroundColor: bg, borderColor: border }]}
     >
-      <Ionicons name={icon} size={13} color={fg} />
+      <PhIcon name={icon} size={13} color={fg} />
       <Text style={[styles.pillText, { color: fg }]}>
         {status.sent_today}/{status.limit} today
       </Text>

@@ -10,12 +10,12 @@
  * email with the real entity before production.
  */
 import React, { useMemo } from "react";
+import PhIcon from "../components/PhIcon";
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Stack, useLocalSearchParams, useRouter } from "expo-router";
-import { Ionicons } from "@expo/vector-icons";
 import { colors } from "../lib/theme";
 
 type Tab = "refund" | "terms" | "privacy";
@@ -32,7 +32,7 @@ export default function RefundPolicyScreen() {
   const headerRight = useMemo(
     () => () => (
       <TouchableOpacity onPress={() => router.back()} hitSlop={10}>
-        <Ionicons name="close" size={22} color={colors.text} />
+        <PhIcon name="close" size={22} color={colors.text} />
       </TouchableOpacity>
     ),
     [router],

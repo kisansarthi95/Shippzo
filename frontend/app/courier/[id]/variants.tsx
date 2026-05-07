@@ -14,13 +14,13 @@
  * confirmed via Alert so a single mis-tap doesn't wipe a tariff.
  */
 import React, { useCallback, useEffect, useState } from "react";
+import PhIcon from "../../../components/PhIcon";
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity,
   Alert, ActivityIndicator, TextInput, KeyboardAvoidingView,
   Platform, Modal,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { Ionicons } from "@expo/vector-icons";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { Api } from "../../../lib/api";
 import { colors } from "../../../lib/theme";
@@ -272,7 +272,7 @@ export default function CourierVariantsScreen() {
     <SafeAreaView style={styles.safe} edges={["top"]}>
       <View style={styles.header}>
         <TouchableOpacity onPress={() => router.back()} style={styles.backBtn}>
-          <Ionicons name="arrow-back" size={22} color={colors.text} />
+          <PhIcon name="arrow-back" size={22} color={colors.text} />
         </TouchableOpacity>
         <Text style={styles.title}>📦 Packing Variants</Text>
         <View style={{ width: 40 }} />
@@ -281,7 +281,7 @@ export default function CourierVariantsScreen() {
       <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 100 }}>
         {/* Cap indicator */}
         <View style={styles.capCard}>
-          <Ionicons name="information-circle-outline" size={18} color="#1F4FBF" />
+          <PhIcon name="information-circle-outline" size={18} color="#1F4FBF" />
           <Text style={styles.capTxt}>
             {cap === null
               ? `${variants.length} variants (Admin — unlimited)`
@@ -292,7 +292,7 @@ export default function CourierVariantsScreen() {
         {/* List */}
         {variants.length === 0 ? (
           <View style={styles.emptyCard}>
-            <Ionicons name="cube-outline" size={36} color="#9CA3AF" />
+            <PhIcon name="cube-outline" size={36} color="#9CA3AF" />
             <Text style={styles.emptyTitle}>No variants yet</Text>
             <Text style={styles.emptySub}>
               Add your first packing variant — set its dimensions, weight,
@@ -305,7 +305,7 @@ export default function CourierVariantsScreen() {
                 style={styles.copyFromCta}
                 onPress={() => setCopyPickerOpen(true)}
               >
-                <Ionicons name="copy" size={16} color="#fff" />
+                <PhIcon name="copy" size={16} color="#fff" />
                 <Text style={styles.copyFromCtaTxt}>
                   Copy variants from another courier
                 </Text>
@@ -328,13 +328,13 @@ export default function CourierVariantsScreen() {
                     onPress={() => openCopy(v)}
                     style={styles.iconBtn}
                   >
-                    <Ionicons name="copy-outline" size={18} color="#7C3AED" />
+                    <PhIcon name="copy-outline" size={18} color="#7C3AED" />
                   </TouchableOpacity>
                   <TouchableOpacity onPress={() => openEdit(v)} style={styles.iconBtn}>
-                    <Ionicons name="create-outline" size={18} color="#1F4FBF" />
+                    <PhIcon name="create-outline" size={18} color="#1F4FBF" />
                   </TouchableOpacity>
                   <TouchableOpacity onPress={() => remove(v)} style={styles.iconBtn}>
-                    <Ionicons name="trash-outline" size={18} color="#DC2626" />
+                    <PhIcon name="trash-outline" size={18} color="#DC2626" />
                   </TouchableOpacity>
                 </View>
               </View>
@@ -359,7 +359,7 @@ export default function CourierVariantsScreen() {
           ]}
           onPress={openAdd}
         >
-          <Ionicons name="add-circle" size={20} color="#fff" />
+          <PhIcon name="add-circle" size={20} color="#fff" />
           <Text style={styles.addBtnTxt}>Add Variant</Text>
         </TouchableOpacity>
       </ScrollView>
@@ -378,7 +378,7 @@ export default function CourierVariantsScreen() {
             <View style={styles.sheetHeader}>
               <Text style={styles.sheetTitle}>📋 Copy variants from…</Text>
               <TouchableOpacity onPress={() => setCopyPickerOpen(false)} disabled={copying} hitSlop={10}>
-                <Ionicons name="close" size={22} color={colors.text} />
+                <PhIcon name="close" size={22} color={colors.text} />
               </TouchableOpacity>
             </View>
             {copying ? (
@@ -404,7 +404,7 @@ export default function CourierVariantsScreen() {
                         {s.variant_count} variant(s) available
                       </Text>
                     </View>
-                    <Ionicons name="chevron-forward" size={18} color="#9CA3AF" />
+                    <PhIcon name="chevron-forward" size={18} color="#9CA3AF" />
                   </TouchableOpacity>
                 ))}
               </ScrollView>
@@ -430,7 +430,7 @@ export default function CourierVariantsScreen() {
                 {editing ? "Edit Variant" : "Add Variant"}
               </Text>
               <TouchableOpacity onPress={() => setEditorOpen(false)} disabled={saving} hitSlop={10}>
-                <Ionicons name="close" size={22} color={colors.text} />
+                <PhIcon name="close" size={22} color={colors.text} />
               </TouchableOpacity>
             </View>
             <ScrollView contentContainerStyle={{ paddingBottom: 30 }} keyboardShouldPersistTaps="handled">
@@ -512,7 +512,7 @@ export default function CourierVariantsScreen() {
               >
                 {saving ? <ActivityIndicator color="#fff" /> : (
                   <>
-                    <Ionicons name="save" size={18} color="#fff" />
+                    <PhIcon name="save" size={18} color="#fff" />
                     <Text style={styles.saveBtnTxt}>
                       {editing ? "Save Changes" : "Add Variant"}
                     </Text>

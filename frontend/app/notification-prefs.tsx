@@ -7,13 +7,13 @@
  * which round-trips through Expo Push to validate end-to-end.
  */
 import React, { useCallback, useEffect, useState } from "react";
+import PhIcon from "../components/PhIcon";
 import {
   View, Text, StyleSheet, ScrollView, Switch, TouchableOpacity,
   ActivityIndicator, Alert, Platform,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Stack } from "expo-router";
-import { Ionicons } from "@expo/vector-icons";
 import { Api, NotificationPrefs } from "../lib/api";
 import {
   registerForPushNotificationsAsync,
@@ -141,7 +141,7 @@ export default function NotificationPrefsScreen() {
     return (
       <View key={String(def.key)} style={styles.row}>
         <View style={[styles.rowIcon, { backgroundColor: def.tone + "18" }]}>
-          <Ionicons name={def.icon} size={18} color={def.tone} />
+          <PhIcon name={def.icon} size={18} color={def.tone} />
         </View>
         <View style={{ flex: 1 }}>
           <Text style={styles.rowTitle}>{def.title}</Text>
@@ -168,7 +168,7 @@ export default function NotificationPrefsScreen() {
         {/* Status / device card */}
         <View style={styles.statusCard}>
           <View style={styles.statusRow}>
-            <Ionicons
+            <PhIcon
               name={tokens.count > 0 ? "checkmark-circle" : "alert-circle"}
               size={22}
               color={tokens.count > 0 ? "#10B981" : "#F59E0B"}
@@ -188,7 +188,7 @@ export default function NotificationPrefsScreen() {
           </View>
           <View style={styles.statusBtnRow}>
             <TouchableOpacity style={styles.btnGhost} onPress={reRegister}>
-              <Ionicons name="refresh" size={14} color="#1F4FBF" />
+              <PhIcon name="refresh" size={14} color="#1F4FBF" />
               <Text style={styles.btnGhostText}>
                 {cachedToken ? "Re-register" : "Register this device"}
               </Text>
@@ -200,7 +200,7 @@ export default function NotificationPrefsScreen() {
             >
               {testing ? <ActivityIndicator color="#fff" /> : (
                 <>
-                  <Ionicons name="paper-plane" size={14} color="#fff" />
+                  <PhIcon name="paper-plane" size={14} color="#fff" />
                   <Text style={styles.btnPrimaryText}>Send test</Text>
                 </>
               )}

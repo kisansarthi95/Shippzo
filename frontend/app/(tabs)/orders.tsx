@@ -1,11 +1,11 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
+import PhIcon from "../../components/PhIcon";
 import {
   View, Text, StyleSheet, TextInput, TouchableOpacity,
   FlatList, RefreshControl, ActivityIndicator, Alert, Modal,
   ScrollView,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { Ionicons } from "@expo/vector-icons";
 import { useFocusEffect, useRouter } from "expo-router";
 import { Api, SheetOrder, PendingOrder, Courier } from "../../lib/api";
 import { colors } from "../../lib/theme";
@@ -194,7 +194,7 @@ export default function OrdersFromSheet() {
             loadPasteOrders();
           }}
         >
-          <Ionicons name="refresh" size={20} color="#fff" />
+          <PhIcon name="refresh" size={20} color="#fff" />
         </TouchableOpacity>
       </View>
 
@@ -202,7 +202,7 @@ export default function OrdersFromSheet() {
       {pasteOrders.length > 0 && (
         <View style={styles.pasteQueueWrap}>
           <View style={styles.pasteQueueHeader}>
-            <Ionicons name="sparkles" size={14} color="#7C3AED" />
+            <PhIcon name="sparkles" size={14} color="#7C3AED" />
             <Text style={styles.pasteQueueTitle}>
               Smart Paste Queue · {pasteOrders.length}
             </Text>
@@ -219,7 +219,7 @@ export default function OrdersFromSheet() {
                     <Text style={styles.pasteBadgeText}>✨ PASTE</Text>
                   </View>
                   <TouchableOpacity onPress={() => deletePasteOrder(po)} hitSlop={8}>
-                    <Ionicons name="close" size={18} color={colors.textMuted} />
+                    <PhIcon name="close" size={18} color={colors.textMuted} />
                   </TouchableOpacity>
                 </View>
                 <Text style={styles.pasteName} numberOfLines={1}>
@@ -240,7 +240,7 @@ export default function OrdersFromSheet() {
                   onPress={() => shipPasteOrder(po)}
                   testID={`ship-order-${po.id}`}
                 >
-                  <Ionicons name="rocket-outline" size={14} color="#fff" />
+                  <PhIcon name="rocket-outline" size={14} color="#fff" />
                   <Text style={styles.shipBtnText}>Ship this order</Text>
                 </TouchableOpacity>
               </View>
@@ -251,7 +251,7 @@ export default function OrdersFromSheet() {
 
       {!connected ? (
         <View style={styles.empty} testID="orders-not-connected">
-          <Ionicons name="logo-google" size={52} color="#9CA3AF" />
+          <PhIcon name="logo-google" size={52} color="#9CA3AF" />
           <Text style={styles.emptyTitle}>Connect Google Sheet</Text>
           <Text style={styles.emptyText}>
             Settings → Google Sheet → paste sheet link → map columns. Orders will appear here automatically.
@@ -266,7 +266,7 @@ export default function OrdersFromSheet() {
         </View>
       ) : error ? (
         <View style={styles.empty}>
-          <Ionicons name="warning" size={48} color={colors.dangerText} />
+          <PhIcon name="warning" size={48} color={colors.dangerText} />
           <Text style={styles.emptyTitle}>Couldn't sync</Text>
           <Text style={styles.emptyText}>{error}</Text>
           <TouchableOpacity style={styles.primaryBtn} onPress={load}>
@@ -277,7 +277,7 @@ export default function OrdersFromSheet() {
         <>
           {headersChanged && (
             <View style={styles.warnBox}>
-              <Ionicons name="warning-outline" size={16} color={colors.warningText} />
+              <PhIcon name="warning-outline" size={16} color={colors.warningText} />
               <Text style={styles.warnText}>
                 Sheet columns changed. Re-map in Settings → Google Sheet.
               </Text>
@@ -285,7 +285,7 @@ export default function OrdersFromSheet() {
           )}
 
           <View style={styles.searchWrap}>
-            <Ionicons name="search" size={18} color={colors.textMuted} />
+            <PhIcon name="search" size={18} color={colors.textMuted} />
             <TextInput
               testID="orders-search"
               value={search}
@@ -344,7 +344,7 @@ export default function OrdersFromSheet() {
               contentContainerStyle={{ padding: 16, paddingBottom: 100 }}
               ListEmptyComponent={
                 <View style={styles.empty}>
-                  <Ionicons name="cube-outline" size={48} color="#9CA3AF" />
+                  <PhIcon name="cube-outline" size={48} color="#9CA3AF" />
                   <Text style={styles.emptyText}>
                     {orders.length === 0
                       ? "No orders in your sheet yet."
@@ -391,7 +391,7 @@ export default function OrdersFromSheet() {
                       onPress={() => shipNow(item)}
                       style={styles.shipBtn}
                     >
-                      <Ionicons name="send" size={16} color="#fff" />
+                      <PhIcon name="send" size={16} color="#fff" />
                       <Text style={styles.shipBtnText}>Ship this order</Text>
                     </TouchableOpacity>
                   )}
@@ -412,10 +412,10 @@ export default function OrdersFromSheet() {
         <View style={styles.modalOverlay}>
           <View style={styles.modalCard}>
             <View style={styles.modalHeader}>
-              <Ionicons name="rocket" size={18} color="#7C3AED" />
+              <PhIcon name="rocket" size={18} color="#7C3AED" />
               <Text style={styles.modalTitle}>Ship Order</Text>
               <TouchableOpacity onPress={() => setShipModalOrder(null)} hitSlop={10}>
-                <Ionicons name="close" size={22} color={colors.text} />
+                <PhIcon name="close" size={22} color={colors.text} />
               </TouchableOpacity>
             </View>
             {shipModalOrder && (
@@ -439,7 +439,7 @@ export default function OrdersFromSheet() {
                       disabled={shipping}
                     >
                       <View style={styles.courierIcon}>
-                        <Ionicons name="cube-outline" size={18} color={colors.primary} />
+                        <PhIcon name="cube-outline" size={18} color={colors.primary} />
                       </View>
                       <View style={{ flex: 1 }}>
                         <Text style={styles.courierName}>{c.name}</Text>
@@ -447,7 +447,7 @@ export default function OrdersFromSheet() {
                           Next: {c.series_prefix}{String(c.next_number || 1).padStart(c.number_padding || 4, "0")}
                         </Text>
                       </View>
-                      <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
+                      <PhIcon name="chevron-forward" size={18} color={colors.textMuted} />
                     </TouchableOpacity>
                   ))}
                 </ScrollView>

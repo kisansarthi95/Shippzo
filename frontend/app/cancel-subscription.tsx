@@ -8,13 +8,13 @@
  * plan_expires_at.
  */
 import React, { useEffect, useState } from "react";
+import PhIcon from "../components/PhIcon";
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert, Platform,
   ActivityIndicator,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Stack, useRouter } from "expo-router";
-import { Ionicons } from "@expo/vector-icons";
 import { Api, UsageSummary } from "../lib/api";
 import { colors } from "../lib/theme";
 import { useAuth } from "../lib/auth";
@@ -82,7 +82,7 @@ export default function CancelSubscriptionScreen() {
           headerStyle: { backgroundColor: colors.background },
           headerRight: () => (
             <TouchableOpacity onPress={() => router.back()} hitSlop={10}>
-              <Ionicons name="close" size={22} color={colors.text} />
+              <PhIcon name="close" size={22} color={colors.text} />
             </TouchableOpacity>
           ),
           headerBackVisible: false,
@@ -93,7 +93,7 @@ export default function CancelSubscriptionScreen() {
           <ActivityIndicator color={colors.primary} style={{ marginTop: 40 }} />
         ) : !onPaid ? (
           <View style={styles.box}>
-            <Ionicons name="information-circle" size={36} color="#475569" />
+            <PhIcon name="information-circle" size={36} color="#475569" />
             <Text style={styles.h1}>You're on the free trial</Text>
             <Text style={styles.p}>
               There's nothing to cancel — you haven't been charged yet.
@@ -125,7 +125,7 @@ export default function CancelSubscriptionScreen() {
             </View>
 
             <View style={styles.notice}>
-              <Ionicons name="warning-outline" size={18} color="#B45309" />
+              <PhIcon name="warning-outline" size={18} color="#B45309" />
               <Text style={styles.noticeTxt}>
                 You won't be charged again. Your access continues until{" "}
                 <Text style={{ fontWeight: "800" }}>{expiresAt}</Text>, then
@@ -149,7 +149,7 @@ export default function CancelSubscriptionScreen() {
                 <ActivityIndicator color="#fff" />
               ) : (
                 <>
-                  <Ionicons name="close-circle" size={18} color="#fff" />
+                  <PhIcon name="close-circle" size={18} color="#fff" />
                   <Text style={styles.cancelTxt}>Cancel Auto-renewal</Text>
                 </>
               )}
@@ -181,7 +181,7 @@ export default function CancelSubscriptionScreen() {
 function Bullet({ children }: { children: React.ReactNode }) {
   return (
     <View style={styles.bulletRow}>
-      <Ionicons name="checkmark-circle" size={16} color="#047857" />
+      <PhIcon name="checkmark-circle" size={16} color="#047857" />
       <Text style={styles.bulletTxt}>{children}</Text>
     </View>
   );

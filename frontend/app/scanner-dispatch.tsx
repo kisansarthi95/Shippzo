@@ -23,6 +23,7 @@
  *   Scanner   Black bg + ORANGE corner brackets + RED horizontal scan line.
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import PhIcon from "../components/PhIcon";
 import {
   View,
   Text,
@@ -35,7 +36,6 @@ import {
   Vibration,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { Ionicons } from "@expo/vector-icons";
 import { useRouter, useLocalSearchParams } from "expo-router";
 import { CameraView, useCameraPermissions } from "expo-camera";
 import Animated, {
@@ -321,7 +321,7 @@ export default function ScannerDispatch() {
           testID="scanner-back"
           style={styles.headerIconBtn}
         >
-          <Ionicons name="arrow-back" size={22} color="#111827" />
+          <PhIcon name="arrow-back" size={22} color="#111827" />
         </TouchableOpacity>
         <Text style={styles.headerTitle}>{theme.title}</Text>
         <View style={{ width: 38 }} />
@@ -354,7 +354,7 @@ export default function ScannerDispatch() {
           onPress={() => setPaused((p) => !p)}
           style={[styles.ctrlBtn, styles.ctrlBtnPause]}
         >
-          <Ionicons
+          <PhIcon
             name={paused ? "play" : "pause"}
             size={14}
             color="#111827"
@@ -366,7 +366,7 @@ export default function ScannerDispatch() {
           onPress={stop}
           style={[styles.ctrlBtn, styles.ctrlBtnStop]}
         >
-          <Ionicons name="stop" size={14} color="#fff" />
+          <PhIcon name="stop" size={14} color="#fff" />
           <Text style={[styles.ctrlBtnText, { color: "#fff" }]}>Stop</Text>
         </TouchableOpacity>
       </View>
@@ -378,7 +378,7 @@ export default function ScannerDispatch() {
         <View style={styles.scannerFrame}>
           {isWeb ? (
             <View style={styles.webFallback}>
-              <Ionicons name="camera-outline" size={42} color="#FF6B00" />
+              <PhIcon name="camera-outline" size={42} color="#FF6B00" />
               <Text style={styles.webFallbackText}>
                 Camera scan isn't available in web preview. Use the manual
                 entry box below — works the same.
@@ -386,7 +386,7 @@ export default function ScannerDispatch() {
             </View>
           ) : !permission.granted ? (
             <View style={styles.webFallback}>
-              <Ionicons name="lock-closed-outline" size={36} color="#fff" />
+              <PhIcon name="lock-closed-outline" size={36} color="#fff" />
               <Text style={[styles.webFallbackText, { color: "#fff" }]}>
                 Camera permission needed to scan barcodes.
               </Text>
@@ -437,7 +437,7 @@ export default function ScannerDispatch() {
 
         {/* Manual entry — universally available fallback */}
         <View style={[styles.manualRow, { borderColor: theme.movedBg }]}>
-          <Ionicons name="keypad-outline" size={18} color={theme.textOnMoved} />
+          <PhIcon name="keypad-outline" size={18} color={theme.textOnMoved} />
           <TextInput
             testID="scanner-manual-input"
             style={styles.manualInput}
@@ -454,7 +454,7 @@ export default function ScannerDispatch() {
             style={[styles.manualGo, { backgroundColor: theme.accent }]}
             testID="scanner-manual-submit"
           >
-            <Ionicons name="checkmark" size={18} color="#fff" />
+            <PhIcon name="checkmark" size={18} color="#fff" />
           </TouchableOpacity>
         </View>
 
@@ -498,7 +498,7 @@ export default function ScannerDispatch() {
           {log.length > 0 && (
             <TouchableOpacity onPress={clearLog} testID="scanner-clear-log">
               <View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
-                <Ionicons name="trash-outline" size={14} color="#8B5E34" />
+                <PhIcon name="trash-outline" size={14} color="#8B5E34" />
                 <Text style={styles.logClearText}>Clear All</Text>
               </View>
             </TouchableOpacity>
@@ -506,7 +506,7 @@ export default function ScannerDispatch() {
         </View>
         {log.length === 0 ? (
           <View style={styles.logEmpty}>
-            <Ionicons name="barcode-outline" size={28} color="#CBB79A" />
+            <PhIcon name="barcode-outline" size={28} color="#CBB79A" />
             <Text style={styles.logEmptyText}>
               Scan a parcel to start the log.
             </Text>
@@ -515,7 +515,7 @@ export default function ScannerDispatch() {
           <View style={{ gap: 8 }}>
             {log.map((row) => (
               <View key={row.id} style={styles.logRow}>
-                <Ionicons
+                <PhIcon
                   name={
                     row.outcome === "moved"
                       ? "checkmark-circle"
@@ -593,7 +593,7 @@ export default function ScannerDispatch() {
           ]}
           testID="scanner-toast"
         >
-          <Ionicons
+          <PhIcon
             name={
               toast.kind === "moved"
                 ? "checkmark-circle"
@@ -627,7 +627,7 @@ export default function ScannerDispatch() {
             {toast.msg}
           </Text>
           <TouchableOpacity onPress={() => setToast(null)} hitSlop={6}>
-            <Ionicons
+            <PhIcon
               name="close"
               size={16}
               color={

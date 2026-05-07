@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
+import PhIcon from "../../components/PhIcon";
 import {
   View,
   Text,
@@ -13,7 +14,6 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { WebView } from "react-native-webview";
-import { Ionicons } from "@expo/vector-icons";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import * as Print from "expo-print";
 import * as Sharing from "expo-sharing";
@@ -303,7 +303,7 @@ export default function LabelScreen() {
           onPress={goBack}
           style={styles.backBtn}
         >
-          <Ionicons name="arrow-back" size={22} color={colors.text} />
+          <PhIcon name="arrow-back" size={22} color={colors.text} />
         </TouchableOpacity>
         <Text style={styles.title} numberOfLines={1}>
           Shipping Label
@@ -319,7 +319,7 @@ export default function LabelScreen() {
             Preview = PDF guaranteed because they share the same template. */}
         <View style={styles.previewCard}>
           <View style={styles.previewBadge}>
-            <Ionicons name="eye-outline" size={13} color="#0369A1" />
+            <PhIcon name="eye-outline" size={13} color="#0369A1" />
             <Text style={styles.previewBadgeText}>
               LIVE PREVIEW · {perPage === "barcode" ? "50×25mm" : perPage === "thermal" ? "100×150mm" : perPage === 4 ? "A6 · 105×148mm" : perPage === 2 ? "A4 · 2/page" : "A4"}
             </Text>
@@ -381,7 +381,7 @@ export default function LabelScreen() {
               style={styles.copyBtn}
               onPress={() => setCopies(Math.max(1, copies - 1))}
             >
-              <Ionicons name="remove" size={20} color={colors.text} />
+              <PhIcon name="remove" size={20} color={colors.text} />
             </TouchableOpacity>
             <Text style={styles.copiesValue}>{copies}</Text>
             <TouchableOpacity
@@ -389,7 +389,7 @@ export default function LabelScreen() {
               style={styles.copyBtn}
               onPress={() => setCopies(Math.min(20, copies + 1))}
             >
-              <Ionicons name="add" size={20} color={colors.text} />
+              <PhIcon name="add" size={20} color={colors.text} />
             </TouchableOpacity>
             <Text style={styles.hint}>
               {perPage === "thermal"
@@ -433,7 +433,7 @@ export default function LabelScreen() {
             style={styles.secondaryBtn}
             onPress={previewPdf}
           >
-            <Ionicons name="eye-outline" size={18} color={colors.text} />
+            <PhIcon name="eye-outline" size={18} color={colors.text} />
             <Text style={styles.secondaryBtnText}>
               {Platform.OS === "web" ? "Preview PDF" : "Preview / Share"}
             </Text>
@@ -443,7 +443,7 @@ export default function LabelScreen() {
             style={styles.primaryBtn}
             onPress={printNow}
           >
-            <Ionicons name="print" size={18} color="#fff" />
+            <PhIcon name="print" size={18} color="#fff" />
             <Text style={styles.primaryBtnText}>
               {perPage === "barcode" ? "Print Stickers" : "Print Labels"}
             </Text>

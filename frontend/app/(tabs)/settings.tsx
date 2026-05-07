@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import PhIcon from "../../components/PhIcon";
 import {
   View,
   Text,
@@ -20,7 +21,6 @@ import * as ImagePicker from "expo-image-picker";
 import * as Clipboard from "expo-clipboard";
 import { SafeAreaView } from "react-native-safe-area-context";
 import PendingSyncPanel from "../../components/PendingSyncPanel";
-import { Ionicons } from "@expo/vector-icons";
 import { useRouter, useFocusEffect, useLocalSearchParams, useNavigation } from "expo-router";
 import { Api, Courier, Settings as SettingsT, SenderAddress, SheetPreview, SHEET_FIELDS, api, PlanKey } from "../../lib/api";
 import { useFeatureFlag } from "../../lib/feature_flags";
@@ -809,7 +809,7 @@ export default function SettingsScreen() {
             style={{ marginRight: 8 }}
             testID="settings-back"
           >
-            <Ionicons name="chevron-back" size={26} color={colors.text} />
+            <PhIcon name="chevron-back" size={26} color={colors.text} />
           </TouchableOpacity>
         ) : null}
         <View style={{ flex: 1 }}>
@@ -856,10 +856,10 @@ export default function SettingsScreen() {
                     activeOpacity={0.6}
                   >
                     <View style={[styles.hubIconWrap, { backgroundColor: c.color + "1A" }]}>
-                      <Ionicons name={c.icon} size={22} color={c.color} />
+                      <PhIcon name={c.icon} size={22} color={c.color} />
                     </View>
                     <Text style={styles.hubTitle}>{c.title}</Text>
-                    <Ionicons name="chevron-forward" size={22} color="#9CA3AF" />
+                    <PhIcon name="chevron-forward" size={22} color="#9CA3AF" />
                   </TouchableOpacity>
                 ))}
                 {/* Admin Panel — only for is_admin users (and never for team-member sessions) */}
@@ -872,13 +872,13 @@ export default function SettingsScreen() {
                       activeOpacity={0.6}
                     >
                       <View style={[styles.hubIconWrap, { backgroundColor: "#FECACA" + "AA" }]}>
-                        <Ionicons name="shield-checkmark-outline" size={22} color="#B91C1C" />
+                        <PhIcon name="shield-checkmark-outline" size={22} color="#B91C1C" />
                       </View>
                       <Text style={styles.hubTitle}>Plan Features</Text>
                       <View style={styles.adminPill}>
                         <Text style={styles.adminPillTxt}>ADMIN</Text>
                       </View>
-                      <Ionicons name="chevron-forward" size={22} color="#9CA3AF" />
+                      <PhIcon name="chevron-forward" size={22} color="#9CA3AF" />
                     </TouchableOpacity>
                     <TouchableOpacity
                       testID="settings-hub-admin-packages"
@@ -887,13 +887,13 @@ export default function SettingsScreen() {
                       activeOpacity={0.6}
                     >
                       <View style={[styles.hubIconWrap, { backgroundColor: "#FED7AA" }]}>
-                        <Ionicons name="gift-outline" size={22} color="#C2410C" />
+                        <PhIcon name="gift-outline" size={22} color="#C2410C" />
                       </View>
                       <Text style={styles.hubTitle}>Credit Packages</Text>
                       <View style={styles.adminPill}>
                         <Text style={styles.adminPillTxt}>ADMIN</Text>
                       </View>
-                      <Ionicons name="chevron-forward" size={22} color="#9CA3AF" />
+                      <PhIcon name="chevron-forward" size={22} color="#9CA3AF" />
                     </TouchableOpacity>
                     <TouchableOpacity
                       testID="settings-hub-admin-users"
@@ -902,13 +902,13 @@ export default function SettingsScreen() {
                       activeOpacity={0.6}
                     >
                       <View style={[styles.hubIconWrap, { backgroundColor: "#DBEAFE" }]}>
-                        <Ionicons name="people-outline" size={22} color="#1D4ED8" />
+                        <PhIcon name="people-outline" size={22} color="#1D4ED8" />
                       </View>
                       <Text style={styles.hubTitle}>Users</Text>
                       <View style={styles.adminPill}>
                         <Text style={styles.adminPillTxt}>ADMIN</Text>
                       </View>
-                      <Ionicons name="chevron-forward" size={22} color="#9CA3AF" />
+                      <PhIcon name="chevron-forward" size={22} color="#9CA3AF" />
                     </TouchableOpacity>
                     <TouchableOpacity
                       testID="settings-hub-admin-pricing"
@@ -917,13 +917,13 @@ export default function SettingsScreen() {
                       activeOpacity={0.6}
                     >
                       <View style={[styles.hubIconWrap, { backgroundColor: "#FCE7F3" }]}>
-                        <Ionicons name="pricetags-outline" size={22} color="#BE185D" />
+                        <PhIcon name="pricetags-outline" size={22} color="#BE185D" />
                       </View>
                       <Text style={styles.hubTitle}>Plan Pricing</Text>
                       <View style={styles.adminPill}>
                         <Text style={styles.adminPillTxt}>ADMIN</Text>
                       </View>
-                      <Ionicons name="chevron-forward" size={22} color="#9CA3AF" />
+                      <PhIcon name="chevron-forward" size={22} color="#9CA3AF" />
                     </TouchableOpacity>
                     <TouchableOpacity
                       testID="settings-hub-admin-wa-pricing"
@@ -932,13 +932,13 @@ export default function SettingsScreen() {
                       activeOpacity={0.6}
                     >
                       <View style={[styles.hubIconWrap, { backgroundColor: "#DCFCE7" }]}>
-                        <Ionicons name="logo-whatsapp" size={22} color="#16A34A" />
+                        <PhIcon name="logo-whatsapp" size={22} color="#16A34A" />
                       </View>
                       <Text style={styles.hubTitle}>WhatsApp Pricing</Text>
                       <View style={styles.adminPill}>
                         <Text style={styles.adminPillTxt}>ADMIN</Text>
                       </View>
-                      <Ionicons name="chevron-forward" size={22} color="#9CA3AF" />
+                      <PhIcon name="chevron-forward" size={22} color="#9CA3AF" />
                     </TouchableOpacity>
                     <TouchableOpacity
                       testID="settings-hub-admin-stage-rules"
@@ -947,13 +947,13 @@ export default function SettingsScreen() {
                       activeOpacity={0.6}
                     >
                       <View style={[styles.hubIconWrap, { backgroundColor: "#FEE2E2" }]}>
-                        <Ionicons name="time-outline" size={22} color="#DC2626" />
+                        <PhIcon name="time-outline" size={22} color="#DC2626" />
                       </View>
                       <Text style={styles.hubTitle}>Stage Rules</Text>
                       <View style={styles.adminPill}>
                         <Text style={styles.adminPillTxt}>ADMIN</Text>
                       </View>
-                      <Ionicons name="chevron-forward" size={22} color="#9CA3AF" />
+                      <PhIcon name="chevron-forward" size={22} color="#9CA3AF" />
                     </TouchableOpacity>
                     <TouchableOpacity
                       testID="settings-hub-admin-wa-templates"
@@ -962,13 +962,13 @@ export default function SettingsScreen() {
                       activeOpacity={0.6}
                     >
                       <View style={[styles.hubIconWrap, { backgroundColor: "#DCFCE7" }]}>
-                        <Ionicons name="chatbubble-ellipses-outline" size={22} color="#16A34A" />
+                        <PhIcon name="chatbubble-ellipses-outline" size={22} color="#16A34A" />
                       </View>
                       <Text style={styles.hubTitle}>WhatsApp Templates</Text>
                       <View style={styles.adminPill}>
                         <Text style={styles.adminPillTxt}>ADMIN</Text>
                       </View>
-                      <Ionicons name="chevron-forward" size={22} color="#9CA3AF" />
+                      <PhIcon name="chevron-forward" size={22} color="#9CA3AF" />
                     </TouchableOpacity>
                     <TouchableOpacity
                       testID="settings-hub-admin-master-sheet"
@@ -977,13 +977,13 @@ export default function SettingsScreen() {
                       activeOpacity={0.6}
                     >
                       <View style={[styles.hubIconWrap, { backgroundColor: "#DCFCE7" }]}>
-                        <Ionicons name="grid-outline" size={22} color="#15803D" />
+                        <PhIcon name="grid-outline" size={22} color="#15803D" />
                       </View>
                       <Text style={styles.hubTitle}>Master Sheet</Text>
                       <View style={styles.adminPill}>
                         <Text style={styles.adminPillTxt}>ADMIN</Text>
                       </View>
-                      <Ionicons name="chevron-forward" size={22} color="#9CA3AF" />
+                      <PhIcon name="chevron-forward" size={22} color="#9CA3AF" />
                     </TouchableOpacity>
                   </>
                 ) : null}
@@ -999,7 +999,7 @@ export default function SettingsScreen() {
                 }
                 style={styles.hubSignOutBtn}
               >
-                <Ionicons name="log-out-outline" size={20} color="#DC2626" />
+                <PhIcon name="log-out-outline" size={20} color="#DC2626" />
                 <Text style={styles.hubSignOutText}>Sign out</Text>
               </TouchableOpacity>
             </View>
@@ -1028,13 +1028,13 @@ export default function SettingsScreen() {
                 <View style={{ flexDirection: "row", gap: 6, marginTop: 4, flexWrap: "wrap" }}>
                   {user?.display_id ? (
                     <View style={styles.badgeDisplayId}>
-                      <Ionicons name="finger-print" size={10} color="#0F172A" />
+                      <PhIcon name="finger-print" size={10} color="#0F172A" />
                       <Text style={styles.badgeDisplayIdTxt}>{user.display_id}</Text>
                     </View>
                   ) : null}
                   {user?.is_admin ? (
                     <View style={styles.badgeAdmin}>
-                      <Ionicons name="shield-checkmark" size={11} color="#fff" />
+                      <PhIcon name="shield-checkmark" size={11} color="#fff" />
                       <Text style={styles.badgeTxt}>Admin</Text>
                     </View>
                   ) : null}
@@ -1046,7 +1046,7 @@ export default function SettingsScreen() {
                     <Text style={[styles.badgeTxt, { color: "#92400E" }]}>
                       {(user?.plan || "free_trial").replace("_", " ").toUpperCase()}
                     </Text>
-                    <Ionicons name="chevron-forward" size={11} color="#92400E" />
+                    <PhIcon name="chevron-forward" size={11} color="#92400E" />
                   </TouchableOpacity>
                 </View>
               </View>
@@ -1080,7 +1080,7 @@ export default function SettingsScreen() {
                 );
               }}
             >
-              <Ionicons name="sparkles-outline" size={16} color={colors.primary} />
+              <PhIcon name="sparkles-outline" size={16} color={colors.primary} />
               <Text style={styles.secondaryBtnTxt}>Clear Demo Data</Text>
             </TouchableOpacity>
 
@@ -1100,7 +1100,7 @@ export default function SettingsScreen() {
                 ]);
               }}
             >
-              <Ionicons name="log-out-outline" size={16} color="#C62828" />
+              <PhIcon name="log-out-outline" size={16} color="#C62828" />
               <Text style={styles.dangerBtnTxt}>Sign out</Text>
             </TouchableOpacity>
           </Section>
@@ -1112,7 +1112,7 @@ export default function SettingsScreen() {
           <Section title="Smart Paste AI" icon="sparkles-outline">
             <View style={styles.spaiIntro}>
               <View style={styles.spaiBadge}>
-                <Ionicons name="sparkles" size={11} color="#fff" />
+                <PhIcon name="sparkles" size={11} color="#fff" />
                 <Text style={styles.spaiBadgeTxt}>AI powered</Text>
               </View>
               <Text style={styles.spaiHint}>
@@ -1318,7 +1318,7 @@ export default function SettingsScreen() {
                   <ActivityIndicator color="#fff" />
                 ) : (
                   <>
-                    <Ionicons name="checkmark-circle" size={16} color="#fff" />
+                    <PhIcon name="checkmark-circle" size={16} color="#fff" />
                     <Text style={styles.primaryBtnTxt}>Save</Text>
                   </>
                 )}
@@ -1328,7 +1328,7 @@ export default function SettingsScreen() {
                 style={styles.secondaryBtn}
                 onPress={resetSmartPasteAI}
               >
-                <Ionicons name="refresh" size={16} color={colors.primary} />
+                <PhIcon name="refresh" size={16} color={colors.primary} />
                 <Text style={styles.secondaryBtnTxt}>Reset</Text>
               </TouchableOpacity>
             </View>
@@ -1338,7 +1338,7 @@ export default function SettingsScreen() {
               style={styles.spaiDefaultToggle}
               onPress={() => setSpaiShowDefault((v) => !v)}
             >
-              <Ionicons
+              <PhIcon
                 name={spaiShowDefault ? "chevron-up" : "chevron-down"}
                 size={14}
                 color="#64748B"
@@ -1377,7 +1377,7 @@ export default function SettingsScreen() {
                   { backgroundColor: PLAN_THEME[(user?.plan as PlanKey) || "free_trial"].chipBg },
                 ]}
               >
-                <Ionicons
+                <PhIcon
                   name={user?.plan === "platinum" ? "rocket" : "ribbon"}
                   size={12}
                   color={PLAN_THEME[(user?.plan as PlanKey) || "free_trial"].chipTxt}
@@ -1391,7 +1391,7 @@ export default function SettingsScreen() {
                   Current Plan
                 </Text>
               </View>
-              <Ionicons name="chevron-forward" size={20} color="#94A3B8" />
+              <PhIcon name="chevron-forward" size={20} color="#94A3B8" />
             </View>
             <Text
               style={[
@@ -1421,7 +1421,7 @@ export default function SettingsScreen() {
                     active && { borderWidth: 2 },
                   ]}
                 >
-                  <Ionicons
+                  <PhIcon
                     name={k === "platinum" ? "rocket" : k === "gold" ? "trophy" : k === "silver" ? "ribbon" : "rose"}
                     size={18}
                     color={t.accent}
@@ -1447,7 +1447,7 @@ export default function SettingsScreen() {
             activeOpacity={0.7}
           >
             <View style={styles.walletIconWrap}>
-              <Ionicons name="wallet-outline" size={22} color="#fff" />
+              <PhIcon name="wallet-outline" size={22} color="#fff" />
             </View>
             <View style={{ flex: 1 }}>
               <Text style={styles.walletLabel}>Credit Wallet</Text>
@@ -1460,7 +1460,7 @@ export default function SettingsScreen() {
                   : "Tap to view"}
               </Text>
             </View>
-            <Ionicons name="chevron-forward" size={22} color="#94A3B8" />
+            <PhIcon name="chevron-forward" size={22} color="#94A3B8" />
           </TouchableOpacity>
 
           {/* AI Processing Charges — admin-only. Regular users don't need
@@ -1544,7 +1544,7 @@ export default function SettingsScreen() {
                   <ActivityIndicator color="#fff" />
                 ) : (
                   <>
-                    <Ionicons name="checkmark-circle" size={16} color="#fff" />
+                    <PhIcon name="checkmark-circle" size={16} color="#fff" />
                     <Text style={styles.primaryBtnTxt}>Save rates</Text>
                   </>
                 )}
@@ -1554,7 +1554,7 @@ export default function SettingsScreen() {
                 style={styles.secondaryBtn}
                 onPress={resetRateCard}
               >
-                <Ionicons name="refresh" size={16} color={colors.primary} />
+                <PhIcon name="refresh" size={16} color={colors.primary} />
                 <Text style={styles.secondaryBtnTxt}>Defaults</Text>
               </TouchableOpacity>
             </View>
@@ -1575,7 +1575,7 @@ export default function SettingsScreen() {
             {sheetStatus !== "connected" && saEmail ? (
               <View style={styles.saShareBox} testID="sa-share-box">
                 <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-                  <Ionicons name="shield-checkmark" size={14} color="#1E40AF" />
+                  <PhIcon name="shield-checkmark" size={14} color="#1E40AF" />
                   <Text style={styles.saShareTitle}>
                     Recommended: Share privately with our service account
                   </Text>
@@ -1601,7 +1601,7 @@ export default function SettingsScreen() {
                     }}
                     style={styles.saEmailCopyBtn}
                   >
-                    <Ionicons name="copy-outline" size={14} color="#1E40AF" />
+                    <PhIcon name="copy-outline" size={14} color="#1E40AF" />
                     <Text style={styles.saEmailCopyTxt}>Copy</Text>
                   </TouchableOpacity>
                 </View>
@@ -1615,7 +1615,7 @@ export default function SettingsScreen() {
 
             <View style={styles.sampleBox} testID="sheet-sample-box">
               <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-                <Ionicons name="bulb-outline" size={14} color={colors.primary} />
+                <PhIcon name="bulb-outline" size={14} color={colors.primary} />
                 <Text style={styles.sampleTitle}>First time? Use the sample template</Text>
               </View>
               <Text style={styles.sampleText}>
@@ -1633,7 +1633,7 @@ export default function SettingsScreen() {
                   )
                 }
               >
-                <Ionicons name="download-outline" size={16} color="#fff" />
+                <PhIcon name="download-outline" size={16} color="#fff" />
                 <Text style={styles.sampleBtnText}>Download Sample CSV</Text>
               </TouchableOpacity>
             </View>
@@ -1641,7 +1641,7 @@ export default function SettingsScreen() {
             {sheetStatus === "connected" && !preview ? (
               <View>
                 <View style={styles.connectedBox}>
-                  <Ionicons name="checkmark-circle" size={18} color={colors.successText} />
+                  <PhIcon name="checkmark-circle" size={18} color={colors.successText} />
                   <View style={{ flex: 1 }}>
                     <Text style={styles.connectedTitle}>Connected</Text>
                     <Text style={styles.connectedSub} numberOfLines={1}>
@@ -1658,7 +1658,7 @@ export default function SettingsScreen() {
                     style={[styles.outlineBtn, { flex: 1 }]}
                     onPress={() => sheetUrl && Linking.openURL(sheetUrl)}
                   >
-                    <Ionicons name="open-outline" size={16} color={colors.text} />
+                    <PhIcon name="open-outline" size={16} color={colors.text} />
                     <Text style={styles.outlineBtnText}>Open Sheet</Text>
                   </TouchableOpacity>
                   <TouchableOpacity
@@ -1666,7 +1666,7 @@ export default function SettingsScreen() {
                     style={[styles.outlineBtn, { flex: 1 }]}
                     onPress={fetchPreview}
                   >
-                    <Ionicons name="refresh" size={16} color={colors.text} />
+                    <PhIcon name="refresh" size={16} color={colors.text} />
                     <Text style={styles.outlineBtnText}>Refresh / Re-map</Text>
                   </TouchableOpacity>
                   <TouchableOpacity
@@ -1674,7 +1674,7 @@ export default function SettingsScreen() {
                     style={[styles.outlineBtn, { borderColor: colors.dangerText }]}
                     onPress={disconnectSheet}
                   >
-                    <Ionicons name="trash-outline" size={16} color={colors.dangerText} />
+                    <PhIcon name="trash-outline" size={16} color={colors.dangerText} />
                   </TouchableOpacity>
                 </View>
 
@@ -1737,7 +1737,7 @@ export default function SettingsScreen() {
                     );
                   }}
                 >
-                  <Ionicons name="cloud-download-outline" size={16} color="#7C3AED" />
+                  <PhIcon name="cloud-download-outline" size={16} color="#7C3AED" />
                   <Text style={[styles.outlineBtnText, { color: "#7C3AED", fontWeight: "800" }]}>
                     Restore My Orders
                   </Text>
@@ -1774,7 +1774,7 @@ export default function SettingsScreen() {
                     <ActivityIndicator color="#fff" />
                   ) : (
                     <>
-                      <Ionicons name="download" size={18} color="#fff" />
+                      <PhIcon name="download" size={18} color="#fff" />
                       <Text style={styles.saveBtnText}>Fetch & Preview</Text>
                     </>
                   )}
@@ -1790,12 +1790,12 @@ export default function SettingsScreen() {
                   </Text>
                   {accessMethod === "service_account" ? (
                     <View style={styles.accessBadgePrivate}>
-                      <Ionicons name="lock-closed" size={10} color="#065F46" />
+                      <PhIcon name="lock-closed" size={10} color="#065F46" />
                       <Text style={styles.accessBadgePrivateTxt}>Private · Service Account</Text>
                     </View>
                   ) : accessMethod === "public_csv" ? (
                     <View style={styles.accessBadgePublic}>
-                      <Ionicons name="globe-outline" size={10} color="#92400E" />
+                      <PhIcon name="globe-outline" size={10} color="#92400E" />
                       <Text style={styles.accessBadgePublicTxt}>Public link</Text>
                     </View>
                   ) : null}
@@ -1820,7 +1820,7 @@ export default function SettingsScreen() {
                       >
                         {mapping[f.key] || "— pick column —"}
                       </Text>
-                      <Ionicons name="chevron-down" size={16} color={colors.textMuted} />
+                      <PhIcon name="chevron-down" size={16} color={colors.textMuted} />
                     </TouchableOpacity>
                   </View>
                 ))}
@@ -1829,7 +1829,7 @@ export default function SettingsScreen() {
                   onPress={saveSheet}
                   style={[styles.saveBtn, { marginTop: 12 }]}
                 >
-                  <Ionicons name="save" size={18} color="#fff" />
+                  <PhIcon name="save" size={18} color="#fff" />
                   <Text style={styles.saveBtnText}>Save Mapping & Connect</Text>
                 </TouchableOpacity>
                 {/* Write headers to user's sheet — based on current mapping
@@ -1865,7 +1865,7 @@ export default function SettingsScreen() {
                     { marginTop: 8, backgroundColor: "#10B981" },
                   ]}
                 >
-                  <Ionicons name="cloud-upload-outline" size={18} color="#fff" />
+                  <PhIcon name="cloud-upload-outline" size={18} color="#fff" />
                   <Text style={styles.saveBtnText}>
                     Write Headers to My Sheet
                   </Text>
@@ -1883,7 +1883,7 @@ export default function SettingsScreen() {
                     { marginTop: 8, backgroundColor: "#6366F1" },
                   ]}
                 >
-                  <Ionicons name="layers-outline" size={18} color="#fff" />
+                  <PhIcon name="layers-outline" size={18} color="#fff" />
                   <Text style={styles.saveBtnText}>Manage Custom Fields</Text>
                 </TouchableOpacity>
               </View>
@@ -1909,7 +1909,7 @@ export default function SettingsScreen() {
                 { marginTop: 12, backgroundColor: "#0EA5E9" },
               ]}
             >
-              <Ionicons name="checkmark-done-outline" size={18} color="#fff" />
+              <PhIcon name="checkmark-done-outline" size={18} color="#fff" />
               <Text style={styles.saveBtnText}>Open Field Requirements</Text>
             </TouchableOpacity>
           </Section>
@@ -1932,7 +1932,7 @@ export default function SettingsScreen() {
                 { marginTop: 12, backgroundColor: "#7C3AED" },
               ]}
             >
-              <Ionicons name="person-add-outline" size={18} color="#fff" />
+              <PhIcon name="person-add-outline" size={18} color="#fff" />
               <Text style={styles.saveBtnText}>Open Save Contact Settings</Text>
             </TouchableOpacity>
           </Section>
@@ -1956,7 +1956,7 @@ export default function SettingsScreen() {
                 { marginTop: 12, backgroundColor: "#16A34A" },
               ]}
             >
-              <Ionicons name="logo-whatsapp" size={18} color="#fff" />
+              <PhIcon name="logo-whatsapp" size={18} color="#fff" />
               <Text style={styles.saveBtnText}>Open WhatsApp Templates</Text>
             </TouchableOpacity>
           </Section>
@@ -1983,7 +1983,7 @@ export default function SettingsScreen() {
                 { marginTop: 12, backgroundColor: "#7C3AED" },
               ]}
             >
-              <Ionicons name="people" size={18} color="#fff" />
+              <PhIcon name="people" size={18} color="#fff" />
               <Text style={styles.saveBtnText}>Manage Team Members</Text>
             </TouchableOpacity>
           </Section>
@@ -2006,7 +2006,7 @@ export default function SettingsScreen() {
                 { marginTop: 12, backgroundColor: "#0EA5E9" },
               ]}
             >
-              <Ionicons name="bar-chart" size={18} color="#fff" />
+              <PhIcon name="bar-chart" size={18} color="#fff" />
               <Text style={styles.saveBtnText}>Open Reports Hub</Text>
             </TouchableOpacity>
           </Section>
@@ -2030,7 +2030,7 @@ export default function SettingsScreen() {
                 { marginTop: 12, backgroundColor: "#F97316" },
               ]}
             >
-              <Ionicons name="time-outline" size={18} color="#fff" />
+              <PhIcon name="time-outline" size={18} color="#fff" />
               <Text style={styles.saveBtnText}>Open Courier Rules</Text>
             </TouchableOpacity>
           </Section>
@@ -2051,7 +2051,7 @@ export default function SettingsScreen() {
                 { marginTop: 12, backgroundColor: "#1F4FBF" },
               ]}
             >
-              <Ionicons name="notifications-outline" size={18} color="#fff" />
+              <PhIcon name="notifications-outline" size={18} color="#fff" />
               <Text style={styles.saveBtnText}>Open Notification Settings</Text>
             </TouchableOpacity>
           </Section>
@@ -2072,7 +2072,7 @@ export default function SettingsScreen() {
                 { marginTop: 12, backgroundColor: "#10B981" },
               ]}
             >
-              <Ionicons name="cloud-upload-outline" size={18} color="#fff" />
+              <PhIcon name="cloud-upload-outline" size={18} color="#fff" />
               <Text style={styles.saveBtnText}>Open Sheet Sync</Text>
             </TouchableOpacity>
           </Section>
@@ -2094,7 +2094,7 @@ export default function SettingsScreen() {
                   { marginTop: 12, backgroundColor: "#9333EA" },
                 ]}
               >
-                <Ionicons name="stats-chart-outline" size={18} color="#fff" />
+                <PhIcon name="stats-chart-outline" size={18} color="#fff" />
                 <Text style={styles.saveBtnText}>Open Analytics</Text>
               </TouchableOpacity>
             </Section>
@@ -2179,7 +2179,7 @@ export default function SettingsScreen() {
                   style={[styles.segmentBtn, logoShape === "square" && styles.segmentBtnActive]}
                   onPress={() => setLogoShape("square")}
                 >
-                  <Ionicons name="square-outline" size={14} color={logoShape === "square" ? "#fff" : colors.text} />
+                  <PhIcon name="square-outline" size={14} color={logoShape === "square" ? "#fff" : colors.text} />
                   <Text style={[styles.segmentText, logoShape === "square" && styles.segmentTextActive]}>
                     Square (1:1)
                   </Text>
@@ -2189,7 +2189,7 @@ export default function SettingsScreen() {
                   style={[styles.segmentBtn, logoShape === "wide" && styles.segmentBtnActive]}
                   onPress={() => setLogoShape("wide")}
                 >
-                  <Ionicons name="remove-outline" size={18} color={logoShape === "wide" ? "#fff" : colors.text} />
+                  <PhIcon name="remove-outline" size={18} color={logoShape === "wide" ? "#fff" : colors.text} />
                   <Text style={[styles.segmentText, logoShape === "wide" && styles.segmentTextActive]}>
                     Wide / Banner (4:1)
                   </Text>
@@ -2214,7 +2214,7 @@ export default function SettingsScreen() {
                         : { width: 70, height: 70, borderRadius: 10, backgroundColor: "#F3F4F6", alignItems: "center", justifyContent: "center" }
                     }
                   >
-                    <Ionicons name="image-outline" size={28} color={colors.textMuted} />
+                    <PhIcon name="image-outline" size={28} color={colors.textMuted} />
                   </View>
                 )}
                 <View style={{ flex: 1, gap: 6 }}>
@@ -2238,7 +2238,7 @@ export default function SettingsScreen() {
                       }
                     }}
                   >
-                    <Ionicons name="cloud-upload-outline" size={14} color="#fff" />
+                    <PhIcon name="cloud-upload-outline" size={14} color="#fff" />
                     <Text style={styles.smallBtnText}>
                       {brandLogo ? "Change Logo" : `Upload ${logoShape === "wide" ? "Wide" : "Square"} Logo`}
                     </Text>
@@ -2249,7 +2249,7 @@ export default function SettingsScreen() {
                       style={[styles.smallBtn, { backgroundColor: "#EF4444" }]}
                       onPress={() => setBrandLogo("")}
                     >
-                      <Ionicons name="trash-outline" size={14} color="#fff" />
+                      <PhIcon name="trash-outline" size={14} color="#fff" />
                       <Text style={styles.smallBtnText}>Remove</Text>
                     </TouchableOpacity>
                   )}
@@ -2267,7 +2267,7 @@ export default function SettingsScreen() {
                   onPress={() => setPreferLogo(true)}
                   disabled={!brandLogo}
                 >
-                  <Ionicons name="image" size={14} color={preferLogo ? "#fff" : colors.text} />
+                  <PhIcon name="image" size={14} color={preferLogo ? "#fff" : colors.text} />
                   <Text style={[styles.segmentText, preferLogo && styles.segmentTextActive]}>
                     Logo {!brandLogo && "(upload first)"}
                   </Text>
@@ -2277,7 +2277,7 @@ export default function SettingsScreen() {
                   style={[styles.segmentBtn, !preferLogo && styles.segmentBtnActive]}
                   onPress={() => setPreferLogo(false)}
                 >
-                  <Ionicons name="text" size={14} color={!preferLogo ? "#fff" : colors.text} />
+                  <PhIcon name="text" size={14} color={!preferLogo ? "#fff" : colors.text} />
                   <Text style={[styles.segmentText, !preferLogo && styles.segmentTextActive]}>
                     Brand Name
                   </Text>
@@ -2388,7 +2388,7 @@ export default function SettingsScreen() {
                   testID="content-budget-indicator"
                 >
                   <View style={styles.budgetHeader}>
-                    <Ionicons
+                    <PhIcon
                       name={full ? "warning-outline" : "checkmark-circle-outline"}
                       size={16}
                       color={full ? "#B45309" : "#047857"}
@@ -2432,7 +2432,7 @@ export default function SettingsScreen() {
 
             {customFields.length === 0 && (
               <View style={styles.emptyCf}>
-                <Ionicons name="layers-outline" size={28} color="#9CA3AF" />
+                <PhIcon name="layers-outline" size={28} color="#9CA3AF" />
                 <Text style={styles.emptyCfText}>No custom fields yet</Text>
                 <Text style={styles.emptyCfSub}>
                   Tap "+ Add Custom Field" below to create one.
@@ -2495,7 +2495,7 @@ export default function SettingsScreen() {
                     style={styles.cfDeleteBtn}
                     hitSlop={8}
                   >
-                    <Ionicons name="trash-outline" size={18} color="#B91C1C" />
+                    <PhIcon name="trash-outline" size={18} color="#B91C1C" />
                   </TouchableOpacity>
                 </View>
 
@@ -2705,7 +2705,7 @@ export default function SettingsScreen() {
                   }
                 }}
               >
-                <Ionicons name="add-circle" size={18} color={colors.primary} />
+                <PhIcon name="add-circle" size={18} color={colors.primary} />
                 <Text style={styles.addCfBtnText}>
                   Add Custom Field ({customFields.length}/6)
                 </Text>
@@ -2714,7 +2714,7 @@ export default function SettingsScreen() {
           </Section>
 
           <TouchableOpacity testID="save-print-btn" style={styles.saveBtn} onPress={saveSender}>
-            <Ionicons name="save" size={18} color="#fff" />
+            <PhIcon name="save" size={18} color="#fff" />
             <Text style={styles.saveBtnText}>Save Print Settings</Text>
           </TouchableOpacity>
           </>)}
@@ -2810,7 +2810,7 @@ export default function SettingsScreen() {
           </Section>
 
           <TouchableOpacity testID="save-business-btn" style={styles.saveBtn} onPress={saveSender}>
-            <Ionicons name="save" size={18} color="#fff" />
+            <PhIcon name="save" size={18} color="#fff" />
             <Text style={styles.saveBtnText}>Save Business Settings</Text>
           </TouchableOpacity>
           </>)}
@@ -2819,7 +2819,7 @@ export default function SettingsScreen() {
           {/* Templates */}
           <Section title="Customer Messages" icon="chatbubbles-outline">
             <View style={styles.infoBox} testID="messages-info-box">
-              <Ionicons name="information-circle-outline" size={16} color={colors.primary} />
+              <PhIcon name="information-circle-outline" size={16} color={colors.primary} />
               <Text style={styles.infoText}>
                 <Text style={{ fontWeight: "800" }}>How templates work:</Text> These messages are NOT auto-sent. When you tap the WhatsApp or Copy icons on a shipment, the app fills in the template with actual values (customer name, tracking ID, etc.) and opens WhatsApp or copies to clipboard. The ETA days field is just a placeholder number you can customize — it's not a scheduler.
               </Text>
@@ -2834,7 +2834,7 @@ export default function SettingsScreen() {
                   onPress={() => setTemplate(PRESETS.wa_gujarati)}
                   testID="preset-wa-gu"
                 >
-                  <Ionicons name="sparkles-outline" size={13} color={colors.primary} />
+                  <PhIcon name="sparkles-outline" size={13} color={colors.primary} />
                   <Text style={styles.presetText}>Gujarati Professional</Text>
                 </TouchableOpacity>
                 <TouchableOpacity
@@ -2842,7 +2842,7 @@ export default function SettingsScreen() {
                   onPress={() => setTemplate(PRESETS.wa_english)}
                   testID="preset-wa-en"
                 >
-                  <Ionicons name="sparkles-outline" size={13} color={colors.primary} />
+                  <PhIcon name="sparkles-outline" size={13} color={colors.primary} />
                   <Text style={styles.presetText}>English Professional</Text>
                 </TouchableOpacity>
               </View>
@@ -2856,7 +2856,7 @@ export default function SettingsScreen() {
               {showPreview && (
                 <View style={styles.previewBox}>
                   <View style={styles.previewHeader}>
-                    <Ionicons name="eye-outline" size={14} color={colors.primary} />
+                    <PhIcon name="eye-outline" size={14} color={colors.primary} />
                     <Text style={styles.previewTitle}>Live Preview (WhatsApp)</Text>
                   </View>
                   <Text style={styles.previewText}>
@@ -2875,7 +2875,7 @@ export default function SettingsScreen() {
                   onPress={() => setCopyTemplate(PRESETS.copy_pro)}
                   testID="preset-copy-pro"
                 >
-                  <Ionicons name="sparkles-outline" size={13} color={colors.primary} />
+                  <PhIcon name="sparkles-outline" size={13} color={colors.primary} />
                   <Text style={styles.presetText}>Professional Layout</Text>
                 </TouchableOpacity>
               </View>
@@ -2889,7 +2889,7 @@ export default function SettingsScreen() {
               {showPreview && (
                 <View style={styles.previewBox}>
                   <View style={styles.previewHeader}>
-                    <Ionicons name="eye-outline" size={14} color={colors.primary} />
+                    <PhIcon name="eye-outline" size={14} color={colors.primary} />
                     <Text style={styles.previewTitle}>Live Preview (Copy)</Text>
                   </View>
                   <Text style={styles.previewText}>
@@ -2910,7 +2910,7 @@ export default function SettingsScreen() {
           </Section>
 
           <TouchableOpacity testID="save-settings-btn" style={styles.saveBtn} onPress={saveSender}>
-            <Ionicons name="save" size={18} color="#fff" />
+            <PhIcon name="save" size={18} color="#fff" />
             <Text style={styles.saveBtnText}>Save Settings</Text>
           </TouchableOpacity>
           </>)}
@@ -2926,7 +2926,7 @@ export default function SettingsScreen() {
                   !courierLimits.can_add && styles.limitBannerFull,
                 ]}
               >
-                <Ionicons
+                <PhIcon
                   name={
                     courierLimits.is_unlimited
                       ? "infinite"
@@ -2972,7 +2972,7 @@ export default function SettingsScreen() {
                     <Text style={styles.courierSub}>📞 {c.contact_phone}</Text>
                   ) : null}
                 </View>
-                <Ionicons name="chevron-forward" size={20} color={colors.textMuted} />
+                <PhIcon name="chevron-forward" size={20} color={colors.textMuted} />
               </TouchableOpacity>
             ))}
             {courierLimits && !courierLimits.can_add ? (
@@ -2982,7 +2982,7 @@ export default function SettingsScreen() {
                   style={[styles.saveBtn, { marginTop: 10, backgroundColor: "#F59E0B" }]}
                   onPress={() => router.push("/plans")}
                 >
-                  <Ionicons name="rocket" size={18} color="#fff" />
+                  <PhIcon name="rocket" size={18} color="#fff" />
                   <Text style={styles.saveBtnText}>
                     Upgrade to {courierLimits.suggested_upgrade} to add more
                   </Text>
@@ -2990,7 +2990,7 @@ export default function SettingsScreen() {
               ) : (
                 // Platinum user at cap — no upgrade path, just an informative row.
                 <View style={[styles.limitBanner, styles.limitBannerFull, { marginTop: 10 }]}>
-                  <Ionicons name="lock-closed" size={16} color="#B45309" />
+                  <PhIcon name="lock-closed" size={16} color="#B45309" />
                   <Text style={[styles.limitBannerText, { color: "#92400E" }]}>
                     You've reached the {courierLimits.limit}-partner limit on your
                     {" "}{courierLimits.plan_label} plan. Contact support to raise it.
@@ -3003,7 +3003,7 @@ export default function SettingsScreen() {
                 style={[styles.saveBtn, { marginTop: 10 }]}
                 onPress={() => router.push("/courier/new")}
               >
-                <Ionicons name="add" size={18} color="#fff" />
+                <PhIcon name="add" size={18} color="#fff" />
                 <Text style={styles.saveBtnText}>Add Courier Partner</Text>
               </TouchableOpacity>
             )}
@@ -3053,27 +3053,27 @@ export default function SettingsScreen() {
                 )
               }
             >
-              <Ionicons name="mail-outline" size={18} color={colors.primary} />
+              <PhIcon name="mail-outline" size={18} color={colors.primary} />
               <Text style={styles.aboutLinkText}>Contact Support</Text>
-              <Ionicons name="open-outline" size={16} color="#94A3B8" />
+              <PhIcon name="open-outline" size={16} color="#94A3B8" />
             </TouchableOpacity>
             <TouchableOpacity
               testID="about-whats-new"
               style={styles.aboutLinkRow}
               onPress={() => Alert.alert("What's New", "• Modular Settings UI\n• Smart Paste Chat-style flow\n• Edit Shipment\n• Bulk Print 2-step popup")}
             >
-              <Ionicons name="sparkles-outline" size={18} color={colors.primary} />
+              <PhIcon name="sparkles-outline" size={18} color={colors.primary} />
               <Text style={styles.aboutLinkText}>What's New</Text>
-              <Ionicons name="chevron-forward" size={16} color="#94A3B8" />
+              <PhIcon name="chevron-forward" size={16} color="#94A3B8" />
             </TouchableOpacity>
             <TouchableOpacity
               testID="about-rate-app"
               style={styles.aboutLinkRow}
               onPress={() => Alert.alert("Thanks!", "Rating sheet will open when published to stores.")}
             >
-              <Ionicons name="star-outline" size={18} color={colors.primary} />
+              <PhIcon name="star-outline" size={18} color={colors.primary} />
               <Text style={styles.aboutLinkText}>Rate this App</Text>
-              <Ionicons name="chevron-forward" size={16} color="#94A3B8" />
+              <PhIcon name="chevron-forward" size={16} color="#94A3B8" />
             </TouchableOpacity>
           </Section>
 
@@ -3083,45 +3083,45 @@ export default function SettingsScreen() {
               style={styles.aboutLinkRow}
               onPress={() => router.push("/refund-policy?tab=privacy" as any)}
             >
-              <Ionicons name="lock-closed-outline" size={18} color={colors.primary} />
+              <PhIcon name="lock-closed-outline" size={18} color={colors.primary} />
               <Text style={styles.aboutLinkText}>Privacy Policy</Text>
-              <Ionicons name="chevron-forward" size={16} color="#94A3B8" />
+              <PhIcon name="chevron-forward" size={16} color="#94A3B8" />
             </TouchableOpacity>
             <TouchableOpacity
               testID="about-terms"
               style={styles.aboutLinkRow}
               onPress={() => router.push("/refund-policy?tab=terms" as any)}
             >
-              <Ionicons name="document-text-outline" size={18} color={colors.primary} />
+              <PhIcon name="document-text-outline" size={18} color={colors.primary} />
               <Text style={styles.aboutLinkText}>Terms of Service</Text>
-              <Ionicons name="chevron-forward" size={16} color="#94A3B8" />
+              <PhIcon name="chevron-forward" size={16} color="#94A3B8" />
             </TouchableOpacity>
             <TouchableOpacity
               testID="about-refund"
               style={styles.aboutLinkRow}
               onPress={() => router.push("/refund-policy?tab=refund" as any)}
             >
-              <Ionicons name="cash-outline" size={18} color={colors.primary} />
+              <PhIcon name="cash-outline" size={18} color={colors.primary} />
               <Text style={styles.aboutLinkText}>Refund Policy</Text>
-              <Ionicons name="chevron-forward" size={16} color="#94A3B8" />
+              <PhIcon name="chevron-forward" size={16} color="#94A3B8" />
             </TouchableOpacity>
             <TouchableOpacity
               testID="about-refund"
               style={styles.aboutLinkRow}
               onPress={() => router.push("/refund-policy" as any)}
             >
-              <Ionicons name="refresh-circle-outline" size={18} color={colors.primary} />
+              <PhIcon name="refresh-circle-outline" size={18} color={colors.primary} />
               <Text style={styles.aboutLinkText}>Refund & Cancellation Policy</Text>
-              <Ionicons name="chevron-forward" size={16} color="#94A3B8" />
+              <PhIcon name="chevron-forward" size={16} color="#94A3B8" />
             </TouchableOpacity>
             <TouchableOpacity
               testID="about-cancel-sub"
               style={styles.aboutLinkRow}
               onPress={() => router.push("/cancel-subscription" as any)}
             >
-              <Ionicons name="close-circle-outline" size={18} color="#DC2626" />
+              <PhIcon name="close-circle-outline" size={18} color="#DC2626" />
               <Text style={[styles.aboutLinkText, { color: "#DC2626" }]}>Cancel Subscription</Text>
-              <Ionicons name="chevron-forward" size={16} color="#94A3B8" />
+              <PhIcon name="chevron-forward" size={16} color="#94A3B8" />
             </TouchableOpacity>
           </Section>
           </>)}
@@ -3140,7 +3140,7 @@ export default function SettingsScreen() {
         <View style={styles.unsavedBackdrop}>
           <View style={styles.unsavedCard} testID="unsaved-modal">
             <View style={styles.unsavedIconWrap}>
-              <Ionicons name="warning" size={26} color="#D97706" />
+              <PhIcon name="warning" size={26} color="#D97706" />
             </View>
             <Text style={styles.unsavedTitle}>Unsaved changes</Text>
             <Text style={styles.unsavedBody}>
@@ -3160,7 +3160,7 @@ export default function SettingsScreen() {
                 <ActivityIndicator color="#fff" />
               ) : (
                 <>
-                  <Ionicons name="save" size={16} color="#fff" />
+                  <PhIcon name="save" size={16} color="#fff" />
                   <Text style={styles.unsavedBtnPrimaryTxt}>Save changes</Text>
                 </>
               )}
@@ -3182,7 +3182,7 @@ export default function SettingsScreen() {
                 }
               }}
             >
-              <Ionicons name="trash-outline" size={16} color="#B91C1C" />
+              <PhIcon name="trash-outline" size={16} color="#B91C1C" />
               <Text style={styles.unsavedBtnDangerTxt}>Discard changes</Text>
             </TouchableOpacity>
 
@@ -3205,11 +3205,11 @@ export default function SettingsScreen() {
 
 function Section({
   title, icon, children,
-}: { title: string; icon: keyof typeof Ionicons.glyphMap; children: React.ReactNode }) {
+}: { title: string; icon: string; children: React.ReactNode }) {
   return (
     <View style={styles.section}>
       <View style={{ flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 10 }}>
-        <Ionicons name={icon} size={16} color={colors.primary} />
+        <PhIcon name={icon} size={16} color={colors.primary} />
         <Text style={styles.sectionTitle}>{title}</Text>
       </View>
       {children}
@@ -3335,7 +3335,7 @@ function NotificationsPanel() {
       </View>
 
       <View style={styles.notifNote}>
-        <Ionicons name="information-circle-outline" size={14} color="#64748B" />
+        <PhIcon name="information-circle-outline" size={14} color="#64748B" />
         <Text style={styles.notifNoteTxt}>
           Preferences are saved instantly. In-app banners on the Home
           screen always respect these settings. Push & email delivery
@@ -3355,7 +3355,7 @@ function NotifRowSwitch({
   return (
     <View style={styles.notifRow}>
       <View style={[styles.notifIcon, { backgroundColor: `${color}1A` }]}>
-        <Ionicons name={icon as any} size={18} color={color} />
+        <PhIcon name={icon as any} size={18} color={color} />
       </View>
       <View style={{ flex: 1 }}>
         <Text style={styles.notifTitle}>{title}</Text>

@@ -14,8 +14,8 @@
  *     behaviour for free.
  */
 import React, { useEffect, useState } from "react";
+import PhIcon from "./PhIcon";
 import { View, Text, StyleSheet, TouchableOpacity, Platform } from "react-native";
-import { Ionicons } from "@expo/vector-icons";
 import NetInfo from "@react-native-community/netinfo";
 import { SyncQueue } from "../lib/syncQueue";
 
@@ -70,7 +70,7 @@ export default function OfflineBanner() {
   if (!online) {
     return (
       <View style={[styles.bar, styles.barOffline]} testID="offline-banner">
-        <Ionicons name="cloud-offline" size={14} color="#fff" />
+        <PhIcon name="cloud-offline" size={14} color="#fff" />
         <Text style={styles.txt}>
           You're offline — new shipments will be saved & synced when back online
         </Text>
@@ -87,7 +87,7 @@ export default function OfflineBanner() {
         style={[styles.bar, styles.barPending]}
         disabled={busy}
       >
-        <Ionicons
+        <PhIcon
           name={errored > 0 ? "alert-circle" : "cloud-upload-outline"}
           size={14}
           color="#92400E"
@@ -99,7 +99,7 @@ export default function OfflineBanner() {
               ? `${pending} pending · ${errored} errored — Tap to retry`
               : `${pending} shipment${pending === 1 ? "" : "s"} pending sync — Tap to retry`}
         </Text>
-        <Ionicons name="refresh" size={14} color="#92400E" />
+        <PhIcon name="refresh" size={14} color="#92400E" />
       </TouchableOpacity>
     );
   }

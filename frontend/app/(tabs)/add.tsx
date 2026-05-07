@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
+import PhIcon from "../../components/PhIcon";
 import {
   View,
   Text,
@@ -14,7 +15,6 @@ import {
   FlatList,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { Ionicons } from "@expo/vector-icons";
 import { useLocalSearchParams, useRouter, useFocusEffect } from "expo-router";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Api, Courier, SheetOrder } from "../../lib/api";
@@ -1222,7 +1222,7 @@ export default function AddShipment() {
           onPress={() => router.push("/scanner?returnTo=add&from=add")}
           style={styles.scanPill}
         >
-          <Ionicons name="scan" size={16} color={colors.primary} />
+          <PhIcon name="scan" size={16} color={colors.primary} />
           <Text style={styles.scanPillText}>Scan</Text>
         </TouchableOpacity>
       </View>
@@ -1245,7 +1245,7 @@ export default function AddShipment() {
               !sheetConnected && { opacity: 0.55 },
             ]}
           >
-            <Ionicons name="cloud-download" size={20} color="#fff" />
+            <PhIcon name="cloud-download" size={20} color="#fff" />
             <View style={{ flex: 1 }}>
               <Text style={styles.importBtnTitle}>
                 {sheetConnected ? "Import from Google Sheet" : "Connect Google Sheet in Settings"}
@@ -1256,7 +1256,7 @@ export default function AddShipment() {
                   : "Settings → Google Sheet → paste link"}
               </Text>
             </View>
-            <Ionicons name="chevron-forward" size={18} color="#fff" />
+            <PhIcon name="chevron-forward" size={18} color="#fff" />
           </TouchableOpacity>
 
           {/* Courier */}
@@ -1317,7 +1317,7 @@ export default function AddShipment() {
                   style={styles.outlineBtn}
                   onPress={() => router.push(`/courier/${selectedCourier.id}/variants` as any)}
                 >
-                  <Ionicons name="add-circle-outline" size={16} color="#7C3AED" />
+                  <PhIcon name="add-circle-outline" size={16} color="#7C3AED" />
                   <Text style={[styles.outlineBtnText, { color: "#7C3AED" }]}>
                     Add Packing Variants
                   </Text>
@@ -1425,7 +1425,7 @@ export default function AddShipment() {
                     onPress={() => setSelectedVariant(null)}
                     style={styles.clearVariantBtn}
                   >
-                    <Ionicons name="close-circle" size={14} color="#6B7280" />
+                    <PhIcon name="close-circle" size={14} color="#6B7280" />
                     <Text style={styles.clearVariantTxt}>Clear variant</Text>
                   </TouchableOpacity>
                 )}
@@ -1676,7 +1676,7 @@ export default function AddShipment() {
                         onPress={() => setFlexBasis(flexBasis === "within_state" ? "" : "within_state")}
                         style={[styles.flexRadio, flexBasis === "within_state" && styles.flexRadioActive]}
                       >
-                        <Ionicons
+                        <PhIcon
                           name={flexBasis === "within_state" ? "radio-button-on" : "radio-button-off"}
                           size={16}
                           color={flexBasis === "within_state" ? "#7C3AED" : "#9CA3AF"}
@@ -1687,7 +1687,7 @@ export default function AddShipment() {
                         onPress={() => setFlexBasis(flexBasis === "outside_state" ? "" : "outside_state")}
                         style={[styles.flexRadio, flexBasis === "outside_state" && styles.flexRadioActive]}
                       >
-                        <Ionicons
+                        <PhIcon
                           name={flexBasis === "outside_state" ? "radio-button-on" : "radio-button-off"}
                           size={16}
                           color={flexBasis === "outside_state" ? "#7C3AED" : "#9CA3AF"}
@@ -1699,7 +1699,7 @@ export default function AddShipment() {
                     {/* Suggestion + manual rate */}
                     {flexSuggestedRate && (
                       <View style={styles.flexSuggestion}>
-                        <Ionicons name="bulb" size={14} color="#B45309" />
+                        <PhIcon name="bulb" size={14} color="#B45309" />
                         <Text style={styles.flexSuggestionTxt}>
                           Suggestion: ₹{flexSuggestedRate.rate}{" "}
                           (from "{flexSuggestedRate.source}",{" "}
@@ -1731,7 +1731,7 @@ export default function AddShipment() {
                   style={styles.manageVariantsLink}
                   onPress={() => router.push(`/courier/${selectedCourier.id}/variants` as any)}
                 >
-                  <Ionicons name="settings-outline" size={12} color="#6B7280" />
+                  <PhIcon name="settings-outline" size={12} color="#6B7280" />
                   <Text style={styles.manageVariantsLinkTxt}>
                     Manage variants for {selectedCourier.name}
                   </Text>
@@ -1761,7 +1761,7 @@ export default function AddShipment() {
                     <Text style={styles.lastBadgeSmText}>Last</Text>
                   </View>
                 )}
-                <Ionicons
+                <PhIcon
                   name="repeat"
                   size={14}
                   color={autoTracking === true ? "#fff" : colors.text}
@@ -1784,7 +1784,7 @@ export default function AddShipment() {
                     <Text style={styles.lastBadgeSmText}>Last</Text>
                   </View>
                 )}
-                <Ionicons
+                <PhIcon
                   name="create-outline"
                   size={14}
                   color={autoTracking === false ? "#fff" : colors.text}
@@ -1823,7 +1823,7 @@ export default function AddShipment() {
                   style={styles.inlineScanBtn}
                   hitSlop={8}
                 >
-                  <Ionicons name="camera" size={20} color={colors.primary} />
+                  <PhIcon name="camera" size={20} color={colors.primary} />
                 </TouchableOpacity>
               )}
             </View>
@@ -2036,7 +2036,7 @@ export default function AddShipment() {
                     <Text style={styles.lastBadgeSmText}>Last</Text>
                   </View>
                 )}
-                <Ionicons
+                <PhIcon
                   name="card"
                   size={14}
                   color={paymentMode === "Prepaid" ? "#fff" : colors.text}
@@ -2058,7 +2058,7 @@ export default function AddShipment() {
                     <Text style={styles.lastBadgeSmText}>Last</Text>
                   </View>
                 )}
-                <Ionicons
+                <PhIcon
                   name="cash"
                   size={14}
                   color={paymentMode === "COD" ? "#fff" : colors.text}
@@ -2162,7 +2162,7 @@ export default function AddShipment() {
               {/* Inline error: Prepaid + token > 0 is invalid */}
               {paymentMode === "Prepaid" && Number(tokenAmount) > 0 ? (
                 <View style={styles.tokenErrorBox} testID="token-prepaid-error">
-                  <Ionicons name="alert-circle" size={16} color="#B91C1C" />
+                  <PhIcon name="alert-circle" size={16} color="#B91C1C" />
                   <View style={{ flex: 1 }}>
                     <Text style={styles.tokenErrorTitle}>
                       Token is not valid for Prepaid
@@ -2327,7 +2327,7 @@ export default function AddShipment() {
               onPress={onCancel}
               hitSlop={8}
             >
-              <Ionicons name="close" size={18} color="#B91C1C" />
+              <PhIcon name="close" size={18} color="#B91C1C" />
               <Text style={styles.cancelBtnText}>Cancel</Text>
             </TouchableOpacity>
             <TouchableOpacity
@@ -2340,7 +2340,7 @@ export default function AddShipment() {
                 <ActivityIndicator color={colors.text} />
               ) : (
                 <>
-                  <Ionicons
+                  <PhIcon
                     name={editingShipmentId ? "checkmark-circle-outline" : "save-outline"}
                     size={18}
                     color={colors.text}
@@ -2357,7 +2357,7 @@ export default function AddShipment() {
               disabled={saving}
               onPress={() => save(true)}
             >
-              <Ionicons name="print" size={18} color="#fff" />
+              <PhIcon name="print" size={18} color="#fff" />
               <Text style={styles.primaryBtnText}>
                 {editingShipmentId ? "Update & Print" : "Save & Print"}
               </Text>
@@ -2375,7 +2375,7 @@ export default function AddShipment() {
               onPress={() => setShowImport(false)}
               style={styles.modalClose}
             >
-              <Ionicons name="close" size={22} color={colors.text} />
+              <PhIcon name="close" size={22} color={colors.text} />
             </TouchableOpacity>
             <Text style={styles.modalTitle}>Import from Sheet</Text>
             <TouchableOpacity
@@ -2383,12 +2383,12 @@ export default function AddShipment() {
               onPress={openImport}
               style={styles.modalClose}
             >
-              <Ionicons name="refresh" size={20} color={colors.text} />
+              <PhIcon name="refresh" size={20} color={colors.text} />
             </TouchableOpacity>
           </View>
 
           <View style={styles.modalSearchWrap}>
-            <Ionicons name="search" size={16} color={colors.textMuted} />
+            <PhIcon name="search" size={16} color={colors.textMuted} />
             <TextInput
               testID="import-search"
               placeholder="Search order, name, phone"
@@ -2483,7 +2483,7 @@ export default function AddShipment() {
                       📦 {item.item || "—"} · ₹{item.amount || "0"}
                     </Text>
                   </View>
-                  <Ionicons name="chevron-forward" size={20} color={colors.textMuted} />
+                  <PhIcon name="chevron-forward" size={20} color={colors.textMuted} />
                 </TouchableOpacity>
               )}
             />

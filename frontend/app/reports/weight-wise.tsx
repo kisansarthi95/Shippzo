@@ -6,11 +6,11 @@
  * accordingly.
  */
 import React, { useCallback, useEffect, useMemo, useState } from "react";
+import PhIcon from "../../components/PhIcon";
 import {
   View, Text, TouchableOpacity, ScrollView, RefreshControl,
   ActivityIndicator, Alert,
 } from "react-native";
-import { Ionicons } from "@expo/vector-icons";
 import { Stack, router } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Api } from "../../lib/api";
@@ -49,7 +49,7 @@ export default function WeightWiseScreen() {
       <Stack.Screen options={{ title: "Weight-wise Breakup" }} />
       <View style={S.header}>
         <TouchableOpacity onPress={() => router.back()} style={S.backBtn}>
-          <Ionicons name="chevron-back" size={22} color="#111827" />
+          <PhIcon name="chevron-back" size={22} color="#111827" />
         </TouchableOpacity>
         <View style={{ flex: 1 }}>
           <Text style={S.title}>Weight-wise Breakup</Text>
@@ -128,7 +128,7 @@ export default function WeightWiseScreen() {
               style={S.excelBtn}
               onPress={() => downloadExcel("/me/reports/weight-wise/excel", params as any)}
             >
-              <Ionicons name="download" size={18} color="#fff" />
+              <PhIcon name="download" size={18} color="#fff" />
               <Text style={S.excelBtnTxt}>Download Excel (.xlsx)</Text>
             </TouchableOpacity>
           </>

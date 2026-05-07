@@ -1,15 +1,16 @@
 import { useEffect, useRef, useState } from "react";
+import PhIcon from "../components/PhIcon";
 import { Stack, useRouter, useSegments } from "expo-router";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { StatusBar } from "expo-status-bar";
 import { Platform, View, ActivityIndicator, Text, LogBox } from "react-native";
 import * as SplashScreen from "expo-splash-screen";
 import { useFonts } from "expo-font";
-import { Ionicons } from "@expo/vector-icons";
 import { AuthProvider, useAuth } from "../lib/auth";
 import { FeatureFlagsProvider } from "../lib/feature_flags";
 import { PermissionsProvider } from "../lib/permissions";
 import ErrorBoundary from "../components/ErrorBoundary";
+
 import OfflineBanner from "../components/OfflineBanner";
 
 // Keep splash visible while we warm-up fonts
@@ -71,40 +72,14 @@ if (typeof globalThis !== "undefined") {
 }
 
 export default function RootLayout() {
-  // Centralized font pre-loading. Calling useFonts({ ...Ionicons.font })
-  // once at the app root means the Ionicons.ttf is fetched + registered
-  // a single time on cold launch instead of once per icon-component
-  // render. Without this, every <Ionicons /> instance independently
-  // calls Font.loadAsync during its first paint, which on Android Expo
-  // Go (SDK 54) over a slow ngrok tunnel triggers hundreds of parallel
-  // download attempts and produces blank-glyph + "loadAsync rejected"
-  // toasts.
-  //
-  // We DON'T block render on `fontsLoaded`. The icon family falls back
-  // to its CSS-name reference and renders an empty glyph until the font
-  // resolves, which is far better UX than a 5-second white splash.
-  const [fontsLoaded] = useFonts({
-    ...Ionicons.font,
-  });
-
-  // Fallback: reveal the app after 3 s even if fonts haven't finished
-  // loading (e.g. slow ngrok tunnel on Android). Icons will use system
-  // fallback glyphs briefly, then swap in once the font resolves.
-  const [fontTimeout, setFontTimeout] = useState(false);
+  // 2026-05-07 — Phase 5e: migrated all icons from @expo/vector-icons
+  // (font-based, flaky on Android Expo Go) to phosphor-react-native
+  // (SVG, no font pipeline). The previous `useFonts({ ...Ionicons.font })`
+  // gate is no longer needed because PhIcon ships pure SVG that renders
+  // synchronously. Splash hides immediately on mount.
   useEffect(() => {
-    const t = setTimeout(() => setFontTimeout(true), 3000);
-    return () => clearTimeout(t);
+    SplashScreen.hideAsync().catch(() => {});
   }, []);
-
-  useEffect(() => {
-    if (fontsLoaded || fontTimeout) {
-      SplashScreen.hideAsync().catch(() => {});
-    }
-  }, [fontsLoaded, fontTimeout]);
-
-  if (!fontsLoaded && !fontTimeout) {
-    return null;
-  }
 
   return (
     <ErrorBoundary>

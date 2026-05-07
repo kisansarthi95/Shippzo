@@ -18,13 +18,13 @@
  * Tap a row → detail modal with recent shipments & wallet history.
  */
 import React, { useCallback, useEffect, useMemo, useState } from "react";
+import PhIcon from "../../components/PhIcon";
 import {
   View, Text, StyleSheet, TextInput, TouchableOpacity, FlatList,
   ActivityIndicator, RefreshControl, Modal, ScrollView, Platform, Alert,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Stack, useRouter } from "expo-router";
-import { Ionicons } from "@expo/vector-icons";
 import { api, PlanKey } from "../../lib/api";
 import { colors } from "../../lib/theme";
 
@@ -232,7 +232,7 @@ export default function AdminUsersScreen() {
           headerStyle: { backgroundColor: colors.background },
           headerRight: () => (
             <TouchableOpacity onPress={() => router.back()} hitSlop={10}>
-              <Ionicons name="close" size={22} color={colors.text} />
+              <PhIcon name="close" size={22} color={colors.text} />
             </TouchableOpacity>
           ),
           headerBackVisible: false,
@@ -270,7 +270,7 @@ export default function AdminUsersScreen() {
 
       {/* Search */}
       <View style={styles.searchBox}>
-        <Ionicons name="search" size={16} color="#94A3B8" />
+        <PhIcon name="search" size={16} color="#94A3B8" />
         <TextInput
           value={q}
           onChangeText={setQ}
@@ -283,7 +283,7 @@ export default function AdminUsersScreen() {
         />
         {q ? (
           <TouchableOpacity onPress={() => setQ("")} hitSlop={10}>
-            <Ionicons name="close-circle" size={18} color="#94A3B8" />
+            <PhIcon name="close-circle" size={18} color="#94A3B8" />
           </TouchableOpacity>
         ) : null}
       </View>
@@ -324,7 +324,7 @@ export default function AdminUsersScreen() {
           ItemSeparatorComponent={() => <View style={{ height: 10 }} />}
           ListEmptyComponent={
             <View style={{ alignItems: "center", padding: 40 }}>
-              <Ionicons name="people-outline" size={44} color="#CBD5E1" />
+              <PhIcon name="people-outline" size={44} color="#CBD5E1" />
               <Text style={{ color: "#94A3B8", marginTop: 10 }}>
                 {q || planFilter ? "No users match the current filter." : "No users yet."}
               </Text>
@@ -346,7 +346,7 @@ export default function AdminUsersScreen() {
         <SafeAreaView edges={["top"]} style={styles.safe}>
           <View style={styles.modalHdr}>
             <TouchableOpacity onPress={() => setDetailOpen(false)} hitSlop={10}>
-              <Ionicons name="arrow-back" size={22} color={colors.text} />
+              <PhIcon name="arrow-back" size={22} color={colors.text} />
             </TouchableOpacity>
             <Text style={styles.modalTitle}>User Detail</Text>
             <View style={{ width: 22 }} />
@@ -385,7 +385,7 @@ function UserRow({ row, onPress }: { row: Row; onPress: () => void }) {
             </Text>
             {row.is_admin ? (
               <View style={styles.adminBadge}>
-                <Ionicons name="shield-checkmark" size={10} color="#fff" />
+                <PhIcon name="shield-checkmark" size={10} color="#fff" />
                 <Text style={styles.adminBadgeTxt}>ADMIN</Text>
               </View>
             ) : null}
@@ -412,7 +412,7 @@ function UserRow({ row, onPress }: { row: Row; onPress: () => void }) {
           ) : null}
           {row.trial_denied_reason === "duplicate_device" ? (
             <View style={[styles.expPill, { backgroundColor: "#FEE2E2" }]}>
-              <Ionicons name="hardware-chip-outline" size={9} color="#7F1D1D" />
+              <PhIcon name="hardware-chip-outline" size={9} color="#7F1D1D" />
               <Text style={[styles.expPillTxt, { color: "#7F1D1D", marginLeft: 2 }]}>
                 Trial denied · same device
               </Text>
@@ -433,7 +433,7 @@ function UserRow({ row, onPress }: { row: Row; onPress: () => void }) {
 function Stat({ icon, value, label }: { icon: string; value: string; label: string }) {
   return (
     <View style={styles.stat}>
-      <Ionicons name={icon as any} size={14} color="#64748B" />
+      <PhIcon name={icon as any} size={14} color="#64748B" />
       <View>
         <Text style={styles.statValue}>{value}</Text>
         <Text style={styles.statLabel}>{label}</Text>
@@ -454,7 +454,7 @@ function DetailView({ d, onResetPassword }: {
       <View style={styles.heroCard}>
         {u.display_id ? (
           <View style={styles.heroIdPill}>
-            <Ionicons name="finger-print" size={11} color="#0F172A" />
+            <PhIcon name="finger-print" size={11} color="#0F172A" />
             <Text style={styles.heroIdTxt}>{u.display_id}</Text>
           </View>
         ) : null}
@@ -468,7 +468,7 @@ function DetailView({ d, onResetPassword }: {
           </View>
           {u.is_admin ? (
             <View style={styles.adminBadge}>
-              <Ionicons name="shield-checkmark" size={10} color="#fff" />
+              <PhIcon name="shield-checkmark" size={10} color="#fff" />
               <Text style={styles.adminBadgeTxt}>ADMIN</Text>
             </View>
           ) : null}
@@ -486,7 +486,7 @@ function DetailView({ d, onResetPassword }: {
             style={styles.actionBtn}
             activeOpacity={0.85}
           >
-            <Ionicons name="key-outline" size={14} color="#fff" />
+            <PhIcon name="key-outline" size={14} color="#fff" />
             <Text style={styles.actionTxt}>Reset Password</Text>
           </TouchableOpacity>
         </View>
@@ -550,7 +550,7 @@ function DetailView({ d, onResetPassword }: {
 function GridItem({ icon, label, value }: { icon: string; label: string; value: string }) {
   return (
     <View style={styles.gridItem}>
-      <Ionicons name={icon as any} size={16} color="#64748B" />
+      <PhIcon name={icon as any} size={16} color="#64748B" />
       <Text style={styles.gridLabel}>{label}</Text>
       <Text style={styles.gridValue} numberOfLines={2}>{value}</Text>
     </View>

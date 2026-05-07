@@ -12,12 +12,12 @@
  *   - "Save" button is sticky at the bottom and only enabled when dirty.
  */
 import React, { useEffect, useMemo, useState } from "react";
+import PhIcon from "../../components/PhIcon";
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity,
   Switch, ActivityIndicator, Alert, Platform,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import { api } from "../../lib/api";
 import { useAuth } from "../../lib/auth";
@@ -190,7 +190,7 @@ export default function AdminPlanFeaturesScreen() {
       {/* Header */}
       <View style={styles.header}>
         <TouchableOpacity onPress={handleBack} hitSlop={10} style={{ marginRight: 8 }}>
-          <Ionicons name="chevron-back" size={26} color={colors.text} />
+          <PhIcon name="chevron-back" size={26} color={colors.text} />
         </TouchableOpacity>
         <View style={{ flex: 1 }}>
           <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
@@ -308,7 +308,7 @@ export default function AdminPlanFeaturesScreen() {
             <ActivityIndicator color="#fff" />
           ) : (
             <>
-              <Ionicons name="save" size={18} color="#fff" />
+              <PhIcon name="save" size={18} color="#fff" />
               <Text style={styles.saveTxt}>
                 {isDirty ? "Save changes" : "No changes"}
               </Text>

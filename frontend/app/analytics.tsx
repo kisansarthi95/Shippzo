@@ -16,13 +16,13 @@
  *       deep links keep working.
  */
 import React, { useCallback, useEffect, useMemo, useState } from "react";
+import PhIcon from "../components/PhIcon";
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity,
   ActivityIndicator, Alert, Dimensions, RefreshControl,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Stack, router } from "expo-router";
-import { Ionicons } from "@expo/vector-icons";
 import { LineChart } from "react-native-chart-kit";
 import { Api } from "../lib/api";
 import { useAuth } from "../lib/auth";
@@ -144,7 +144,7 @@ export default function AnalyticsScreen() {
               style={[styles.scopeBtn, scope === "mine" && styles.scopeBtnActive]}
               onPress={() => setScope("mine")}
             >
-              <Ionicons
+              <PhIcon
                 name="person-circle"
                 size={14}
                 color={scope === "mine" ? "#fff" : "#1F4FBF"}
@@ -157,7 +157,7 @@ export default function AnalyticsScreen() {
               style={[styles.scopeBtn, scope === "platform" && styles.scopeBtnActive]}
               onPress={() => setScope("platform")}
             >
-              <Ionicons
+              <PhIcon
                 name="globe"
                 size={14}
                 color={scope === "platform" ? "#fff" : "#1F4FBF"}
@@ -234,7 +234,7 @@ export default function AnalyticsScreen() {
                 setPaymentMode("all"); setStateFilter("all");
               }}
             >
-              <Ionicons name="close-circle" size={14} color="#DC2626" />
+              <PhIcon name="close-circle" size={14} color="#DC2626" />
               <Text style={styles.clearFilterTxt}>Clear ({activeFilterCount})</Text>
             </TouchableOpacity>
           )}
@@ -374,7 +374,7 @@ export default function AnalyticsScreen() {
                 <Text style={styles.listRank}>#{i + 1}</Text>
                 <Text style={styles.listName} numberOfLines={1}>{c.name}</Text>
                 <Text style={styles.listCount}>{c.count}</Text>
-                <Ionicons
+                <PhIcon
                   name={courier === c.name ? "filter" : "filter-outline"}
                   size={14}
                   color={courier === c.name ? "#1F4FBF" : "#9CA3AF"}
@@ -467,21 +467,21 @@ export default function AnalyticsScreen() {
                   style={styles.linkBtn}
                   onPress={() => router.push("/admin/sla-alerts" as any)}
                 >
-                  <Ionicons name="alert-circle" size={14} color="#DC2626" />
+                  <PhIcon name="alert-circle" size={14} color="#DC2626" />
                   <Text style={styles.linkText}>SLA Alerts</Text>
                 </TouchableOpacity>
                 <TouchableOpacity
                   style={styles.linkBtn}
                   onPress={() => router.push("/admin/stage-rules" as any)}
                 >
-                  <Ionicons name="settings" size={14} color="#1F4FBF" />
+                  <PhIcon name="settings" size={14} color="#1F4FBF" />
                   <Text style={styles.linkText}>Stage Rules</Text>
                 </TouchableOpacity>
                 <TouchableOpacity
                   style={styles.linkBtn}
                   onPress={() => router.push("/sheet-sync" as any)}
                 >
-                  <Ionicons name="cloud-upload" size={14} color="#10B981" />
+                  <PhIcon name="cloud-upload" size={14} color="#10B981" />
                   <Text style={styles.linkText}>Sheet Sync</Text>
                 </TouchableOpacity>
               </View>
@@ -533,7 +533,7 @@ function FilterPill({ icon, label, active, onPress }: {
       style={[styles.filterPill, active && styles.filterPillActive]}
       onPress={onPress}
     >
-      <Ionicons name={icon} size={12} color={active ? "#fff" : "#1F4FBF"} />
+      <PhIcon name={icon} size={12} color={active ? "#fff" : "#1F4FBF"} />
       <Text
         style={[styles.filterPillTxt, active && { color: "#fff" }]}
         numberOfLines={1}
@@ -550,7 +550,7 @@ function KpiCard({ icon, tint, value, label, subtitle }: {
   return (
     <View style={[styles.kpiCard, { borderLeftColor: tint }]}>
       <View style={styles.kpiTopRow}>
-        <Ionicons name={icon} size={16} color={tint} />
+        <PhIcon name={icon} size={16} color={tint} />
         <Text style={[styles.kpiValue, { color: tint }]}>{value}</Text>
       </View>
       <Text style={styles.kpiLabel}>{label}</Text>
@@ -565,7 +565,7 @@ function PayBox({ label, count, amount, tint, icon }: {
   return (
     <View style={[styles.payBox, { borderColor: tint + "55" }]}>
       <View style={[styles.payBoxIcon, { backgroundColor: tint + "20" }]}>
-        <Ionicons name={icon} size={20} color={tint} />
+        <PhIcon name={icon} size={20} color={tint} />
       </View>
       <Text style={[styles.payBoxCount, { color: tint }]}>{count}</Text>
       <Text style={styles.payBoxLabel}>{label}</Text>
@@ -587,7 +587,7 @@ function PickerOverlay({ visible, title, options, labelMap, selected, onSelect, 
         <View style={styles.overlayHeader}>
           <Text style={styles.overlayTitle}>{title}</Text>
           <TouchableOpacity onPress={onClose} hitSlop={10}>
-            <Ionicons name="close" size={22} color="#374151" />
+            <PhIcon name="close" size={22} color="#374151" />
           </TouchableOpacity>
         </View>
         <ScrollView style={{ maxHeight: 360 }}>
@@ -602,7 +602,7 @@ function PickerOverlay({ visible, title, options, labelMap, selected, onSelect, 
                 <Text style={[styles.overlayItemTxt, isSel && { color: "#1F4FBF", fontWeight: "800" }]}>
                   {labelMap?.[opt] ?? opt}
                 </Text>
-                {isSel && <Ionicons name="checkmark" size={18} color="#1F4FBF" />}
+                {isSel && <PhIcon name="checkmark" size={18} color="#1F4FBF" />}
               </TouchableOpacity>
             );
           })}

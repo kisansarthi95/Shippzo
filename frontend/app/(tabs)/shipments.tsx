@@ -1,11 +1,11 @@
 import React, { useCallback, useMemo, useState, useEffect } from "react";
+import PhIcon from "../../components/PhIcon";
 import {
   View, Text, StyleSheet, TextInput, ScrollView, TouchableOpacity,
   FlatList, RefreshControl, Linking, Alert, Platform, Modal,
   ActivityIndicator,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { Ionicons } from "@expo/vector-icons";
 import * as Clipboard from "expo-clipboard";
 import * as Print from "expo-print";
 import * as Sharing from "expo-sharing";
@@ -632,7 +632,7 @@ export default function Shipments() {
                 else setSelectMode(true);
               }}
             >
-              <Ionicons
+              <PhIcon
                 name={selectMode ? "close" : "checkbox-outline"}
                 size={20}
                 color={selectMode ? "#fff" : colors.text}
@@ -650,7 +650,7 @@ export default function Shipments() {
               onPress={openBulkContactPicker}
               disabled={selectedIds.size === 0}
             >
-              <Ionicons name="person-add-outline" size={20} color="#fff" />
+              <PhIcon name="person-add-outline" size={20} color="#fff" />
             </TouchableOpacity>
           )}
           {flagCsvExport && (
@@ -658,14 +658,14 @@ export default function Shipments() {
             testID="export-csv-btn" style={styles.iconBtn}
             onPress={() => Linking.openURL(Api.csvUrl())}
           >
-            <Ionicons name="download-outline" size={20} color={colors.text} />
+            <PhIcon name="download-outline" size={20} color={colors.text} />
           </TouchableOpacity>
           )}
         </View>
       </View>
 
       <View style={styles.searchWrap}>
-        <Ionicons name="search" size={18} color={colors.textMuted} />
+        <PhIcon name="search" size={18} color={colors.textMuted} />
         <TextInput
           testID="search-input"
           placeholder="Search tracking, name, city, order..."
@@ -793,7 +793,7 @@ export default function Shipments() {
                   active && { backgroundColor: colors.primary, borderColor: colors.primary },
                 ]}
               >
-                <Ionicons
+                <PhIcon
                   name="calendar-outline"
                   size={13}
                   color={active ? "#fff" : colors.primary}
@@ -844,7 +844,7 @@ export default function Shipments() {
                 },
               ]}
             >
-              <Ionicons
+              <PhIcon
                 name="barcode-outline"
                 size={26}
                 color={isShipMode ? "#6B5BFF" : "#FF6B00"}
@@ -908,7 +908,7 @@ export default function Shipments() {
               needConfirmCount === 0 && styles.confirmCardIconBoxEmpty,
             ]}
           >
-            <Ionicons
+            <PhIcon
               name="chatbubble-ellipses"
               size={24}
               color={needConfirmCount === 0 ? "#9CA3AF" : "#B45309"}
@@ -937,7 +937,7 @@ export default function Shipments() {
           </View>
           {needConfirmCount > 0 && (
             <View style={styles.confirmCardArrow}>
-              <Ionicons name="chevron-forward" size={22} color="#B45309" />
+              <PhIcon name="chevron-forward" size={22} color="#B45309" />
             </View>
           )}
         </TouchableOpacity>
@@ -994,7 +994,7 @@ export default function Shipments() {
                     }}
                     style={[styles.bulkLayoutCard, active && styles.bulkLayoutCardActive]}
                   >
-                    <Ionicons
+                    <PhIcon
                       name={opt.icon as any}
                       size={20}
                       color={active ? "#fff" : colors.primary}
@@ -1036,7 +1036,7 @@ export default function Shipments() {
                   { borderColor: "#7C3AED", backgroundColor: "#F5F3FF" },
                 ]}
               >
-                <Ionicons
+                <PhIcon
                   name="person-add-outline"
                   size={20}
                   color="#7C3AED"
@@ -1102,7 +1102,7 @@ export default function Shipments() {
                   },
                 ]}
               >
-                <Ionicons
+                <PhIcon
                   name="cube-outline"
                   size={20}
                   color={status === "Pending" ? "#C2410C" : "#92400E"}
@@ -1145,7 +1145,7 @@ export default function Shipments() {
         >
           <TouchableOpacity activeOpacity={1} style={styles.bulkPopupCard}>
             <View style={styles.bulkPopupHeaderRow}>
-              <Ionicons name="print" size={18} color={colors.primary} />
+              <PhIcon name="print" size={18} color={colors.primary} />
               <Text style={styles.bulkPopupTitle}>
                 {selectedIds.size} shipment{selectedIds.size !== 1 ? "s" : ""} •{" "}
                 {bulkPerPage === "thermal" ? "Thermal 4×6" :
@@ -1155,7 +1155,7 @@ export default function Shipments() {
                  bulkPerPage === 2 ? "½A4" : "Layout"}
               </Text>
               <TouchableOpacity onPress={() => setActionPopupOpen(false)} hitSlop={10}>
-                <Ionicons name="close" size={22} color={colors.text} />
+                <PhIcon name="close" size={22} color={colors.text} />
               </TouchableOpacity>
             </View>
             <Text style={styles.bulkPopupSub}>
@@ -1171,7 +1171,7 @@ export default function Shipments() {
                   bulkPreviewPdf();
                 }}
               >
-                <Ionicons name="eye-outline" size={20} color={colors.text} />
+                <PhIcon name="eye-outline" size={20} color={colors.text} />
                 <Text style={[styles.bulkPopupBtnText, { color: colors.text }]}>
                   Preview
                 </Text>
@@ -1184,7 +1184,7 @@ export default function Shipments() {
                   bulkPrint();
                 }}
               >
-                <Ionicons name="print" size={20} color="#fff" />
+                <PhIcon name="print" size={20} color="#fff" />
                 <Text style={styles.bulkPopupBtnText}>Print</Text>
               </TouchableOpacity>
             </View>
@@ -1211,7 +1211,7 @@ export default function Shipments() {
         >
           <TouchableOpacity activeOpacity={1} style={styles.bulkPopupCard}>
             <View style={styles.bulkPopupHeaderRow}>
-              <Ionicons name="person-add" size={18} color="#7C3AED" />
+              <PhIcon name="person-add" size={18} color="#7C3AED" />
               <Text style={styles.bulkPopupTitle}>
                 Apply category to {selectedIds.size} contact
                 {selectedIds.size !== 1 ? "s" : ""}
@@ -1221,7 +1221,7 @@ export default function Shipments() {
                 hitSlop={10}
                 disabled={bulkContactBusy}
               >
-                <Ionicons name="close" size={22} color={colors.text} />
+                <PhIcon name="close" size={22} color={colors.text} />
               </TouchableOpacity>
             </View>
             <Text
@@ -1299,7 +1299,7 @@ export default function Shipments() {
         contentContainerStyle={{ padding: 16, paddingBottom: 100 }}
         ListEmptyComponent={
           <View style={styles.empty} testID="empty-shipments">
-            <Ionicons name="cube-outline" size={48} color="#9CA3AF" />
+            <PhIcon name="cube-outline" size={48} color="#9CA3AF" />
             <Text style={styles.emptyText}>No shipments found.</Text>
             <TouchableOpacity
               testID="empty-new-shipment" style={styles.primaryBtn}
@@ -1330,7 +1330,7 @@ export default function Shipments() {
               <View style={styles.row}>
                 <View style={{ flexDirection: "row", alignItems: "center", gap: 6, flex: 1 }}>
                   {selectMode && (
-                    <Ionicons
+                    <PhIcon
                       name={isSelected ? "checkbox" : "square-outline"}
                       size={22}
                       color={isSelected ? colors.primary : colors.textMuted}
@@ -1436,10 +1436,10 @@ export default function Shipments() {
         <View style={styles.modalOverlay}>
           <View style={styles.dateModalCard}>
             <View style={styles.dateModalHdr}>
-              <Ionicons name="calendar" size={18} color={colors.primary} />
+              <PhIcon name="calendar" size={18} color={colors.primary} />
               <Text style={styles.dateModalTitle}>Custom Date Range</Text>
               <TouchableOpacity onPress={() => setShowDateModal(false)} hitSlop={10}>
-                <Ionicons name="close" size={22} color={colors.text} />
+                <PhIcon name="close" size={22} color={colors.text} />
               </TouchableOpacity>
             </View>
             <Text style={styles.dateHint}>Select From &amp; To dates to filter shipments.</Text>
@@ -1575,7 +1575,7 @@ export default function Shipments() {
                       </Text>
                     </View>
                     {selected && (
-                      <Ionicons name="checkmark-circle" size={22} color={meta.fg} />
+                      <PhIcon name="checkmark-circle" size={22} color={meta.fg} />
                     )}
                   </TouchableOpacity>
                 );
@@ -1600,14 +1600,14 @@ export default function Shipments() {
 function ActionBtn({
   icon, color, onPress, testID,
 }: {
-  icon: keyof typeof import("@expo/vector-icons").Ionicons.glyphMap;
+  icon: string;
   color: string;
   onPress: () => void;
   testID?: string;
 }) {
   return (
     <TouchableOpacity testID={testID} onPress={onPress} style={styles.actionBtn}>
-      <Ionicons name={icon} size={18} color={color} />
+      <PhIcon name={icon} size={18} color={color} />
     </TouchableOpacity>
   );
 }
@@ -1637,7 +1637,7 @@ function StatusChip({
     <View style={[styles.chip, { backgroundColor: bg }]}>
       <Text style={[styles.chipText, { color: fg }]}>{label.toUpperCase()}</Text>
       {onPress && (
-        <Ionicons
+        <PhIcon
           name="chevron-down"
           size={11}
           color={fg}

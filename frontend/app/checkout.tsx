@@ -28,12 +28,12 @@
  * in production builds without any native config.
  */
 import React, { useEffect, useMemo, useRef, useState } from "react";
+import PhIcon from "../components/PhIcon";
 import {
   View, Text, ActivityIndicator, StyleSheet, Alert, TouchableOpacity, Platform,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Stack, useLocalSearchParams, useRouter } from "expo-router";
-import { Ionicons } from "@expo/vector-icons";
 import { WebView } from "react-native-webview";
 import { Api, PlanKey } from "../lib/api";
 import { colors } from "../lib/theme";
@@ -292,7 +292,7 @@ export default function CheckoutScreen() {
       <SafeAreaView edges={["top"]} style={styles.safe}>
         <Stack.Screen options={{ title: "Payment", headerStyle: { backgroundColor: colors.background } }} />
         <View style={styles.center}>
-          <Ionicons name="alert-circle" size={48} color="#DC2626" />
+          <PhIcon name="alert-circle" size={48} color="#DC2626" />
           <Text style={styles.errTxt}>{error}</Text>
           <TouchableOpacity style={styles.backBtn} onPress={() => router.back()}>
             <Text style={styles.backBtnTxt}>Go back</Text>
@@ -317,7 +317,7 @@ export default function CheckoutScreen() {
           headerStyle: { backgroundColor: colors.background },
           headerRight: () => (
             <TouchableOpacity onPress={() => router.back()} hitSlop={10}>
-              <Ionicons name="close" size={22} color={colors.text} />
+              <PhIcon name="close" size={22} color={colors.text} />
             </TouchableOpacity>
           ),
           headerBackVisible: false,

@@ -7,13 +7,13 @@
  * decide when a Shipped parcel should be flagged for follow-up).
  */
 import React, { useCallback, useEffect, useMemo, useState } from "react";
+import PhIcon from "../components/PhIcon";
 import {
   View, Text, StyleSheet, ScrollView, TextInput, TouchableOpacity,
   ActivityIndicator, Alert, KeyboardAvoidingView, Platform,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Stack, router } from "expo-router";
-import { Ionicons } from "@expo/vector-icons";
 import { Api } from "../lib/api";
 
 export default function CourierRulesScreen() {
@@ -156,7 +156,7 @@ export default function CourierRulesScreen() {
           >
             {saving ? <ActivityIndicator color="#fff" /> : (
               <>
-                <Ionicons name="save-outline" size={15} color="#fff" />
+                <PhIcon name="save-outline" size={15} color="#fff" />
                 <Text style={styles.saveText}>Save Rules</Text>
               </>
             )}

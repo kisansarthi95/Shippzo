@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
+import PhIcon from "../../components/PhIcon";
 import {
   View,
   Text,
@@ -17,7 +18,6 @@ import {
   PanResponder,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { Ionicons } from "@expo/vector-icons";
 import { useFocusEffect, useRouter } from "expo-router";
 import * as Clipboard from "expo-clipboard";
 import * as ImagePicker from "expo-image-picker";
@@ -829,14 +829,14 @@ export default function Dashboard() {
             style={[styles.headerAction, { backgroundColor: colors.primary }]}
             onPress={() => { setRefreshing(true); load(); }}
           >
-            <Ionicons name="refresh" size={20} color="#fff" />
+            <PhIcon name="refresh" size={20} color="#fff" />
           </TouchableOpacity>
           <TouchableOpacity
             testID="open-scanner-btn"
             style={styles.headerAction}
             onPress={() => router.push("/scanner?returnTo=add")}
           >
-            <Ionicons name="scan" size={22} color="#fff" />
+            <PhIcon name="scan" size={22} color="#fff" />
           </TouchableOpacity>
         </View>
       </View>
@@ -864,14 +864,14 @@ export default function Dashboard() {
               <View style={styles.sheetGrabBar} />
             </View>
             <View style={styles.modalHeader}>
-              <Ionicons name="sparkles" size={18} color="#7C3AED" />
+              <PhIcon name="sparkles" size={18} color="#7C3AED" />
               <Text style={styles.modalTitle}>Smart Paste</Text>
               <TouchableOpacity
                 onPress={() => setPasteModalOpen(false)}
                 hitSlop={10}
                 disabled={pasting || photoUploading}
               >
-                <Ionicons name="close" size={22} color={colors.text} />
+                <PhIcon name="close" size={22} color={colors.text} />
               </TouchableOpacity>
             </View>
 
@@ -907,7 +907,7 @@ export default function Dashboard() {
                     activeOpacity={0.85}
                   >
                     <View style={styles.entryBigBtnIcon}>
-                      <Ionicons name="clipboard-outline" size={26} color="#7C3AED" />
+                      <PhIcon name="clipboard-outline" size={26} color="#7C3AED" />
                     </View>
                     <View style={{ flex: 1 }}>
                       <Text style={styles.entryBigBtnTitle}>📋  Paste Text</Text>
@@ -915,7 +915,7 @@ export default function Dashboard() {
                         Copy WhatsApp / SMS first, then tap here.
                       </Text>
                     </View>
-                    <Ionicons name="chevron-forward" size={22} color="#7C3AED" />
+                    <PhIcon name="chevron-forward" size={22} color="#7C3AED" />
                   </TouchableOpacity>
 
                   <TouchableOpacity
@@ -925,7 +925,7 @@ export default function Dashboard() {
                     activeOpacity={0.85}
                   >
                     <View style={styles.entryBigBtnIcon}>
-                      <Ionicons name="camera-outline" size={26} color="#7C3AED" />
+                      <PhIcon name="camera-outline" size={26} color="#7C3AED" />
                     </View>
                     <View style={{ flex: 1 }}>
                       <Text style={styles.entryBigBtnTitle}>📷  Upload Photo</Text>
@@ -933,7 +933,7 @@ export default function Dashboard() {
                         Camera or Gallery — reads Gujarati / Hindi / English.
                       </Text>
                     </View>
-                    <Ionicons name="chevron-forward" size={22} color="#7C3AED" />
+                    <PhIcon name="chevron-forward" size={22} color="#7C3AED" />
                   </TouchableOpacity>
                 </View>
               )}
@@ -968,17 +968,17 @@ export default function Dashboard() {
               <View style={styles.sheetGrabBar} />
             </View>
             <View style={styles.modalHeader}>
-              <Ionicons name="sparkles-outline" size={18} color="#7C3AED" />
+              <PhIcon name="sparkles-outline" size={18} color="#7C3AED" />
               <Text style={styles.modalTitle}>Smart Paste</Text>
               <TouchableOpacity onPress={closeChat} hitSlop={10} disabled={chatSending}>
-                <Ionicons name="close" size={22} color={colors.text} />
+                <PhIcon name="close" size={22} color={colors.text} />
               </TouchableOpacity>
             </View>
 
             {/* Repeat-customer / duplicate-shipment banner */}
             {!!suggestedCustomer && flagRepeatBanner && (
               <View style={styles.dupBanner}>
-                <Ionicons name="person-circle-outline" size={16} color="#1E40AF" />
+                <PhIcon name="person-circle-outline" size={16} color="#1E40AF" />
                 <Text style={styles.dupBannerTxt} numberOfLines={2}>
                   Repeat customer: {suggestedCustomer?.customer_name || ""}
                   {suggestedCustomer?._count ? `  (${suggestedCustomer._count} prev)` : ""}
@@ -994,7 +994,7 @@ export default function Dashboard() {
             )}
             {dupFound.length > 0 && (
               <View style={[styles.dupBanner, { backgroundColor: "#FEF3C7", borderColor: "#FCD34D" }]}>
-                <Ionicons name="alert-circle-outline" size={16} color="#92400E" />
+                <PhIcon name="alert-circle-outline" size={16} color="#92400E" />
                 <Text style={[styles.dupBannerTxt, { color: "#78350F" }]} numberOfLines={2}>
                   Possible duplicate shipment — review before saving.
                 </Text>
@@ -1087,13 +1087,13 @@ export default function Dashboard() {
                     >
                       <View style={styles.spRowLeft}>
                         {isMissing ? (
-                          <Ionicons
+                          <PhIcon
                             name={isReq ? "alert-circle" : "ellipse-outline"}
                             size={16}
                             color={isReq ? "#DC2626" : "#94A3B8"}
                           />
                         ) : (
-                          <Ionicons name="checkmark-circle" size={16} color="#16A34A" />
+                          <PhIcon name="checkmark-circle" size={16} color="#16A34A" />
                         )}
                       </View>
                       <View style={{ flex: 1 }}>
@@ -1113,7 +1113,7 @@ export default function Dashboard() {
                             ]}
                             activeOpacity={0.85}
                           >
-                            <Ionicons
+                            <PhIcon
                               name="cash-outline"
                               size={14}
                               color={payNorm === "COD" ? "#fff" : "#7C3AED"}
@@ -1142,7 +1142,7 @@ export default function Dashboard() {
                             ]}
                             activeOpacity={0.85}
                           >
-                            <Ionicons
+                            <PhIcon
                               name="card-outline"
                               size={14}
                               color={payNorm === "PREPAID" ? "#fff" : "#7C3AED"}
@@ -1179,13 +1179,13 @@ export default function Dashboard() {
                     >
                       <View style={styles.spRowLeft}>
                         {isMissing ? (
-                          <Ionicons
+                          <PhIcon
                             name={isReq ? "alert-circle" : "ellipse-outline"}
                             size={16}
                             color={isReq ? "#DC2626" : "#94A3B8"}
                           />
                         ) : (
-                          <Ionicons name="checkmark-circle" size={16} color="#16A34A" />
+                          <PhIcon name="checkmark-circle" size={16} color="#16A34A" />
                         )}
                       </View>
                       <View style={{ flex: 1 }}>
@@ -1244,7 +1244,7 @@ export default function Dashboard() {
                          !/^\d{6}$/.test(val) && (
                           <View style={styles.spHintBox}>
                             <View style={styles.spHintHeader}>
-                              <Ionicons name="sparkles" size={13} color="#7C3AED" />
+                              <PhIcon name="sparkles" size={13} color="#7C3AED" />
                               <Text style={styles.spHintTitle}>
                                 Suggested for "{cityHint.city}" — tap to confirm
                               </Text>
@@ -1268,7 +1268,7 @@ export default function Dashboard() {
                                   }}
                                   testID={`city-hint-${sg.pincode}`}
                                 >
-                                  <Ionicons
+                                  <PhIcon
                                     name="checkmark-circle-outline"
                                     size={13}
                                     color="#7C3AED"
@@ -1297,7 +1297,7 @@ export default function Dashboard() {
                         {key === "STATE" && autoState &&
                          autoState.state === val && (
                           <View style={styles.spAutoPill}>
-                            <Ionicons name="sparkles" size={11} color="#16A34A" />
+                            <PhIcon name="sparkles" size={11} color="#16A34A" />
                             <Text style={styles.spAutoPillTxt}>
                               Auto-filled from "{autoState.city}"
                             </Text>
@@ -1366,13 +1366,13 @@ export default function Dashboard() {
                             >
                               <View style={styles.spRowLeft}>
                                 {cval ? (
-                                  <Ionicons
+                                  <PhIcon
                                     name="checkmark-circle"
                                     size={16}
                                     color="#16A34A"
                                   />
                                 ) : (
-                                  <Ionicons
+                                  <PhIcon
                                     name="ellipse-outline"
                                     size={16}
                                     color="#94A3B8"
@@ -1426,7 +1426,7 @@ export default function Dashboard() {
 
                     {reqMiss.length > 0 && (
                       <View style={styles.spReqHint}>
-                        <Ionicons name="information-circle" size={14} color="#92400E" />
+                        <PhIcon name="information-circle" size={14} color="#92400E" />
                         <Text style={styles.spReqHintTxt}>
                           {reqMiss.length === 1
                             ? "1 required field still empty"
@@ -1576,7 +1576,7 @@ export default function Dashboard() {
                   <ActivityIndicator color="#fff" />
                 ) : (
                   <>
-                    <Ionicons name="save-outline" size={16} color="#fff" />
+                    <PhIcon name="save-outline" size={16} color="#fff" />
                     <Text style={[styles.spFooterBtnTxt, { color: "#fff", marginLeft: 6 }]}>
                       Save Shipment
                     </Text>
@@ -1709,13 +1709,13 @@ export default function Dashboard() {
                 activeOpacity={0.85}
               >
                 <View style={styles.scanRowIcon}>
-                  <Ionicons name="barcode-outline" size={22} color="#8B5E34" />
+                  <PhIcon name="barcode-outline" size={22} color="#8B5E34" />
                 </View>
                 <View style={{ flex: 1 }}>
                   <Text style={styles.scanRowTitle}>Scan & Ready to Ship</Text>
                   <Text style={styles.scanRowSub}>Pending → Ready to Ship</Text>
                 </View>
-                <Ionicons name="chevron-forward" size={20} color="#A87842" />
+                <PhIcon name="chevron-forward" size={20} color="#A87842" />
               </TouchableOpacity>
               <TouchableOpacity
                 testID="quick-scan-shipped"
@@ -1729,7 +1729,7 @@ export default function Dashboard() {
                 activeOpacity={0.85}
               >
                 <View style={[styles.scanRowIcon, { backgroundColor: "#E0DAFF" }]}>
-                  <Ionicons name="rocket-outline" size={22} color="#4B3FCF" />
+                  <PhIcon name="rocket-outline" size={22} color="#4B3FCF" />
                 </View>
                 <View style={{ flex: 1 }}>
                   <Text style={[styles.scanRowTitle, { color: "#4B3FCF" }]}>
@@ -1739,7 +1739,7 @@ export default function Dashboard() {
                     Ready to Ship → Shipped
                   </Text>
                 </View>
-                <Ionicons name="chevron-forward" size={20} color="#6B5BFF" />
+                <PhIcon name="chevron-forward" size={20} color="#6B5BFF" />
               </TouchableOpacity>
               {/* Phase G5 — Action Required widget. Self-hides when
                   no breaches OR admin has muted the banner channel. */}
@@ -1845,7 +1845,7 @@ export default function Dashboard() {
 
             {recent.length === 0 ? (
               <View style={styles.empty} testID="empty-recent">
-                <Ionicons name="cube-outline" size={48} color="#9CA3AF" />
+                <PhIcon name="cube-outline" size={48} color="#9CA3AF" />
                 <Text style={styles.emptyText}>
                   No shipments yet. Create your first shipment.
                 </Text>
@@ -1875,7 +1875,7 @@ export default function Dashboard() {
                       {s.courier_name} · {s.city || "—"}
                     </Text>
                   </View>
-                  <Ionicons
+                  <PhIcon
                     name="chevron-forward"
                     size={20}
                     color={colors.textMuted}
@@ -1900,7 +1900,7 @@ function StatCard({
 }: {
   label: string;
   value: number | string;
-  icon: keyof typeof Ionicons.glyphMap;
+  icon: string;
   tone: "neutral" | "warning" | "success" | "primary";
   testID?: string;
   width?: number;
@@ -1918,7 +1918,7 @@ function StatCard({
   if (isPrimary) {
     return (
       <View testID={testID} style={[styles.statCard, styles.statCardPrimary, sizeStyle]}>
-        <Ionicons name={icon} size={18} color="#fff" />
+        <PhIcon name={icon} size={18} color="#fff" />
         <Text style={styles.statValuePrimary} numberOfLines={1} adjustsFontSizeToFit>
           {value}
         </Text>
@@ -1931,7 +1931,7 @@ function StatCard({
 
   return (
     <View testID={testID} style={[styles.statCard, sizeStyle]}>
-      <Ionicons name={icon} size={18} color={accent} />
+      <PhIcon name={icon} size={18} color={accent} />
       <Text
         style={[styles.statValue, { color: accent }]}
         numberOfLines={1}
@@ -1955,7 +1955,7 @@ function ActionPill({
   testID,
   chevron,
 }: {
-  icon: keyof typeof Ionicons.glyphMap;
+  icon: string;
   label: string;
   onPress: () => void;
   badge?: number;
@@ -1982,7 +1982,7 @@ function ActionPill({
       activeOpacity={0.75}
     >
       <View style={[styles.pillIconWrap, { backgroundColor: "transparent" }]}>
-        <Ionicons name={icon} size={22} color={t.fg} />
+        <PhIcon name={icon} size={22} color={t.fg} />
       </View>
       <Text
         style={[styles.pillLabel, { color: t.fg }]}
@@ -1999,7 +1999,7 @@ function ActionPill({
         </View>
       )}
       {chevron && (
-        <Ionicons name="chevron-forward" size={20} color="#9CA3AF" style={{ marginLeft: 8 }} />
+        <PhIcon name="chevron-forward" size={20} color="#9CA3AF" style={{ marginLeft: 8 }} />
       )}
     </TouchableOpacity>
   );

@@ -14,11 +14,11 @@
  *  • Footer becomes a solid red "View all N alerts →" CTA.
  */
 import React, { useCallback, useEffect, useState } from "react";
+import PhIcon from "./PhIcon";
 import {
   View, Text, StyleSheet, TouchableOpacity, ActivityIndicator,
   ScrollView,
 } from "react-native";
-import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
 import { Api } from "../lib/api";
 
@@ -91,7 +91,7 @@ export default function SlaActionWidget({ isAdmin = false }: Props) {
       {/* Header */}
       <View style={styles.header}>
         <View style={styles.headerLeft}>
-          <Ionicons name="alert-circle" size={20} color="#DC2626" />
+          <PhIcon name="alert-circle" size={20} color="#DC2626" />
           <Text style={styles.headerTitle}>Action Required</Text>
         </View>
         <View style={styles.countPill}>
@@ -168,7 +168,7 @@ export default function SlaActionWidget({ isAdmin = false }: Props) {
                     </Text>
                   </View>
 
-                  <Ionicons name="chevron-forward" size={18} color="#9CA3AF" />
+                  <PhIcon name="chevron-forward" size={18} color="#9CA3AF" />
                 </TouchableOpacity>
               );
             })}
@@ -196,7 +196,7 @@ export default function SlaActionWidget({ isAdmin = false }: Props) {
             <Text style={styles.viewAllText}>
               View all {alerts.length} alert{alerts.length === 1 ? "" : "s"}
             </Text>
-            <Ionicons name="arrow-forward" size={16} color="#fff" />
+            <PhIcon name="arrow-forward" size={16} color="#fff" />
           </TouchableOpacity>
         </>
       )}

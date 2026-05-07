@@ -10,6 +10,7 @@
  * always appear with sensible defaults until the user changes them.
  */
 import React, { useCallback, useEffect, useState } from "react";
+import PhIcon from "../components/PhIcon";
 import {
   View,
   Text,
@@ -20,7 +21,6 @@ import {
   ActivityIndicator,
   TouchableOpacity,
 } from "react-native";
-import { Ionicons } from "@expo/vector-icons";
 import { Stack, router } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Api, CustomField, Settings } from "../lib/api";
@@ -149,7 +149,7 @@ export default function FieldRequirementsScreen() {
       <ScrollView contentContainerStyle={{ padding: 16 }}>
         {/* Intro banner */}
         <View style={styles.banner}>
-          <Ionicons name="information-circle" size={20} color={colors.primary} />
+          <PhIcon name="information-circle" size={20} color={colors.primary} />
           <Text style={styles.bannerText}>
             Toggle which fields are required (mandatory) when saving a
             shipment. Applies to both Smart Paste and the New Shipment form.

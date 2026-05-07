@@ -5,11 +5,11 @@
  * revenue, margin) plus winner badges so the owner can reassign volume.
  */
 import React, { useCallback, useEffect, useMemo, useState } from "react";
+import PhIcon from "../../components/PhIcon";
 import {
   View, Text, TouchableOpacity, ScrollView, RefreshControl,
   ActivityIndicator, Alert,
 } from "react-native";
-import { Ionicons } from "@expo/vector-icons";
 import { Stack, router } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Api } from "../../lib/api";
@@ -58,7 +58,7 @@ export default function PartnerComparisonScreen() {
       <Stack.Screen options={{ title: "Partner Comparison" }} />
       <View style={S.header}>
         <TouchableOpacity onPress={() => router.back()} style={S.backBtn}>
-          <Ionicons name="chevron-back" size={22} color="#111827" />
+          <PhIcon name="chevron-back" size={22} color="#111827" />
         </TouchableOpacity>
         <View style={{ flex: 1 }}>
           <Text style={S.title}>Partner Comparison</Text>
@@ -127,7 +127,7 @@ export default function PartnerComparisonScreen() {
               style={S.excelBtn}
               onPress={() => downloadExcel("/me/reports/partner-comparison/excel", params as any)}
             >
-              <Ionicons name="download" size={18} color="#fff" />
+              <PhIcon name="download" size={18} color="#fff" />
               <Text style={S.excelBtnTxt}>Download Excel (.xlsx)</Text>
             </TouchableOpacity>
           </>

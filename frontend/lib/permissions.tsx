@@ -15,8 +15,8 @@ import React, {
   createContext, useContext, useEffect, useState, useCallback,
 } from "react";
 import { View, Text, StyleSheet } from "react-native";
-import { Ionicons } from "@expo/vector-icons";
 import { Api } from "./api";
+import PhIcon from "../components/PhIcon";
 
 type AuthContextPayload = {
   isTeamMember: boolean;
@@ -91,7 +91,7 @@ export function Gated({
   if (fallback === "hide") return null;
   return (
     <View style={styles.lockCard}>
-      <Ionicons name="lock-closed" size={26} color="#92400E" />
+      <PhIcon name="lock-closed" size={26} color="#92400E" />
       <Text style={styles.lockTitle}>No access</Text>
       <Text style={styles.lockTxt}>
         Your role does not have the

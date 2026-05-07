@@ -1,10 +1,10 @@
 import React, { useCallback, useEffect, useState } from "react";
+import PhIcon from "../../components/PhIcon";
 import {
   View, Text, StyleSheet, TextInput, ScrollView, TouchableOpacity,
   Alert, KeyboardAvoidingView, Platform, ActivityIndicator, Linking,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { Ionicons } from "@expo/vector-icons";
 import * as Clipboard from "expo-clipboard";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { Api, Courier } from "../../lib/api";
@@ -186,14 +186,14 @@ export default function CourierEdit() {
     <SafeAreaView style={styles.safe} edges={["top"]}>
       <View style={styles.header}>
         <TouchableOpacity testID="courier-back" onPress={() => router.back()} style={styles.backBtn}>
-          <Ionicons name="arrow-back" size={22} color={colors.text} />
+          <PhIcon name="arrow-back" size={22} color={colors.text} />
         </TouchableOpacity>
         <Text style={styles.title} numberOfLines={1}>
           {isNew ? "Add Courier" : name || "Edit Courier"}
         </Text>
         {!isNew ? (
           <TouchableOpacity testID="courier-delete" onPress={remove} style={styles.backBtn}>
-            <Ionicons name="trash-outline" size={20} color={colors.dangerText} />
+            <PhIcon name="trash-outline" size={20} color={colors.dangerText} />
           </TouchableOpacity>
         ) : (
           <View style={{ width: 40 }} />
@@ -382,12 +382,12 @@ export default function CourierEdit() {
               <View style={{ flexDirection: "row", gap: 8, marginTop: 6 }}>
                 <TouchableOpacity testID="courier-copy-contact" onPress={copyContact}
                   style={[styles.outlineBtn, { flex: 1 }]}>
-                  <Ionicons name="copy-outline" size={16} color={colors.text} />
+                  <PhIcon name="copy-outline" size={16} color={colors.text} />
                   <Text style={styles.outlineBtnText}>Copy Contact</Text>
                 </TouchableOpacity>
                 <TouchableOpacity testID="courier-whatsapp-share" onPress={shareContact}
                   style={[styles.outlineBtn, { flex: 1, borderColor: "#25D366" }]}>
-                  <Ionicons name="logo-whatsapp" size={16} color="#25D366" />
+                  <PhIcon name="logo-whatsapp" size={16} color="#25D366" />
                   <Text style={[styles.outlineBtnText, { color: "#25D366" }]}>WhatsApp</Text>
                 </TouchableOpacity>
               </View>
@@ -406,7 +406,7 @@ export default function CourierEdit() {
                 style={[styles.outlineBtn, { borderColor: "#7C3AED", marginTop: 8 }]}
                 onPress={() => router.push(`/courier/${id}/variants` as any)}
               >
-                <Ionicons name="cube-outline" size={16} color="#7C3AED" />
+                <PhIcon name="cube-outline" size={16} color="#7C3AED" />
                 <Text style={[styles.outlineBtnText, { color: "#7C3AED" }]}>
                   📦 Manage Packing Variants
                 </Text>
@@ -417,7 +417,7 @@ export default function CourierEdit() {
           <TouchableOpacity testID="courier-save-btn" style={styles.saveBtn} onPress={save} disabled={saving}>
             {saving ? <ActivityIndicator color="#fff" /> : (
               <>
-                <Ionicons name="save" size={18} color="#fff" />
+                <PhIcon name="save" size={18} color="#fff" />
                 <Text style={styles.saveBtnText}>{isNew ? "Add Courier" : "Save Changes"}</Text>
               </>
             )}

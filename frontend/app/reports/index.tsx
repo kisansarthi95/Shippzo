@@ -11,8 +11,8 @@
  * behind feature flags later if needed).
  */
 import React from "react";
+import PhIcon from "../../components/PhIcon";
 import { View, Text, StyleSheet, TouchableOpacity, ScrollView } from "react-native";
-import { Ionicons } from "@expo/vector-icons";
 import { Stack, router } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { usePermissions } from "../../lib/permissions";
@@ -21,7 +21,7 @@ type Report = {
   key: string;
   title: string;
   desc: string;
-  icon: keyof typeof Ionicons.glyphMap;
+  icon: string;
   color: string;
   bg: string;
   path: string;
@@ -93,7 +93,7 @@ export default function ReportsHubScreen() {
 
       <View style={styles.header}>
         <TouchableOpacity onPress={() => router.back()} style={styles.backBtn}>
-          <Ionicons name="chevron-back" size={22} color="#111827" />
+          <PhIcon name="chevron-back" size={22} color="#111827" />
         </TouchableOpacity>
         <View style={{ flex: 1 }}>
           <Text style={styles.title}>Reports</Text>
@@ -104,7 +104,7 @@ export default function ReportsHubScreen() {
       <ScrollView contentContainerStyle={styles.scroll}>
         {isTeamMember && visible.length < REPORTS.length && (
           <View style={styles.permsBanner}>
-            <Ionicons name="information-circle" size={16} color="#1F4FBF" />
+            <PhIcon name="information-circle" size={16} color="#1F4FBF" />
             <Text style={styles.permsBannerTxt}>
               You're seeing {visible.length} of {REPORTS.length} reports based on
               your role permissions.
@@ -114,7 +114,7 @@ export default function ReportsHubScreen() {
 
         {visible.length === 0 ? (
           <View style={[styles.tile, { backgroundColor: "#FEF3C7", justifyContent: "center" }]}>
-            <Ionicons name="lock-closed" size={22} color="#92400E" />
+            <PhIcon name="lock-closed" size={22} color="#92400E" />
             <View style={{ flex: 1, marginLeft: 8 }}>
               <Text style={[styles.tileTitle, { color: "#92400E" }]}>No reports available</Text>
               <Text style={styles.tileDesc}>
@@ -131,18 +131,18 @@ export default function ReportsHubScreen() {
             activeOpacity={0.7}
           >
             <View style={[styles.iconBox, { backgroundColor: r.color }]}>
-              <Ionicons name={r.icon} size={22} color="#fff" />
+              <PhIcon name={r.icon} size={22} color="#fff" />
             </View>
             <View style={{ flex: 1 }}>
               <Text style={[styles.tileTitle, { color: r.color }]}>{r.title}</Text>
               <Text style={styles.tileDesc} numberOfLines={2}>{r.desc}</Text>
             </View>
-            <Ionicons name="chevron-forward" size={20} color={r.color} />
+            <PhIcon name="chevron-forward" size={20} color={r.color} />
           </TouchableOpacity>
         ))}
 
         <View style={styles.footerNote}>
-          <Ionicons name="information-circle-outline" size={16} color="#6B7280" />
+          <PhIcon name="information-circle-outline" size={16} color="#6B7280" />
           <Text style={styles.footerNoteTxt}>
             All reports support custom date ranges (up to 3 months) and one-tap
             Excel download for sharing with couriers, accountants, or your team.

@@ -10,13 +10,13 @@
  * or SMS infra — the phone number acts as the 2nd factor.
  */
 import React, { useState } from "react";
+import PhIcon from "../../components/PhIcon";
 import {
   View, Text, StyleSheet, TextInput, TouchableOpacity, Alert,
   KeyboardAvoidingView, Platform, ScrollView, ActivityIndicator,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Stack, useRouter } from "expo-router";
-import { Ionicons } from "@expo/vector-icons";
 import { api } from "../../lib/api";
 import { useAuth } from "../../lib/auth";
 import { colors } from "../../lib/theme";
@@ -84,7 +84,7 @@ export default function ForgotPasswordScreen() {
           headerStyle: { backgroundColor: colors.background },
           headerRight: () => (
             <TouchableOpacity onPress={() => router.back()} hitSlop={10}>
-              <Ionicons name="close" size={22} color={colors.text} />
+              <PhIcon name="close" size={22} color={colors.text} />
             </TouchableOpacity>
           ),
           headerBackVisible: false,
@@ -97,7 +97,7 @@ export default function ForgotPasswordScreen() {
         <ScrollView contentContainerStyle={{ padding: 20, paddingBottom: 40 }}>
           <View style={styles.hero}>
             <View style={styles.heroIcon}>
-              <Ionicons name="key-outline" size={32} color={colors.primary} />
+              <PhIcon name="key-outline" size={32} color={colors.primary} />
             </View>
             <Text style={styles.title}>Forgot your password?</Text>
             <Text style={styles.sub}>
@@ -144,7 +144,7 @@ export default function ForgotPasswordScreen() {
                 style={[styles.input, { flex: 1 }]}
               />
               <TouchableOpacity style={styles.eyeBtn} onPress={() => setShowPwd((v) => !v)}>
-                <Ionicons name={showPwd ? "eye-off" : "eye"} size={20} color="#64748B" />
+                <PhIcon name={showPwd ? "eye-off" : "eye"} size={20} color="#64748B" />
               </TouchableOpacity>
             </View>
 
@@ -174,7 +174,7 @@ export default function ForgotPasswordScreen() {
             </TouchableOpacity>
 
             <View style={styles.noteBox}>
-              <Ionicons name="information-circle-outline" size={15} color="#64748B" />
+              <PhIcon name="information-circle-outline" size={15} color="#64748B" />
               <Text style={styles.noteTxt}>
                 For security we allow max 3 failed attempts per hour.
                 Can't remember your registered mobile? Contact support and
@@ -187,7 +187,7 @@ export default function ForgotPasswordScreen() {
             onPress={() => router.replace("/(auth)/login")}
             style={styles.backLink}
           >
-            <Ionicons name="arrow-back" size={14} color={colors.primary} />
+            <PhIcon name="arrow-back" size={14} color={colors.primary} />
             <Text style={styles.backLinkTxt}>Back to login</Text>
           </TouchableOpacity>
         </ScrollView>

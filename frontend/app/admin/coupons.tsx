@@ -20,12 +20,12 @@
  *     Stays live by reading from razorpay_orders aggregation.
  */
 import React, { useEffect, useMemo, useState } from "react";
+import PhIcon from "../../components/PhIcon";
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity, TextInput,
   Switch, ActivityIndicator, Alert, Modal, Platform, Linking,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import DateTimePicker from "@react-native-community/datetimepicker";
 import Constants from "expo-constants";
@@ -257,11 +257,11 @@ export default function AdminCouponsScreen() {
     <SafeAreaView style={styles.safe} edges={["top"]}>
       <View style={styles.header}>
         <TouchableOpacity onPress={() => router.back()} style={styles.headerBtn}>
-          <Ionicons name="arrow-back" size={22} color={colors.text} />
+          <PhIcon name="arrow-back" size={22} color={colors.text} />
         </TouchableOpacity>
         <Text style={styles.headerTitle}>Coupons</Text>
         <TouchableOpacity onPress={openCreate} style={[styles.headerBtn, styles.primaryBtn]}>
-          <Ionicons name="add" size={20} color="#fff" />
+          <PhIcon name="add" size={20} color="#fff" />
         </TouchableOpacity>
       </View>
 
@@ -330,7 +330,7 @@ export default function AdminCouponsScreen() {
 
           {sorted.length === 0 ? (
             <View style={styles.emptyCard}>
-              <Ionicons name="pricetag-outline" size={32} color="#94A3B8" />
+              <PhIcon name="pricetag-outline" size={32} color="#94A3B8" />
               <Text style={styles.emptyTxt}>No coupons yet.</Text>
               <TouchableOpacity onPress={openCreate} style={styles.emptyBtn}>
                 <Text style={styles.emptyBtnTxt}>Create your first coupon</Text>
@@ -382,15 +382,15 @@ export default function AdminCouponsScreen() {
                   ) : null}
                   <View style={styles.rowActions}>
                     <TouchableOpacity onPress={() => shareViaWhatsApp(c)} style={styles.smallBtnSuccess}>
-                      <Ionicons name="logo-whatsapp" size={14} color="#15803D" />
+                      <PhIcon name="logo-whatsapp" size={14} color="#15803D" />
                       <Text style={[styles.smallBtnTxt, { color: "#15803D" }]}>Share</Text>
                     </TouchableOpacity>
                     <TouchableOpacity onPress={() => openEdit(c)} style={styles.smallBtn}>
-                      <Ionicons name="create-outline" size={14} color={colors.primary} />
+                      <PhIcon name="create-outline" size={14} color={colors.primary} />
                       <Text style={styles.smallBtnTxt}>Edit</Text>
                     </TouchableOpacity>
                     <TouchableOpacity onPress={() => askDelete(c)} style={styles.smallBtnDanger}>
-                      <Ionicons name="trash-outline" size={14} color="#B91C1C" />
+                      <PhIcon name="trash-outline" size={14} color="#B91C1C" />
                       <Text style={[styles.smallBtnTxt, { color: "#B91C1C" }]}>Delete</Text>
                     </TouchableOpacity>
                   </View>
@@ -410,7 +410,7 @@ export default function AdminCouponsScreen() {
                 {editor?.id ? "Edit coupon" : "New coupon"}
               </Text>
               <TouchableOpacity onPress={cancelEditor}>
-                <Ionicons name="close" size={22} color={colors.text} />
+                <PhIcon name="close" size={22} color={colors.text} />
               </TouchableOpacity>
             </View>
             <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 32 }}>
@@ -459,7 +459,7 @@ export default function AdminCouponsScreen() {
                 style={styles.dateBtn}
                 testID="coupon-date-from"
               >
-                <Ionicons name="calendar-outline" size={16} color={colors.primary} />
+                <PhIcon name="calendar-outline" size={16} color={colors.primary} />
                 <Text style={styles.dateBtnTxt}>{fmtDate(editor?.valid_from || "")}</Text>
               </TouchableOpacity>
 
@@ -469,7 +469,7 @@ export default function AdminCouponsScreen() {
                 style={styles.dateBtn}
                 testID="coupon-date-to"
               >
-                <Ionicons name="calendar-outline" size={16} color={colors.primary} />
+                <PhIcon name="calendar-outline" size={16} color={colors.primary} />
                 <Text style={styles.dateBtnTxt}>{fmtDate(editor?.valid_to || "")}</Text>
               </TouchableOpacity>
 

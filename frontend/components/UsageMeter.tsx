@@ -9,8 +9,8 @@
  * Tap → navigates to /plans.
  */
 import React, { useCallback, useState } from "react";
+import PhIcon from "./PhIcon";
 import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator } from "react-native";
-import { Ionicons } from "@expo/vector-icons";
 import { useFocusEffect, useRouter } from "expo-router";
 import { Api, UsageSummary, PlanKey } from "../lib/api";
 import { colors } from "../lib/theme";
@@ -92,7 +92,7 @@ export default function UsageMeter() {
     >
       <View style={styles.row}>
         <View style={[styles.planChip, { backgroundColor: pal.accent }]}>
-          <Ionicons
+          <PhIcon
             name={isTrial ? "sparkles" : usage.plan === "platinum" ? "rocket" : "star"}
             size={12}
             color="#fff"
@@ -104,7 +104,7 @@ export default function UsageMeter() {
         <Text style={[styles.headline, { color: pal.text }]} numberOfLines={1}>
           {usage.labels_used} / {usage.label_cap}
         </Text>
-        <Ionicons name="chevron-forward" size={18} color={pal.accent} />
+        <PhIcon name="chevron-forward" size={18} color={pal.accent} />
       </View>
 
       {/* Progress bar */}
@@ -133,7 +133,7 @@ export default function UsageMeter() {
 
       {exhausted ? (
         <View style={[styles.cta, { backgroundColor: pal.accent }]}>
-          <Ionicons name="arrow-up-circle" size={14} color="#fff" />
+          <PhIcon name="arrow-up-circle" size={14} color="#fff" />
           <Text style={styles.ctaTxt}>Upgrade to keep shipping</Text>
         </View>
       ) : null}

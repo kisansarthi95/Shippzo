@@ -12,12 +12,12 @@
  * same pricing table.
  */
 import React, { useCallback, useEffect, useMemo, useState } from "react";
+import PhIcon from "../../components/PhIcon";
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity, TextInput,
   Switch, ActivityIndicator, Alert, KeyboardAvoidingView, Platform,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import { api } from "../../lib/api";
 import { useAuth } from "../../lib/auth";
@@ -287,7 +287,7 @@ export default function AdminWhatsAppPricingScreen() {
           keyboardShouldPersistTaps="handled"
         >
           <View style={styles.introBox}>
-            <Ionicons name="logo-whatsapp" size={20} color="#25D366" />
+            <PhIcon name="logo-whatsapp" size={20} color="#25D366" />
             <Text style={styles.introText}>
               Charge users a per-message credit when they tap "Send WhatsApp"
               on a shipment. Only applies to MANUAL sends — no actual message
@@ -316,7 +316,7 @@ export default function AdminWhatsAppPricingScreen() {
 
           {/* Phase-15: Daily WhatsApp send limit (anti-block) */}
           <View style={styles.sectionHeader}>
-            <Ionicons name="shield-checkmark-outline" size={16} color="#1F4FBF" />
+            <PhIcon name="shield-checkmark-outline" size={16} color="#1F4FBF" />
             <Text style={styles.sectionHeaderText}>Anti-Block Daily Limit</Text>
           </View>
           <View style={styles.dailyCard}>
@@ -390,7 +390,7 @@ export default function AdminWhatsAppPricingScreen() {
 
           {/* Phase-15: AI generation rates per plan */}
           <View style={styles.sectionHeader}>
-            <Ionicons name="sparkles-outline" size={16} color="#6B5BFF" />
+            <PhIcon name="sparkles-outline" size={16} color="#6B5BFF" />
             <Text style={styles.sectionHeaderText}>
               AI Template Generation — Per Plan
             </Text>
@@ -461,7 +461,7 @@ export default function AdminWhatsAppPricingScreen() {
 
           {/* Per-plan rates */}
           <View style={styles.sectionHeader}>
-            <Ionicons name="logo-whatsapp" size={16} color="#25D366" />
+            <PhIcon name="logo-whatsapp" size={16} color="#25D366" />
             <Text style={styles.sectionHeaderText}>
               Per-Message Send — Per Plan
             </Text>
@@ -543,7 +543,7 @@ export default function AdminWhatsAppPricingScreen() {
               <ActivityIndicator size="small" color="#fff" />
             ) : (
               <>
-                <Ionicons name="save-outline" size={18} color="#fff" />
+                <PhIcon name="save-outline" size={18} color="#fff" />
                 <Text style={styles.saveBtnText}>Save</Text>
               </>
             )}
@@ -558,7 +558,7 @@ function Header({ onBack }: { onBack: () => void }) {
   return (
     <View style={styles.header}>
       <TouchableOpacity onPress={onBack} style={styles.backBtn} hitSlop={10}>
-        <Ionicons name="chevron-back" size={24} color={colors.text} />
+        <PhIcon name="chevron-back" size={24} color={colors.text} />
       </TouchableOpacity>
       <Text style={styles.headerTitle}>WhatsApp Pricing</Text>
       <View style={{ width: 36 }} />

@@ -10,12 +10,12 @@
  * already-busy Plan Features page.
  */
 import React, { useEffect, useMemo, useState } from "react";
+import PhIcon from "../../components/PhIcon";
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity, TextInput,
   Switch, ActivityIndicator, Alert, Platform,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import { api } from "../../lib/api";
 import { useAuth } from "../../lib/auth";
@@ -143,7 +143,7 @@ export default function AdminCreditPackagesScreen() {
     <SafeAreaView style={styles.safe} edges={["top"]}>
       <View style={styles.header}>
         <TouchableOpacity onPress={handleBack} hitSlop={10} style={{ marginRight: 8 }}>
-          <Ionicons name="chevron-back" size={26} color={colors.text} />
+          <PhIcon name="chevron-back" size={26} color={colors.text} />
         </TouchableOpacity>
         <View style={{ flex: 1 }}>
           <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
@@ -161,7 +161,7 @@ export default function AdminCreditPackagesScreen() {
 
       <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: 16, paddingBottom: 120 }}>
         <View style={styles.infoBox}>
-          <Ionicons name="information-circle" size={18} color="#0EA5E9" />
+          <PhIcon name="information-circle" size={18} color="#0EA5E9" />
           <Text style={styles.infoTxt}>
             Bonus is auto-computed (credits − amount). Mark one package as Popular to highlight it.
           </Text>
@@ -176,7 +176,7 @@ export default function AdminCreditPackagesScreen() {
                 style={styles.removeBtn}
                 testID={`pkg-remove-${idx}`}
               >
-                <Ionicons name="trash-outline" size={16} color="#B91C1C" />
+                <PhIcon name="trash-outline" size={16} color="#B91C1C" />
                 <Text style={styles.removeTxt}>Remove</Text>
               </TouchableOpacity>
             </View>
@@ -234,7 +234,7 @@ export default function AdminCreditPackagesScreen() {
 
             {p.bonus > 0 ? (
               <View style={styles.bonusBadge}>
-                <Ionicons name="gift" size={14} color="#047857" />
+                <PhIcon name="gift" size={14} color="#047857" />
                 <Text style={styles.bonusTxt}>+{p.bonus} bonus credits</Text>
               </View>
             ) : (
@@ -246,7 +246,7 @@ export default function AdminCreditPackagesScreen() {
         ))}
 
         <TouchableOpacity onPress={addRow} style={styles.addBtn} testID="pkg-add-btn">
-          <Ionicons name="add-circle" size={18} color={colors.primary} />
+          <PhIcon name="add-circle" size={18} color={colors.primary} />
           <Text style={styles.addTxt}>Add a new package</Text>
         </TouchableOpacity>
       </ScrollView>
@@ -260,7 +260,7 @@ export default function AdminCreditPackagesScreen() {
         >
           {saving ? <ActivityIndicator color="#fff" /> : (
             <>
-              <Ionicons name="save" size={18} color="#fff" />
+              <PhIcon name="save" size={18} color="#fff" />
               <Text style={styles.saveTxt}>{isDirty ? "Save packages" : "No changes"}</Text>
             </>
           )}

@@ -6,11 +6,11 @@
  * customers to blacklist.
  */
 import React, { useCallback, useEffect, useMemo, useState } from "react";
+import PhIcon from "../../components/PhIcon";
 import {
   View, Text, TouchableOpacity, ScrollView, RefreshControl,
   ActivityIndicator, Alert,
 } from "react-native";
-import { Ionicons } from "@expo/vector-icons";
 import { Stack, router } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Api } from "../../lib/api";
@@ -54,7 +54,7 @@ export default function ReturnAnalysisScreen() {
       <Stack.Screen options={{ title: "Return Analysis" }} />
       <View style={S.header}>
         <TouchableOpacity onPress={() => router.back()} style={S.backBtn}>
-          <Ionicons name="chevron-back" size={22} color="#111827" />
+          <PhIcon name="chevron-back" size={22} color="#111827" />
         </TouchableOpacity>
         <View style={{ flex: 1 }}>
           <Text style={S.title}>Return Analysis</Text>
@@ -154,7 +154,7 @@ export default function ReturnAnalysisScreen() {
 
             {sm.total_returns === 0 && (
               <View style={S.empty}>
-                <Ionicons name="checkmark-circle" size={40} color="#10B981" />
+                <PhIcon name="checkmark-circle" size={40} color="#10B981" />
                 <Text style={S.emptyTxt}>No returns in this period 🎉</Text>
               </View>
             )}
@@ -165,7 +165,7 @@ export default function ReturnAnalysisScreen() {
                 range: params.range, from: params.from, to: params.to,
               } as any)}
             >
-              <Ionicons name="download" size={18} color="#fff" />
+              <PhIcon name="download" size={18} color="#fff" />
               <Text style={S.excelBtnTxt}>Download Excel (.xlsx)</Text>
             </TouchableOpacity>
           </>

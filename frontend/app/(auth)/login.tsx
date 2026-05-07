@@ -1,11 +1,11 @@
 import React, { useState } from "react";
+import PhIcon from "../../components/PhIcon";
 import {
   View, Text, TextInput, TouchableOpacity, StyleSheet,
   KeyboardAvoidingView, Platform, ScrollView, ActivityIndicator, Alert,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
-import { Ionicons } from "@expo/vector-icons";
 import { useAuth } from "../../lib/auth";
 import { colors } from "../../lib/theme";
 import GoogleSignInButton from "../../components/GoogleSignInButton";
@@ -64,7 +64,7 @@ export default function LoginScreen() {
                 style={[styles.modeBtn, mode === "owner" && styles.modeBtnActive]}
                 onPress={() => setMode("owner")}
               >
-                <Ionicons
+                <PhIcon
                   name="storefront"
                   size={14}
                   color={mode === "owner" ? "#fff" : "#1F4FBF"}
@@ -77,7 +77,7 @@ export default function LoginScreen() {
                 style={[styles.modeBtn, mode === "team" && styles.modeBtnActive]}
                 onPress={() => setMode("team")}
               >
-                <Ionicons
+                <PhIcon
                   name="people"
                   size={14}
                   color={mode === "team" ? "#fff" : "#1F4FBF"}
@@ -113,7 +113,7 @@ export default function LoginScreen() {
                 placeholderTextColor="#94A3B8"
               />
               <TouchableOpacity style={styles.eyeBtn} onPress={() => setShowPwd((v) => !v)}>
-                <Ionicons name={showPwd ? "eye-off" : "eye"} size={20} color="#64748B" />
+                <PhIcon name={showPwd ? "eye-off" : "eye"} size={20} color="#64748B" />
               </TouchableOpacity>
             </View>
 

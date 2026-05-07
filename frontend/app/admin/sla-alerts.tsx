@@ -7,13 +7,13 @@
  * the engine settings screen.
  */
 import React, { useCallback, useEffect, useMemo, useState } from "react";
+import PhIcon from "../../components/PhIcon";
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert,
   ActivityIndicator, RefreshControl, Linking,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Stack, router } from "expo-router";
-import { Ionicons } from "@expo/vector-icons";
 import { Api } from "../../lib/api";
 
 const STAGE_COLORS: Record<string, string> = {
@@ -212,7 +212,7 @@ export default function SlaAlertsScreen() {
 
         {alerts.length === 0 ? (
           <View style={styles.empty}>
-            <Ionicons name="checkmark-circle" size={40} color="#10B981" />
+            <PhIcon name="checkmark-circle" size={40} color="#10B981" />
             <Text style={styles.emptyText}>
               {showDismissed ? "No resolved alerts." : "All clear — no open SLA alerts."}
             </Text>
@@ -227,7 +227,7 @@ export default function SlaAlertsScreen() {
                     style={styles.bulkBtn}
                     onPress={() => dismissStage(s)}
                   >
-                    <Ionicons name="checkmark-done" size={13} color="#fff" />
+                    <PhIcon name="checkmark-done" size={13} color="#fff" />
                     <Text style={styles.bulkBtnText}>Dismiss all in current view</Text>
                   </TouchableOpacity>
                 ))}
@@ -267,7 +267,7 @@ export default function SlaAlertsScreen() {
                           style={[styles.actionBtn, styles.waBtnRich]}
                           onPress={() => openWhatsApp(c.phone, a)}
                         >
-                          <Ionicons name="logo-whatsapp" size={16} color="#fff" />
+                          <PhIcon name="logo-whatsapp" size={16} color="#fff" />
                           <View style={{ flexShrink: 1 }}>
                             <Text style={styles.waName} numberOfLines={1}>
                               {c.name || "Team"}
@@ -290,7 +290,7 @@ export default function SlaAlertsScreen() {
                           style={[styles.actionBtn, styles.waBtn]}
                           onPress={() => openWhatsApp(p, a)}
                         >
-                          <Ionicons name="logo-whatsapp" size={14} color="#fff" />
+                          <PhIcon name="logo-whatsapp" size={14} color="#fff" />
                           <Text
                             style={styles.actionBtnText}
                             numberOfLines={1}
@@ -307,7 +307,7 @@ export default function SlaAlertsScreen() {
                         onPress={() => dismissOne(a.id)}
                         disabled={busy}
                       >
-                        <Ionicons name="close" size={14} color="#374151" />
+                        <PhIcon name="close" size={14} color="#374151" />
                         <Text style={[styles.actionBtnText, { color: "#374151" }]}>Dismiss</Text>
                       </TouchableOpacity>
                     )}

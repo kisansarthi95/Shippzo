@@ -12,6 +12,7 @@
  *   Free Trial / Silver: 0, Gold: 3, Platinum: 5, Admin: unlimited.
  */
 import React, { useCallback, useEffect, useState } from "react";
+import PhIcon from "../components/PhIcon";
 import {
   View,
   Text,
@@ -25,7 +26,6 @@ import {
   KeyboardAvoidingView,
   Platform,
 } from "react-native";
-import { Ionicons } from "@expo/vector-icons";
 import { router, Stack } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Api, CustomField } from "../lib/api";
@@ -169,7 +169,7 @@ export default function CustomFieldsScreen() {
             !state?.feature_enabled && styles.bannerOff,
           ]}
         >
-          <Ionicons
+          <PhIcon
             name={
               state?.is_admin
                 ? "infinite"
@@ -204,7 +204,7 @@ export default function CustomFieldsScreen() {
           <Text style={styles.muted}>Loading…</Text>
         ) : (state?.fields || []).length === 0 ? (
           <View style={styles.empty}>
-            <Ionicons name="document-outline" size={36} color={colors.textMuted} />
+            <PhIcon name="document-outline" size={36} color={colors.textMuted} />
             <Text style={styles.emptyTitle}>No custom fields yet</Text>
             <Text style={styles.emptySub}>
               Add fields like "Salesperson", "Reference No", "Delivery Date"
@@ -232,7 +232,7 @@ export default function CustomFieldsScreen() {
                 hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                 onPress={() => remove(f)}
               >
-                <Ionicons
+                <PhIcon
                   name="trash-outline"
                   size={20}
                   color={colors.dangerText || "#EF4444"}
@@ -245,7 +245,7 @@ export default function CustomFieldsScreen() {
         {/* Add button */}
         {state?.feature_enabled && canAdd ? (
           <TouchableOpacity style={styles.addBtn} onPress={openAdd}>
-            <Ionicons name="add" size={20} color="#fff" />
+            <PhIcon name="add" size={20} color="#fff" />
             <Text style={styles.addBtnText}>Add Custom Field</Text>
           </TouchableOpacity>
         ) : state?.feature_enabled && !canAdd ? (
@@ -253,7 +253,7 @@ export default function CustomFieldsScreen() {
             style={[styles.addBtn, { backgroundColor: "#F59E0B" }]}
             onPress={() => router.push("/plans")}
           >
-            <Ionicons name="rocket" size={18} color="#fff" />
+            <PhIcon name="rocket" size={18} color="#fff" />
             <Text style={styles.addBtnText}>
               Cap reached — upgrade to add more
             </Text>
@@ -263,7 +263,7 @@ export default function CustomFieldsScreen() {
             style={[styles.addBtn, { backgroundColor: "#F59E0B" }]}
             onPress={() => router.push("/plans")}
           >
-            <Ionicons name="rocket" size={18} color="#fff" />
+            <PhIcon name="rocket" size={18} color="#fff" />
             <Text style={styles.addBtnText}>Upgrade to use Custom Fields</Text>
           </TouchableOpacity>
         ) : null}

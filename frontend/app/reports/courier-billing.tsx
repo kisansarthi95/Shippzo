@@ -10,6 +10,7 @@
  * admins toggle which plans see it from the Plan Features admin.
  */
 import React, { useCallback, useEffect, useState } from "react";
+import PhIcon from "../../components/PhIcon";
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity,
   ActivityIndicator, Alert, RefreshControl, Linking, Share, Modal,
@@ -17,7 +18,6 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Stack, router } from "expo-router";
-import { Ionicons } from "@expo/vector-icons";
 import DateTimePicker from "@react-native-community/datetimepicker";
 import { Api } from "../../lib/api";
 import { errMsg } from "../../lib/errMsg";
@@ -286,7 +286,7 @@ export default function CourierBillingReportScreen() {
           ]}
           onPress={() => onRangeChipPress("custom")}
         >
-          <Ionicons
+          <PhIcon
             name="calendar"
             size={16}
             color={range === "custom" ? "#fff" : "#1F4FBF"}
@@ -301,7 +301,7 @@ export default function CourierBillingReportScreen() {
               ? appliedLabel
               : "Custom Date / Pick Months (up to 3)"}
           </Text>
-          <Ionicons
+          <PhIcon
             name="chevron-forward"
             size={14}
             color={range === "custom" ? "#fff" : "#9CA3AF"}
@@ -354,7 +354,7 @@ export default function CourierBillingReportScreen() {
           </View>
           {data.rows_without_rate > 0 && (
             <View style={styles.warnRow}>
-              <Ionicons name="warning" size={14} color="#B45309" />
+              <PhIcon name="warning" size={14} color="#B45309" />
               <Text style={styles.warnTxt}>
                 {data.rows_without_rate} parcel(s) have no rate set — they
                 count in volume but contribute ₹0 to charges.
@@ -370,7 +370,7 @@ export default function CourierBillingReportScreen() {
             style={[styles.actionBtn, { backgroundColor: "#1F4FBF" }]}
             onPress={downloadExcel}
           >
-            <Ionicons name="download" size={16} color="#fff" />
+            <PhIcon name="download" size={16} color="#fff" />
             <Text style={styles.actionBtnTxt}>Download Excel</Text>
           </TouchableOpacity>
           <TouchableOpacity
@@ -378,7 +378,7 @@ export default function CourierBillingReportScreen() {
             style={[styles.actionBtn, { backgroundColor: "#10B981" }]}
             onPress={shareSummary}
           >
-            <Ionicons name="share-social" size={16} color="#fff" />
+            <PhIcon name="share-social" size={16} color="#fff" />
             <Text style={styles.actionBtnTxt}>Share Summary</Text>
           </TouchableOpacity>
         </View>
@@ -386,7 +386,7 @@ export default function CourierBillingReportScreen() {
         {/* Per-courier sections */}
         {data.couriers.length === 0 ? (
           <View style={styles.emptyCard}>
-            <Ionicons name="cube-outline" size={32} color="#9CA3AF" />
+            <PhIcon name="cube-outline" size={32} color="#9CA3AF" />
             <Text style={styles.emptyTxt}>No shipments in this range</Text>
           </View>
         ) : (
@@ -409,7 +409,7 @@ export default function CourierBillingReportScreen() {
                   </View>
                   <View style={{ alignItems: "flex-end" }}>
                     <Text style={styles.courierTotal}>{formatINR(c.total_charges)}</Text>
-                    <Ionicons
+                    <PhIcon
                       name={open ? "chevron-up" : "chevron-down"}
                       size={16} color="#9CA3AF"
                     />
@@ -493,7 +493,7 @@ export default function CourierBillingReportScreen() {
             <View style={styles.sheetHeader}>
               <Text style={styles.sheetTitle}>📅 Custom Range</Text>
               <TouchableOpacity onPress={() => setCustomOpen(false)} hitSlop={10}>
-                <Ionicons name="close" size={22} color="#374151" />
+                <PhIcon name="close" size={22} color="#374151" />
               </TouchableOpacity>
             </View>
 
@@ -524,7 +524,7 @@ export default function CourierBillingReportScreen() {
                   style={styles.dateBox}
                   onPress={() => setPickerOpen("from")}
                 >
-                  <Ionicons name="calendar-outline" size={16} color="#1F4FBF" />
+                  <PhIcon name="calendar-outline" size={16} color="#1F4FBF" />
                   <Text style={styles.dateTxt}>
                     {customFrom ? customFrom.toLocaleDateString("en-GB") : "Pick start date"}
                   </Text>
@@ -535,7 +535,7 @@ export default function CourierBillingReportScreen() {
                   style={styles.dateBox}
                   onPress={() => setPickerOpen("to")}
                 >
-                  <Ionicons name="calendar-outline" size={16} color="#1F4FBF" />
+                  <PhIcon name="calendar-outline" size={16} color="#1F4FBF" />
                   <Text style={styles.dateTxt}>
                     {customTo ? customTo.toLocaleDateString("en-GB") : "Pick end date"}
                   </Text>
@@ -614,7 +614,7 @@ export default function CourierBillingReportScreen() {
             )}
 
             <TouchableOpacity style={styles.applyBtn} onPress={applyCustom}>
-              <Ionicons name="checkmark-circle" size={18} color="#fff" />
+              <PhIcon name="checkmark-circle" size={18} color="#fff" />
               <Text style={styles.applyBtnTxt}>Apply</Text>
             </TouchableOpacity>
           </View>

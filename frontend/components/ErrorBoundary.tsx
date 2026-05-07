@@ -19,11 +19,10 @@
  * a "white screen" crash on mobile.
  */
 import React from "react";
+import PhIcon from "./PhIcon";
 import {
   View, Text, StyleSheet, TouchableOpacity, ScrollView, Platform, Alert,
 } from "react-native";
-import { Ionicons } from "@expo/vector-icons";
-
 // Note: expo-updates is intentionally NOT required here.
 // Metro statically resolves require() calls even inside try/catch, which
 // breaks the bundle when the module isn't installed (dev / Expo Go).
@@ -102,7 +101,7 @@ export default class ErrorBoundary extends React.Component<Props, State> {
       <View style={styles.wrap}>
         <ScrollView contentContainerStyle={styles.scroll}>
           <View style={styles.iconBox}>
-            <Ionicons name="alert-circle" size={56} color="#DC2626" />
+            <PhIcon name="alert-circle" size={56} color="#DC2626" />
           </View>
           <Text style={styles.title}>The app hit an unexpected error</Text>
           <Text style={styles.subtitle}>
@@ -120,7 +119,7 @@ export default class ErrorBoundary extends React.Component<Props, State> {
             onPress={this.handleReload}
             activeOpacity={0.85}
           >
-            <Ionicons name="refresh" size={18} color="#fff" />
+            <PhIcon name="refresh" size={18} color="#fff" />
             <Text style={styles.primaryTxt}>Reload app</Text>
           </TouchableOpacity>
 
@@ -132,7 +131,7 @@ export default class ErrorBoundary extends React.Component<Props, State> {
             <Text style={styles.secondaryTxt}>
               {this.state.showDetails ? "Hide details" : "Show technical details"}
             </Text>
-            <Ionicons
+            <PhIcon
               name={this.state.showDetails ? "chevron-up" : "chevron-down"}
               size={14}
               color="#475569"
@@ -150,7 +149,7 @@ export default class ErrorBoundary extends React.Component<Props, State> {
                 {this.state.errorInfo?.componentStack || "(none)"}
               </Text>
               <TouchableOpacity style={styles.copyBtn} onPress={this.copyError}>
-                <Ionicons name="copy-outline" size={14} color="#0F172A" />
+                <PhIcon name="copy-outline" size={14} color="#0F172A" />
                 <Text style={styles.copyTxt}>Copy error</Text>
               </TouchableOpacity>
             </View>

@@ -11,12 +11,12 @@
  * all placement knobs are user-owned.
  */
 import React, { useCallback, useEffect, useMemo, useState } from "react";
+import PhIcon from "../../components/PhIcon";
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity, TextInput,
   Switch, ActivityIndicator, Alert, KeyboardAvoidingView, Platform,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import { Api } from "../../lib/api";
 import { colors } from "../../lib/theme";
@@ -195,7 +195,7 @@ export default function ContactSaveSettingsScreen() {
           {/* Live preview */}
           <View style={styles.previewCard}>
             <View style={styles.previewHead}>
-              <Ionicons name="eye-outline" size={14} color="#7C3AED" />
+              <PhIcon name="eye-outline" size={14} color="#7C3AED" />
               <Text style={styles.previewHeadTxt}>Live Preview</Text>
             </View>
             <Text style={styles.previewName}>{preview?.name || "—"}</Text>
@@ -305,7 +305,7 @@ export default function ContactSaveSettingsScreen() {
                   <Text style={styles.catDefTag}>default</Text>
                 )}
                 <TouchableOpacity onPress={() => removeCategory(c)} hitSlop={6}>
-                  <Ionicons name="close" size={14} color="#DC2626" />
+                  <PhIcon name="close" size={14} color="#DC2626" />
                 </TouchableOpacity>
               </View>
             ))}
@@ -322,7 +322,7 @@ export default function ContactSaveSettingsScreen() {
               maxLength={8}
             />
             <TouchableOpacity style={styles.addBtn} onPress={addCategory}>
-              <Ionicons name="add" size={16} color="#fff" />
+              <PhIcon name="add" size={16} color="#fff" />
               <Text style={styles.addBtnTxt}>Add</Text>
             </TouchableOpacity>
           </View>
@@ -398,12 +398,12 @@ export default function ContactSaveSettingsScreen() {
                 ))}
               </View>
               <TouchableOpacity onPress={() => removeMapRow(idx)} hitSlop={8}>
-                <Ionicons name="trash-outline" size={18} color="#DC2626" />
+                <PhIcon name="trash-outline" size={18} color="#DC2626" />
               </TouchableOpacity>
             </View>
           ))}
           <TouchableOpacity style={styles.addRowBtn} onPress={addMapRow}>
-            <Ionicons name="add-circle-outline" size={18} color="#7C3AED" />
+            <PhIcon name="add-circle-outline" size={18} color="#7C3AED" />
             <Text style={styles.addRowTxt}>Add rule</Text>
           </TouchableOpacity>
         </ScrollView>
@@ -417,7 +417,7 @@ export default function ContactSaveSettingsScreen() {
           >
             {saving
               ? <ActivityIndicator color="#fff" size="small" />
-              : <><Ionicons name="save-outline" size={18} color="#fff" /><Text style={styles.saveBtnTxt}>Save Preferences</Text></>
+              : <><PhIcon name="save-outline" size={18} color="#fff" /><Text style={styles.saveBtnTxt}>Save Preferences</Text></>
             }
           </TouchableOpacity>
         </View>
@@ -430,7 +430,7 @@ function Header({ onBack, title }: { onBack: () => void; title: string }) {
   return (
     <View style={styles.header}>
       <TouchableOpacity onPress={onBack} style={styles.backBtn} hitSlop={10}>
-        <Ionicons name="chevron-back" size={24} color={colors.text} />
+        <PhIcon name="chevron-back" size={24} color={colors.text} />
       </TouchableOpacity>
       <Text style={styles.headerTitle}>{title}</Text>
       <View style={{ width: 36 }} />

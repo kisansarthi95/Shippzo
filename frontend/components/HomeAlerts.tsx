@@ -12,8 +12,8 @@
  * wallet). Respects user.notification_prefs (loaded from /api).
  */
 import React, { useCallback, useEffect, useState } from "react";
+import PhIcon from "./PhIcon";
 import { View, Text, StyleSheet, TouchableOpacity } from "react-native";
-import { Ionicons } from "@expo/vector-icons";
 import { useFocusEffect, useRouter } from "expo-router";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Api, UsageSummary, Wallet, NotificationPrefs } from "../lib/api";
@@ -216,7 +216,7 @@ function BannerView({
     >
       <View style={styles.row}>
         <View style={[styles.iconBox, { backgroundColor: pal.iconBg }]}>
-          <Ionicons name={banner.icon as any} size={18} color={pal.iconColor} />
+          <PhIcon name={banner.icon as any} size={18} color={pal.iconColor} />
         </View>
         <View style={{ flex: 1 }}>
           <Text style={[styles.title, { color: pal.titleColor }]}>{banner.title}</Text>
@@ -224,7 +224,7 @@ function BannerView({
         </View>
         {dismissable ? (
           <TouchableOpacity onPress={onDismiss} hitSlop={10} style={styles.closeBtn}>
-            <Ionicons name="close" size={16} color={pal.bodyColor} />
+            <PhIcon name="close" size={16} color={pal.bodyColor} />
           </TouchableOpacity>
         ) : null}
       </View>
@@ -234,7 +234,7 @@ function BannerView({
         activeOpacity={0.85}
       >
         <Text style={[styles.ctaTxt, { color: pal.ctaTxt }]}>{banner.ctaLabel}</Text>
-        <Ionicons name="arrow-forward" size={14} color={pal.ctaTxt} />
+        <PhIcon name="arrow-forward" size={14} color={pal.ctaTxt} />
       </TouchableOpacity>
     </View>
   );

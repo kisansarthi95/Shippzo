@@ -17,12 +17,12 @@
  * with a mid-batch daily-limit guard.
  */
 import React, { useCallback, useEffect, useMemo, useState } from "react";
+import PhIcon from "../../components/PhIcon";
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity,
   ActivityIndicator, Alert, Platform, Pressable, RefreshControl,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { Ionicons } from "@expo/vector-icons";
 import { Stack, useLocalSearchParams, router } from "expo-router";
 import { Api, Shipment } from "../../lib/api";
 import { errMsg } from "../../lib/errMsg";
@@ -293,7 +293,7 @@ export default function BulkMessageScreen() {
           backgroundColor: "#FEF3C7", padding: 24, borderRadius: 14,
           borderWidth: 1, borderColor: "#FCD34D", alignItems: "center", maxWidth: 320,
         }}>
-          <Ionicons name="lock-closed" size={36} color="#92400E" />
+          <PhIcon name="lock-closed" size={36} color="#92400E" />
           <Text style={{ fontSize: 16, fontWeight: "800", color: "#92400E", marginTop: 10 }}>
             Bulk Message is locked
           </Text>
@@ -357,14 +357,14 @@ export default function BulkMessageScreen() {
             setTplCache({});
           }}
         >
-          <Ionicons name="language" size={13} color="#1F4FBF" />
+          <PhIcon name="language" size={13} color="#1F4FBF" />
           <Text style={styles.langPillText}>
             {LANG_OPTIONS.find((l) => l.key === defaultLang)?.label || "Lang"}
           </Text>
         </TouchableOpacity>
         {meta?.min_days ? (
           <View style={styles.thresholdPill}>
-            <Ionicons name="time-outline" size={12} color="#B45309" />
+            <PhIcon name="time-outline" size={12} color="#B45309" />
             <Text style={styles.thresholdText}>
               ≥ {meta.min_days}d in {meta.statuses[0]}
             </Text>
@@ -372,7 +372,7 @@ export default function BulkMessageScreen() {
         ) : null}
         <View style={{ flex: 1 }} />
         <TouchableOpacity onPress={toggleAll} style={styles.selectAllBtn}>
-          <Ionicons
+          <PhIcon
             name={allVisibleSelected ? "checkbox" : "square-outline"}
             size={16}
             color={allVisibleSelected ? "#10B981" : "#6B7280"}
@@ -394,7 +394,7 @@ export default function BulkMessageScreen() {
       >
         {visible.length === 0 ? (
           <View style={styles.empty}>
-            <Ionicons name="checkmark-circle" size={38} color="#10B981" />
+            <PhIcon name="checkmark-circle" size={38} color="#10B981" />
             <Text style={styles.emptyText}>
               {tab === "pending"
                 ? "No pending parcels for this stage."
@@ -415,7 +415,7 @@ export default function BulkMessageScreen() {
                 onPress={() => toggleOne(r.id)}
               >
                 <View style={styles.cardLeft}>
-                  <Ionicons
+                  <PhIcon
                     name={isSel ? "checkbox" : "square-outline"}
                     size={20}
                     color={isSel ? "#10B981" : sent ? "#9CA3AF" : "#6B7280"}
@@ -458,7 +458,7 @@ export default function BulkMessageScreen() {
           >
             {busy ? <ActivityIndicator color="#fff" /> : (
               <>
-                <Ionicons name="refresh" size={15} color="#fff" />
+                <PhIcon name="refresh" size={15} color="#fff" />
                 <Text style={styles.actionBtnText}>
                   Reset {selectedIds.length} to pending
                 </Text>
@@ -473,7 +473,7 @@ export default function BulkMessageScreen() {
           >
             {busy ? <ActivityIndicator color="#fff" /> : (
               <>
-                <Ionicons name="logo-whatsapp" size={16} color="#fff" />
+                <PhIcon name="logo-whatsapp" size={16} color="#fff" />
                 <Text style={styles.actionBtnText}>
                   Send WhatsApp ({selectedIds.length})
                 </Text>

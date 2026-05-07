@@ -7,13 +7,13 @@
  * "Sync now" to drain the retry queue immediately.
  */
 import React, { useCallback, useEffect, useState } from "react";
+import PhIcon from "../components/PhIcon";
 import {
   View, Text, StyleSheet, ScrollView, Switch, TouchableOpacity,
   ActivityIndicator, Alert, Linking, RefreshControl,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Stack, router } from "expo-router";
-import { Ionicons } from "@expo/vector-icons";
 import { Api } from "../lib/api";
 
 type Status = {
@@ -109,7 +109,7 @@ export default function SheetSyncScreen() {
       >
         {!status.connected ? (
           <View style={styles.notConnected}>
-            <Ionicons name="document-text-outline" size={36} color="#9CA3AF" />
+            <PhIcon name="document-text-outline" size={36} color="#9CA3AF" />
             <Text style={styles.notConnectedTitle}>No Google Sheet connected</Text>
             <Text style={styles.notConnectedSub}>
               Connect a sheet from Settings → Google Sheet to start auto-syncing
@@ -127,7 +127,7 @@ export default function SheetSyncScreen() {
             {/* Health card */}
             <View style={styles.healthCard}>
               <View style={styles.healthHeader}>
-                <Ionicons name="cloud-done" size={22} color="#10B981" />
+                <PhIcon name="cloud-done" size={22} color="#10B981" />
                 <Text style={styles.healthTitle}>Auto-sync is active</Text>
               </View>
               <Text style={styles.healthSub}>
@@ -155,7 +155,7 @@ export default function SheetSyncScreen() {
                   return (
                     <View key={k} style={styles.statCell}>
                       <View style={[styles.statIcon, { backgroundColor: t.color + "20" }]}>
-                        <Ionicons name={t.icon} size={14} color={t.color} />
+                        <PhIcon name={t.icon} size={14} color={t.color} />
                       </View>
                       <Text style={styles.statNum}>{c[k]}</Text>
                       <Text style={styles.statLabel}>{t.label}</Text>
@@ -172,7 +172,7 @@ export default function SheetSyncScreen() {
                 >
                   {busy === "run" ? <ActivityIndicator color="#1F4FBF" /> : (
                     <>
-                      <Ionicons name="refresh" size={14} color="#1F4FBF" />
+                      <PhIcon name="refresh" size={14} color="#1F4FBF" />
                       <Text style={styles.btnGhostText}>Sync now</Text>
                     </>
                   )}
@@ -182,7 +182,7 @@ export default function SheetSyncScreen() {
                     style={styles.btnGhost}
                     onPress={() => Linking.openURL(status.sheet_url)}
                   >
-                    <Ionicons name="open-outline" size={14} color="#1F4FBF" />
+                    <PhIcon name="open-outline" size={14} color="#1F4FBF" />
                     <Text style={styles.btnGhostText}>Open sheet</Text>
                   </TouchableOpacity>
                 )}
@@ -194,7 +194,7 @@ export default function SheetSyncScreen() {
             <View style={styles.card}>
               <View style={styles.row}>
                 <View style={[styles.rowIcon, { backgroundColor: "#10B98120" }]}>
-                  <Ionicons name="add-circle" size={18} color="#10B981" />
+                  <PhIcon name="add-circle" size={18} color="#10B981" />
                 </View>
                 <View style={{ flex: 1 }}>
                   <Text style={styles.rowTitle}>📦 New shipment created</Text>
@@ -210,7 +210,7 @@ export default function SheetSyncScreen() {
               </View>
               <View style={styles.row}>
                 <View style={[styles.rowIcon, { backgroundColor: "#1F4FBF20" }]}>
-                  <Ionicons name="sync" size={18} color="#1F4FBF" />
+                  <PhIcon name="sync" size={18} color="#1F4FBF" />
                 </View>
                 <View style={{ flex: 1 }}>
                   <Text style={styles.rowTitle}>🔄 Status changes</Text>
@@ -226,7 +226,7 @@ export default function SheetSyncScreen() {
               </View>
               <View style={styles.row}>
                 <View style={[styles.rowIcon, { backgroundColor: "#DC262620" }]}>
-                  <Ionicons name="trash" size={18} color="#DC2626" />
+                  <PhIcon name="trash" size={18} color="#DC2626" />
                 </View>
                 <View style={{ flex: 1 }}>
                   <Text style={styles.rowTitle}>🗑️ Shipment deleted</Text>
@@ -244,7 +244,7 @@ export default function SheetSyncScreen() {
 
             {(c.error > 0 || status.queue_pending > 0) && (
               <View style={styles.warnCard}>
-                <Ionicons name="warning" size={18} color="#B45309" />
+                <PhIcon name="warning" size={18} color="#B45309" />
                 <View style={{ flex: 1 }}>
                   <Text style={styles.warnTitle}>{c.error + status.queue_pending} sync(s) need attention</Text>
                   <Text style={styles.warnSub}>

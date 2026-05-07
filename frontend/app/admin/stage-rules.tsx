@@ -15,13 +15,13 @@
  * the whole pipeline visible at a glance while editing.
  */
 import React, { useCallback, useEffect, useMemo, useState } from "react";
+import PhIcon from "../../components/PhIcon";
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity,
   TextInput, Switch, ActivityIndicator, Alert, KeyboardAvoidingView,
   Platform,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { Ionicons } from "@expo/vector-icons";
 import { Stack, router } from "expo-router";
 import { Api } from "../../lib/api";
 
@@ -217,7 +217,7 @@ export default function StageRulesScreen() {
                   <Text style={[styles.tdNum, { color: v.auto_trigger ? "#1F4FBF" : "#9CA3AF" }]}>
                     {tplType && v.customer_msg_enabled ? (v.auto_trigger ? "AUTO" : "MAN") : "—"}
                   </Text>
-                  <Ionicons
+                  <PhIcon
                     name={isExpanded ? "chevron-up" : "chevron-down"}
                     size={18} color="#9CA3AF"
                   />
@@ -346,7 +346,7 @@ export default function StageRulesScreen() {
                               style={styles.tplLink}
                               onPress={() => router.push("/settings/whatsapp-templates")}
                             >
-                              <Ionicons name="open-outline" size={14} color="#4338CA" />
+                              <PhIcon name="open-outline" size={14} color="#4338CA" />
                               <Text style={styles.tplLinkText}>
                                 Edit template variants ({tplType}) →
                               </Text>
@@ -498,7 +498,7 @@ export default function StageRulesScreen() {
                   <ActivityIndicator color="#fff" />
                 ) : (
                   <>
-                    <Ionicons name="play" size={14} color="#fff" />
+                    <PhIcon name="play" size={14} color="#fff" />
                     <Text style={styles.runBtnText}>Run scan now</Text>
                   </>
                 )}
@@ -508,7 +508,7 @@ export default function StageRulesScreen() {
               style={styles.viewAlertsBtn}
               onPress={() => router.push("/admin/sla-alerts" as any)}
             >
-              <Ionicons name="alert-circle" size={14} color="#DC2626" />
+              <PhIcon name="alert-circle" size={14} color="#DC2626" />
               <Text style={styles.viewAlertsText}>View open SLA alerts →</Text>
             </TouchableOpacity>
           </View>
@@ -554,7 +554,7 @@ export default function StageRulesScreen() {
             {saving
               ? <ActivityIndicator color="#fff" />
               : <>
-                  <Ionicons name="save-outline" size={15} color="#fff" />
+                  <PhIcon name="save-outline" size={15} color="#fff" />
                   <Text style={styles.saveBtnText}>
                     {dirty ? "Save changes" : "All saved"}
                   </Text>

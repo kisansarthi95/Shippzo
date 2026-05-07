@@ -10,6 +10,7 @@
  * Razorpay wiring lands in Phase-4c.
  */
 import React, { useCallback, useMemo, useState } from "react";
+import PhIcon from "../components/PhIcon";
 import {
   View,
   Text,
@@ -25,7 +26,6 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Stack, useFocusEffect, useRouter } from "expo-router";
-import { Ionicons } from "@expo/vector-icons";
 import { Api, CreditHistoryEntry, Wallet, api } from "../lib/api";
 import { colors } from "../lib/theme";
 
@@ -100,7 +100,7 @@ export default function WalletScreen() {
   const headerRight = useMemo(
     () => () => (
       <TouchableOpacity onPress={() => router.back()} hitSlop={10}>
-        <Ionicons name="close" size={24} color={colors.text} />
+        <PhIcon name="close" size={24} color={colors.text} />
       </TouchableOpacity>
     ),
     [router],
@@ -122,7 +122,7 @@ export default function WalletScreen() {
       >
         {/* Razorpay live banner */}
         <View style={styles.mockBanner}>
-          <Ionicons name="shield-checkmark-outline" size={16} color="#065F46" />
+          <PhIcon name="shield-checkmark-outline" size={16} color="#065F46" />
           <Text style={styles.mockBannerTxt}>
             Payments are powered by Razorpay (test mode). Use card 4111 1111 1111 1111, any CVV, future expiry to test.
           </Text>
@@ -132,7 +132,7 @@ export default function WalletScreen() {
         <View style={styles.balanceCard}>
           <Text style={styles.balanceHint}>Remaining balance</Text>
           <View style={styles.balanceRow}>
-            <Ionicons name="wallet" size={28} color="#FFF" />
+            <PhIcon name="wallet" size={28} color="#FFF" />
             <Text style={styles.balanceValue}>
               {loading ? "--" : (wallet?.remaining_credits ?? 0).toFixed(2)}
             </Text>
@@ -154,7 +154,7 @@ export default function WalletScreen() {
             style={styles.topupBtn}
             onPress={() => setPurchaseOpen(true)}
           >
-            <Ionicons name="add-circle" size={18} color={colors.primary} />
+            <PhIcon name="add-circle" size={18} color={colors.primary} />
             <Text style={styles.topupTxt}>Top up credits</Text>
           </TouchableOpacity>
         </View>
@@ -164,7 +164,7 @@ export default function WalletScreen() {
           <View style={styles.rateTitleRow}>
             <Text style={styles.rateTitle}>Pricing</Text>
             <View style={styles.aiBadge}>
-              <Ionicons name="sparkles" size={11} color="#fff" />
+              <PhIcon name="sparkles" size={11} color="#fff" />
               <Text style={styles.aiBadgeTxt}>AI powered</Text>
             </View>
           </View>
@@ -186,7 +186,7 @@ export default function WalletScreen() {
           <ActivityIndicator style={{ marginTop: 30 }} color={colors.primary} />
         ) : history.length === 0 ? (
           <View style={styles.emptyBox}>
-            <Ionicons name="receipt-outline" size={28} color="#94A3B8" />
+            <PhIcon name="receipt-outline" size={28} color="#94A3B8" />
             <Text style={styles.emptyTxt}>No credit activity yet</Text>
           </View>
         ) : (
@@ -227,7 +227,7 @@ function HistoryRow({ entry }: { entry: CreditHistoryEntry }) {
   return (
     <View style={styles.row}>
       <View style={[styles.rowIcon, { backgroundColor: bg }]}>
-        <Ionicons name={iconName} size={18} color={tone} />
+        <PhIcon name={iconName} size={18} color={tone} />
       </View>
       <View style={{ flex: 1, gap: 2 }}>
         <Text style={styles.rowDesc} numberOfLines={2}>{entry.description}</Text>
@@ -274,7 +274,7 @@ function PurchaseModal({
           <View style={styles.sheetHeader}>
             <Text style={styles.sheetTitle}>Top up credits</Text>
             <TouchableOpacity onPress={onClose} hitSlop={10}>
-              <Ionicons name="close" size={22} color="#334155" />
+              <PhIcon name="close" size={22} color="#334155" />
             </TouchableOpacity>
           </View>
           <Text style={styles.sheetHint}>
@@ -305,7 +305,7 @@ function PurchaseModal({
                   </Text>
                   {p.bonus > 0 ? (
                     <View style={[styles.pkgBonusPill, active && { backgroundColor: "rgba(255,255,255,0.2)" }]}>
-                      <Ionicons name="gift" size={10} color={active ? "#fff" : "#047857"} />
+                      <PhIcon name="gift" size={10} color={active ? "#fff" : "#047857"} />
                       <Text style={[styles.pkgBonusTxt, active && { color: "#fff" }]}>
                         +{p.bonus} bonus
                       </Text>

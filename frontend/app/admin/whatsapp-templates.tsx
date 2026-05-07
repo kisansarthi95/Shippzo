@@ -9,6 +9,7 @@
  * as the final fallback if the admin clears their override.
  */
 import React, { useCallback, useEffect, useMemo, useState } from "react";
+import PhIcon from "../../components/PhIcon";
 import {
   View,
   Text,
@@ -22,7 +23,6 @@ import {
   Platform,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { Ionicons } from "@expo/vector-icons";
 import { Stack } from "expo-router";
 import { Api } from "../../lib/api";
 
@@ -222,7 +222,7 @@ export default function AdminWhatsAppTemplates() {
                           { backgroundColor: (meta?.tone || "#6B5BFF") + "22" },
                         ]}
                       >
-                        <Ionicons
+                        <PhIcon
                           name={meta?.icon || "chatbubble-outline"}
                           size={18}
                           color={meta?.tone || "#6B5BFF"}
@@ -239,7 +239,7 @@ export default function AdminWhatsAppTemplates() {
                           {meta?.sub || ""}
                         </Text>
                       </View>
-                      <Ionicons
+                      <PhIcon
                         name={active ? "chevron-up" : "chevron-down"}
                         size={18}
                         color="#9CA3AF"
@@ -262,7 +262,7 @@ export default function AdminWhatsAppTemplates() {
                     style={styles.resetBtn}
                     onPress={() => handleResetType(activeType)}
                   >
-                    <Ionicons name="refresh" size={12} color="#374151" />
+                    <PhIcon name="refresh" size={12} color="#374151" />
                     <Text style={styles.resetBtnText}>Reset</Text>
                   </TouchableOpacity>
                 </View>
@@ -351,7 +351,7 @@ export default function AdminWhatsAppTemplates() {
             onPress={handleSave}
             disabled={saving}
           >
-            <Ionicons name="save-outline" size={16} color="#fff" />
+            <PhIcon name="save-outline" size={16} color="#fff" />
             <Text style={styles.saveBtnText}>
               {saving ? "Saving…" : "Save Defaults"}
             </Text>
