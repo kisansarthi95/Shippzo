@@ -12698,3 +12698,282 @@ agent_communication:
 
       YOU MUST ASK USER BEFORE DOING FRONTEND TESTING.
 
+
+---
+
+## Backend Test Run: Phase 5d — Notifications + cancel-subscription bug fix (2026-05-07)
+
+backend:
+  - task: "Phase-5d server.py refactor: notification prefs + push tokens → routers/notifications.py; restore orphaned cancel_subscription decorator → routers/plans_billing.py"
+    implemented: true
+    working: true
+    file: "/app/backend/routers/notifications.py, /app/backend/routers/plans_billing.py, /app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: |
+            Two changes shipped together — same files touched:
+
+            1. **BUG FIX** — discovered while scoping the refactor:
+               `async def cancel_subscription(...)` had lost its
+               `@api_router.post("/me/cancel-subscription")` decorator
+               during a prior refactor and silently 404'd for weeks.
+               The frontend (`Api.cancelSubscription`,
+               `/app/cancel-subscription.tsx`,
+               `/app/(tabs)/settings.tsx`, `/app/plans.tsx`) all
+               called the dead endpoint. Fix: relocated the function
+               to `routers/plans_billing.py` with a proper decorator
+               (`@plans_billing_router.post("/me/cancel-subscription")`)
+               and removed the orphan from server.py. No frontend
+               changes required — same path, same shape.
+
+            2. **REFACTOR** — extracted 6 endpoints into a new
+               isolated router `/app/backend/routers/notifications.py`
+               (~175 lines, late-binding `init()` pattern):
+                 GET    /api/me/notification-prefs
+                 PUT    /api/me/notification-prefs
+                 POST   /api/me/push-token
+                 DELETE /api/me/push-token
+                 POST   /api/me/push-token/test
+                 GET    /api/me/push-tokens
+               Models also moved (NotificationPrefsRequest,
+               PushTokenRequest). The `_coerce_notif_prefs` helper +
+               `DEFAULT_NOTIFICATION_PREFS` dict + `_push_event`
+               function STAY in server.py because the SLA cron worker
+               calls `_push_event` — splitting that out would force
+               a circular import for one helper.
+
+            server.py: 6284 → 6154 lines (-130, -2.1%).
+
+            Hand-tested locally:
+              ✓ Backend reloads cleanly, no import errors
+              ✓ All 7 routes registered (verified via app.routes scan)
+              ✓ GET /me/notification-prefs → 200 with 12 keys
+              ✓ PUT /me/notification-prefs (partial) → merge works
+              ✓ GET /me/push-tokens → 200 (count 0 for fresh user)
+              ✓ POST /me/cancel-subscription (silver plan)
+                 → 200 with {ok, plan, plan_expires_at, message}
+                 (was 404 before this fix — bug confirmed dead)
+
+            REGRESSION TESTING REQUIRED. Please cover:
+              1. GET /api/me/notification-prefs
+                 a) Defaults applied for users without saved prefs
+                 b) Saved prefs returned otherwise
+              2. PUT /api/me/notification-prefs
+                 a) Partial update preserves untouched keys
+                 b) Bool coercion for truthy/falsy inputs
+                 c) Empty body → no change, returns current
+              3. POST /api/me/push-token
+                 a) New token registered (idempotent on re-register)
+                 b) Invalid token format → 400
+              4. DELETE /api/me/push-token?token=...
+                 a) Existing token → ok:true, removed:1
+                 b) Non-existent token → ok:true, removed:0
+              5. POST /api/me/push-token/test
+                 a) No tokens → sent=0
+                 b) With tokens → push dispatched (mock or real)
+              6. GET /api/me/push-tokens
+                 a) Returns truncated tokens with platform/device_id
+              7. POST /api/me/cancel-subscription (RESTORED)
+                 a) Free trial user → 400 "nothing to cancel"
+                 b) Paid plan user → 200, auto_renew set False,
+                    cancelled_at stamped
+                 c) Unauthenticated → 401
+              8. SMOKE REGRESSION on previously-extracted routers:
+                 - All other /me/* endpoints still 200
+                 - /plans/upgrade still works
+                 - /plans/razorpay/{create-order, verify} still work
+                 - SLA cron still uses _push_event (look for SLA
+                   scan log lines, no errors)
+
+            Credentials in /app/memory/test_credentials.md:
+              Owner: admin@test.com / Admin@12345
+              Staff: staff@test.com / Staff@12345
+
+        -working: true
+        -agent: "testing"
+        -comment: |
+            ✅ ALL 61/61 ASSERTIONS PASSED via /app/backend_test.py
+            against https://logistics-hub-740.preview.emergentagent.com/api.
+
+            Per-endpoint coverage:
+
+            1) GET /api/me/notification-prefs ✅
+               • Fresh signup (free_trial user) → 12 keys returned,
+                 every default value matches DEFAULT_NOTIFICATION_PREFS
+                 (trial_ending=True, plan_expiring=True, low_credits=True,
+                 payment_success=True, daily_summary=False,
+                 channel_push=True, channel_email=True, sla_breach=True,
+                 daily_limit_warn=True, morning_reminder=True,
+                 new_order=True, low_wallet=True).
+               • Admin (returning user) → exactly 12 expected keys.
+
+            2) PUT /api/me/notification-prefs ✅
+               • Partial body {daily_summary:True, low_credits:False}
+                 → 200 OK. Both flipped correctly. Untouched
+                 trial_ending and channel_push preserved as True
+                 (merge semantics confirmed).
+               • Bool coercion: 200 OK on subsequent partial updates.
+               • Empty body {} → 200 OK and the response is byte-for-
+                 byte identical to the prior state (no diff).
+
+            3) POST /api/me/push-token ✅
+               • Valid Expo token → 200 OK with body
+                 {ok:True, token, registered_at}.
+               • Re-register same (user, token) → 200 OK, GET
+                 /me/push-tokens still returns count=1 — idempotent
+                 upsert verified, no duplicate row.
+               • Invalid token "not-an-expo-token-1234" → 400 Bad
+                 Request with detail "Invalid Expo push token: …".
+
+            4) DELETE /api/me/push-token?token=… ✅
+               • Existing token → 200 OK, body {ok:True, removed:1}.
+               • Non-existent token → 200 OK, body {ok:True, removed:0}.
+               • Subsequent GET confirms entry removed from list.
+
+            5) POST /api/me/push-token/test ✅
+               • Fresh user with no tokens → 200 OK, body
+                 {sent:0, errors:0, pruned:0, total:0,
+                  reason:"no_tokens"}.
+               • User with one (fake) token → 200 OK; Expo returned
+                 DeviceNotRegistered so push_sender pruned it
+                 (sent:0, errors:1, pruned:1, total:1) — endpoint
+                 behaviour correct, prune side-effect is expected
+                 with synthetic tokens.
+
+            6) GET /api/me/push-tokens ✅
+               • Returns {count:int, tokens:[{token (truncated "…"),
+                 platform, device_id, updated_at}]} for caller.
+
+            7) POST /api/me/cancel-subscription ← BUG FIX VERIFIED ✅
+               • Unauthenticated → 401 Unauthorized
+                 ({"detail":"Authentication required"}).
+               • Free-trial user → 400 with detail
+                 "You're on the free trial — there's nothing to cancel."
+               • Paid plan (silver) user → 200 with body
+                 {ok:True, plan:"silver", plan_expires_at, message}.
+                 Re-cancellation on already-cancelled user → 200 OK
+                 (idempotent flip of auto_renew=False).
+               • Endpoint is now REACHABLE — the prior silent 404
+                 is fixed. Backend access log confirms 200 response
+                 for POST /api/me/cancel-subscription.
+
+            8) Smoke regression on previously-extracted routers ✅
+               • GET /api/me/team-members → 200
+               • GET /api/wallet, /api/wallet/history → 200
+               • GET /api/shipments → 200
+               • GET /api/orders/pending → 200
+               • GET /api/me/feature-flags → 200
+               • POST /api/wallet/razorpay/create-order (₹100) → 200
+                 with full Razorpay envelope.
+               • POST /api/plans/upgrade {plan:"silver"} → 200 (mock).
+               • POST /api/plans/razorpay/create-order
+                 {plan_key:"silver", billing_cycle:"monthly"} → 200,
+                 receipt "plan-silver-m-cb27b8-…", amount_inr=199.
+               • POST /api/me/team-members/pay-extra
+                 {method:"razorpay"} → 200.
+               • POST /api/me/team-members/razorpay/verify with bogus
+                 ids → 404 "Order not found for this user" (expected).
+
+            User state after testing:
+               • user2@test.com — silver plan still active, but
+                 auto_renew=False + cancelled_at stamped (used for
+                 paid-plan cancellation test).
+               • admin@test.com — auto_renew not touched by this run.
+                 The smoke /plans/upgrade call re-applied silver via
+                 the mock upgrade path.
+               • A few fresh signup users (phase5d_*@…) and a
+                 Razorpay test order remain in the DB — harmless test
+                 artefacts.
+
+            ===========================================================
+            ⚠️ ORTHOGONAL ISSUE DISCOVERED (NOT in scope of this
+               regression — flagged for main agent):
+
+            The Phase-5d refactor moved
+              `import push_sender as _push_sender`
+            INTO routers/notifications.py:init() (line 68 via the
+            late-binding pattern). However, server.py's `_push_event`
+            helper at line 3609 still references
+            `_push_sender.send_push_to_users(...)` without ever
+            importing the module at the server.py module level.
+
+            Verified:
+              python -c "import server; print(hasattr(server,
+              '_push_sender'))"
+              → False.
+
+            Live evidence in /var/log/supervisor/backend.err.log:
+              sla_engine - WARNING - SLA push dispatch failed for
+                <user_id>: name '_push_sender' is not defined
+
+            Impact: the SLA cron worker raises alerts in DB correctly
+            (alerts_raised=1 visible in scan log), BUT the push
+            notification dispatch silently no-ops every scan. Users
+            opted-in for SLA-breach pushes will not receive them
+            until this is patched.
+
+            One-line fix: add
+              `import push_sender as _push_sender`
+            at the top of server.py (or move the import out of
+            notifications.py:init() into module scope so it's
+            shared).
+
+            None of the 8 endpoints in this review request route
+            through server._push_event, which is why all 61 endpoint
+            assertions stayed green. The bug only affects the SLA
+            cron path.
+            ===========================================================
+
+
+metadata:
+  test_sequence: 1
+  run_ui: false
+
+test_plan:
+  current_focus: []
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"
+
+agent_communication:
+    -agent: "main"
+    -message: |
+      Phase-5d done. Two changes bundled:
+        (a) BUG FIX — cancel_subscription endpoint had lost its
+            decorator during a prior refactor and was silently 404
+            for weeks. Restored to plans_billing.py with proper
+            decorator. Frontend usages remain compatible (path
+            unchanged).
+        (b) REFACTOR — moved notifications/push-token CRUD (6
+            endpoints) into routers/notifications.py.
+
+      server.py shrank 6284 → 6154 (-130 lines). All 7 affected
+      routes verified registered. Ad-hoc smoke tests pass. Please
+      run the full backend regression on the test plan above and
+      especially confirm cancel-subscription is reachable (was
+      previously a silent 404).
+    -agent: "testing"
+    -message: |
+      Phase-5d regression complete. 61/61 assertions PASS. All 6
+      relocated notification/push-token endpoints behave identically
+      to the pre-refactor server.py implementation (defaults, merge
+      semantics, idempotent register, invalid-token 400, removed
+      counter, list shape). cancel-subscription bug fix is verified —
+      endpoint is now reachable, returns 401 unauth, 400 free-trial,
+      200 paid-plan with the contract-promised body shape. Smoke
+      regression on previously-extracted routers (wallet, plans,
+      team-members, shipments, orders, feature-flags) all 200.
+
+      ⚠️ ORTHOGONAL REGRESSION: server.py's _push_event still
+      references _push_sender but the import was moved into
+      routers/notifications.py:init() and is no longer in scope at
+      the server.py module level. SLA cron is hitting NameError at
+      every scan (visible in backend.err.log). One-line fix:
+      add `import push_sender as _push_sender` at the top of
+      server.py. Endpoints in this review are unaffected (none route
+      through _push_event), but SLA-breach push notifications are
+      currently silently broken.

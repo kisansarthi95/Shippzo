@@ -3578,121 +3578,9 @@ def _coerce_notif_prefs(raw: Optional[Dict[str, Any]]) -> Dict[str, bool]:
     return out
 
 
-@api_router.get("/me/notification-prefs")
-async def get_notification_prefs(
-    current_user: Dict[str, Any] = Depends(get_current_user),
-):
-    """Per-user notification toggles. Surfaced from Settings → Notifications."""
-    fresh = await db.users.find_one({"id": current_user["id"]}, {"_id": 0}) or {}
-    return _coerce_notif_prefs(fresh.get("notification_prefs"))
+# [refactor Phase-5d] notification-prefs GET/PUT + NotificationPrefsRequest → routers/notifications.py
 
-
-class NotificationPrefsRequest(BaseModel):
-    trial_ending:    Optional[bool] = None
-    plan_expiring:   Optional[bool] = None
-    low_credits:     Optional[bool] = None
-    payment_success: Optional[bool] = None
-    daily_summary:   Optional[bool] = None
-    channel_push:    Optional[bool] = None
-    channel_email:   Optional[bool] = None
-    # Phase G6 — operational events
-    sla_breach:        Optional[bool] = None
-    daily_limit_warn:  Optional[bool] = None
-    morning_reminder:  Optional[bool] = None
-    new_order:         Optional[bool] = None
-    low_wallet:        Optional[bool] = None
-
-
-@api_router.put("/me/notification-prefs")
-async def put_notification_prefs(
-    payload: NotificationPrefsRequest,
-    current_user: Dict[str, Any] = Depends(get_current_user),
-):
-    fresh = await db.users.find_one({"id": current_user["id"]}, {"_id": 0}) or {}
-    current = _coerce_notif_prefs(fresh.get("notification_prefs"))
-    incoming = payload.model_dump(exclude_none=True)
-    merged = {**current, **{k: bool(v) for k, v in incoming.items()}}
-    await db.users.update_one(
-        {"id": current_user["id"]},
-        {"$set": {"notification_prefs": merged}},
-    )
-    return merged
-
-
-# ---------------------- Phase G6 — Push Token Registry ----------------------
-
-import push_sender as _push_sender  # noqa: E402
-
-
-class PushTokenRequest(BaseModel):
-    token: str
-    platform: Optional[str] = "unknown"   # "ios" | "android" | "web"
-    device_id: Optional[str] = ""
-
-
-@api_router.post("/me/push-token")
-async def register_push_token(
-    payload: PushTokenRequest,
-    current_user: Dict[str, Any] = Depends(get_current_user),
-):
-    """Register or refresh an Expo push token for this device."""
-    try:
-        res = await _push_sender.register_token(
-            db, current_user["id"],
-            payload.token,
-            platform=payload.platform or "unknown",
-            device_id=payload.device_id or "",
-        )
-        return res
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-
-@api_router.delete("/me/push-token")
-async def remove_push_token(
-    token: str,
-    current_user: Dict[str, Any] = Depends(get_current_user),
-):
-    """Drop a token (e.g. user logged out / disabled notifications)."""
-    n = await _push_sender.remove_token(db, current_user["id"], token)
-    return {"ok": True, "removed": int(n)}
-
-
-@api_router.post("/me/push-token/test")
-async def push_token_self_test(
-    current_user: Dict[str, Any] = Depends(get_current_user),
-):
-    """Fire a test push to all devices of the calling user. Useful
-    from the Notification Prefs screen — confirms the device is
-    correctly registered."""
-    res = await _push_sender.send_push_to_users(
-        db,
-        user_ids=[current_user["id"]],
-        title="🔔 Notifications working",
-        body="If you can read this, push delivery is configured correctly.",
-        data={"type": "self_test"},
-        channel_id="default",
-    )
-    return res
-
-
-@api_router.get("/me/push-tokens")
-async def list_my_push_tokens(
-    current_user: Dict[str, Any] = Depends(get_current_user),
-):
-    fresh = await db.users.find_one({"id": current_user["id"]}, {"_id": 0}) or {}
-    toks = fresh.get("push_tokens") or []
-    return {
-        "count":  len(toks),
-        "tokens": [{
-            "token":     (t or {}).get("token", "")[:40] + "…",
-            "platform":  (t or {}).get("platform"),
-            "device_id": (t or {}).get("device_id"),
-            "updated_at": (t or {}).get("updated_at"),
-        } for t in toks],
-    }
-
-
+# [refactor Phase-5d] PushTokenRequest model + 4 push-token endpoints → routers/notifications.py
 # Helper used by SLA engine + cron jobs to send a push only when the
 # user opted in to that event type. Centralized here so we have one
 # place to add throttling / digest logic later.
@@ -3726,43 +3614,7 @@ async def _push_event(
     )
     res["filtered"] = len(user_ids) - len(eligible)
     return res
-async def cancel_subscription(
-    current_user: Dict[str, Any] = Depends(get_current_user),
-):
-    """User-initiated cancellation. Currently we use Razorpay Orders
-    (one-time charges, NOT recurring subscriptions) so there is nothing
-    to cancel mid-cycle — the user simply doesn't pay next time. The
-    paid plan stays active until plan_expires_at, after which
-    ensure_can_create_label blocks label creation.
-
-    This endpoint flips an `auto_renew=false` flag (forward-compatible
-    with future Razorpay Subscriptions integration) and stamps a
-    cancellation timestamp the Settings UI shows.
-    """
-    fresh = await db.users.find_one({"id": current_user["id"]}, {"_id": 0}) or {}
-    plan = fresh.get("plan") or "free_trial"
-    if plan == "free_trial":
-        raise HTTPException(
-            status_code=400,
-            detail="You're on the free trial — there's nothing to cancel.",
-        )
-    await db.users.update_one(
-        {"id": current_user["id"]},
-        {"$set": {
-            "auto_renew": False,
-            "cancelled_at": datetime.utcnow().isoformat() + "+00:00",
-        }},
-    )
-    return {
-        "ok": True,
-        "plan": plan,
-        "plan_expires_at": fresh.get("plan_expires_at"),
-        "message": (
-            "Auto-renewal cancelled. Your plan stays active until "
-            f"{fresh.get('plan_expires_at') or 'expiry'}, after which "
-            "you'll be moved to the free trial."
-        ),
-    }
+# [refactor Phase-5d] orphaned async def cancel_subscription (missing decorator since previous refactor) → restored to routers/plans_billing.py with proper @router.post decorator
 
 
 # [refactor Phase-5c-1] class UpgradePlanRequest → routers/plans_billing.py
@@ -5266,6 +5118,24 @@ except Exception as _sw_exc:
     import logging as _lg
     _lg.getLogger("server.bootstrap").exception(
         f"Failed to mount shipments_write router: {_sw_exc}",
+    )
+
+# Phase-5d modular: notification preferences + push-token registry.
+# Pure user-scoped CRUD with no cross-cutting business logic; the only
+# helpers it needs from server.py are db, get_current_user, and
+# _coerce_notif_prefs (which stays here because the SLA cron worker
+# also calls it via _push_event).
+try:
+    from routers.notifications import (
+        notifications_router as _notifications_router,
+        init as _init_notifications_router,
+    )
+    _init_notifications_router()
+    app.include_router(_notifications_router)
+except Exception as _ntf_exc:
+    import logging as _lg
+    _lg.getLogger("server.bootstrap").exception(
+        f"Failed to mount notifications router: {_ntf_exc}",
     )
 
 

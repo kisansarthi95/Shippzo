@@ -114,6 +114,53 @@ def init() -> None:
             "user": user_public(fresh or {}),
         }
 
+    # =================  Cancel auto-renewal  ============================
+
+    @plans_billing_router.post("/me/cancel-subscription")
+    async def cancel_subscription(
+        current_user: Dict[str, Any] = Depends(_get_current_user),
+    ):
+        """User-initiated cancellation. Currently we use Razorpay Orders
+        (one-time charges, NOT recurring subscriptions) so there is
+        nothing to cancel mid-cycle — the user simply doesn't pay next
+        time. The paid plan stays active until plan_expires_at, after
+        which ensure_can_create_label blocks label creation.
+
+        This endpoint flips an `auto_renew=false` flag (forward-compatible
+        with future Razorpay Subscriptions integration) and stamps a
+        cancellation timestamp the Settings UI shows.
+
+        Phase-5d (2026-05-07): the original endpoint in server.py lost
+        its decorator during a previous refactor and silently 404-ed
+        for weeks. Recovered + relocated to this router with the bug
+        fix. Frontend (`Api.cancelSubscription`) needs no change — it
+        already targets POST /api/me/cancel-subscription.
+        """
+        fresh = await db.users.find_one({"id": current_user["id"]}, {"_id": 0}) or {}
+        plan = fresh.get("plan") or "free_trial"
+        if plan == "free_trial":
+            raise HTTPException(
+                status_code=400,
+                detail="You're on the free trial — there's nothing to cancel.",
+            )
+        await db.users.update_one(
+            {"id": current_user["id"]},
+            {"$set": {
+                "auto_renew":   False,
+                "cancelled_at": datetime.now(timezone.utc).isoformat(),
+            }},
+        )
+        return {
+            "ok":              True,
+            "plan":            plan,
+            "plan_expires_at": fresh.get("plan_expires_at"),
+            "message": (
+                "Auto-renewal cancelled. Your plan stays active until "
+                f"{fresh.get('plan_expires_at') or 'expiry'}, after which "
+                "you'll be moved to the free trial."
+            ),
+        }
+
     # =================  Razorpay plan subscription  ====================
 
     @plans_billing_router.post("/plans/razorpay/create-order")
