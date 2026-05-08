@@ -9860,7 +9860,7 @@ frontend:
         -agent: "main"
         -comment: |
             Each of the 5 template rows in the settings screen now shows
-            a dashed "✨ AI Generate / Edit 9 Variants" button below the
+            a dashed "AI Generate / Edit 9 Variants" button below the
             header. A green "· N AI variants" tag is appended to the
             template label when variants have been saved. The rest of
             the page (legacy single-template editing, language picker,
@@ -13673,3 +13673,64 @@ agent_communication:
       Both fixes are tiny (one or two lines each). After main
       applies them, please re-run /app/backend_test_phase_f2_1.py
       to confirm all 69 assertions pass.
+
+---
+
+## Phase F2.1 — RE-TEST after bug fixes (2026-05-08)
+
+backend:
+  - task: "Phase F2.1 — CSV/XLSX import: Status + Timestamp + Custom Field mapping (re-test)"
+    implemented: true
+    working: true
+    file: "/app/backend/import_schema.py, /app/backend/routers/file_import.py, /app/backend/routers/shipments_write.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "testing"
+        -comment: |
+            RE-TEST — 69/69 PASS via /app/backend_test_phase_f2_1.py
+            against https://logistics-hub-740.preview.emergentagent.com/api.
+
+            Both bug fixes verified working:
+
+            ✅ BUG #1 FIXED — Custom-field name vs label mismatch.
+              • C2: column header "Pet Type" auto-suggested as
+                "custom:5b791918-…" (matches the cf id) by
+                /api/orders/import/preview — confirmed via
+                suggested[Pet Type] == "custom:<cf_id>".
+              • G: GET /api/me/file-import-mapping returns
+                custom_fields=[{id:"5b791918-…", label:"Pet Type"}]
+                with non-empty label (the human-readable name).
+
+            ✅ BUG #2 FIXED — ship_pending_order now carries custom_values.
+              • C4: After ship_pending_order, the resulting Shipment doc
+                has custom_values = {"5b791918-…": "Golden Retriever"}
+                (was empty {} before fix).
+
+            Other invariants (all green):
+              • A) STATUS — 8/8 canonicalisations + Shipment.status
+                copied correctly. No row stored as "Dispatch".
+              • B) TIMESTAMP — DD/MM/YYYY CSV, native XLSX datetime,
+                and bad-timestamp fallback all working. Shipment.created_at
+                == imported_at where applicable.
+              • D) All header aliases (status/stage/order_status/
+                shipment_status, timestamp/date/order_date/created_at)
+                auto-mapped correctly on preview.
+              • E) "Dispatch"/"Dispatched" → Shipment.status="Ready to Ship".
+              • F) Phase F1 regression — payment_mode coerce, BOM CSV,
+                save_default round-trip, source_meta, 400 validation.
+
+            Cleanup confirmed (cleanup phase ran successfully — all test
+            pending orders, shipments, and the "Pet Type" custom field
+            were deleted). No orphan data left behind.
+
+agent_communication:
+    -agent: "testing"
+    -message: |
+        Phase F2.1 RE-TEST COMPLETE — 69/69 PASS. Both bug fixes
+        (Bug #1: cf.get("name") fallback in three locations; Bug #2:
+        custom_values added to ship_doc) verified working. All
+        invariants (A through G) green. No regressions detected.
+        Test artefacts cleaned up. Ready to finish.

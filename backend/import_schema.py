@@ -367,7 +367,10 @@ def suggest_mapping(
     out: Dict[str, str] = {}
     custom_lookup: Dict[str, str] = {}
     for cf in (custom_fields or []):
-        lbl = (cf.get("label") or "").strip().lower()
+        # NOTE: user_custom_fields docs store the human label under
+        # `name` (not `label`). Older drafts of this helper assumed
+        # `label`; keep both lookups so a future schema rename is safe.
+        lbl = (cf.get("name") or cf.get("label") or "").strip().lower()
         if lbl:
             custom_lookup[lbl] = f"custom:{cf.get('id')}"
             custom_lookup[lbl.replace(" ", "_")] = f"custom:{cf.get('id')}"

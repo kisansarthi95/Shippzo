@@ -422,7 +422,7 @@ export default function WhatsAppTemplatesSettings() {
                       >
                         <PhIcon name="sparkles" size={13} color="#6B5BFF" />
                         <Text style={styles.aiBtnText}>
-                          ✨ AI Generate {variantCount > 0 ? "/ Edit" : ""} 9 Variants
+                          AI Generate {variantCount > 0 ? "/ Edit" : ""} 9 Variants
                         </Text>
                       </TouchableOpacity>
                     </View>

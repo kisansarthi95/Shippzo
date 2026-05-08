@@ -557,6 +557,14 @@ def init() -> None:
             "status":             _ship_status,
             "created_at":         _ship_created_at,
             "updated_at":         utcnow_iso(),
+            # Phase F2.1 — carry per-shipment custom-field values from
+            # the source PendingOrder so Smart Paste / CSV / Webhook
+            # imports preserve dynamic fields end-to-end. Existing
+            # `_write_custom_values_to_user_sheet_bg` (below) ALSO
+            # writes to the user's Google sheet — both are needed:
+            # the user-sheet write is best-effort, the doc embed is
+            # mandatory (analytics + label rendering read it).
+            "custom_values":      order.get("custom_values") or {},
             # Carry the Master Sheet row number so a future delete can
             # soft-delete the exact tombstone row.
             "sheet_row_num":      order.get("sheet_row_num"),

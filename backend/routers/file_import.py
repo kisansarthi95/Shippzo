@@ -193,7 +193,9 @@ def init() -> None:
             "mapping":        doc.get("file_import_mapping") or {},
             "schema_fields":  SCHEMA_FIELDS,
             "custom_fields":  [
-                {"id": cf.get("id"), "label": cf.get("label", "")}
+                # `name` is the canonical label key on user_custom_fields
+                # docs (CustomFieldCreate.name in routers/custom_fields.py).
+                {"id": cf.get("id"), "label": cf.get("name") or cf.get("label") or ""}
                 for cf in custom_fields
             ],
         }
@@ -252,7 +254,8 @@ def init() -> None:
             "total_rows":     len(rows),
             "schema_fields":  SCHEMA_FIELDS,
             "custom_fields":  [
-                {"id": cf.get("id"), "label": cf.get("label", "")}
+                # `name` is the canonical label key on user_custom_fields.
+                {"id": cf.get("id"), "label": cf.get("name") or cf.get("label") or ""}
                 for cf in custom_fields
             ],
             "suggested":      suggested,
