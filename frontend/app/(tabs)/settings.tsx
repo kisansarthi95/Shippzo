@@ -1988,7 +1988,7 @@ export default function SettingsScreen() {
               with the permissions you grant.
               Hidden for team-member sessions — only owners manage staff. */}
           {!isTeamMember && (
-          <Section title="👥 Team Members & Permissions" icon="people-outline">
+          <Section title="Team Members & Permissions" icon="people-outline">
             <Text style={styles.toggleSub}>
               Add staff with their name, phone & role. Assign per-feature
               permissions — they'll only see what you allow when they get
@@ -2013,7 +2013,7 @@ export default function SettingsScreen() {
           {/* Phase 2.5 — Reports Hub
               Single entry point to 5 business reports with custom
               date ranges and Excel download support. */}
-          <Section title="📊 Reports & Analytics" icon="bar-chart-outline">
+          <Section title="Reports & Analytics" icon="bar-chart-outline">
             <Text style={styles.toggleSub}>
               5 business reports: Courier Billing, Return Analysis,
               Weight-wise Breakup, Partner Comparison, COD Reconciliation.
@@ -2057,7 +2057,7 @@ export default function SettingsScreen() {
           </Section>
 
           {/* Phase G6 — Notification preferences shortcut. */}
-          <Section title="🔔 Push Notifications" icon="notifications-outline">
+          <Section title="Push Notifications" icon="notifications-outline">
             <Text style={styles.toggleSub}>
               Choose which alerts you want on your phone — SLA breaches,
               daily WhatsApp limit warnings, morning ops digest, plan
@@ -2078,7 +2078,7 @@ export default function SettingsScreen() {
           </Section>
 
           {/* Phase H — Google Sheet auto-sync shortcut. */}
-          <Section title="📊 Google Sheet Auto-Sync" icon="cloud-upload-outline">
+          <Section title="Google Sheet Auto-Sync" icon="cloud-upload-outline">
             <Text style={styles.toggleSub}>
               Mirror every shipment lifecycle event (create, status
               change, delete) to your Google Sheet automatically. Toggle

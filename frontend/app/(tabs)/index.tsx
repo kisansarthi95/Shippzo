@@ -1757,7 +1757,7 @@ export default function Dashboard() {
               <ActionPill
                 testID="quick-analytics"
                 icon="stats-chart"
-                label="📈 Open Analytics Dashboard"
+                label=" Open Analytics Dashboard"
                 onPress={() => router.push("/analytics" as any)}
                 tone="violet"
                 chevron
@@ -1775,7 +1775,7 @@ export default function Dashboard() {
               <ActionPill
                 testID="quick-courier-billing"
                 icon="document-text"
-                label="📄 Courier Billing Report"
+                label="Courier Billing Report"
                 onPress={() => router.push("/reports/courier-billing" as any)}
                 tone="neutral"
                 chevron

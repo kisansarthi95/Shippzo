@@ -13281,3 +13281,395 @@ agent_communication:
         coercions, limits, regression) is solid and production-
         ready.
 
+
+
+# ====================================================================
+# Phase F2.1 — Status + Timestamp + Custom-Field Mapping in Imports
+# ====================================================================
+
+backend:
+  - task: "Phase F2.1 — CSV/XLSX import: Status + Timestamp + Custom Field mapping"
+    implemented: true
+    working: false
+    file: "/app/backend/import_schema.py, /app/backend/routers/file_import.py, /app/backend/server.py (PendingOrder model), /app/backend/routers/shipments_write.py (ship_pending_order)"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: false
+        -agent: "testing"
+        -comment: |
+            PHASE F2.1 BACKEND REGRESSION — 66/69 PASSED, 3 FAILED.
+            Test script: /app/backend_test_phase_f2_1.py
+            Target:      https://logistics-hub-740.preview.emergentagent.com/api
+            Auth:        admin@test.com / Admin@12345
+
+            ✅ ALL PASSING (66 assertions):
+              A. STATUS MAPPING — preview auto-suggests "status",
+                 commit accepts mapping {Status: status}, all 8 free-text
+                 inputs ("Shipped", "delivered", "DISPATCHED", "ready to
+                 ship", "rto", "Cancelled", "Out for delivery",
+                 "garbage_x") canonicalised correctly to imported_status
+                 = Shipped / Delivered / Ready to Ship / Ready to Ship /
+                 Returned / Cancelled / Shipped / Garbage_X.
+                 Critical: NO row stored as literal "Dispatch".
+                 Shipping the "Shipped" pending row produced
+                 Shipment.status="Shipped" (NOT Pending).
+              B. TIMESTAMP MAPPING — CSV "29/04/2026 14:30:00" parsed to
+                 ISO "2026-04-29T14:30:00", Shipment.created_at matched
+                 imported_at exactly. XLSX native datetime cell
+                 (2026-03-15 09:45) round-tripped to ISO and into
+                 Shipment.created_at unchanged. Bad timestamp ("not a
+                 date") → imported_at="" + Shipment.created_at = server
+                 now() (within 5 min window).
+              D. ALIAS REGRESSION — preview auto-mapped status, stage,
+                 order_status, shipment_status → "status"; timestamp,
+                 date, order_date, created_at → "created_at_override".
+              E. DISPATCH CLEANUP — both "Dispatch" and "Dispatched"
+                 collapsed to "Ready to Ship" in imported_status AND in
+                 the resulting Shipment.status. Literal "Dispatch"
+                 NEVER appears.
+              F. PHASE F1 REGRESSION — BOM CSV preview/commit, payment
+                 mode coercion (cod→COD, PAID→PAID, online→PAID — the
+                 PAYMENT_MODE_NORMALISE import bug stays fixed),
+                 source_meta in pending response, mapping validation
+                 (400 unknown field, 400 missing name+phone),
+                 save_default round-trip — all OK.
+              G. /me/file-import-mapping endpoint NOW returns the
+                 'custom_fields' key (was missing before Phase F2.1).
+
+            ❌ FAILURES (3) — all rooted in two related bugs:
+
+            BUG #1: Custom-field "name" vs "label" mismatch.
+              The user_custom_fields collection persists the field
+              under key `name` (see CustomFieldCreate model in
+              /app/backend/routers/custom_fields.py:46-53). However,
+              the import code reads `cf.get("label")` in two places:
+                • /app/backend/import_schema.py — suggest_mapping()
+                  builds custom_lookup from cf["label"], so a column
+                  header that matches the field NAME is NEVER
+                  auto-suggested.
+                • /app/backend/routers/file_import.py — both the
+                  GET /api/me/file-import-mapping and POST/preview
+                  responses ship the items as
+                  {"id": cf.get("id"), "label": cf.get("label", "")}.
+                  Result: every label comes back as "" so the UI
+                  has no way to show the custom field name in the
+                  picker, and the auto-suggest never fires.
+              Failed assertions:
+                • "C2 suggested[Pet Type] auto = custom:<id>" — got None,
+                  expected "custom:<id>".
+                • "G at least one custom field has non-empty 'label'"
+                  — every cf came back with label="".
+              FIX: replace cf.get("label") with cf.get("name") (or
+              cf.get("label") or cf.get("name")) in both places.
+
+            BUG #2: ship_pending_order does NOT copy custom_values
+                    onto the Shipment doc.
+              /app/backend/routers/shipments_write.py:530-564 builds
+              ship_doc with explicit field copies but never sets
+              ship_doc["custom_values"] from order["custom_values"].
+              The post-insert code does call
+              _write_custom_values_to_user_sheet_bg(...) to push the
+              values to the user's personal sheet, but the SHIPMENT
+              document itself never carries them — so anything that
+              reads a shipment by id (label printer, order detail,
+              webhook out, future bulk-message builder) cannot see the
+              imported custom values.
+              Failed assertion:
+                • "C4 Shipment.custom_values has same entry" — got {},
+                  expected {<cf_id>: "Golden Retriever"}.
+              Successful precondition assertions confirm the bug is
+              isolated to the ship step:
+                • "C3 PendingOrder.custom_values has entry under cf_id"
+                  — PASSED with custom_values=
+                    {<cf_id>: "Golden Retriever"}.
+                • Mapping value "custom:<id>" was accepted, parsed, and
+                  written into pending_orders correctly.
+              FIX: in ship_pending_order, add
+                  "custom_values": order.get("custom_values") or {},
+              to the ship_doc dict (mirroring how Smart Paste shipments
+              already carry it).
+
+            CRITICAL USER REQUIREMENTS — STATUS:
+              ✅ Imported "Dispatch" / "Dispatched" → "Ready to Ship"
+                 on Shipment (NEVER literal "Dispatch") — verified.
+              ✅ Imported Delivered + timestamp → Shipment carries
+                 status="Delivered" + created_at = parsed timestamp
+                 (verified through B path; delivered_at handling not
+                 separately asserted but code path is exercised).
+              ✅ Unknown statuses don't 500 — they title-case through
+                 (Garbage_X verified).
+              ✅ Bad timestamps don't 500 — fall back to server now()
+                 when shipped (verified).
+              ❌ Custom-field mapping prefix "custom:<id>" round-trips
+                 preview → commit → pending_orders ✅, but does NOT
+                 reach shipments.custom_values ❌. Half of the
+                 contract is broken.
+
+            All test data was cleaned up via DELETE /shipments/{id},
+            DELETE /orders/pending/{id}, DELETE /me/custom-fields/{id}.
+
+        -working: "NA"
+        -agent: "main"
+        -comment: |
+            Phase F2.1 implemented. Three new capabilities were wired into
+            the existing CSV/Excel import pipeline so historical or
+            partner-tagged orders can land in the right pipeline bucket:
+
+            1. STATUS field now mappable.
+               • SCHEMA_FIELDS gains "status" (canonical pipeline status).
+               • normalise_status() smart-matches free text to one of the
+                 10 canonical statuses (Pending/Processing/Ready to Ship/
+                 Shipped/Delivered/Feedback/Modified/Cancel by buyer/
+                 Cancelled/Returned). Legacy "Dispatch", "Dispatched",
+                 "OFD", "RTO" all collapse to the new canonical labels —
+                 specifically "Dispatch" → "Ready to Ship" per user req.
+               • Header aliases: status, stage (legacy), order_status,
+                 shipment_status, state, current_status, delivery_status.
+
+            2. TIMESTAMP / Order Date now mappable.
+               • SCHEMA_FIELDS gains "created_at_override".
+               • normalise_timestamp() uses dateutil.parser with both
+                 default-first and dayfirst (Indian DD/MM/YYYY) fallback;
+                 native datetime / date objects from openpyxl pass through
+                 via .isoformat(). Unparseable values silently degrade
+                 to "" so the row imports with server now() instead of
+                 erroring.
+               • Header aliases: timestamp, date, order_date, created,
+                 created_at, created_on, placed_at, placed_on, ordered_on,
+                 order_time.
+
+            3. PER-USER CUSTOM FIELDS now mappable.
+               • Mapping value format: "custom:<custom_field_id>".
+               • is_custom_field_mapping / custom_field_id helpers.
+               • Imported value lands in PendingOrder.custom_values dict
+                 (already routed downstream to the user's personal Sheet
+                 + Shipment.custom_values via existing flows).
+               • suggest_mapping() also auto-suggests "custom:<id>" when
+                 the column header matches a custom field's label.
+
+            Plumbing changes:
+               • PendingOrder model gains imported_status, imported_at
+                 (both optional, default ""). Existing rows stay valid.
+               • file_import.py /commit endpoint now reads schema fields
+                 status + created_at_override and relocates them onto
+                 imported_status / imported_at on the PendingOrder doc
+                 (so the pipeline status remains "pending" until ship
+                 fires).
+               • shipments_write.py ship_pending_order copies
+                 imported_status → ship_doc.status (default "Pending"
+                 when blank) and imported_at → ship_doc.created_at.
+                 If imported_status == "Delivered" + imported_at exists,
+                 we also stamp delivered_at so analytics line up.
+               • XLSX parser: now keeps native datetime / int / float
+                 from openpyxl (data_only=True) instead of str()-ing.
+                 Sample-row preview JSON-stringifies separately so the
+                 wire format stays unchanged.
+               • Pre-existing bug fix: file_import.py used to reference
+                 PAYMENT_MODE_NORMALISE without importing it. Now imports
+                 from import_schema and uses the shared helpers
+                 (normalise_value, validate_mapping_field).
+
+            "Dispatch" cleanup (per user req): the alias map collapses
+            every dispatch* variant into "Ready to Ship". No new code
+            writes the literal "Dispatch" anywhere. Step 2 (global UI
+            rename of leftover "Stage"/"Dispatch" labels) tracked
+            separately.
+
+            Files touched:
+               /app/backend/import_schema.py            (rewritten)
+               /app/backend/routers/file_import.py      (rewritten)
+               /app/backend/server.py                   (PendingOrder)
+               /app/backend/routers/shipments_write.py  (ship_pending_order)
+               /app/frontend/app/file-import.tsx        (UI labels +
+                                                          custom fields
+                                                          picker section)
+               /app/frontend/lib/api.ts                 (response types)
+
+            Test request: please regression the import pipeline end-
+            to-end with three scenarios:
+
+            A) STATUS mapping
+               1. POST /api/orders/import/preview with a CSV whose
+                  columns include "Status". Confirm `suggested[Status]
+                  == "status"`.
+               2. POST /api/orders/import/commit with mapping
+                  {Status: "status"}. Test rows with values:
+                  "Shipped", "delivered", "DISPATCHED", "ready to ship",
+                  "rto", "Cancelled", "Out for delivery", "garbage_x".
+               3. GET /api/orders/pending?source=file → confirm each
+                  row's `imported_status` is the canonical match
+                  (Shipped, Delivered, Ready to Ship, Ready to Ship,
+                  Returned, Cancelled, Shipped, "Garbage_X" title-cased).
+               4. POST /api/orders/pending/{id}/ship for the "Shipped"
+                  row → resulting Shipment.status MUST be "Shipped",
+                  NOT "Pending".
+
+            B) TIMESTAMP mapping
+               1. CSV with "Timestamp" column = "29/04/2026 14:30:00".
+               2. After commit + ship → Shipment.created_at must equal
+                  the parsed ISO of that timestamp (NOT now()).
+               3. XLSX with a real Excel datetime cell → same behaviour.
+               4. Bad timestamp ("not a date") → import succeeds,
+                  imported_at = "", Shipment.created_at = now() on ship.
+
+            C) CUSTOM FIELD mapping
+               1. Create a custom field via POST /api/me/custom-fields
+                  with label "Pet Type".
+               2. CSV with column "Pet Type" → preview should auto-
+                  suggest "custom:<that_id>".
+               3. Commit with mapping → PendingOrder.custom_values has
+                  the value under <id>. Ship → Shipment.custom_values
+                  carries the same.
+
+            D) ALIAS regression — confirm each header below auto-maps
+               on preview:
+                 status / stage / order_status / shipment_status →
+                   schema "status"
+                 timestamp / date / order_date / created_at →
+                   schema "created_at_override"
+
+            E) LEGACY guard
+               1. Importing a row with status="Dispatch" must end up
+                  as Shipment.status="Ready to Ship", NOT "Dispatch".
+
+            Bonus: confirm GET /api/me/file-import-mapping now also
+            returns `custom_fields: [{id,label}, …]` (used by the
+            picker UI).
+
+            All Phase F1 regressions (preview/commit/save_default,
+            row limits, format errors, source_meta presence) MUST
+            still pass — this is purely additive.
+
+frontend:
+  - task: "Phase F2.1 — Import UI: Status/Timestamp picker + Custom Fields section"
+    implemented: true
+    working: "NA"
+    file: "/app/frontend/app/file-import.tsx, /app/frontend/lib/api.ts"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: |
+            Field-picker modal now exposes:
+              • "Status (Pending / Shipped / Delivered…)" — schema id status
+              • "Order Date / Timestamp"                  — schema id created_at_override
+              • A new bottom "Your Custom Fields" group when the user
+                has defined any. Each item maps to "custom:<id>" and
+                the column row pill renders ★ <Label> while picked.
+            User permission required before invoking
+            expo_frontend_testing_agent.
+
+metadata:
+  test_sequence: 1
+  run_ui: false
+
+test_plan:
+  current_focus:
+    - "Phase F2.1 — CSV/XLSX import: Status + Timestamp + Custom Field mapping"
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"
+
+agent_communication:
+    -agent: "main"
+    -comment: |
+      Phase F2.1 ready for backend regression. Please run the four
+      scenarios A/B/C/D/E listed under the task's status_history
+      comment above, plus the Phase F1 happy-path smoke (preview,
+      commit, save_default, source_meta).
+
+      Test credentials in /app/memory/test_credentials.md.
+
+      Key invariants to assert:
+        • Imported "Dispatch" / "Dispatched" / "ready to ship" all
+          become Shipment.status="Ready to Ship" (NEVER literal
+          "Dispatch").
+        • Imported "Delivered" + a timestamp → Shipment carries both
+          status="Delivered" AND delivered_at = the parsed timestamp.
+        • Unknown statuses don't 500 — they title-case through.
+        • Bad timestamps don't 500 — they fall back to server now()
+          when the row is shipped.
+        • Custom-field mapping prefix "custom:<id>" round-trips
+          through preview → commit → pending_orders → ship_order →
+          shipments.custom_values.
+
+    -agent: "testing"
+    -message: |
+      Phase F2.1 BACKEND REGRESSION COMPLETE — 66/69 PASS.
+
+      Test script committed at /app/backend_test_phase_f2_1.py
+      (uses python `requests`, NOT curl — same style as Phase F1).
+      All test artefacts (pending orders, shipments, custom field,
+      no test couriers were created — used existing) were cleaned
+      up at the end via DELETE endpoints.
+
+      ✅ FULLY WORKING (Status, Timestamp, Aliases, Dispatch
+      cleanup, F1 regression):
+        • A) STATUS — 8/8 status canonicalisations correct,
+          Shipment.status copied from imported_status correctly.
+          Critical "Dispatch" never appears.
+        • B) TIMESTAMP — DD/MM/YYYY CSV parsed, native XLSX
+          datetime parsed, bad timestamp falls back to now()
+          on ship. Shipment.created_at == imported_at when present.
+        • D) Header aliases status/stage/order_status/
+          shipment_status & timestamp/date/order_date/created_at
+          all auto-mapped on preview.
+        • E) "Dispatch" / "Dispatched" → Shipment.status
+          "Ready to Ship" (NEVER literal "Dispatch") — verified.
+        • F) Phase F1 regression all green — payment_mode coerce,
+          BOM CSV, save_default, source_meta, validation 400s.
+
+      ❌ TWO BUGS FOUND, both in custom-field handling:
+
+      BUG #1 — Custom-field "name" vs "label" mismatch (HIGH)
+        File: /app/backend/import_schema.py + 
+              /app/backend/routers/file_import.py
+        The user_custom_fields collection stores the field under
+        `name` (not `label`). Both files read cf.get("label"),
+        which is always None/"" for these docs.
+        Symptoms:
+          • GET /api/me/file-import-mapping returns
+            custom_fields = [{id, label:""}, …] — labels are
+            blank, so the UI cannot show field names.
+          • POST /api/orders/import/preview: a column header
+            matching the custom-field NAME is NOT auto-suggested
+            as "custom:<id>" (the auto-suggest test for column
+            "Pet Type" failed).
+          • Manual mapping ({"Pet Type": "custom:<id>"}) DOES
+            still work end-to-end into pending_orders, so the
+            commit path is unaffected.
+        FIX: change cf.get("label") to cf.get("name")
+        (or coalesce: cf.get("label") or cf.get("name") or "")
+        in:
+          - import_schema.suggest_mapping (lines 369-373)
+          - routers/file_import.py get_file_import_mapping
+            (lines 195-198)
+          - routers/file_import.py import_preview
+            (lines 254-257)
+
+      BUG #2 — ship_pending_order doesn't copy custom_values
+              onto Shipment (HIGH)
+        File: /app/backend/routers/shipments_write.py (~line 530)
+        The ship_doc dict built in ship_pending_order copies
+        every PendingOrder field except `custom_values`. Only
+        the side-effect _write_custom_values_to_user_sheet_bg
+        pushes the values to the user's personal Google Sheet —
+        the Shipment doc itself ends up with custom_values={}.
+        Result: Shipment.custom_values is empty even when the
+        pending order had values — the C path of the contract
+        is half-broken (preview ✅, commit ✅, pending ✅,
+        SHIPMENT ❌).
+        FIX: add this line to the ship_doc dict literal:
+            "custom_values": order.get("custom_values") or {},
+        Alternatively, post-insert:
+            ship_doc["custom_values"] = order.get(
+                "custom_values") or {}
+        before db.shipments.insert_one(ship_doc).
+
+      Both fixes are tiny (one or two lines each). After main
+      applies them, please re-run /app/backend_test_phase_f2_1.py
+      to confirm all 69 assertions pass.

@@ -2290,6 +2290,16 @@ class PendingOrder(BaseModel):
     box_height:    float = 0.0
     category:      str   = ""
 
+    # Phase F2.1 — Status + Timestamp from imported sources
+    # (CSV/Excel/Google Sheet/Webhook). When the source row already
+    # carries a real-world Status (Shipped / Delivered / Cancelled /
+    # …) and / or a creation timestamp, those values land here on the
+    # PendingOrder so ship_pending_order can copy them straight to the
+    # resulting Shipment instead of resetting to "Pending" + now().
+    # Both default to "" so legacy paste/sheet/manual rows stay valid.
+    imported_status: str = ""
+    imported_at:     str = ""
+
 
 class SmartPasteRequest(BaseModel):
     text: str

@@ -14,6 +14,17 @@ Endpoints:
   PUT    /api/me/file-import-mapping    save / update the default mapping
 
 Pattern: late-binding `init()` — same as routers/notifications.py.
+
+Phase F1.1 (2026-05-08): Address Auto-Merge, Token field exposed.
+Phase F1.2 (2026-05-08): All 22 Add-Shipment fields mappable.
+Phase F2.0 (2026-05-08): Schema/aliases/coercions extracted to
+    /app/backend/import_schema.py for sharing with webhook router.
+Phase F2.1 (2026-05-09): Status + Timestamp mapping. When the source
+    file carries Shipped / Delivered / etc. plus a real-world date,
+    the resulting PendingOrder records `imported_status` and
+    `imported_at`; ship_pending_order copies them to the Shipment so
+    historical imports land in the right pipeline bucket. Per-user
+    custom fields can be mapped via "custom:<id>" mapping values.
 """
 from __future__ import annotations
 
@@ -28,40 +39,20 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
 
 from import_schema import (
-    SCHEMA_FIELDS, NUMERIC_FIELDS, suggest_mapping,
-    build_pending_doc_from_mapping,
+    SCHEMA_FIELDS,
+    NUMERIC_FIELDS,
+    PAYMENT_MODE_NORMALISE,
+    HEADER_ALIASES,
+    suggest_mapping,
+    normalise_value,
+    is_custom_field_mapping,
+    custom_field_id,
+    validate_mapping_field,
 )
 
 
 file_import_router = APIRouter(prefix="/api", tags=["file-import"])
 
-# ────────────────────────────────────────────────────────────────────
-# Schema fields the user can map columns to.
-#
-# Phase F1.1 (2026-05-08): The system stores a delivery address in
-# address_line1 / address_line2 internally, but the IMPORT UX exposes
-# a single virtual "address" field — many CSV/Excel exports already
-# have separate "Address Line 1" / "Address Line 2" columns and asking
-# the user to map both to two distinct schema fields invites
-# truncation / line2 falling off when the user only maps line1.
-# Instead, mapping MULTIPLE columns to "address" auto-merges them
-# (in mapping-iteration order) with a single-space separator and
-# writes the result to address_line1.
-#
-# Phase F1.2 (2026-05-08): Mirrored every field in the Add-Shipment
-# form so a user can map ANY column from their CSV/Excel — box size,
-# parcel dimensions (L/W/H), category, plus all customer + payment
-# fields. List is ordered by frequency-of-use so the most common
-# fields (Customer Name → Phone → Address → Amount → Token) sit at
-# the top of the field-picker modal where users actually look.
-# ────────────────────────────────────────────────────────────────────
-# Phase F2 (2026-05-08): SCHEMA_FIELDS, NUMERIC_FIELDS, alias map,
-# value coercion, and the per-row mapping builder all moved to
-# /app/backend/import_schema.py so the new Webhook ingest router
-# (routers/webhook.py) can share the exact same field set + coercions.
-# Update the schema there once; both routers benefit. The previous
-# inline definitions / _normalise_value / _parse_upload row-builder
-# have been removed in favour of the shared helpers.
 
 MAX_SAMPLE_ROWS = 10
 MAX_FILE_BYTES  = 10 * 1024 * 1024     # 10 MB hard limit
@@ -102,7 +93,13 @@ def _parse_csv(blob: bytes) -> tuple[List[str], List[Dict[str, str]]]:
     return [h.strip() for h in header], rows
 
 
-def _parse_xlsx(blob: bytes) -> tuple[List[str], List[Dict[str, str]]]:
+def _parse_xlsx(blob: bytes) -> tuple[List[str], List[Dict[str, Any]]]:
+    """Parse .xlsx into header + list of dict rows.
+
+    NOTE: We KEEP native Python types (datetime, int, float) when openpyxl
+    yields them so the timestamp/status normalisers downstream can do
+    their job (e.g. datetime.isoformat()) without lossy str() conversion.
+    """
     try:
         from openpyxl import load_workbook
     except ImportError:
@@ -123,20 +120,17 @@ def _parse_xlsx(blob: bytes) -> tuple[List[str], List[Dict[str, str]]]:
     except StopIteration:
         raise HTTPException(status_code=400, detail="Sheet is empty")
     header = [str(c).strip() if c is not None else "" for c in header_raw]
-    rows: List[Dict[str, str]] = []
+    rows: List[Dict[str, Any]] = []
     for line in rows_iter:
         line = list(line) + [None] * (len(header) - len(line))
         line = line[: len(header)]
-        if all(c is None or str(c).strip() == "" for c in line):
+        if all(c is None or (isinstance(c, str) and c.strip() == "") for c in line):
             continue   # skip blank rows
-        rows.append({
-            h: ("" if line[i] is None else str(line[i]).strip())
-            for i, h in enumerate(header)
-        })
+        rows.append({h: line[i] for i, h in enumerate(header)})
     return header, rows
 
 
-def _parse_upload(file: UploadFile, blob: bytes) -> tuple[str, List[str], List[Dict[str, str]]]:
+def _parse_upload(file: UploadFile, blob: bytes) -> tuple[str, List[str], List[Dict[str, Any]]]:
     name = (file.filename or "").lower()
     if name.endswith(".xlsx"):
         cols, rows = _parse_xlsx(blob)
@@ -151,21 +145,18 @@ def _parse_upload(file: UploadFile, blob: bytes) -> tuple[str, List[str], List[D
     )
 
 
-def _normalise_value(field: str, raw: str) -> Any:
-    raw = (raw or "").strip()
-    if field in NUMERIC_FIELDS:
-        if not raw:
-            return 0.0
-        try:
-            return float(raw.replace(",", "").replace("₹", "").strip())
-        except ValueError:
-            return 0.0
-    if field == "payment_mode":
-        return PAYMENT_MODE_NORMALISE.get(raw.lower(), "COD" if not raw else raw.upper())
-    if field == "pincode":
-        # keep as string but strip non-digits
-        return "".join(ch for ch in raw if ch.isdigit())
-    return raw
+def _row_sample_for_preview(rows: List[Dict[str, Any]]) -> List[Dict[str, str]]:
+    """Stringify sample rows for the JSON preview response so datetime
+    objects don't blow up json.dumps."""
+    out: List[Dict[str, str]] = []
+    for r in rows[:MAX_SAMPLE_ROWS]:
+        out.append({
+            k: ("" if v is None else (
+                v.isoformat() if hasattr(v, "isoformat") else str(v).strip()
+            ))
+            for k, v in r.items()
+        })
+    return out
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -182,6 +173,12 @@ def init() -> None:
         generate_master_order_id,
     )
 
+    async def _list_user_custom_fields(user_id: str) -> List[Dict[str, Any]]:
+        cur = db.user_custom_fields.find(
+            {"user_id": user_id, "active": {"$ne": False}}, {"_id": 0},
+        )
+        return [doc async for doc in cur]
+
     # ── Saved default mapping (per user) ──────────────────────────
 
     @file_import_router.get("/me/file-import-mapping")
@@ -191,9 +188,14 @@ def init() -> None:
         doc = await db.users.find_one(
             {"id": current_user["id"]}, {"_id": 0, "file_import_mapping": 1},
         ) or {}
+        custom_fields = await _list_user_custom_fields(current_user["id"])
         return {
-            "mapping":     doc.get("file_import_mapping") or {},
-            "schema_fields": SCHEMA_FIELDS,
+            "mapping":        doc.get("file_import_mapping") or {},
+            "schema_fields":  SCHEMA_FIELDS,
+            "custom_fields":  [
+                {"id": cf.get("id"), "label": cf.get("label", "")}
+                for cf in custom_fields
+            ],
         }
 
     @file_import_router.put("/me/file-import-mapping")
@@ -201,8 +203,14 @@ def init() -> None:
         payload: FileImportMappingPayload,
         current_user: Dict[str, Any] = Depends(_get_current_user),
     ):
-        # Sanity-check the mapping values are known schema fields.
-        bad = [v for v in payload.mapping.values() if v and v not in SCHEMA_FIELDS]
+        # Sanity-check the mapping values are known schema fields or
+        # one of the user's custom-field ids ("custom:<id>").
+        custom_fields = await _list_user_custom_fields(current_user["id"])
+        cf_ids = {cf.get("id") for cf in custom_fields if cf.get("id")}
+        bad = [
+            v for v in payload.mapping.values()
+            if not validate_mapping_field(v, cf_ids)
+        ]
         if bad:
             raise HTTPException(
                 status_code=400,
@@ -234,90 +242,19 @@ def init() -> None:
                 {"id": current_user["id"]}, {"_id": 0, "file_import_mapping": 1},
             ) or {}
         ).get("file_import_mapping") or {}
-        # Heuristic header→field aliases (lowercase, _-collapsed key).
-        # Phase F1.1 — extra entries route any "address line *" / "addr"
-        # variant to the single virtual `address` field so users don't
-        # have to know about line1/line2 plumbing.
-        ALIASES = {
-            "address":         "address",
-            "addr":            "address",
-            "address_line":    "address",
-            "address_line_1":  "address",
-            "address_line_2":  "address",
-            "address_1":       "address",
-            "address_2":       "address",
-            "addressline1":    "address",
-            "addressline2":    "address",
-            "full_address":    "address",
-            "delivery_address":"address",
-            "name":            "customer_name",
-            "customer":        "customer_name",
-            "phone":           "customer_phone",
-            "mobile":          "customer_phone",
-            "contact":         "customer_phone",
-            "alt_phone":       "customer_alt_phone",
-            "email":           "customer_email",
-            "gst":             "customer_gstin",
-            "gstin":           "customer_gstin",
-            "pin":             "pincode",
-            "pin_code":        "pincode",
-            "zip":             "pincode",
-            "amt":             "amount",
-            "total":           "amount",
-            "order_amount":    "amount",
-            "order_value":     "amount",
-            "token":           "token_amount",
-            "advance":         "token_amount",
-            "advance_amount":  "token_amount",
-            "token_amt":       "token_amount",
-            "mode":            "payment_mode",
-            "payment":         "payment_mode",
-            "courier":         "courier_hint",
-            "logistics":       "courier_hint",
-            "wt":              "weight",
-            "parcel_weight":   "weight",
-            "package_weight":  "weight",
-            "remarks":         "notes",
-            "comment":         "notes",
-            "comments":        "notes",
-            "shipment_notes":  "notes",
-            # Phase F1.2 — box / parcel
-            "box":             "box_dimensions",
-            "box_size":        "box_dimensions",
-            "dimensions":      "box_dimensions",
-            "lwh":             "box_dimensions",
-            "size":            "box_dimensions",
-            "length":          "box_length",
-            "l":               "box_length",
-            "breadth":         "box_width",
-            "width":           "box_width",
-            "w":               "box_width",
-            "height":          "box_height",
-            "h":               "box_height",
-            "category":        "category",
-            "cat":             "category",
-            "item_category":   "category",
-            "item":            "items",
-            "product":         "items",
-            "products":        "items",
-        }
-        suggested: Dict[str, str] = {}
-        for c in columns:
-            if c in saved:
-                suggested[c] = saved[c]
-                continue
-            cl = c.lower().strip().replace(" ", "_").replace("-", "_")
-            if cl in SCHEMA_FIELDS:
-                suggested[c] = cl
-            elif cl in ALIASES:
-                suggested[c] = ALIASES[cl]
+        custom_fields = await _list_user_custom_fields(current_user["id"])
+        suggested = suggest_mapping(columns, saved, custom_fields)
         return {
             "format":         fmt,
             "filename":       file.filename or "",
             "columns":        columns,
-            "sample_rows":    rows[:MAX_SAMPLE_ROWS],
+            "sample_rows":    _row_sample_for_preview(rows),
             "total_rows":     len(rows),
             "schema_fields":  SCHEMA_FIELDS,
+            "custom_fields":  [
+                {"id": cf.get("id"), "label": cf.get("label", "")}
+                for cf in custom_fields
+            ],
             "suggested":      suggested,
         }
 
@@ -353,21 +290,29 @@ def init() -> None:
                 ),
             )
 
+        # Fetch the user's custom fields once to validate "custom:<id>"
+        # mapping values + accept them downstream.
+        custom_fields = await _list_user_custom_fields(current_user["id"])
+        cf_ids = {cf.get("id") for cf in custom_fields if cf.get("id")}
+
         # Reverse-lookup: schema_field → list[file_column].
         # Phase F1.1 — multiple columns can map to the same field
         # (specifically the virtual "address" field, which auto-merges
         # Address Line 1 + Address Line 2 from the source file). For
-        # all other fields the LAST mapping wins (sane fallback if a
-        # user accidentally maps two columns to e.g. `customer_name`).
+        # all other fields the LAST mapping wins.
         field_to_cols: Dict[str, List[str]] = {}
+        custom_to_cols: Dict[str, List[str]] = {}
         for col, field in mapping_obj.items():
             if not field:
                 continue
-            if field not in SCHEMA_FIELDS:
+            if not validate_mapping_field(field, cf_ids):
                 raise HTTPException(
                     status_code=400,
                     detail=f"Unknown schema field in mapping: {field}",
                 )
+            if is_custom_field_mapping(field):
+                custom_to_cols.setdefault(custom_field_id(field), []).append(col)
+                continue
             field_to_cols.setdefault(field, []).append(col)
 
         if (not field_to_cols.get("customer_name")
@@ -404,7 +349,7 @@ def init() -> None:
                     "id":                str(uuid.uuid4()),
                     "user_id":           current_user["id"],
                     "source":            "file",
-                    "status":            "pending",
+                    "status":            "pending",   # pipeline: pending|shipped|skipped
                     "master_order_id":   master_oids[idx],
                     "order_id":          "",
                     "created_at":        now,
@@ -415,36 +360,65 @@ def init() -> None:
                         "imported_at":  now,
                         "row_index":    idx + 2,   # +2 = 1 (header) + 1-based
                     },
+                    "custom_values":     {},
                 }
                 # Initialise all schema fields to defaults.
-                # Note: the virtual "address" field doesn't exist in
-                # the PendingOrder schema — we materialise it into
-                # address_line1 below. Storage stays line1 + line2 so
-                # downstream Sheet append + label rendering continue
-                # working unchanged.
                 for field in SCHEMA_FIELDS:
                     if field == "address":
                         continue
-                    doc[field] = 0.0 if field in NUMERIC_FIELDS else (
-                        "COD" if field == "payment_mode" else ""
-                    )
+                    if field in NUMERIC_FIELDS:
+                        doc[field] = 0.0
+                    elif field == "payment_mode":
+                        doc[field] = "COD"
+                    else:
+                        doc[field] = ""
                 doc["address_line1"] = ""
                 doc["address_line2"] = ""
 
-                # Fill from mapped columns. For "address", concatenate
-                # all mapped columns in mapping-iteration order with a
-                # single-space separator (line1 + " " + line2 etc.) and
-                # write to address_line1.
+                # Fill from mapped columns.
                 for field, cols in field_to_cols.items():
                     if field == "address":
                         parts = [
-                            (row.get(c, "") or "").strip()
+                            (str(row.get(c, "") or "")).strip()
                             for c in cols
                         ]
                         doc["address_line1"] = " ".join(p for p in parts if p)
                         continue
                     raw = row.get(cols[-1], "")  # last-mapped wins
-                    doc[field] = _normalise_value(field, raw)
+                    doc[field] = normalise_value(field, raw)
+
+                # Custom-field mappings → custom_values dict.
+                for cf_id, cols in custom_to_cols.items():
+                    raw = row.get(cols[-1], "")
+                    doc["custom_values"][cf_id] = (
+                        "" if raw is None else str(raw).strip()
+                    )
+
+                # Phase F2.1 — Status + Timestamp from import.
+                #
+                # The mapping loop above wrote any "status" /
+                # "created_at_override" cells onto `doc` under those
+                # exact key names, OVERWRITING the pipeline `status`
+                # we set earlier. We need to relocate them:
+                #   • doc["status"] (canonical "Shipped"/"Delivered"/…)
+                #     → doc["imported_status"]; reset doc["status"] to
+                #     the pipeline-pending sentinel so PendingOrder's
+                #     own state-machine isn't broken.
+                #   • doc["created_at_override"] (ISO timestamp)
+                #     → doc["imported_at"].
+                # Both downstream values are read by ship_pending_order
+                # which copies them onto the resulting Shipment.
+                doc["imported_status"] = (
+                    doc.get("status") or "" if "status" in field_to_cols else ""
+                )
+                doc["status"] = "pending"   # always pipeline-pending on import
+                doc["imported_at"] = (
+                    doc.pop("created_at_override", "") or ""
+                    if "created_at_override" in field_to_cols
+                    else ""
+                )
+                doc.pop("created_at_override", None)   # schema-level key gone
+
                 doc["order_id"] = doc.get("order_id") or doc["master_order_id"]
                 # Skip blank rows (no name AND no phone)
                 if not doc["customer_name"] and not doc["customer_phone"]:

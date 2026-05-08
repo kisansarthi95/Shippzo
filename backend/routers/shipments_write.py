@@ -516,6 +516,17 @@ def init() -> None:
             if s.strip()
         ]
 
+        # Phase F2.1 — Status + Timestamp from imported sources.
+        # When the source row already carried a real-world status
+        # (Shipped/Delivered/etc.) and/or timestamp, those land on the
+        # PendingOrder as `imported_status` / `imported_at`. We copy
+        # them onto the resulting Shipment so historical imports land
+        # in the right pipeline bucket + carry the original timestamp.
+        _imp_status = (order.get("imported_status") or "").strip()
+        _imp_at     = (order.get("imported_at") or "").strip()
+        _ship_status = _imp_status if _imp_status else "Pending"
+        _ship_created_at = _imp_at if _imp_at else utcnow_iso()
+
         ship_doc = {
             "id":                 str(uuid.uuid4()),
             "tracking_id":        tracking_id,
@@ -543,14 +554,19 @@ def init() -> None:
             "order_id":           _get("order_id_hint"),
             "master_order_id":    str(order.get("master_order_id") or ""),
             "notes":              _get("notes"),
-            "status":             "Pending",
-            "created_at":         utcnow_iso(),
+            "status":             _ship_status,
+            "created_at":         _ship_created_at,
             "updated_at":         utcnow_iso(),
             # Carry the Master Sheet row number so a future delete can
             # soft-delete the exact tombstone row.
             "sheet_row_num":      order.get("sheet_row_num"),
             "user_id":            current_user["id"],
         }
+        # Phase F2.1 — when the import landed an already-Delivered row,
+        # also stamp delivered_at so analytics + the Detail page show
+        # the same timestamp the user saw in their source file.
+        if _ship_status == "Delivered" and _imp_at:
+            ship_doc["delivered_at"] = _imp_at
 
         # ── Mandatory Master Sheet backup (all plans) ──
         # PendingOrders that came in via Smart Paste already wrote a row

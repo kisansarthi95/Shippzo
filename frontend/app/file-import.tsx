@@ -62,6 +62,9 @@ const FIELD_LABEL: Record<string, string> = {
   courier_hint:       "Courier (hint)",
   order_id:           "Order ID",
   notes:              "Notes / Remarks",
+  // Phase F2.1 — order state + creation timestamp
+  status:             "Status (Pending / Shipped / Delivered…)",
+  created_at_override: "Order Date / Timestamp",
 };
 
 export default function FileImportScreen() {
@@ -255,7 +258,13 @@ export default function FileImportScreen() {
                   </View>
                   <View style={styles.fieldPill}>
                     <Text style={[styles.fieldPillTxt, !cur && { color: "#94A3B8" }]}>
-                      {cur ? FIELD_LABEL[cur] || cur : "Ignore"}
+                      {cur
+                        ? (cur.startsWith("custom:")
+                            ? `★ ${preview.custom_fields?.find(
+                                (cf: any) => `custom:${cf.id}` === cur,
+                              )?.label || "Custom Field"}`
+                            : (FIELD_LABEL[cur] || cur))
+                        : "Ignore"}
                     </Text>
                     <PhIcon name="chevron-down" size={14} color="#64748B" />
                   </View>
@@ -336,6 +345,35 @@ export default function FileImportScreen() {
                   <Text style={styles.fieldOptionSub}>{f}</Text>
                 </TouchableOpacity>
               ))}
+              {/* Phase F2.1 — per-user Custom Fields appear as their own
+                  group at the bottom of the picker so the import
+                  pipeline matches whatever the Add-Shipment form
+                  exposes. Mapping value is stored as "custom:<id>". */}
+              {(preview?.custom_fields || []).length > 0 ? (
+                <>
+                  <View style={styles.customGroupHeader}>
+                    <PhIcon name="star" size={12} color="#7C3AED" />
+                    <Text style={styles.customGroupHeaderTxt}>
+                      Your Custom Fields
+                    </Text>
+                  </View>
+                  {(preview?.custom_fields || []).map((cf: any) => {
+                    const v = `custom:${cf.id}`;
+                    return (
+                      <TouchableOpacity
+                        key={v}
+                        style={styles.fieldOption}
+                        onPress={() => { setColMapping(pickerCol!, v); setPickerCol(null); }}
+                      >
+                        <Text style={[styles.fieldOptionTxt, { color: "#7C3AED" }]}>
+                          ★ {cf.label || cf.id}
+                        </Text>
+                        <Text style={styles.fieldOptionSub}>{v}</Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </>
+              ) : null}
             </ScrollView>
           </Pressable>
         </Pressable>
@@ -371,4 +409,6 @@ const styles = StyleSheet.create({
   fieldOption: { paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: "#F1F5F9" },
   fieldOptionTxt: { fontSize: 14, fontWeight: "600", color: "#0F172A" },
   fieldOptionSub: { fontSize: 11, color: "#94A3B8", marginTop: 2 },
+  customGroupHeader: { flexDirection: "row", alignItems: "center", gap: 6, paddingTop: 14, paddingBottom: 6, marginTop: 4, borderTopWidth: 1, borderTopColor: "#E5E7EB" },
+  customGroupHeaderTxt: { fontSize: 11, fontWeight: "700", color: "#7C3AED", textTransform: "uppercase", letterSpacing: 0.5 },
 });

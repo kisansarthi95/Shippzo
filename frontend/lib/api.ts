@@ -1701,6 +1701,7 @@ export const Api = {
         sample_rows: Record<string, string>[];
         total_rows: number;
         schema_fields: string[];
+        custom_fields: { id: string; label: string }[];
         suggested: Record<string, string>;
       }>("/orders/import/preview", fd, {
         headers: { "Content-Type": "multipart/form-data" },
@@ -1736,7 +1737,11 @@ export const Api = {
   },
   getFileImportMapping: () =>
     api
-      .get<{ mapping: Record<string, string>; schema_fields: string[] }>(
+      .get<{
+        mapping: Record<string, string>;
+        schema_fields: string[];
+        custom_fields: { id: string; label: string }[];
+      }>(
         "/me/file-import-mapping",
       )
       .then((r) => r.data),
