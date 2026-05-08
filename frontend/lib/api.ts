@@ -1796,9 +1796,19 @@ export const Api = {
         configured: boolean;
       }>("/me/webhook-config")
       .then((r) => r.data),
-  rotateWebhookSecret: () =>
+  rotateWebhookSecret: (name?: string) =>
     api
-      .post<{ secret: string; url: string }>("/me/webhook-config/rotate")
+      .post<{ secret: string; url: string; name: string }>(
+        "/me/webhook-config/rotate",
+        name ? { name } : undefined,
+      )
+      .then((r) => r.data),
+  putWebhookName: (name: string) =>
+    api
+      .put<{ ok: boolean; name: string }>(
+        "/me/webhook-config/name",
+        { name },
+      )
       .then((r) => r.data),
   putWebhookMapping: (mapping: Record<string, string>) =>
     api

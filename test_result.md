@@ -14016,3 +14016,136 @@ agent_communication:
           unchanged.
         • Frontend screens load (app already booting, login renders).
 
+
+
+# ====================================================================
+# Phase F2.4 + F2.5 — Webhook Hardening + Naming
+# ====================================================================
+#   F2.4 — Dukaan & generic external-sender compatibility:
+#          • HTTPS-aware URL builder (X-Forwarded-Proto / Host)
+#          • Forgiving ingest (200 OK without mapping; sample saved)
+#          • Last-N-payload capture for in-app preview
+#          • Dukaan-specific HEADER_ALIASES (35 keys)
+#   F2.5 — Friendly source name on every webhook ("Shopify"/"Dukaan"):
+#          • POST /me/webhook-config/rotate now accepts {name}
+#          • PUT  /me/webhook-config/name (rename)
+#          • GET  /me/webhook-config returns {name, recent_samples}
+#          • Webhook-imported pending orders carry source_meta.webhook_name
+# ====================================================================
+
+backend:
+  - task: "Phase F2.4/F2.5 — Webhook HTTPS, forgiving ingest, naming"
+    implemented: true
+    working: "NA"
+    file: "/app/backend/routers/webhook.py, /app/backend/import_schema.py (Dukaan aliases)"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: |
+            Five new behaviours layered on the F2.2 webhook router:
+
+            1. _build_webhook_url(request, secret) helper. Reads
+               X-Forwarded-Proto + X-Forwarded-Host (set by the
+               K8s ingress) so the URL we hand to the user is the
+               public HTTPS URL, not the in-cluster http://service.
+               Default scheme upgraded to "https" so plain-HTTP is
+               never returned.
+
+            2. Forgiving ingest. /api/webhook/orders/{secret} no
+               longer 409s when the user hasn't configured a
+               mapping yet. Instead it persists the latest 10
+               payloads on users.webhook_recent_samples (capped
+               via $slice -10) and returns 200 OK with a friendly
+               "Connection OK — open the app to map fields"
+               note. Senders' "Test webhook" probes therefore
+               always succeed. Invalid bodies (raw strings) also
+               return 200 with errors[] instead of 400.
+
+            3. Last-received samples surfaced in
+               GET /api/me/webhook-config (recent_samples[]) so
+               the UI can offer one-tap "Use last received
+               payload" → /preview seeded with the real Dukaan
+               payload.
+
+            4. Webhook naming.
+               • New `webhook_name` field on users (str, ≤32 chars).
+               • POST /me/webhook-config/rotate now accepts an
+                 optional {name} body so first-generate can name +
+                 rotate atomically.
+               • PUT /me/webhook-config/name to rename later.
+               • GET /me/webhook-config returns the name.
+               • Ingest stamps source_meta.webhook_name onto every
+                 PendingOrder created via this user's webhook so
+                 the Orders UI can render "🟠 SHOPIFY"-style badges.
+
+            5. Dukaan & e-commerce HEADER_ALIASES (35 keys).
+               buyer.{name|phone|email} → customer_*; shipping_address.
+               {address_1|address_2|city|state|pincode} → address/city/...;
+               total_cost / order_total / subtotal → amount;
+               display_order_id / uuid → order_id;
+               order_status → status; payment_method / is_cod →
+               payment_mode. Same alias map is shared with file_import +
+               sheets so Dukaan CSV exports auto-map too.
+
+            REGRESSION REQUEST:
+               • F2.2 invariants (auth bypass, secret rotation,
+                 mapping CRUD, ship-pending-status copy).
+               • F2.4: forgiving ingest path. POST without mapping
+                 → 200 OK; sample appears in /me/webhook-config.
+               • F2.5: rotate with {name:"Shopify"} → name field
+                 returned; subsequent ingest writes
+                 source_meta.webhook_name="Shopify" on each
+                 PendingOrder; PUT /me/webhook-config/name updates;
+                 32-char cap enforced.
+               • _build_webhook_url honours X-Forwarded-Proto.
+                 Simulate header X-Forwarded-Proto: https to confirm
+                 url starts with https://.
+
+frontend:
+  - task: "Phase F2.5 — Webhook Config UI: name input, rename pill, generate-with-name modal"
+    implemented: true
+    working: "NA"
+    file: "/app/frontend/app/webhook-config.tsx, /app/frontend/lib/api.ts (rotateWebhookSecret(name?), putWebhookName)"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: |
+            Webhook Config screen now:
+              • On first generate, opens a name-input modal
+                ("Shopify" / "Dukaan"). Submit → atomic rotate-
+                with-name round-trip.
+              • Renders the name as an orange "🏷️ SHOPIFY" pill
+                above the URL block, plus a "Rename" tap to edit.
+              • "Use last received payload" green card appears
+                whenever recent_samples is non-empty (Phase F2.4).
+
+metadata:
+  test_sequence: 3
+  run_ui: false
+
+test_plan:
+  current_focus:
+    - "Phase F2.4/F2.5 — Webhook HTTPS, forgiving ingest, naming"
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"
+
+agent_communication:
+    -agent: "main"
+    -comment: |
+      Phase F2.4 + F2.5 ready for backend regression. F2.2 suite
+      should still pass. New invariants:
+        • Webhook URL always returns https:// (X-Forwarded-Proto
+          honoured).
+        • Ingest without mapping returns 200, persists sample.
+        • rotate accepts {name}; PUT /me/webhook-config/name
+          updates; GET surfaces name + recent_samples.
+        • PendingOrders created via webhook ingest carry
+          source_meta.webhook_name = configured name.
+

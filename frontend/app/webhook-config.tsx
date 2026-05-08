@@ -58,6 +58,7 @@ const FIELD_LABEL: Record<string, string> = {
 type Config = {
   secret: string;
   url: string | null;
+  name: string;
   mapping: Record<string, string>;
   schema_fields: string[];
   custom_fields: { id: string; label: string }[];
@@ -107,6 +108,13 @@ export default function WebhookConfigScreen() {
 
   const [pickerKey, setPickerKey]   = useState<string | null>(null);
 
+  // Phase F2.5 — friendly source name (e.g. "Shopify"). Required on
+  // first generate so the imported pending-order cards carry a clean
+  // badge label. Editable later via the "Rename" tap.
+  const [nameOpen, setNameOpen]     = useState(false);
+  const [nameDraft, setNameDraft]   = useState("");
+  const [nameMode, setNameMode]     = useState<"generate" | "rename">("generate");
+
   const load = async () => {
     setLoading(true);
     try {
@@ -147,16 +155,58 @@ export default function WebhookConfigScreen() {
     } catch {}
   };
 
-  const generateSecret = async () => {
+  const generateSecret = async (nameOverride?: string) => {
     setRotating(true);
     try {
-      const data = await Api.rotateWebhookSecret();
-      setCfg((c) => c ? { ...c, secret: data.secret, url: data.url, configured: true } : c);
-      Alert.alert("Secret created", "Your webhook URL is ready. Old URLs (if any) are now disabled.");
+      const data = await Api.rotateWebhookSecret(nameOverride);
+      setCfg((c) => c ? {
+        ...c,
+        secret: data.secret,
+        url: data.url,
+        name: data.name || c.name,
+        configured: true,
+      } : c);
+      Alert.alert(
+        "Secret created",
+        nameOverride
+          ? `Webhook URL ready for "${nameOverride}". Old URLs are now disabled.`
+          : "Your webhook URL is ready. Old URLs (if any) are now disabled.",
+      );
     } catch (e: any) {
       Alert.alert("Couldn't rotate secret", e?.message || "Try again later.");
     } finally {
       setRotating(false);
+    }
+  };
+
+  const openGenerateName = () => {
+    setNameMode("generate");
+    setNameDraft(cfg?.name || "");
+    setNameOpen(true);
+  };
+
+  const openRenameName = () => {
+    setNameMode("rename");
+    setNameDraft(cfg?.name || "");
+    setNameOpen(true);
+  };
+
+  const submitName = async () => {
+    const clean = nameDraft.trim();
+    if (!clean) {
+      Alert.alert("Name required", "Please enter a name (e.g. Shopify, Dukaan).");
+      return;
+    }
+    setNameOpen(false);
+    if (nameMode === "generate") {
+      await generateSecret(clean);
+    } else {
+      try {
+        const data = await Api.putWebhookName(clean);
+        setCfg((c) => c ? { ...c, name: data.name } : c);
+      } catch (e: any) {
+        Alert.alert("Couldn't rename", e?.message || "Try again.");
+      }
     }
   };
 
@@ -274,6 +324,25 @@ export default function WebhookConfigScreen() {
           <Text style={styles.sectionTitle}>Your Webhook URL</Text>
           {cfg?.configured ? (
             <View style={styles.urlCard}>
+              {/* Phase F2.5 — friendly name pill + edit. */}
+              <View style={{ flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 8 }}>
+                <View style={{
+                  flexDirection: "row", alignItems: "center", gap: 4,
+                  backgroundColor: "#FFF7EE",
+                  paddingHorizontal: 10, paddingVertical: 4, borderRadius: 12,
+                  borderWidth: 1, borderColor: "#FED7AA",
+                }}>
+                  <PhIcon name="tag" size={11} color="#FF6B00" />
+                  <Text style={{ fontSize: 11, fontWeight: "700", color: "#FF6B00" }}>
+                    {cfg.name || "WEBHOOK"}
+                  </Text>
+                </View>
+                <TouchableOpacity onPress={openRenameName} style={{ paddingHorizontal: 6 }}>
+                  <Text style={{ fontSize: 11, color: "#3B82F6", fontWeight: "600" }}>
+                    {cfg.name ? "Rename" : "Add name"}
+                  </Text>
+                </TouchableOpacity>
+              </View>
               <Text
                 style={styles.urlText}
                 numberOfLines={showRaw ? undefined : 2}
@@ -311,7 +380,7 @@ export default function WebhookConfigScreen() {
               </Text>
               <TouchableOpacity
                 style={styles.generateBtn}
-                onPress={generateSecret}
+                onPress={openGenerateName}
                 disabled={rotating}
               >
                 {rotating ? <ActivityIndicator color="#fff" /> : (
@@ -543,6 +612,52 @@ export default function WebhookConfigScreen() {
                 </>
               ) : null}
             </ScrollView>
+          </View>
+        </View>
+      </Modal>
+
+      {/* ── Name modal — Phase F2.5 ──────────────────────────── */}
+      <Modal
+        visible={nameOpen}
+        animationType="fade"
+        transparent
+        onRequestClose={() => setNameOpen(false)}
+      >
+        <View style={styles.modalBackdrop}>
+          <View style={[styles.modalCard, { maxHeight: 280 }]}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>
+                {nameMode === "generate" ? "Name your webhook" : "Rename webhook"}
+              </Text>
+              <TouchableOpacity onPress={() => setNameOpen(false)}>
+                <PhIcon name="x" size={20} color="#0F172A" />
+              </TouchableOpacity>
+            </View>
+            <Text style={styles.modalSub}>
+              Give it a friendly label so imported orders are tagged with
+              the source store (e.g. "Shopify", "Dukaan", "Meesho", "Custom Site").
+            </Text>
+            <TextInput
+              value={nameDraft}
+              onChangeText={setNameDraft}
+              placeholder="Shopify"
+              placeholderTextColor="#94A3B8"
+              autoFocus
+              maxLength={32}
+              style={{
+                paddingHorizontal: 12, paddingVertical: 12, borderRadius: 10,
+                borderWidth: 1, borderColor: "#E5E7EB", backgroundColor: "#F8FAFC",
+                fontSize: 15, color: "#0F172A", marginBottom: 12,
+              }}
+            />
+            <TouchableOpacity
+              style={styles.previewBtn}
+              onPress={submitName}
+            >
+              <Text style={styles.previewBtnTxt}>
+                {nameMode === "generate" ? "Generate URL" : "Save Name"}
+              </Text>
+            </TouchableOpacity>
           </View>
         </View>
       </Modal>

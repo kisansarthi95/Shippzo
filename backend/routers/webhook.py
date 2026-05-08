@@ -59,6 +59,20 @@ class WebhookMappingPayload(BaseModel):
     mapping: Dict[str, str]
 
 
+class WebhookNamePayload(BaseModel):
+    """Phase F2.5 — friendly source label shown on every pending-order
+    card that came in via this user's webhook URL. Kept short so the
+    UI badge reads cleanly (e.g. "Shopify", "Dukaan", "Meesho")."""
+    name: str
+
+
+class WebhookRotatePayload(BaseModel):
+    """Optional payload accepted by /me/webhook-config/rotate so the
+    UI can pass the friendly name in a single round-trip on the very
+    first generation. `name` is trimmed + capped to 32 chars."""
+    name: str | None = None
+
+
 def _gen_secret() -> str:
     """32-char URL-safe secret, ~190 bits entropy."""
     return secrets.token_urlsafe(24).rstrip("=")
@@ -143,14 +157,14 @@ def init() -> None:
         secret = u.get("webhook_secret") or ""
         full_url = _build_webhook_url(request, secret) if secret else None
         custom_fields = await _list_user_custom_fields(current_user["id"])
-        # Phase F2.4 — surface the last received samples so the
-        # Webhook Config UI can offer "Use last received payload" for
-        # easy mapping setup right after the user pastes the URL into
-        # Dukaan / Shopify and hits "Test webhook".
         recent_samples = u.get("webhook_recent_samples") or []
         return {
             "secret":          secret,
             "url":             full_url,
+            # Phase F2.5 — friendly source name (e.g. "Shopify"). Empty
+            # string when the user hasn't named the webhook yet; the
+            # UI then defaults the badge to a generic "WEBHOOK" pill.
+            "name":            (u.get("webhook_name") or "").strip(),
             "mapping":         u.get("webhook_mapping") or {},
             "schema_fields":   SCHEMA_FIELDS,
             "custom_fields":  [
@@ -158,27 +172,52 @@ def init() -> None:
                 for cf in custom_fields
             ],
             "configured":      bool(secret),
-            "recent_samples":  recent_samples[-5:],   # last 5 only
+            "recent_samples":  recent_samples[-5:],
         }
 
     @webhook_router.post("/me/webhook-config/rotate")
     async def rotate_webhook_secret(
         request: Request,
+        payload: WebhookRotatePayload | None = Body(default=None),
         current_user: Dict[str, Any] = Depends(_get_current_user),
     ):
         new_secret = _gen_secret()
+        update: Dict[str, Any] = {
+            "webhook_secret":     new_secret,
+            "webhook_secret_at":  datetime.now(timezone.utc).isoformat(),
+        }
+        # Phase F2.5 — also accept a friendly name on first generation
+        # so the UI can do "rotate + name" in a single round-trip.
+        if payload and payload.name:
+            update["webhook_name"] = payload.name.strip()[:32]
         await db.users.update_one(
             {"id": current_user["id"]},
-            {"$set": {
-                "webhook_secret":     new_secret,
-                "webhook_secret_at":  datetime.now(timezone.utc).isoformat(),
-            }},
+            {"$set": update},
         )
         origin_url = _build_webhook_url(request, new_secret)
         return {
             "secret": new_secret,
             "url":    origin_url,
+            "name":   update.get("webhook_name", ""),
         }
+
+    @webhook_router.put("/me/webhook-config/name")
+    async def put_webhook_name(
+        payload: WebhookNamePayload = Body(...),
+        current_user: Dict[str, Any] = Depends(_get_current_user),
+    ):
+        """Rename an already-generated webhook. The friendly name is
+        used purely as a display badge on imported pending orders so
+        the user can tell at a glance which storefront sent which
+        order (Shopify / Dukaan / Meesho / custom). Capped at 32 chars
+        — long enough for any platform name, short enough that the
+        badge doesn't wrap on small phones."""
+        clean = (payload.name or "").strip()[:32]
+        await db.users.update_one(
+            {"id": current_user["id"]},
+            {"$set": {"webhook_name": clean}},
+        )
+        return {"ok": True, "name": clean}
 
     @webhook_router.put("/me/webhook-config")
     async def put_webhook_config(
@@ -215,7 +254,7 @@ def init() -> None:
     ):
         u = await db.users.find_one(
             {"webhook_secret": secret},
-            {"_id": 0, "id": 1, "webhook_mapping": 1},
+            {"_id": 0, "id": 1, "webhook_mapping": 1, "webhook_name": 1},
         )
         if not u:
             raise HTTPException(status_code=404, detail="Unknown webhook secret")
@@ -335,8 +374,13 @@ def init() -> None:
                 "master_order_id": await generate_master_order_id(),
                 "created_at":      now,
                 "source_meta": {
-                    "received_at": now,
-                    "remote_keys": list(flat.keys())[:30],
+                    "received_at":  now,
+                    "remote_keys":  list(flat.keys())[:30],
+                    # Phase F2.5 — friendly source name (e.g. "Shopify").
+                    # The pending-orders UI uses this as the badge label
+                    # so the user can tell at a glance which storefront
+                    # an order came from.
+                    "webhook_name": (u.get("webhook_name") or "").strip(),
                 },
             })
             doc["order_id"] = doc.get("order_id") or doc["master_order_id"]
