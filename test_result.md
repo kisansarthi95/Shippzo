@@ -14418,3 +14418,50 @@ agent_communication:
       No other regressions found. F2.1 continues to pass 69/69.
       `POST /api/me/custom-fields` 422 in F2.4_5 E3b is still
       observed but explicitly out-of-scope per review request.
+
+---
+
+## Backend Test Run: Phase F2.4 + F2.5 Webhook Hardening — FINAL RE-TEST (2026-05-08)
+
+backend:
+  - task: "Phase F2.4/F2.5 — Webhook Hardening (HTTPS URL builder, forgiving ingest, naming, Dukaan aliases, F2.2 regression)"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "testing"
+        -comment: |
+            FINAL RE-TEST: 59/59 PASS via /app/backend_test_phase_f2_4_5.py
+            against https://logistics-hub-740.preview.emergentagent.com/api.
+            
+            Confirmed: the 2-field fix (imported_status + imported_at on
+            class Shipment Pydantic model in /app/backend/server.py lines
+            975-976) successfully flipped the previously-failing E4
+            assertions to PASS:
+              - E4 shipment.imported_status == 'Delivered' ✅
+              - E4 shipment.imported_at populated ✅
+            
+            All sections green:
+              A) HTTPS URL builder (5/5) — rotate/GET URLs always https
+              B) Forgiving ingest (12/12) — no-mapping → 200, recent_samples
+                 capped, raw-string body 200, bogus secret 404
+              C) Webhook naming (14/14) — rotate-with-name, GET, PUT /name,
+                 32-char truncation, empty-clear, source_meta.webhook_name
+              D) Dukaan alias preview (13/13) — all 12 expected mappings
+              E) F2.2 regression (15/15) — auth bypass on ingest, owner
+                 endpoints require bearer, mapping CRUD validation,
+                 ship_pending_order copies imported_status + imported_at
+                 + delivered_at correctly.
+            
+            Cleanup: 3 resources removed; no test artifacts left.
+
+agent_communication:
+    -agent: "testing"
+    -message: |
+        Phase F2.4/F2.5 final re-test COMPLETE — 59/59 PASS.
+        The Shipment model field-fix worked as expected. No regressions.
+        Ready for main agent to summarise/finish.

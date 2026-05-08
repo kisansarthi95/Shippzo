@@ -968,6 +968,12 @@ class Shipment(BaseModel):
     # (via Smart Paste), we remember the exact row number so deletion can
     # mark it as "DELETED" instead of actually removing the row.
     sheet_row_num: Optional[int] = None
+    # Phase F2.1 / F2.4 — preserved from source PendingOrder when this
+    # shipment was created via CSV / Excel / Webhook import that
+    # carried a real-world status + timestamp. Empty strings on
+    # rows that came in via manual Add-Shipment.
+    imported_status: str = ""
+    imported_at: str = ""
 
 
 class ShipmentCreate(BaseModel):
