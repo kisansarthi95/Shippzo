@@ -14465,3 +14465,120 @@ agent_communication:
         Phase F2.4/F2.5 final re-test COMPLETE — 59/59 PASS.
         The Shipment model field-fix worked as expected. No regressions.
         Ready for main agent to summarise/finish.
+
+
+# ====================================================================
+# Phase B — Unified Pending-Orders List
+# ====================================================================
+# User feedback (May 2026):
+#   "ઓર્ડર ની અંદર ત્રણ અલગ અલગ સેક્શન પડ્યા છે ... બધા જ એક લાઈનમાં
+#    આવવા જોઈએ ... આડા સ્કોલ થાય એવી રીતે નહીં ઊભા સ્ક્રોલ થવા જોઈએ
+#    ... જે પહેલું આવશે તે ઉપર"
+#
+# Implementation: collapsed three horizontal-scroll source-specific
+# carousels (Smart Paste · File · Sheet) into a single vertical
+# FlatList where each card carries a colour-coded source badge.
+# Webhook-imported orders join the same list with a per-user friendly
+# name (Phase F2.5) shown as the badge label. Sheet rows that are
+# already shipped are filtered out.
+# ====================================================================
+
+frontend:
+  - task: "Phase B — Unified vertical Pending-Orders list with colour-coded source badges"
+    implemented: true
+    working: "NA"
+    file: "/app/frontend/app/(tabs)/orders.tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: |
+            Refactored the Orders screen end-to-end:
+
+            • Replaced the 3 horizontal sections (Smart Paste Queue,
+              File Imports, Google Sheet FlatList) + the "All / Pending
+              / Shipped" filter chips with ONE vertical FlatList that
+              renders rows from EVERY source (paste / file / sheet /
+              webhook) sorted newest-first.
+
+            • Source identity is conveyed via a colour-coded badge at
+              the top-left of each card:
+                ✨ PASTE   — purple   (#EDE9FE / #7C3AED)
+                📄 FILE    — green    (#D1FAE5 / #047857)
+                📊 SHEET   — blue     (#DBEAFE / #1D4ED8)
+                🔌 <NAME>  — orange   (#FFE4CC / #C2410C)
+              Webhook badge label uses the user's friendly name
+              (e.g. "🔌 SHOPIFY") set via /api/me/webhook-config/name
+              (Phase F2.5). Falls back to "🔌 WEBHOOK" if unnamed.
+
+            • New source-filter chips replace the legacy pending/
+              shipped/all chips:
+                All · ✨ Smart Paste · 📄 File · 📊 Sheet · 🔌 <Name>
+              Each chip swaps the same vertical FlatList; counts
+              update live.
+
+            • Sheet rows now filter out `already_shipped` per user
+              requirement; only pending sheet rows surface.
+
+            • Header subtitle aggregates pending across all sources:
+              "12 pending · synced 2m ago".
+
+            • The legacy code paths are retained for safety but no
+              longer rendered:
+                - pasteQueueWrap / pasteCard / pasteBadge styles
+                - card / row / orderId / shippedChip / pendingChip
+              These can be deleted in a future cleanup pass once we
+              confirm no other screen imports them.
+
+            Data plumbing:
+              - loadPasteOrders() now also fetches webhook orders and
+                Api.getWebhookConfig() (best-effort) for the name.
+              - unifiedRows[] builder runs every render, low cost
+                even with 500+ orders (single pass through 4 arrays).
+              - sortTime field uses created_at when available; sheet
+                rows fall back to row_index so newer rows still
+                bubble to the top.
+
+            Visual smoke OK:
+              • App boots, login renders.
+              • Bundle compiles cleanly (web + iOS).
+              • No console errors during initial load.
+
+            REMAINING USER PHASES (see prior conversation):
+              - Phase C: Edit option on every pending card + back-
+                without-save 3-option dialog (Save / Discard /
+                Continue).
+              - Phase D: Confirm pending row stays until ship-form
+                actually saves (no premature delete).
+
+            Frontend test will be invoked after USER permission per
+            project policy.
+
+metadata:
+  test_sequence: 4
+  run_ui: false
+
+test_plan:
+  current_focus:
+    - "Phase B — Unified vertical Pending-Orders list with colour-coded source badges"
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"
+
+agent_communication:
+    -agent: "main"
+    -comment: |
+      Phase B (frontend-only refactor) ready for visual review by
+      the user. No backend changes; no regression risk for existing
+      F2.x backend endpoints.
+
+      User can now log in (admin@test.com / Admin@12345) and visit
+      the Orders tab to see:
+        • One scrolling list (no more horizontal carousels).
+        • Source badge on every card.
+        • Filter chips for All / Smart Paste / File / Sheet /
+          <webhook_name>.
+        • Sheet "All" badge gone, shipped sheet rows hidden.
+

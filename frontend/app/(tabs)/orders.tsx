@@ -10,7 +10,7 @@ import { useFocusEffect, useRouter } from "expo-router";
 import { Api, SheetOrder, PendingOrder, Courier } from "../../lib/api";
 import { colors } from "../../lib/theme";
 
-type Filter = "pending" | "shipped" | "all";
+type Filter = "pending" | "shipped" | "all";   // legacy — retained for type-import compat
 
 export default function OrdersFromSheet() {
   const router = useRouter();
@@ -20,7 +20,8 @@ export default function OrdersFromSheet() {
   const [lastSync, setLastSync] = useState<Date | null>(null);
   const [headersChanged, setHeadersChanged] = useState(false);
   const [search, setSearch] = useState("");
-  const [filter, setFilter] = useState<Filter>("pending");
+  // Phase B — `filter` state retired; pending/shipped/all chips were
+  // collapsed into source-based chips (paste/file/sheet/webhook).
   const [error, setError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -29,20 +30,37 @@ export default function OrdersFromSheet() {
   const [pasteOrders, setPasteOrders] = useState<PendingOrder[]>([]);
   // Phase F1 — File-import pending queue (CSV/XLSX uploads)
   const [fileOrders, setFileOrders] = useState<PendingOrder[]>([]);
+  // Phase F2.5 — Webhook ingest pending queue (Dukaan/Shopify/etc.)
+  const [webhookOrders, setWebhookOrders] = useState<PendingOrder[]>([]);
+  // Phase F2.5 — friendly webhook label (e.g. "Shopify"). Falls back
+  // to "WEBHOOK" pill when the user hasn't named theirs yet.
+  const [webhookName, setWebhookName]   = useState<string>("");
   const [couriers, setCouriers] = useState<Courier[]>([]);
   const [shipModalOrder, setShipModalOrder] = useState<PendingOrder | null>(null);
   const [shipping, setShipping] = useState(false);
+  // Phase B — unified source filter. "all" shows every pending row
+  // from every channel mixed together; the others narrow to one
+  // channel. Cards are sorted newest-first regardless of filter.
+  const [sourceFilter, setSourceFilter] = useState<
+    "all" | "paste" | "file" | "sheet" | "webhook"
+  >("all");
 
   const loadPasteOrders = useCallback(async () => {
     try {
-      const [pos, fos, cs] = await Promise.all([
-        Api.listPendingOrders({ source: "paste", status: "pending" }),
-        Api.listPendingOrders({ source: "file",  status: "pending" }),
+      const [pos, fos, wos, cs, wcfg] = await Promise.all([
+        Api.listPendingOrders({ source: "paste",   status: "pending" }),
+        Api.listPendingOrders({ source: "file",    status: "pending" }),
+        Api.listPendingOrders({ source: "webhook", status: "pending" }),
         Api.listCouriers(),
+        // Webhook name lookup is best-effort — a brand-new account
+        // won't have one yet, in which case we fall back to "WEBHOOK".
+        Api.getWebhookConfig().catch(() => null),
       ]);
       setPasteOrders(pos);
       setFileOrders(fos);
+      setWebhookOrders(wos);
       setCouriers(cs);
+      setWebhookName((wcfg as any)?.name || "");
     } catch {/* ignore */}
   }, []);
 
@@ -139,20 +157,204 @@ export default function OrdersFromSheet() {
     }, [load, loadPasteOrders])
   );
 
-  const visible = orders.filter((o) => {
-    if (filter === "pending" && o.already_shipped) return false;
-    if (filter === "shipped" && !o.already_shipped) return false;
-    const q = search.trim().toLowerCase();
-    if (!q) return true;
-    return (
-      (o.order_id || "").toLowerCase().includes(q) ||
-      (o.customer_name || "").toLowerCase().includes(q) ||
-      (o.phone || "").toLowerCase().includes(q) ||
-      (o.city || "").toLowerCase().includes(q)
-    );
-  });
+  // Phase B — Build the unified pending-orders list. All four sources
+  // (Smart Paste, File Import, Webhook, Google Sheet) collapse into
+  // a single vertical-scroll FlatList where each row carries its own
+  // colour-coded badge. Newest-first ordering uses created_at when
+  // available, falling back to spreadsheet row index for sheet rows.
+  type UnifiedRow = {
+    key: string;
+    source: "paste" | "file" | "sheet" | "webhook";
+    badgeLabel: string;
+    badgeBg: string;
+    badgeFg: string;
+    sortTime: number;          // higher = newer
+    customer_name: string;
+    customer_phone: string;
+    city: string;
+    state: string;
+    pincode: string;
+    items: string;
+    amount: number;
+    payment_mode: string;
+    extra?: string;            // small footnote (e.g. "from invoice.csv")
+    paste?: PendingOrder;      // present for paste/file/webhook
+    sheet?: SheetOrder;        // present for sheet
+  };
 
-  const pendingCount = orders.filter((o) => !o.already_shipped).length;
+  const unifiedRows: UnifiedRow[] = (() => {
+    const out: UnifiedRow[] = [];
+    const tsOf = (iso?: string) =>
+      iso ? Date.parse(iso) || 0 : 0;
+
+    // Smart Paste
+    if (sourceFilter === "all" || sourceFilter === "paste") {
+      for (const po of pasteOrders) {
+        out.push({
+          key: `paste|${po.id}`,
+          source: "paste",
+          badgeLabel: "✨ PASTE",
+          badgeBg: "#EDE9FE",
+          badgeFg: "#7C3AED",
+          sortTime: tsOf(po.created_at),
+          customer_name: po.customer_name,
+          customer_phone: po.customer_phone,
+          city: po.city,
+          state: po.state,
+          pincode: po.pincode,
+          items: po.items,
+          amount: Number(po.amount || 0),
+          payment_mode: po.payment_mode,
+          paste: po,
+        });
+      }
+    }
+    // File Imports
+    if (sourceFilter === "all" || sourceFilter === "file") {
+      for (const po of fileOrders) {
+        const meta: any = (po as any).source_meta || {};
+        out.push({
+          key: `file|${po.id}`,
+          source: "file",
+          badgeLabel: "📄 FILE",
+          badgeBg: "#D1FAE5",
+          badgeFg: "#047857",
+          sortTime: tsOf(meta.imported_at) || tsOf(po.created_at),
+          customer_name: po.customer_name,
+          customer_phone: po.customer_phone,
+          city: po.city,
+          state: po.state,
+          pincode: po.pincode,
+          items: po.items,
+          amount: Number(po.amount || 0),
+          payment_mode: po.payment_mode,
+          extra: meta.filename ? `from ${meta.filename}` : undefined,
+          paste: po,
+        });
+      }
+    }
+    // Webhook (Dukaan / Shopify / …) — name-tagged badge.
+    if (sourceFilter === "all" || sourceFilter === "webhook") {
+      const wname = (webhookName || "WEBHOOK").toUpperCase().slice(0, 16);
+      for (const po of webhookOrders) {
+        const meta: any = (po as any).source_meta || {};
+        out.push({
+          key: `webhook|${po.id}`,
+          source: "webhook",
+          badgeLabel: `🔌 ${(meta.webhook_name || webhookName || "WEBHOOK").toUpperCase().slice(0, 16)}`,
+          badgeBg: "#FFE4CC",
+          badgeFg: "#C2410C",
+          sortTime: tsOf(meta.received_at) || tsOf(po.created_at),
+          customer_name: po.customer_name,
+          customer_phone: po.customer_phone,
+          city: po.city,
+          state: po.state,
+          pincode: po.pincode,
+          items: po.items,
+          amount: Number(po.amount || 0),
+          payment_mode: po.payment_mode,
+          extra: meta.webhook_name
+            ? `from ${meta.webhook_name}`
+            : (wname !== "WEBHOOK" ? `from ${wname}` : undefined),
+          paste: po,
+        });
+      }
+    }
+    // Google Sheet — pending-only (drop already_shipped per user req).
+    if (sourceFilter === "all" || sourceFilter === "sheet") {
+      const q = search.trim().toLowerCase();
+      for (const o of orders) {
+        if (o.already_shipped) continue;
+        if (q) {
+          const hay = `${o.order_id} ${o.customer_name} ${o.phone} ${o.city}`.toLowerCase();
+          if (!hay.includes(q)) continue;
+        }
+        out.push({
+          key: `sheet|${o.row_key || o.row_index}`,
+          source: "sheet",
+          badgeLabel: "📊 SHEET",
+          badgeBg: "#DBEAFE",
+          badgeFg: "#1D4ED8",
+          // Sheets API returns no real timestamp — approximate with
+          // negative row_index so newer (higher) rows still bubble up.
+          sortTime: typeof o.row_index === "number" ? o.row_index : 0,
+          customer_name: o.customer_name,
+          customer_phone: o.phone,
+          city: o.city,
+          state: o.state,
+          pincode: o.pincode,
+          items: o.item,
+          amount: Number(o.amount || 0),
+          payment_mode: "",
+          extra: `Row ${o.row_index}${o.order_id ? ` · #${o.order_id}` : ""}`,
+          sheet: o,
+        });
+      }
+    }
+
+    // Newest first.
+    out.sort((a, b) => b.sortTime - a.sortTime);
+    return out;
+  })();
+
+  const renderUnifiedRow = (row: UnifiedRow) => (
+    <View key={row.key} style={styles.unifiedCard} testID={`unified-${row.key}`}>
+      <View style={styles.unifiedHeader}>
+        <View style={[styles.unifiedBadge, { backgroundColor: row.badgeBg }]}>
+          <Text style={[styles.unifiedBadgeTxt, { color: row.badgeFg }]}>
+            {row.badgeLabel}
+          </Text>
+        </View>
+        {row.paste ? (
+          <TouchableOpacity onPress={() => deletePasteOrder(row.paste!)} hitSlop={8}>
+            <PhIcon name="close" size={18} color={colors.textMuted} />
+          </TouchableOpacity>
+        ) : null}
+      </View>
+      <Text style={styles.unifiedName} numberOfLines={1}>
+        {row.customer_name || "(no name)"}
+      </Text>
+      <Text style={styles.unifiedMeta} numberOfLines={1}>
+        📞 {row.customer_phone || "—"} · {row.pincode || "—"}
+      </Text>
+      <Text style={styles.unifiedMeta} numberOfLines={1}>
+        {row.city || "—"}{row.state ? `, ${row.state}` : ""}
+      </Text>
+      {!!row.items && (
+        <Text style={styles.unifiedItems} numberOfLines={1}>
+          📦 {row.items}
+        </Text>
+      )}
+      <Text style={styles.unifiedAmount}>
+        {row.payment_mode === "COD" ? "💵 COD" : row.payment_mode === "PAID" ? "✅ PAID" : ""}
+        {row.amount ? `  ₹${row.amount.toFixed(0)}` : ""}
+      </Text>
+      {!!row.extra && (
+        <Text style={styles.unifiedExtra} numberOfLines={1}>{row.extra}</Text>
+      )}
+      <TouchableOpacity
+        style={[
+          styles.shipBtn,
+          row.source === "file"    && { backgroundColor: "#10B981" },
+          row.source === "sheet"   && { backgroundColor: "#1D4ED8" },
+          row.source === "webhook" && { backgroundColor: "#C2410C" },
+        ]}
+        onPress={() => {
+          if (row.sheet) shipNow(row.sheet);
+          else if (row.paste) shipPasteOrder(row.paste);
+        }}
+        testID={`ship-${row.key}`}
+      >
+        <PhIcon name="rocket-outline" size={14} color="#fff" />
+        <Text style={styles.shipBtnText}>Ship this order</Text>
+      </TouchableOpacity>
+    </View>
+  );
+
+  // Phase B — `visible` and `pendingCount` are derived inline now
+  // via the unified `unifiedRows` builder above; the legacy filter
+  // ("pending"/"shipped"/"all") was retired in favour of source-based
+  // chips. Search is applied during the unified-rows assembly.
 
   const shipNow = (o: SheetOrder) => {
     // Navigate to Add with prefilled fields via URL params (stringified).
@@ -184,9 +386,15 @@ export default function OrdersFromSheet() {
         <View>
           <Text style={styles.title}>Orders</Text>
           <Text style={styles.subtitle}>
-            {connected
-              ? `${pendingCount + pasteOrders.length} pending · synced ${lastSync ? timeAgo(lastSync) : "—"}`
-              : `${pasteOrders.length} pending from Smart Paste`}
+            {(() => {
+              // Phase B — single subtitle that aggregates pending
+              // counts from every source the user has wired up.
+              const sheetPending = orders.filter(o => !o.already_shipped).length;
+              const totalPending = pasteOrders.length + fileOrders.length + webhookOrders.length + sheetPending;
+              return totalPending === 0
+                ? "No pending orders yet"
+                : `${totalPending} pending · synced ${lastSync ? timeAgo(lastSync) : "—"}`;
+            })()}
           </Text>
         </View>
         <View style={{ flexDirection: "row", alignItems: "center" }}>
@@ -211,268 +419,101 @@ export default function OrdersFromSheet() {
         </View>
       </View>
 
-      {/* Paste Queue (always visible when has items) */}
-      {pasteOrders.length > 0 && (
-        <View style={styles.pasteQueueWrap}>
-          <View style={styles.pasteQueueHeader}>
-            <PhIcon name="sparkles" size={14} color="#7C3AED" />
-            <Text style={styles.pasteQueueTitle}>
-              Smart Paste Queue · {pasteOrders.length}
-            </Text>
-          </View>
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={{ paddingHorizontal: 12, paddingBottom: 12, gap: 10 }}
-          >
-            {pasteOrders.map((po) => (
-              <View key={po.id} style={styles.pasteCard}>
-                <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
-                  <View style={styles.pasteBadge}>
-                    <Text style={styles.pasteBadgeText}>✨ PASTE</Text>
-                  </View>
-                  <TouchableOpacity onPress={() => deletePasteOrder(po)} hitSlop={8}>
-                    <PhIcon name="close" size={18} color={colors.textMuted} />
-                  </TouchableOpacity>
-                </View>
-                <Text style={styles.pasteName} numberOfLines={1}>
-                  {po.customer_name || "(no name)"}
-                </Text>
-                <Text style={styles.pasteMeta} numberOfLines={1}>
-                  📞 {po.customer_phone || "—"} · {po.pincode || "—"}
-                </Text>
-                <Text style={styles.pasteMeta} numberOfLines={1}>
-                  {po.city || "—"}, {po.state || ""}
-                </Text>
-                <Text style={styles.pasteAmount}>
-                  {po.payment_mode === "COD" ? "💵 COD" : "✅ PAID"}{" "}
-                  ₹{Number(po.amount || 0).toFixed(0)}
-                </Text>
-                <TouchableOpacity
-                  style={styles.shipBtn}
-                  onPress={() => shipPasteOrder(po)}
-                  testID={`ship-order-${po.id}`}
-                >
-                  <PhIcon name="rocket-outline" size={14} color="#fff" />
-                  <Text style={styles.shipBtnText}>Ship this order</Text>
-                </TouchableOpacity>
-              </View>
-            ))}
-          </ScrollView>
-        </View>
-      )}
+      {/* Phase B — Unified Pending Orders.
+          One vertical FlatList for ALL sources (Smart Paste, File,
+          Webhook, Google Sheet). Each card carries a colour-coded
+          source badge and the list is sorted newest-first.
+          Sheet rows that are already shipped are filtered out. */}
+      <View style={styles.searchWrap}>
+        <PhIcon name="search" size={18} color={colors.textMuted} />
+        <TextInput
+          testID="orders-search"
+          value={search}
+          onChangeText={setSearch}
+          placeholder="Search order, name, phone, city"
+          placeholderTextColor="#9CA3AF"
+          style={styles.searchInput}
+        />
+      </View>
 
-      {/* Phase F1 — File-import (CSV/XLSX) pending queue */}
-      {fileOrders.length > 0 && (
-        <View style={styles.pasteQueueWrap}>
-          <View style={styles.pasteQueueHeader}>
-            <PhIcon name="cloud-upload" size={14} color="#10B981" />
-            <Text style={[styles.pasteQueueTitle, { color: "#10B981" }]}>
-              File Imports · {fileOrders.length}
-            </Text>
-          </View>
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={{ paddingHorizontal: 12, paddingBottom: 12, gap: 10 }}
-          >
-            {fileOrders.map((po) => {
-              const meta = (po as any).source_meta || {};
-              const ago = meta.imported_at ? timeAgo(new Date(meta.imported_at)) : "";
-              return (
-                <View key={po.id} style={[styles.pasteCard, { borderColor: "#A7F3D0" }]}>
-                  <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
-                    <View style={[styles.pasteBadge, { backgroundColor: "#D1FAE5" }]}>
-                      <Text style={[styles.pasteBadgeText, { color: "#047857" }]}>📄 FILE</Text>
-                    </View>
-                    <TouchableOpacity onPress={() => deletePasteOrder(po)} hitSlop={8}>
-                      <PhIcon name="close" size={18} color={colors.textMuted} />
-                    </TouchableOpacity>
-                  </View>
-                  <Text style={styles.pasteName} numberOfLines={1}>
-                    {po.customer_name || "(no name)"}
-                  </Text>
-                  <Text style={styles.pasteMeta} numberOfLines={1}>
-                    📞 {po.customer_phone || "—"} · {po.pincode || "—"}
-                  </Text>
-                  <Text style={styles.pasteMeta} numberOfLines={1}>
-                    {po.city || "—"}, {po.state || ""}
-                  </Text>
-                  <Text style={styles.pasteAmount}>
-                    {po.payment_mode === "COD" ? "💵 COD" : "✅ PAID"}{" "}
-                    ₹{Number(po.amount || 0).toFixed(0)}
-                  </Text>
-                  {ago ? (
-                    <Text style={[styles.pasteMeta, { fontSize: 10, marginTop: 2 }]} numberOfLines={1}>
-                      ⬆ {ago}{meta.filename ? ` · ${meta.filename}` : ""}
-                    </Text>
-                  ) : null}
-                  <TouchableOpacity
-                    style={[styles.shipBtn, { backgroundColor: "#10B981" }]}
-                    onPress={() => shipPasteOrder(po)}
-                    testID={`ship-file-order-${po.id}`}
-                  >
-                    <PhIcon name="rocket-outline" size={14} color="#fff" />
-                    <Text style={styles.shipBtnText}>Ship this order</Text>
-                  </TouchableOpacity>
-                </View>
-              );
-            })}
-          </ScrollView>
-        </View>
-      )}
+      {/* Source filter chips — horizontal, but each tab swaps the
+          vertical list below. */}
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        contentContainerStyle={{ paddingHorizontal: 12, paddingBottom: 8, gap: 8 }}
+      >
+        {([
+          { k: "all",     label: `All (${pasteOrders.length + fileOrders.length + webhookOrders.length + orders.filter(o => !o.already_shipped).length})` },
+          { k: "paste",   label: `✨ Smart Paste${pasteOrders.length ? ` (${pasteOrders.length})` : ""}` },
+          { k: "file",    label: `📄 File${fileOrders.length ? ` (${fileOrders.length})` : ""}` },
+          { k: "sheet",   label: `📊 Sheet${connected ? ` (${orders.filter(o => !o.already_shipped).length})` : ""}` },
+          { k: "webhook", label: `🔌 ${(webhookName || "Webhook")}${webhookOrders.length ? ` (${webhookOrders.length})` : ""}` },
+        ] as const).map((f) => {
+          const active = sourceFilter === f.k;
+          return (
+            <TouchableOpacity
+              key={f.k}
+              testID={`unified-filter-${f.k}`}
+              onPress={() => setSourceFilter(f.k as any)}
+              style={[styles.filterPill, active && styles.filterPillActive]}
+            >
+              <Text style={[styles.filterText, active && { color: "#fff" }]}>
+                {f.label}
+              </Text>
+            </TouchableOpacity>
+          );
+        })}
+      </ScrollView>
 
-      {!connected ? (
-        <View style={styles.empty} testID="orders-not-connected">
-          <PhIcon name="logo-google" size={52} color="#9CA3AF" />
-          <Text style={styles.emptyTitle}>Connect Google Sheet</Text>
-          <Text style={styles.emptyText}>
-            Settings → Google Sheet → paste sheet link → map columns. Orders will appear here automatically.
+      {error && sourceFilter !== "all" && sourceFilter !== "sheet" ? null : null}
+      {connected && headersChanged && (
+        <View style={styles.warnBox}>
+          <PhIcon name="warning-outline" size={16} color={colors.warningText} />
+          <Text style={styles.warnText}>
+            Sheet columns changed. Re-map in Settings → Google Sheet.
           </Text>
-          <TouchableOpacity
-            testID="orders-goto-settings"
-            style={styles.primaryBtn}
-            onPress={() => router.push("/(tabs)/settings")}
-          >
-            <Text style={styles.primaryBtnText}>Open Settings</Text>
-          </TouchableOpacity>
         </View>
-      ) : error ? (
-        <View style={styles.empty}>
-          <PhIcon name="warning" size={48} color={colors.dangerText} />
-          <Text style={styles.emptyTitle}>Couldn't sync</Text>
-          <Text style={styles.emptyText}>{error}</Text>
-          <TouchableOpacity style={styles.primaryBtn} onPress={load}>
-            <Text style={styles.primaryBtnText}>Retry</Text>
-          </TouchableOpacity>
+      )}
+
+      {loading ? (
+        <ActivityIndicator color={colors.primary} style={{ marginTop: 40 }} />
+      ) : unifiedRows.length === 0 ? (
+        <View style={styles.empty} testID="unified-empty">
+          <PhIcon name="cube-outline" size={48} color="#9CA3AF" />
+          <Text style={styles.emptyTitle}>No pending orders</Text>
+          <Text style={styles.emptyText}>
+            New orders will appear here automatically as they arrive
+            from Smart Paste, File Imports, Google Sheet, or Webhooks.
+          </Text>
+          {!connected && (
+            <TouchableOpacity
+              testID="orders-goto-settings"
+              style={styles.primaryBtn}
+              onPress={() => router.push("/(tabs)/settings")}
+            >
+              <Text style={styles.primaryBtnText}>Connect a source</Text>
+            </TouchableOpacity>
+          )}
         </View>
       ) : (
-        <>
-          {headersChanged && (
-            <View style={styles.warnBox}>
-              <PhIcon name="warning-outline" size={16} color={colors.warningText} />
-              <Text style={styles.warnText}>
-                Sheet columns changed. Re-map in Settings → Google Sheet.
-              </Text>
-            </View>
-          )}
-
-          <View style={styles.searchWrap}>
-            <PhIcon name="search" size={18} color={colors.textMuted} />
-            <TextInput
-              testID="orders-search"
-              value={search}
-              onChangeText={setSearch}
-              placeholder="Search order, name, phone, city"
-              placeholderTextColor="#9CA3AF"
-              style={styles.searchInput}
+        <FlatList
+          testID="unified-list"
+          data={unifiedRows}
+          keyExtractor={(r) => r.key}
+          refreshControl={
+            <RefreshControl
+              refreshing={refreshing}
+              onRefresh={() => {
+                setRefreshing(true);
+                load();
+                loadPasteOrders();
+              }}
             />
-          </View>
-
-          <View style={styles.filterRow}>
-            {([
-              { k: "pending", label: `Pending${pendingCount ? ` (${pendingCount})` : ""}` },
-              { k: "shipped", label: "Shipped" },
-              { k: "all", label: `All (${orders.length})` },
-            ] as const).map((f) => {
-              const active = filter === f.k;
-              return (
-                <TouchableOpacity
-                  key={f.k}
-                  testID={`orders-filter-${f.k}`}
-                  onPress={() => setFilter(f.k)}
-                  style={[styles.filterPill, active && styles.filterPillActive]}
-                >
-                  <Text style={[styles.filterText, active && { color: "#fff" }]}>
-                    {f.label}
-                  </Text>
-                </TouchableOpacity>
-              );
-            })}
-          </View>
-
-          {loading ? (
-            <ActivityIndicator color={colors.primary} style={{ marginTop: 40 }} />
-          ) : (
-            <FlatList
-              testID="orders-list"
-              data={visible}
-              // Always include the row_index suffix — when two sheet rows
-              // happen to hash to the same row_key (the backend builds it
-              // from amount + customer name and Indian customers re-using
-              // the same name across orders DOES happen), React would
-              // otherwise warn "two children with the same key" and
-              // silently drop one of the rows. Suffixing with the
-              // 1-indexed row number guarantees uniqueness.
-              keyExtractor={(o, idx) => `${o.row_key || "row"}|${o.row_index ?? idx}`}
-              refreshControl={
-                <RefreshControl
-                  refreshing={refreshing}
-                  onRefresh={() => {
-                    setRefreshing(true);
-                    load();
-                  }}
-                />
-              }
-              contentContainerStyle={{ padding: 16, paddingBottom: 100 }}
-              ListEmptyComponent={
-                <View style={styles.empty}>
-                  <PhIcon name="cube-outline" size={48} color="#9CA3AF" />
-                  <Text style={styles.emptyText}>
-                    {orders.length === 0
-                      ? "No orders in your sheet yet."
-                      : "No matching orders."}
-                  </Text>
-                </View>
-              }
-              renderItem={({ item }) => (
-                <View
-                  style={[styles.card, item.already_shipped && { opacity: 0.55 }]}
-                  testID={`order-card-${item.row_index}`}
-                >
-                  <View style={styles.row}>
-                    <Text style={styles.orderId}>
-                      {item.order_id ? `#${item.order_id}` : `Row ${item.row_index}`}
-                    </Text>
-                    {item.already_shipped ? (
-                      <View style={styles.shippedChip}>
-                        <Text style={styles.shippedChipText}>SHIPPED</Text>
-                      </View>
-                    ) : (
-                      <View style={styles.pendingChip}>
-                        <Text style={styles.pendingChipText}>PENDING</Text>
-                      </View>
-                    )}
-                  </View>
-                  <Text style={styles.customerName}>
-                    {item.customer_name || "(no name)"}
-                  </Text>
-                  <Text style={styles.metaLine}>
-                    {item.phone || "no phone"} · {item.city || "—"}
-                  </Text>
-                  {!!item.item && (
-                    <Text style={styles.itemLine} numberOfLines={2}>
-                      📦 {item.item}
-                    </Text>
-                  )}
-                  {!!item.amount && (
-                    <Text style={styles.amountLine}>₹{item.amount}</Text>
-                  )}
-                  {!item.already_shipped && (
-                    <TouchableOpacity
-                      testID={`ship-now-${item.row_index}`}
-                      onPress={() => shipNow(item)}
-                      style={styles.shipBtn}
-                    >
-                      <PhIcon name="send" size={16} color="#fff" />
-                      <Text style={styles.shipBtnText}>Ship this order</Text>
-                    </TouchableOpacity>
-                  )}
-                </View>
-              )}
-            />
-          )}
-        </>
+          }
+          contentContainerStyle={{ padding: 16, paddingBottom: 100 }}
+          renderItem={({ item }) => renderUnifiedRow(item)}
+        />
       )}
 
       {/* Courier Picker Modal for Ship This Order */}
@@ -634,6 +675,31 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20, paddingVertical: 12, borderRadius: 10,
   },
   primaryBtnText: { color: "#fff", fontWeight: "800" },
+
+  // ─── Phase B — Unified pending-orders card ────────────────────
+  // Used for cards from every source (paste / file / sheet / webhook).
+  // Source identity is conveyed via the colour-coded badge at the top.
+  unifiedCard: {
+    backgroundColor: colors.surface,
+    borderWidth: 2, borderColor: "#E5E7EB",
+    borderRadius: 12, padding: 14, marginBottom: 10,
+  },
+  unifiedHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  unifiedBadge: {
+    paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6,
+  },
+  unifiedBadgeTxt: {
+    fontSize: 10, fontWeight: "900", letterSpacing: 0.5,
+  },
+  unifiedName: { marginTop: 8, fontSize: 16, fontWeight: "800", color: colors.text },
+  unifiedMeta: { marginTop: 2, fontSize: 12, color: colors.textMuted },
+  unifiedItems: { marginTop: 4, fontSize: 13, color: colors.text, fontWeight: "600" },
+  unifiedAmount: { marginTop: 6, fontSize: 14, color: colors.text, fontWeight: "800" },
+  unifiedExtra: { marginTop: 4, fontSize: 11, color: "#94A3B8", fontStyle: "italic" },
 
   // Smart Paste queue styles
   pasteQueueWrap: {
