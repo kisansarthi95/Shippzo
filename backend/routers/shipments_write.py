@@ -557,6 +557,13 @@ def init() -> None:
             "status":             _ship_status,
             "created_at":         _ship_created_at,
             "updated_at":         utcnow_iso(),
+            # Phase F2.4 — also persist the raw imported values on the
+            # Shipment doc itself so analytics + the Detail page can
+            # show "imported from Shopify on 29 Apr" without joining
+            # back to the (now-deleted) PendingOrder. Empty strings
+            # when the source row didn't carry these fields.
+            "imported_status":    _imp_status,
+            "imported_at":        _imp_at,
             # Phase F2.1 — carry per-shipment custom-field values from
             # the source PendingOrder so Smart Paste / CSV / Webhook
             # imports preserve dynamic fields end-to-end. Existing

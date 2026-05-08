@@ -14288,3 +14288,133 @@ agent_communication:
       the imported_status/imported_at fix lands, since that script
       also asserts on shipment.imported_status post-ship.
 
+
+
+# Phase F2.4 + F2.5 — RE-TEST after ship_doc fix (2026-05-08 PM2)
+
+backend:
+  - task: "Phase F2.4 + F2.5 — Webhook HTTPS / Forgiving Ingest / Naming (RE-TEST)"
+    implemented: true
+    working: false
+    file: "/app/backend/routers/webhook.py, /app/backend/routers/shipments_write.py, /app/backend/server.py"
+    stuck_count: 1
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: false
+        -agent: "testing"
+        -comment: |
+            Phase F2.4 + F2.5 BACKEND RE-TEST after the one-line fix in
+            /app/backend/routers/shipments_write.py (added
+            `"imported_status": _imp_status,` and
+            `"imported_at": _imp_at,` to the ship_doc dict at lines
+            565-566). RESULTS UNCHANGED: 57/59 PASS (still 2 FAIL).
+
+            Phase F2.1 regression /app/backend_test_phase_f2_1.py:
+            69/69 PASS (✅).
+
+            ❌ STILL FAILING — same 2 assertions:
+              1) E4 shipment.imported_status == "Delivered" — got None
+              2) E4 shipment.imported_at populated         — got None
+
+            ROOT CAUSE — INCOMPLETE FIX. The dict-write fix is correct
+            and the values ARE persisted to MongoDB, BUT the FastAPI
+            route returns the response via `response_model=Shipment`
+            (server.py: ship_pending_order at
+            /app/backend/routers/shipments_write.py:443):
+
+                @shipments_write_router.post(
+                    "/orders/pending/{order_id}/ship",
+                    response_model=Shipment,
+                )
+                async def ship_pending_order(...):
+
+            The `Shipment` Pydantic model (/app/backend/server.py
+            lines 897-970) does NOT declare `imported_status` or
+            `imported_at` fields. FastAPI's response serializer
+            silently strips any extra keys → the API response has
+            those keys as null/missing, even though they ARE on the
+            ship_doc passed to insert_one.
+
+            The PendingOrder model (server.py:2338-2339) DOES declare
+            them, which is why the F2.1 test (which only checks
+            PendingOrder.imported_status, plus shipment.status which
+            IS in the Shipment model) passes. F2.4_5 E4 specifically
+            checks `ship.get("imported_status")` and
+            `ship.get("imported_at")` on the response of
+            `POST /api/orders/pending/{id}/ship` and gets None.
+
+            FIX REQUIRED — Add to the `Shipment` BaseModel in
+            /app/backend/server.py (around line 970, before
+            `class ShipmentCreate`):
+
+                # Phase F2.1 — when source row carried a real-world
+                # status/timestamp at import time, preserve them on
+                # the Shipment so the Detail page + analytics can
+                # render "imported as Delivered on 15 Jan".
+                imported_status: str = ""
+                imported_at: str = ""
+
+            (Same defaults as PendingOrder. ShipmentCreate /
+            ShipmentUpdate do NOT need them — these are server-set
+            from the source PendingOrder, never client-supplied.)
+
+            VERIFIED THE DATA IS PERSISTED CORRECTLY:
+            - The fix in shipments_write.py is in place
+              (lines 525-526, 565-566 confirmed via grep).
+            - The endpoint returns 200 with the new shipment doc
+              shape but `imported_status`/`imported_at` are stripped
+              from the JSON response by Pydantic.
+
+            CLEANUP: 3 resources removed (1 shipment, 2 pending
+            orders) at end of f2_4_5 run; webhook name reset to "";
+            f2_1 run cleans up its own data ("Cleanup done" line in
+            log).
+
+            F2.1 BREAKDOWN (re-run in same session):
+              ✅ A — Mapping CRUD + imported_status (3/3)
+              ✅ B — Single-shipment ingest preserves status (sub-tests)
+              ✅ C — CSV preview / commit / dedupe / save_default
+              ✅ D — Excel (.xlsx) preview / commit
+              ✅ E — Phase F2.2 status remapping ("Dispatch" →
+                     "Ready to Ship") on PendingOrder + Shipment.
+                     [shipment.status in model → preserved correctly.]
+              ✅ F — Phase F1 BOM CSV regression (3 imports OK)
+              ✅ G — /me/file-import-mapping returns custom_fields list
+              TOTAL: 69 passed / 0 failed.
+
+agent_communication:
+    -agent: "testing"
+    -message: |
+      RE-TEST RESULTS:
+        • /app/backend_test_phase_f2_4_5.py — 57/59 PASS (2 FAIL,
+          unchanged from previous run).
+        • /app/backend_test_phase_f2_1.py    — 69/69 PASS.
+
+      THE FIX IS INCOMPLETE.
+
+      The dict-level fix in shipments_write.py:565-566 is correct
+      AND in place — `ship_doc` now contains `imported_status` /
+      `imported_at`. BUT the endpoint declares
+      `response_model=Shipment` and the `Shipment` BaseModel
+      (server.py:897) does NOT include these two fields, so FastAPI
+      strips them from the JSON response. The data IS persisted to
+      Mongo correctly; only the response is missing them.
+
+      ACTION ITEM (~3 lines of code):
+        Add to `class Shipment` in /app/backend/server.py
+        (around line 970, before `class ShipmentCreate`):
+
+            imported_status: str = ""
+            imported_at: str = ""
+
+        That single change should flip the last 2 failing
+        assertions and put the F2.4_5 suite at 59/59 PASS.
+
+        DO NOT touch ShipmentCreate / ShipmentUpdate; these are
+        server-derived from the source PendingOrder and should not
+        be client-mutable.
+
+      No other regressions found. F2.1 continues to pass 69/69.
+      `POST /api/me/custom-fields` 422 in F2.4_5 E3b is still
+      observed but explicitly out-of-scope per review request.
