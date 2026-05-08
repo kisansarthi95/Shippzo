@@ -27,17 +27,21 @@ export default function OrdersFromSheet() {
 
   // Smart Paste pending orders queue
   const [pasteOrders, setPasteOrders] = useState<PendingOrder[]>([]);
+  // Phase F1 — File-import pending queue (CSV/XLSX uploads)
+  const [fileOrders, setFileOrders] = useState<PendingOrder[]>([]);
   const [couriers, setCouriers] = useState<Courier[]>([]);
   const [shipModalOrder, setShipModalOrder] = useState<PendingOrder | null>(null);
   const [shipping, setShipping] = useState(false);
 
   const loadPasteOrders = useCallback(async () => {
     try {
-      const [pos, cs] = await Promise.all([
+      const [pos, fos, cs] = await Promise.all([
         Api.listPendingOrders({ source: "paste", status: "pending" }),
+        Api.listPendingOrders({ source: "file",  status: "pending" }),
         Api.listCouriers(),
       ]);
       setPasteOrders(pos);
+      setFileOrders(fos);
       setCouriers(cs);
     } catch {/* ignore */}
   }, []);
@@ -185,17 +189,26 @@ export default function OrdersFromSheet() {
               : `${pasteOrders.length} pending from Smart Paste`}
           </Text>
         </View>
-        <TouchableOpacity
-          testID="orders-refresh-btn"
-          style={styles.refreshBtn}
-          onPress={() => {
-            setRefreshing(true);
-            load();
-            loadPasteOrders();
-          }}
-        >
-          <PhIcon name="refresh" size={20} color="#fff" />
-        </TouchableOpacity>
+        <View style={{ flexDirection: "row", alignItems: "center" }}>
+          <TouchableOpacity
+            testID="orders-upload-btn"
+            style={[styles.refreshBtn, { backgroundColor: "#10B981", marginRight: 8 }]}
+            onPress={() => router.push("/file-import" as any)}
+          >
+            <PhIcon name="cloud-upload" size={20} color="#fff" />
+          </TouchableOpacity>
+          <TouchableOpacity
+            testID="orders-refresh-btn"
+            style={styles.refreshBtn}
+            onPress={() => {
+              setRefreshing(true);
+              load();
+              loadPasteOrders();
+            }}
+          >
+            <PhIcon name="refresh" size={20} color="#fff" />
+          </TouchableOpacity>
+        </View>
       </View>
 
       {/* Paste Queue (always visible when has items) */}
@@ -245,6 +258,66 @@ export default function OrdersFromSheet() {
                 </TouchableOpacity>
               </View>
             ))}
+          </ScrollView>
+        </View>
+      )}
+
+      {/* Phase F1 — File-import (CSV/XLSX) pending queue */}
+      {fileOrders.length > 0 && (
+        <View style={styles.pasteQueueWrap}>
+          <View style={styles.pasteQueueHeader}>
+            <PhIcon name="cloud-upload" size={14} color="#10B981" />
+            <Text style={[styles.pasteQueueTitle, { color: "#10B981" }]}>
+              File Imports · {fileOrders.length}
+            </Text>
+          </View>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={{ paddingHorizontal: 12, paddingBottom: 12, gap: 10 }}
+          >
+            {fileOrders.map((po) => {
+              const meta = (po as any).source_meta || {};
+              const ago = meta.imported_at ? timeAgo(new Date(meta.imported_at)) : "";
+              return (
+                <View key={po.id} style={[styles.pasteCard, { borderColor: "#A7F3D0" }]}>
+                  <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+                    <View style={[styles.pasteBadge, { backgroundColor: "#D1FAE5" }]}>
+                      <Text style={[styles.pasteBadgeText, { color: "#047857" }]}>📄 FILE</Text>
+                    </View>
+                    <TouchableOpacity onPress={() => deletePasteOrder(po)} hitSlop={8}>
+                      <PhIcon name="close" size={18} color={colors.textMuted} />
+                    </TouchableOpacity>
+                  </View>
+                  <Text style={styles.pasteName} numberOfLines={1}>
+                    {po.customer_name || "(no name)"}
+                  </Text>
+                  <Text style={styles.pasteMeta} numberOfLines={1}>
+                    📞 {po.customer_phone || "—"} · {po.pincode || "—"}
+                  </Text>
+                  <Text style={styles.pasteMeta} numberOfLines={1}>
+                    {po.city || "—"}, {po.state || ""}
+                  </Text>
+                  <Text style={styles.pasteAmount}>
+                    {po.payment_mode === "COD" ? "💵 COD" : "✅ PAID"}{" "}
+                    ₹{Number(po.amount || 0).toFixed(0)}
+                  </Text>
+                  {ago ? (
+                    <Text style={[styles.pasteMeta, { fontSize: 10, marginTop: 2 }]} numberOfLines={1}>
+                      ⬆ {ago}{meta.filename ? ` · ${meta.filename}` : ""}
+                    </Text>
+                  ) : null}
+                  <TouchableOpacity
+                    style={[styles.shipBtn, { backgroundColor: "#10B981" }]}
+                    onPress={() => shipPasteOrder(po)}
+                    testID={`ship-file-order-${po.id}`}
+                  >
+                    <PhIcon name="rocket-outline" size={14} color="#fff" />
+                    <Text style={styles.shipBtnText}>Ship this order</Text>
+                  </TouchableOpacity>
+                </View>
+              );
+            })}
           </ScrollView>
         </View>
       )}

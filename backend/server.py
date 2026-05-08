@@ -5146,6 +5146,23 @@ except Exception as _ntf_exc:
         f"Failed to mount notifications router: {_ntf_exc}",
     )
 
+# Phase-F1 modular: CSV / XLSX bulk-import → pending_orders.
+# Self-contained domain (no shared mutable state with the rest of
+# server.py) — only needs db, get_current_user, and
+# generate_master_order_id.
+try:
+    from routers.file_import import (
+        file_import_router as _file_import_router,
+        init as _init_file_import_router,
+    )
+    _init_file_import_router()
+    app.include_router(_file_import_router)
+except Exception as _fi_exc:
+    import logging as _lg
+    _lg.getLogger("server.bootstrap").exception(
+        f"Failed to mount file_import router: {_fi_exc}",
+    )
+
 
 # --------------------------------------------------------------------
 # Auth middleware — requires a valid bearer token on every /api/*

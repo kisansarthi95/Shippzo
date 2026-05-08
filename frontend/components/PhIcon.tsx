@@ -91,6 +91,7 @@ const ICON_MAP: Record<string, React.ComponentType<any>> = {
   "arrow-up-circle":       Ph.ArrowCircleUp,
   "chevron-back":          Ph.CaretLeft,
   "chevron-down":          Ph.CaretDown,
+  "chevron-up":            Ph.CaretUp,
   "chevron-forward":       Ph.CaretRight,
   "open":                  Ph.ArrowSquareOut,
 

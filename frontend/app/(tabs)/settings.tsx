@@ -1569,6 +1569,27 @@ export default function SettingsScreen() {
             <Text style={[styles.hint, { marginTop: -2, marginBottom: 8, color: "#1E3A8A", fontWeight: "700" }]}>
               Your orders stay safe even if the app is uninstalled
             </Text>
+            {/* Phase F1 — adjacent CSV/Excel import-mapping shortcut */}
+            <TouchableOpacity
+              testID="open-file-import-mapping"
+              onPress={() => router.push("/file-import?mode=settings" as any)}
+              style={{
+                flexDirection: "row", alignItems: "center", gap: 10,
+                backgroundColor: "#ECFDF5", borderColor: "#A7F3D0", borderWidth: 1,
+                borderRadius: 10, padding: 12, marginBottom: 12,
+              }}
+            >
+              <PhIcon name="cloud-upload" size={18} color="#047857" />
+              <View style={{ flex: 1 }}>
+                <Text style={{ fontWeight: "700", color: "#065F46", fontSize: 13 }}>
+                  CSV / Excel Import Mapping
+                </Text>
+                <Text style={{ fontSize: 11, color: "#10B981", marginTop: 1 }}>
+                  Map columns once · auto-applies on next upload
+                </Text>
+              </View>
+              <PhIcon name="chevron-forward" size={16} color="#10B981" />
+            </TouchableOpacity>
             {/* Phase-5: Service Account share panel — keeps user's
                 Sheet PRIVATE. Shown only on the connect view (not when
                 already connected). */}

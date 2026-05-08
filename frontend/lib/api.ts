@@ -1684,6 +1684,70 @@ export const Api = {
   pendingOrdersCount: () =>
     api.get<{ count: number }>("/orders/pending-count").then((r) => r.data),
 
+  // ─────── Phase F1 — CSV / XLSX bulk import ───────
+  /** Parse an uploaded CSV/XLSX without writing to DB. Returns columns,
+   *  first 10 rows, total row count, schema fields, and an
+   *  auto-suggested column→field mapping (saved-default + naive header
+   *  match). */
+  fileImportPreview: async (uri: string, name: string, mime: string) => {
+    const fd = new FormData();
+    // RN FormData accepts {uri, name, type} ducktyped as Blob.
+    fd.append("file", { uri, name, type: mime } as any);
+    return api
+      .post<{
+        format: "csv" | "xlsx";
+        filename: string;
+        columns: string[];
+        sample_rows: Record<string, string>[];
+        total_rows: number;
+        schema_fields: string[];
+        suggested: Record<string, string>;
+      }>("/orders/import/preview", fd, {
+        headers: { "Content-Type": "multipart/form-data" },
+      })
+      .then((r) => r.data);
+  },
+  /** Commit an upload with the user-confirmed mapping. Optionally
+   *  saves the mapping as default for next time. */
+  fileImportCommit: async (
+    uri: string,
+    name: string,
+    mime: string,
+    mapping: Record<string, string>,
+    save_default = false,
+  ) => {
+    const fd = new FormData();
+    fd.append("file", { uri, name, type: mime } as any);
+    fd.append("mapping", JSON.stringify(mapping));
+    fd.append("save_default", save_default ? "true" : "false");
+    return api
+      .post<{
+        ok: boolean;
+        imported: number;
+        skipped: number;
+        total: number;
+        errors: string[];
+        filename: string;
+        format: string;
+      }>("/orders/import/commit", fd, {
+        headers: { "Content-Type": "multipart/form-data" },
+      })
+      .then((r) => r.data);
+  },
+  getFileImportMapping: () =>
+    api
+      .get<{ mapping: Record<string, string>; schema_fields: string[] }>(
+        "/me/file-import-mapping",
+      )
+      .then((r) => r.data),
+  putFileImportMapping: (mapping: Record<string, string>) =>
+    api
+      .put<{ ok: boolean; mapping: Record<string, string> }>(
+        "/me/file-import-mapping",
+        { mapping },
+      )
+      .then((r) => r.data),
+
   // --- Feature 1: Write headers to user sheet ---
   syncSheetHeaders: (dry_run = false) =>
     api
