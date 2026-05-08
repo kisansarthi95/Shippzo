@@ -270,7 +270,7 @@ export default function OrdersFromSheet() {
           if (!hay.includes(q)) continue;
         }
         out.push({
-          key: `sheet|${o.row_key || o.row_index}`,
+          key: `sheet|${o.row_index}|${o.row_key || ""}`,
           source: "sheet",
           badgeLabel: "📊 SHEET",
           badgeBg: "#DBEAFE",
@@ -305,28 +305,28 @@ export default function OrdersFromSheet() {
             {row.badgeLabel}
           </Text>
         </View>
-        <View style={{ flexDirection: "row", gap: 4, alignItems: "center" }}>
-          {/* Phase C — Edit affordance.
-              For paste / file / webhook (which all live in the
-              pending_orders Mongo collection) we route to the new
-              dedicated edit screen. Sheet rows can't be edited
-              in-place (they live on the user's Google Sheet) so
-              we route them through /(tabs)/add with prefill — same
-              path as the "Ship this order" CTA but without firing
-              the actual ship request. */}
+        <View style={{ flexDirection: "row", gap: 6, alignItems: "center" }}>
+          {/* Phase C — Edit + Delete sized identically (32×32 round
+              icon buttons) so they read as a paired action group
+              instead of a big edit button + tiny delete X. */}
           {row.paste ? (
             <TouchableOpacity
               onPress={() => router.push(`/edit-pending/${row.paste!.id}` as any)}
-              hitSlop={8}
-              style={styles.editIconBtn}
+              hitSlop={6}
+              style={styles.cardActionBtn}
               testID={`edit-${row.key}`}
             >
               <PhIcon name="create-outline" size={16} color="#3B82F6" />
             </TouchableOpacity>
           ) : null}
           {row.paste ? (
-            <TouchableOpacity onPress={() => deletePasteOrder(row.paste!)} hitSlop={8}>
-              <PhIcon name="close" size={18} color={colors.textMuted} />
+            <TouchableOpacity
+              onPress={() => deletePasteOrder(row.paste!)}
+              hitSlop={6}
+              style={[styles.cardActionBtn, { backgroundColor: "#FEF2F2", borderColor: "#FECACA" }]}
+              testID={`delete-${row.key}`}
+            >
+              <PhIcon name="trash-outline" size={16} color="#DC2626" />
             </TouchableOpacity>
           ) : null}
         </View>
@@ -456,12 +456,19 @@ export default function OrdersFromSheet() {
         />
       </View>
 
-      {/* Source filter chips — horizontal, but each tab swaps the
-          vertical list below. */}
+      {/* Source filter chips — horizontal scroll, fixed height so the
+          ScrollView doesn't stretch the chips into tall capsules when
+          its parent flex container has spare vertical space. */}
       <ScrollView
         horizontal
         showsHorizontalScrollIndicator={false}
-        contentContainerStyle={{ paddingHorizontal: 12, paddingBottom: 8, gap: 8 }}
+        style={{ flexGrow: 0, maxHeight: 48 }}
+        contentContainerStyle={{
+          paddingHorizontal: 12,
+          paddingBottom: 8,
+          gap: 8,
+          alignItems: "center",
+        }}
       >
         {([
           { k: "all",     label: `All (${pasteOrders.length + fileOrders.length + webhookOrders.length + orders.filter(o => !o.already_shipped).length})` },
@@ -720,8 +727,11 @@ const styles = StyleSheet.create({
   unifiedItems: { marginTop: 4, fontSize: 13, color: colors.text, fontWeight: "600" },
   unifiedAmount: { marginTop: 6, fontSize: 14, color: colors.text, fontWeight: "800" },
   unifiedExtra: { marginTop: 4, fontSize: 11, color: "#94A3B8", fontStyle: "italic" },
-  editIconBtn: {
-    paddingHorizontal: 6, paddingVertical: 4, borderRadius: 6,
+  // Phase C — uniform 32×32 round icon buttons for Edit + Delete so
+  // they read as a paired action group on every pending card.
+  cardActionBtn: {
+    width: 32, height: 32, borderRadius: 8,
+    alignItems: "center", justifyContent: "center",
     backgroundColor: "#EFF6FF", borderWidth: 1, borderColor: "#BFDBFE",
   },
 
