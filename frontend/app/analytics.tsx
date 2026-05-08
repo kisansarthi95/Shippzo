@@ -422,7 +422,7 @@ export default function AnalyticsScreen() {
         {/* Admin-only extras */}
         {scope === "platform" && data.admin && (
           <>
-            <Text style={styles.sectionTitle}>👑 Platform extras (admin)</Text>
+            <Text style={styles.sectionTitle}>👑  Platform extras (admin)</Text>
             <View style={styles.card}>
               <View style={styles.adminMetricRow}>
                 <View style={styles.adminMetric}>
@@ -441,7 +441,7 @@ export default function AnalyticsScreen() {
                 </View>
               </View>
             </View>
-            <Text style={styles.sectionTitle}>🏆 Top users by volume</Text>
+            <Text style={styles.sectionTitle}>Top users by volume</Text>
             <View style={styles.card}>
               {data.admin.top_users.length === 0 ? (
                 <Text style={styles.emptyMini}>No data for this range</Text>

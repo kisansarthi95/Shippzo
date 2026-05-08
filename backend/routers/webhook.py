@@ -43,7 +43,12 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Path, Request
 from pydantic import BaseModel
 
 from import_schema import (
-    SCHEMA_FIELDS, build_pending_doc_from_mapping, suggest_mapping,
+    SCHEMA_FIELDS,
+    build_pending_doc_from_mapping,
+    suggest_mapping,
+    validate_mapping_field,
+    is_custom_field_mapping,
+    custom_field_id,
 )
 
 
@@ -92,6 +97,12 @@ def init() -> None:
         generate_master_order_id,
     )
 
+    async def _list_user_custom_fields(user_id: str) -> List[Dict[str, Any]]:
+        cur = db.user_custom_fields.find(
+            {"user_id": user_id, "active": {"$ne": False}}, {"_id": 0},
+        )
+        return [doc async for doc in cur]
+
     # ════════════════════════════════════════════════════════════════
     # 1. Authenticated config (owner only)
     # ════════════════════════════════════════════════════════════════
@@ -106,11 +117,16 @@ def init() -> None:
         # URL: take origin from request, append /api/webhook/orders/<secret>
         origin = str(request.base_url).rstrip("/")
         full_url = f"{origin}/api/webhook/orders/{secret}" if secret else None
+        custom_fields = await _list_user_custom_fields(current_user["id"])
         return {
             "secret":         secret,
             "url":            full_url,
             "mapping":        u.get("webhook_mapping") or {},
             "schema_fields":  SCHEMA_FIELDS,
+            "custom_fields":  [
+                {"id": cf.get("id"), "label": cf.get("name") or cf.get("label") or ""}
+                for cf in custom_fields
+            ],
             "configured":     bool(secret),
         }
 
@@ -138,7 +154,14 @@ def init() -> None:
         payload: WebhookMappingPayload = Body(...),
         current_user: Dict[str, Any] = Depends(_get_current_user),
     ):
-        bad = [v for v in payload.mapping.values() if v and v not in SCHEMA_FIELDS]
+        # Phase F2.2 — accept "custom:<id>" pointers to per-user custom
+        # fields, in addition to the canonical SCHEMA_FIELDS list.
+        custom_fields = await _list_user_custom_fields(current_user["id"])
+        cf_ids = {cf.get("id") for cf in custom_fields if cf.get("id")}
+        bad = [
+            v for v in payload.mapping.values()
+            if not validate_mapping_field(v, cf_ids)
+        ]
         if bad:
             raise HTTPException(
                 status_code=400,
@@ -157,10 +180,11 @@ def init() -> None:
     @webhook_router.post("/webhook/orders/{secret}")
     async def webhook_ingest(
         secret: str = Path(..., min_length=8, max_length=128),
-        body: Dict[str, Any] = Body(...),
+        body: Any = Body(...),
     ):
         u = await db.users.find_one(
-            {"webhook_secret": secret}, {"_id": 0, "id": 1, "webhook_mapping": 1},
+            {"webhook_secret": secret},
+            {"_id": 0, "id": 1, "webhook_mapping": 1},
         )
         if not u:
             raise HTTPException(status_code=404, detail="Unknown webhook secret")
@@ -181,8 +205,13 @@ def init() -> None:
             rows: List[Any] = body
         elif isinstance(body, dict) and isinstance(body.get("orders"), list):
             rows = body["orders"]
-        else:
+        elif isinstance(body, dict):
             rows = [body]
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail="Body must be a JSON object, list, or {orders: [...]}",
+            )
 
         if len(rows) > 200:
             raise HTTPException(
@@ -209,16 +238,27 @@ def init() -> None:
                 errors.append(f"row {idx}: missing customer_name and customer_phone")
                 continue
 
+            # Phase F2.2 — relocate the schema-level "status" /
+            # "created_at_override" cells onto dedicated keys consumed
+            # by ship_pending_order. Same logic as file_import.py.
+            imp_status = (doc.pop("status", "") or "").strip() if "status" in {
+                m for m in mapping.values()
+            } else ""
+            imp_at = (doc.pop("created_at_override", "") or "").strip() if "created_at_override" in {
+                m for m in mapping.values()
+            } else ""
             doc.update({
                 "id":              str(uuid.uuid4()),
                 "user_id":         u["id"],
                 "source":          "webhook",
-                "status":          "pending",
+                "status":          "pending",   # pipeline status
+                "imported_status": imp_status,
+                "imported_at":     imp_at,
                 "master_order_id": await generate_master_order_id(),
                 "created_at":      now,
                 "source_meta": {
                     "received_at": now,
-                    "remote_keys": list(flat.keys())[:30],   # first 30 for audit
+                    "remote_keys": list(flat.keys())[:30],
                 },
             })
             doc["order_id"] = doc.get("order_id") or doc["master_order_id"]
@@ -242,28 +282,39 @@ def init() -> None:
 
     @webhook_router.post("/me/webhook-config/preview")
     async def webhook_preview(
-        body: Dict[str, Any] = Body(
+        body: Any = Body(
             ..., description="Paste a sample JSON payload here",
         ),
         current_user: Dict[str, Any] = Depends(_get_current_user),
     ):
         """Lets the UI paste a sample JSON payload (e.g. one captured
         from Shopify) and shows the user every flattened key + a
-        suggested mapping (saved-default + alias heuristics)."""
-        rows = (
-            body if isinstance(body, list)
-            else body.get("orders") if isinstance(body, dict) and isinstance(body.get("orders"), list)
-            else [body]
-        )
+        suggested mapping (saved-default + alias heuristics + per-user
+        custom-field name match)."""
+        if isinstance(body, list):
+            rows = body
+        elif isinstance(body, dict) and isinstance(body.get("orders"), list):
+            rows = body["orders"]
+        elif isinstance(body, dict):
+            rows = [body]
+        else:
+            rows = []
         first = rows[0] if rows and isinstance(rows[0], dict) else {}
         flat  = _flatten(first)
         keys  = list(flat.keys())
-        u = await db.users.find_one({"id": current_user["id"]}, {"_id": 0, "webhook_mapping": 1}) or {}
-        suggested = suggest_mapping(keys, u.get("webhook_mapping"))
+        u = await db.users.find_one(
+            {"id": current_user["id"]}, {"_id": 0, "webhook_mapping": 1},
+        ) or {}
+        custom_fields = await _list_user_custom_fields(current_user["id"])
+        suggested = suggest_mapping(keys, u.get("webhook_mapping"), custom_fields)
         return {
             "keys":          keys,
             "sample_values": {k: flat[k] for k in keys[:30]},
             "schema_fields": SCHEMA_FIELDS,
+            "custom_fields": [
+                {"id": cf.get("id"), "label": cf.get("name") or cf.get("label") or ""}
+                for cf in custom_fields
+            ],
             "suggested":     suggested,
         }
 

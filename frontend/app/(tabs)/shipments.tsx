@@ -136,6 +136,26 @@ function matchesStatusFilter(shipStatus: string, filter: StatusFilter): boolean 
   return false;
 }
 
+/** Phase F2.2 — render an ISO timestamp as a glanceable, locale-aware
+ *  "29 Apr 2026 · 02:30 PM" string. Empty/garbage input returns "" so
+ *  the caller can short-circuit. The label intentionally uses 12-hour
+ *  format because that matches how Indian shop owners read receipts. */
+function formatTimestamp(iso: string | undefined | null): string {
+  if (!iso) return "";
+  const t = Date.parse(iso);
+  if (Number.isNaN(t)) return "";
+  const d = new Date(t);
+  const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+  const day = String(d.getDate()).padStart(2, "0");
+  const mon = months[d.getMonth()];
+  const yr  = d.getFullYear();
+  let hh = d.getHours();
+  const mm = String(d.getMinutes()).padStart(2, "0");
+  const ampm = hh >= 12 ? "PM" : "AM";
+  hh = hh % 12 || 12;
+  return `${day} ${mon} ${yr} · ${String(hh).padStart(2, "0")}:${mm} ${ampm}`;
+}
+
 export default function Shipments() {
   const router = useRouter();
   const params = useLocalSearchParams<{ status?: string; select?: string }>();
@@ -1360,6 +1380,15 @@ export default function Shipments() {
                   📦 {item.items.join(", ")}
                 </Text>
               )}
+              {/* Phase F2.2 — created_at timestamp (formatted compact)
+                  so historical imports show their real-world date and
+                  every shipment carries a glanceable "when" stamp. */}
+              {!!item.created_at && (
+                <Text style={styles.timestamp} numberOfLines={1}>
+                  <PhIcon name="time-outline" size={11} color="#94A3B8" />
+                  {"  "}{formatTimestamp(item.created_at)}
+                </Text>
+              )}
             </TouchableOpacity>
             {!selectMode && (
               <View style={styles.actions}>
@@ -1906,6 +1935,8 @@ const styles = StyleSheet.create({
   order: { fontSize: 11, color: colors.primary, fontWeight: "700", marginTop: 2 },
   sub: { marginTop: 3, color: colors.textMuted, fontSize: 12 },
   items: { marginTop: 3, color: colors.text, fontSize: 12, fontWeight: "600" },
+  // Phase F2.2 — Created-at timestamp shown discreetly under each card.
+  timestamp: { marginTop: 4, color: "#94A3B8", fontSize: 11, fontWeight: "500" },
   chip: { paddingHorizontal: 8, paddingVertical: 3, borderRadius: 4 },
   chipText: { fontSize: 10, fontWeight: "800", letterSpacing: 0.5 },
   actions: {

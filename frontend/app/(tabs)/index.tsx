@@ -1757,7 +1757,7 @@ export default function Dashboard() {
               <ActionPill
                 testID="quick-analytics"
                 icon="stats-chart"
-                label=" Open Analytics Dashboard"
+                label="Open Analytics Dashboard"
                 onPress={() => router.push("/analytics" as any)}
                 tone="violet"
                 chevron

@@ -1660,6 +1660,30 @@ async def sheets_orders(
 
     mapping = cfg.column_mapping or {}
 
+    # Phase F2.3 — Legacy mapping keys (phone, item, timestamp) ↔
+    # canonical keys (customer_phone, items, created_at_override).
+    # Both spellings are accepted on read so users with old saved
+    # mappings keep working AND new mappings using the canonical
+    # names from import_schema work too. Build a unified lookup.
+    SHEET_KEY_ALIASES = {
+        "phone":             "customer_phone",
+        "customer_phone":    "phone",
+        "item":              "items",
+        "items":             "item",
+        "timestamp":         "created_at_override",
+        "created_at_override": "timestamp",
+    }
+
+    def mapped_field(row: Dict[str, str], key: str) -> str:
+        col = mapping.get(key)
+        if not col:
+            alias = SHEET_KEY_ALIASES.get(key)
+            if alias:
+                col = mapping.get(alias)
+        if not col:
+            return ""
+        return row.get(col, "")
+
     # Find shipments that were imported from this sheet to mark them
     imported_keys = set()
     existing = await db.shipments.find(
@@ -1671,10 +1695,9 @@ async def sheets_orders(
             imported_keys.add(e["sheet_row_key"])
 
     def mapped(row: Dict[str, str], key: str) -> str:
-        col = mapping.get(key)
-        if not col:
-            return ""
-        return row.get(col, "")
+        # Backwards-compat shim — keeps the inner loop unchanged but
+        # all reads go through the alias-aware `mapped_field` helper.
+        return mapped_field(row, key)
 
     orders = []
     for idx, row in enumerate(data["rows"]):
@@ -1692,6 +1715,21 @@ async def sheets_orders(
             "item": mapped(row, "item"),
             "amount": mapped(row, "amount"),
             "timestamp": mapped(row, "timestamp"),
+            # Phase F2.3 — surface the new canonical fields too so the
+            # ship-this-row UI can pre-fill the same metadata that
+            # CSV/Webhook imports already deliver.
+            "status":       mapped(row, "status"),
+            "payment_mode": mapped(row, "payment_mode"),
+            "weight":       mapped(row, "weight"),
+            "items_full":   mapped(row, "items"),
+            "alt_phone":    mapped(row, "customer_alt_phone"),
+            "email":        mapped(row, "customer_email"),
+            "gstin":        mapped(row, "customer_gstin"),
+            "category":     mapped(row, "category"),
+            "notes":        mapped(row, "notes"),
+            "token_amount": mapped(row, "token_amount"),
+            "box_dimensions": mapped(row, "box_dimensions"),
+            "courier_hint": mapped(row, "courier_hint"),
             "already_shipped": row_key in imported_keys,
             "raw": row,
         })
@@ -5191,6 +5229,25 @@ except Exception as _fi_exc:
     )
 
 
+# Phase-F2 modular: Webhook ingest (real-time JSON-payload imports) +
+# per-user webhook config endpoints. Same late-binding pattern.
+# Note: the public POST /api/webhook/orders/{secret} endpoint is added
+# to _AUTH_EXEMPT_PREFIXES below so external systems can call it
+# without an auth header (the URL secret is the auth).
+try:
+    from routers.webhook import (
+        webhook_router as _webhook_router,
+        init as _init_webhook_router,
+    )
+    _init_webhook_router()
+    app.include_router(_webhook_router)
+except Exception as _wh_exc:
+    import logging as _lg
+    _lg.getLogger("server.bootstrap").exception(
+        f"Failed to mount webhook router: {_wh_exc}",
+    )
+
+
 # --------------------------------------------------------------------
 # Auth middleware — requires a valid bearer token on every /api/*
 # route except /api/auth/* (signup/login/me/logout are public/self-auth).
@@ -5202,7 +5259,15 @@ from starlette.responses import JSONResponse
 from auth import decode_token as _decode_token
 
 # Endpoints that are intentionally reachable without a token.
-_AUTH_EXEMPT_PREFIXES = ("/api/auth/", "/api/legal/", "/api/team/login")
+# Phase F2: /api/webhook/orders/<secret> is public — the URL secret IS
+# the auth (secret-in-URL pattern). External systems (Shopify, Zapier,
+# custom webhooks) cannot attach an Authorization header.
+_AUTH_EXEMPT_PREFIXES = (
+    "/api/auth/",
+    "/api/legal/",
+    "/api/team/login",
+    "/api/webhook/orders/",
+)
 # Phase 2.5 — Excel report endpoints accept ?token= query param instead
 # of header (browser cannot attach Authorization to <a href> downloads).
 _EXCEL_DOWNLOAD_PATHS = {

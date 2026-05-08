@@ -1590,6 +1590,28 @@ export default function SettingsScreen() {
               </View>
               <PhIcon name="chevron-forward" size={16} color="#10B981" />
             </TouchableOpacity>
+            {/* Phase F2.2 — Webhook ingest config (real-time JSON-payload
+                imports). Same mapping mental model as CSV/Excel above. */}
+            <TouchableOpacity
+              testID="open-webhook-config"
+              onPress={() => router.push("/webhook-config" as any)}
+              style={{
+                flexDirection: "row", alignItems: "center", gap: 10,
+                backgroundColor: "#FFF7EE", borderColor: "#FED7AA", borderWidth: 1,
+                borderRadius: 10, padding: 12, marginBottom: 12,
+              }}
+            >
+              <PhIcon name="cloud-upload" size={18} color="#FF6B00" />
+              <View style={{ flex: 1 }}>
+                <Text style={{ fontWeight: "700", color: "#9A3412", fontSize: 13 }}>
+                  Webhook Ingest (Live JSON)
+                </Text>
+                <Text style={{ fontSize: 11, color: "#FF6B00", marginTop: 1 }}>
+                  POST orders from Shopify, Zapier, custom scripts
+                </Text>
+              </View>
+              <PhIcon name="chevron-forward" size={16} color="#FF6B00" />
+            </TouchableOpacity>
             {/* Phase-5: Service Account share panel — keeps user's
                 Sheet PRIVATE. Shown only on the connect view (not when
                 already connected). */}

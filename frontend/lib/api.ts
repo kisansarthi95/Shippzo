@@ -1783,6 +1783,40 @@ export const Api = {
     api.put<CustomField>(`/me/custom-fields/${id}`, data).then((r) => r.data),
   deleteMyCustomField: (id: string) =>
     api.delete(`/me/custom-fields/${id}`).then((r) => r.data),
+
+  // --- Phase F2.2: Webhook ingest config ---
+  getWebhookConfig: () =>
+    api
+      .get<{
+        secret: string;
+        url: string | null;
+        mapping: Record<string, string>;
+        schema_fields: string[];
+        custom_fields: { id: string; label: string }[];
+        configured: boolean;
+      }>("/me/webhook-config")
+      .then((r) => r.data),
+  rotateWebhookSecret: () =>
+    api
+      .post<{ secret: string; url: string }>("/me/webhook-config/rotate")
+      .then((r) => r.data),
+  putWebhookMapping: (mapping: Record<string, string>) =>
+    api
+      .put<{ ok: boolean; mapping: Record<string, string> }>(
+        "/me/webhook-config",
+        { mapping },
+      )
+      .then((r) => r.data),
+  previewWebhookPayload: (payload: any) =>
+    api
+      .post<{
+        keys: string[];
+        sample_values: Record<string, string>;
+        schema_fields: string[];
+        custom_fields: { id: string; label: string }[];
+        suggested: Record<string, string>;
+      }>("/me/webhook-config/preview", payload)
+      .then((r) => r.data),
 };
 
 export type CustomField = {
@@ -1831,15 +1865,57 @@ export type PendingOrder = {
   processed_at?: string;
 };
 
+// Phase F2.3 (2026-05-09) — Sheet column-mapping fields aligned with
+// the unified `import_schema.SCHEMA_FIELDS` list used by CSV / Excel /
+// Webhook imports. Legacy keys (phone / item / timestamp) are kept on
+// the saved mapping for backward compatibility, but the picker now
+// shows the full canonical 22-field set + Status + Order Date so a
+// Sheet row can carry the same metadata as an imported CSV.
+//
+// Two legacy keys are intentionally retained so existing user mappings
+// keep working unchanged:
+//   • `phone`     — alias for `customer_phone`
+//   • `item`      — alias for `items`
+//   • `timestamp` — alias for `created_at_override`
+// New rows automatically prefer the canonical name; the read-side
+// helpers in /api/sheets/orders accept either spelling.
 export const SHEET_FIELDS: { key: string; label: string }[] = [
-  { key: "order_id", label: "Order ID" },
-  { key: "customer_name", label: "Customer Name" },
-  { key: "phone", label: "Phone" },
-  { key: "address", label: "Address" },
-  { key: "city", label: "City" },
-  { key: "state", label: "State" },
-  { key: "pincode", label: "Pincode" },
-  { key: "item", label: "Item / Product" },
-  { key: "amount", label: "Amount" },
-  { key: "timestamp", label: "Timestamp" },
+  // Identity
+  { key: "customer_name",      label: "Customer Name" },
+  { key: "customer_phone",     label: "Customer Phone" },
+  { key: "customer_alt_phone", label: "Alternate Phone" },
+  { key: "customer_email",     label: "Email" },
+  { key: "customer_gstin",     label: "GSTIN" },
+  // Address (auto-merge if multi-mapped)
+  { key: "address",            label: "Address (line1 + line2 auto-merge)" },
+  { key: "city",               label: "City" },
+  { key: "state",              label: "State" },
+  { key: "pincode",            label: "Pincode" },
+  // Payment
+  { key: "amount",             label: "Order Amount (₹)" },
+  { key: "token_amount",       label: "Token / Advance (₹)" },
+  { key: "payment_mode",       label: "Payment Mode (COD / PAID)" },
+  // Items / parcel
+  { key: "items",              label: "Items / Products" },
+  { key: "category",           label: "Item Category" },
+  { key: "weight",             label: "Parcel Weight" },
+  { key: "box_dimensions",     label: "Box Size (10×8×4)" },
+  { key: "box_length",         label: "Box Length" },
+  { key: "box_width",          label: "Box Width" },
+  { key: "box_height",         label: "Box Height" },
+  // Misc + state metadata
+  { key: "courier_hint",       label: "Courier (hint)" },
+  { key: "order_id",           label: "Order ID" },
+  { key: "notes",              label: "Notes / Remarks" },
+  { key: "status",             label: "Status (Pending / Shipped / Delivered…)" },
+  { key: "created_at_override", label: "Order Date / Timestamp" },
 ];
+
+/** Legacy → canonical aliases for Sheet mappings. Read-side accepts
+ *  either spelling so older saved mappings keep working unchanged
+ *  while new rows prefer canonical keys. */
+export const SHEET_FIELD_ALIASES: Record<string, string> = {
+  phone:     "customer_phone",
+  item:      "items",
+  timestamp: "created_at_override",
+};

@@ -280,7 +280,7 @@ async def scan_all_users(db, *, now: Optional[datetime] = None) -> Dict[str, Any
                 for a in new_alerts:
                     by_stage[a["stage"]] = by_stage.get(a["stage"], 0) + 1
                 body_parts = [f"{n} {s}" for s, n in by_stage.items()]
-                title = f"🚨 {len(new_alerts)} SLA breach{'es' if len(new_alerts) != 1 else ''}"
+                title = f"{len(new_alerts)} SLA breach{'es' if len(new_alerts) != 1 else ''}"
                 body  = " · ".join(body_parts) + " — tap to review"
                 # Late import to avoid cycle (server.py imports sla_engine).
                 try:

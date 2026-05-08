@@ -58,6 +58,17 @@ def init() -> None:
 
     # =================  Shipments — list + stats  =====================
 
+    # Phase F2.2 — alias map so GET /shipments?status=Ready%20to%20Ship
+    # also surfaces legacy rows still tagged "Dispatch" / "Dispatched".
+    # Mirrors the STATUS_META aliases on the frontend so what the user
+    # sees in the UI tab matches what the API returns. NOTE: every alias
+    # value listed here MUST also be an existing canonical status value
+    # somewhere — otherwise a typo could silently expand a filter.
+    STATUS_ALIASES_FOR_FILTER: Dict[str, list] = {
+        "Ready to Ship": ["Ready to Ship", "Dispatch", "Dispatched",
+                          "ReadyToShip", "READY_TO_SHIP"],
+    }
+
     @shipments_read_router.get("/shipments", response_model=List[Shipment])
     async def list_shipments(
         status: Optional[str] = None,
@@ -70,7 +81,11 @@ def init() -> None:
         # another's data.
         q: dict = {"user_id": current_user["id"]}
         if status:
-            q["status"] = status
+            aliases = STATUS_ALIASES_FOR_FILTER.get(status)
+            if aliases:
+                q["status"] = {"$in": aliases}
+            else:
+                q["status"] = status
         if courier_id:
             q["courier_id"] = courier_id
         if search:

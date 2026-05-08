@@ -13734,3 +13734,285 @@ agent_communication:
         custom_values added to ship_doc) verified working. All
         invariants (A through G) green. No regressions detected.
         Test artefacts cleaned up. Ready to finish.
+
+
+# ====================================================================
+# Phase F2.2 — Webhook Ingest (Live JSON) + "Stage" → "Status" Rename +
+# "Dispatch" Cleanup + Shipment Card Timestamp
+# ====================================================================
+
+backend:
+  - task: "Phase F2.2 — Webhook ingest pipeline (5 endpoints) + Status/Timestamp/Custom-Field support"
+    implemented: true
+    working: "NA"
+    file: "/app/backend/routers/webhook.py, /app/backend/server.py (mount + AUTH_EXEMPT_PREFIXES), /app/backend/routers/shipment_ops.py (Dispatch→Ready to Ship), /app/backend/routers/shipments_write.py (sheet-sync write label)"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: |
+            Phase F2.2 wires up the previously-scaffolded webhook router
+            into server.py and brings the same Status / Timestamp /
+            Custom-Field capabilities introduced for CSV imports
+            (Phase F2.1) to the live JSON ingest path.
+
+            CHANGES:
+            ─────────────────────────────────────────────────────
+            1. routers/webhook.py — completed implementation:
+               • 5 endpoints all live:
+                   GET  /api/me/webhook-config
+                   POST /api/me/webhook-config/rotate
+                   PUT  /api/me/webhook-config
+                   POST /api/me/webhook-config/preview
+                   POST /api/webhook/orders/{secret}     (PUBLIC ingest)
+               • get_webhook_config + preview now return
+                 `custom_fields: [{id, label}]` so the UI can render the
+                 per-user custom-field group in the picker (parity with
+                 file-import).
+               • put_webhook_config validates "custom:<id>" pointers via
+                 the shared validate_mapping_field helper (no longer
+                 rejects custom-field mappings as "unknown schema").
+               • webhook_ingest now relocates the schema-level "status"
+                 / "created_at_override" cells onto dedicated
+                 `imported_status` / `imported_at` keys on the
+                 PendingOrder doc — same logic as file_import. Ship_
+                 pending_order then copies those onto the resulting
+                 Shipment, so a Shopify "Delivered" + "2026-04-29"
+                 webhook payload lands as a real Delivered shipment
+                 with that timestamp instead of a fresh Pending row.
+               • Body type relaxed from `Dict[str, Any]` → `Any` so
+                 list / object / `{orders:[...]}` are all accepted.
+               • Response includes `errors[:10]` for diagnostic UX.
+
+            2. server.py — webhook router mounted via late-binding
+               init() pattern, identical to file_import.py.
+               • _AUTH_EXEMPT_PREFIXES extended with
+                 `/api/webhook/orders/` so external systems can POST
+                 without an Authorization header (the URL secret IS
+                 the auth — secret-in-URL pattern).
+
+            3. routers/shipment_ops.py (scan-dispatch) — write-side
+               cleanup. Used to set status="Dispatch"; now sets
+               status="Ready to Ship". Read-side aliases in
+               STATUS_META still classify legacy "Dispatch" rows so
+               existing data continues to surface under the same UI
+               tab. NO Dispatch literal is written anywhere going
+               forward.
+
+            4. routers/shipments_write.py (Sheet two-way sync) — same
+               cleanup. The Master Sheet row was being bumped to
+               "Dispatched" on ship; now it's bumped to "Ready to
+               Ship" so Sheet reflects the canonical app label.
+
+            QUICK SMOKE alreadу verified locally:
+              • Mount log: webhook router successfully imported.
+              • POST /api/webhook/orders/<bogus-secret> → 404
+                "Unknown webhook secret" (auth bypass works).
+              • GET /api/me/webhook-config without bearer → 401
+                (auth still enforced for owner endpoints).
+
+            REQUEST: please run a regression suite covering both the
+            existing F1+F2.1 invariants AND the new webhook flow.
+
+            TEST PLAN:
+            ─────────────────────────────────────────────────────
+            CREDENTIALS: /app/memory/test_credentials.md
+              Owner: admin@test.com / Admin@12345
+
+            A) Webhook config CRUD (auth required)
+              1. GET  /me/webhook-config → 200, configured=false on
+                 fresh user; mapping={}; schema_fields includes
+                 "status" + "created_at_override"; custom_fields is
+                 a (possibly empty) list.
+              2. POST /me/webhook-config/rotate → 200; secret length
+                 ≥ 22 chars; url ends with "/api/webhook/orders/<secret>".
+              3. GET  /me/webhook-config (after rotate) → configured
+                 should now be true; same secret + url.
+              4. POST /me/webhook-config/rotate AGAIN → secret CHANGES.
+                 Confirm: posting to old URL now returns 404.
+
+            B) Webhook mapping save
+              1. PUT  /me/webhook-config with mapping
+                 {"customer.name": "customer_name",
+                  "customer.phone": "customer_phone",
+                  "shipping.line1": "address",
+                  "shipping.line2": "address",
+                  "order.amount": "amount",
+                  "order.status": "status",
+                  "order.placed_at": "created_at_override"}
+                 → 200, ok=true.
+              2. PUT with an unknown schema field ("foo") → 400.
+              3. PUT with "custom:<existing_id>" (after creating a
+                 custom field via /api/me/custom-fields) → 200.
+              4. PUT with "custom:<garbage-id>" → 400.
+
+            C) Webhook payload preview (auth required)
+              POST /me/webhook-config/preview with sample:
+                {"customer":{"name":"R","phone":"9..."},
+                 "shipping":{"line1":"A","line2":"B"},
+                 "order":{"amount":100,"status":"Shipped",
+                          "placed_at":"2026-04-29T14:30:00"}}
+              Expect:
+                • keys[] flattened (e.g. "customer.name").
+                • sample_values map of first 30 keys.
+                • suggested map auto-populates customer.name →
+                  customer_name, etc., using header aliases.
+                • schema_fields + custom_fields in response.
+
+            D) PUBLIC INGEST (no auth header) — happy path
+              POST /api/webhook/orders/<secret>
+                {"customer":{"name":"Riya","phone":"9876543210"},
+                 "shipping":{"line1":"123 MG Road","line2":"Surat"},
+                 "order":{"amount":1499,"status":"Shipped",
+                          "placed_at":"2026-04-29T14:30:00"}}
+              Expect:
+                • 200, imported=1, skipped=0.
+                • A new pending_orders doc with:
+                    customer_name="Riya"
+                    customer_phone="9876543210"
+                    address_line1="123 MG Road Surat"   (auto-merge)
+                    amount=1499
+                    imported_status="Shipped"
+                    imported_at="2026-04-29T14:30:00" (ISO)
+                    status="pending"   (pipeline)
+                    source="webhook"
+                    source_meta.received_at present
+              Then call /api/orders/pending/<id>/ship → resulting
+              Shipment.status MUST be "Shipped" (NOT "Pending"), and
+              Shipment.created_at MUST equal the imported timestamp.
+
+            E) PUBLIC INGEST — batch & nested arrays
+              1. POST {"orders":[<row1>,<row2>,<row3>]} → imported=3.
+              2. POST [<row1>,<row2>] (top-level array) → imported=2.
+              3. POST 201 rows → 413 "too large".
+
+            F) PUBLIC INGEST — invalid / missing fields
+              1. POST with bogus secret → 404.
+              2. POST when user has NO mapping configured → 409.
+              3. POST with row missing both customer_name AND
+                 customer_phone → that row goes to errors[], imported=0.
+              4. POST with non-dict body → 400.
+
+            G) DISPATCH CLEANUP (regression for "Stage" → "Status")
+              1. POST /api/shipments/scan-dispatch with a Pending
+                 shipment's tracking_id → resulting Shipment.status
+                 MUST be "Ready to Ship", NOT "Dispatch".
+              2. The old aliases array still surfaces legacy rows
+                 with literal "Dispatch" / "Dispatched" stored — do
+                 a direct DB insert of one such row, then GET
+                 /api/shipments?status=Ready%20to%20Ship and confirm
+                 the legacy row appears under that filter (no
+                 regressions).
+
+            H) Phase F1 + F2.1 happy-path SMOKE
+              Run the existing /app/backend_test_phase_f2_1.py (or
+              equivalent CSV/Excel + custom-fields suite). Expect
+              69/69 pass — no regressions from the import_schema
+              imports being shared with webhook.py.
+
+            Please report PASS/FAIL counts + HTTP traces for any
+            failures. Clean up created test data at the end.
+
+frontend:
+  - task: "Phase F2.2 — Webhook config UI + Settings shortcut + Shipment card timestamp"
+    implemented: true
+    working: "NA"
+    file: "/app/frontend/app/webhook-config.tsx (NEW), /app/frontend/lib/api.ts (4 new endpoints), /app/frontend/app/(tabs)/settings.tsx (Webhook Ingest shortcut), /app/frontend/app/(tabs)/shipments.tsx (formatTimestamp + card timestamp), /app/frontend/app/scanner-dispatch.tsx (Dispatch→Ready to Ship labels), /app/frontend/app/admin/stage-rules.tsx (Stage→Status), /app/frontend/app/admin/sla-alerts.tsx (Stage→Status), /app/frontend/app/(tabs)/index.tsx (Stage Rules → Status Rules), /app/frontend/app/bulk-message/[type].tsx (Stage→Status), /app/frontend/app/(tabs)/settings.tsx (Stage Rules → Status Rules)"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: |
+            Phase F2.2 frontend changes (user-permission-required for
+            full test):
+
+            NEW SCREEN — /app/frontend/app/webhook-config.tsx
+              • View / copy / share / rotate webhook URL.
+              • Empty state: "Generate Webhook URL" CTA when no secret.
+              • Paste-sample-JSON modal lets user paste a Shopify
+                payload, posts to /preview, and seeds the mapping
+                editor with auto-suggestions.
+              • Mapping editor: per-key TouchableOpacity rows opening
+                a field-picker modal with the same 22 schema fields +
+                "Your Custom Fields" group as file-import.tsx.
+              • Save bar with disabled state during PUT.
+
+            SETTINGS HUB — /(tabs)/settings.tsx
+              • New "Webhook Ingest (Live JSON)" shortcut card right
+                under "CSV / Excel Import Mapping". Cream/orange
+                palette to differentiate from green sheet imports.
+              • "Stage Rules" link relabelled to "Status Rules".
+
+            SHIPMENT CARD — /(tabs)/shipments.tsx
+              • New formatTimestamp() helper renders ISO →
+                "29 Apr 2026 · 02:30 PM".
+              • Each card now shows a tiny clock-icon + timestamp
+                row beneath items. Historical imports immediately
+                show their real-world date.
+
+            DISPATCH WIPE
+              • shipments.tsx STATUS_META key renamed
+                "Dispatch" → "Ready to Ship" (legacy aliases still
+                accepted on read).
+              • StatusFilter type union, STATUS_FILTER_ORDER, every
+                comparison + section header updated.
+              • scanner-dispatch.tsx: mode labels + screen titles
+                say "Ready to Ship" / "Shipping Scanner" — never
+                "Dispatch".
+
+            STAGE → STATUS RENAME (UI labels only)
+              • admin/stage-rules.tsx: page title, table header, SLA
+                description, success toast.
+              • admin/sla-alerts.tsx: WhatsApp alert text "in stage"
+                → "in status".
+              • bulk-message/[type].tsx: empty-state text.
+              • (tabs)/index.tsx: bulk-msg subtitle, "Tap a stage" →
+                "Tap a status", "Stage Rules + SLA Engine" → "Status
+                Rules".
+
+            DB invariants preserved:
+              • Field name shipment.status remains.
+              • Legacy values "Dispatch"/"Dispatched" still readable
+                via STATUS_META aliases — old data not orphaned.
+
+            Visual smoke OK:
+              • App boots, login screen renders.
+              • Page-content scan: "Dispatch" / "Stage Rules"
+                strings absent from rendered HTML on the loaded
+                screens.
+
+            Frontend test will be invoked after USER permission per
+            project policy.
+
+metadata:
+  test_sequence: 2
+  run_ui: false
+
+test_plan:
+  current_focus:
+    - "Phase F2.2 — Webhook ingest pipeline (5 endpoints) + Status/Timestamp/Custom-Field support"
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"
+
+agent_communication:
+    -agent: "main"
+    -comment: |
+      Phase F2.2 ready for backend regression. Please run scenarios
+      A–H listed under the task's status_history above. Test
+      credentials in /app/memory/test_credentials.md.
+
+      Critical invariants:
+        • Webhook URL secret-in-URL bypass works (ingest does not
+          require Authorization header).
+        • Status & Timestamp values from webhook payloads end up on
+          the resulting Shipment (NOT just the PendingOrder).
+        • "Dispatch" literal NEVER written by any new code path.
+        • F2.1 custom_fields + status normalisation behaviours
+          unchanged.
+        • Frontend screens load (app already booting, login renders).
+

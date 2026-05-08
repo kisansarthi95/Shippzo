@@ -256,7 +256,7 @@ export default function StageRulesScreen() {
                     {/* Alert */}
                     <View style={styles.dividerSm} />
                     <View style={styles.kvRow}>
-                      <Text style={styles.kvLabel}>🔔 Internal Alert</Text>
+                      <Text style={styles.kvLabel}> Internal Alert</Text>
                       <Switch
                         value={!!v.alert_enabled}
                         onValueChange={(b) => setStageVal(stage, { alert_enabled: b })}
@@ -323,7 +323,7 @@ export default function StageRulesScreen() {
                       <>
                         <View style={styles.dividerSm} />
                         <View style={styles.kvRow}>
-                          <Text style={styles.kvLabel}>💬 Customer Message</Text>
+                          <Text style={styles.kvLabel}> Customer Message</Text>
                           <Switch
                             value={!!v.customer_msg_enabled}
                             onValueChange={(b) => setStageVal(stage, { customer_msg_enabled: b })}
@@ -334,7 +334,7 @@ export default function StageRulesScreen() {
                         {v.customer_msg_enabled && (
                           <>
                             <View style={[styles.kvRow, { marginTop: 8 }]}>
-                              <Text style={styles.kvLabel}>⚡ Auto-trigger (background)</Text>
+                              <Text style={styles.kvLabel}> Auto-trigger (background)</Text>
                               <Switch
                                 value={!!v.auto_trigger}
                                 onValueChange={(b) => setStageVal(stage, { auto_trigger: b })}
@@ -378,7 +378,7 @@ export default function StageRulesScreen() {
                     {v.escalation && v.escalation.length > 0 && (
                       <>
                         <View style={styles.dividerSm} />
-                        <Text style={styles.fieldLabel}>📈 Escalation</Text>
+                        <Text style={styles.fieldLabel}> Escalation</Text>
                         {v.escalation.map((step: any, idx: number) => (
                           <Text key={idx} style={styles.escLine}>
                             • Day {Number(v.sla_days) + Number(step.day_after_sla || 0)} →
@@ -397,7 +397,7 @@ export default function StageRulesScreen() {
           {/* Engine Settings (Phase G3) */}
           <View style={styles.engineBlock}>
             <View style={styles.engineHeader}>
-              <Text style={styles.recipTitle}>⚙️ SLA Engine Settings</Text>
+              <Text style={styles.recipTitle}>SLA Engine Settings</Text>
               <Switch
                 value={globalEnabled}
                 onValueChange={setGlobalEnabled}
