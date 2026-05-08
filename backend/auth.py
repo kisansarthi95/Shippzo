@@ -111,6 +111,11 @@ class SignupRequest(BaseModel):
     # uuid). Optional for backwards compatibility — older clients won't
     # send it, and the backend simply skips the abuse check for them.
     device_fingerprint: str = Field(default="", max_length=256)
+    # Phase G — primary business category collected on the signup form.
+    # Validated server-side against business_categories.VALID_SLUGS;
+    # left empty by older clients (which then trigger the post-login
+    # onboarding gate as a fallback).
+    primary_business_category: str = Field(default="", max_length=64)
 
 
 class LoginRequest(BaseModel):

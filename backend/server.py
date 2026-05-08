@@ -262,6 +262,18 @@ async def auth_signup(payload: SignupRequest):
     if await db.users.find_one({"email": email}):
         raise HTTPException(status_code=400, detail="Email already registered")
 
+    # Phase G — primary business category. Required on the form, but
+    # we accept blank for backward-compat (older clients) and let the
+    # post-login onboarding gate catch them.
+    pbc = (payload.primary_business_category or "").strip()
+    if pbc:
+        from business_categories import is_valid_category
+        if not is_valid_category(pbc):
+            raise HTTPException(
+                status_code=400,
+                detail="Please pick a valid business category.",
+            )
+
     # Normalise + validate phone — allow digits + optional leading "+".
     phone_raw = (payload.phone or "").strip()
     phone_digits = re.sub(r"\D", "", phone_raw)

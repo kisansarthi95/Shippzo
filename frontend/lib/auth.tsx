@@ -35,7 +35,8 @@ type AuthState = {
   signIn: (email: string, password: string) => Promise<void>;
   signInTeam: (email: string, password: string) => Promise<void>;
   signUp: (
-    email: string, password: string, name: string, shop_name: string, phone: string,
+    email: string, password: string, name: string, shop_name: string,
+    phone: string, business_category?: string,
   ) => Promise<{ trial_denied: boolean; trial_denied_reason: string }>;
   signInWithGoogleSession: (sessionId: string) => Promise<void>;
   signOut: () => Promise<void>;
@@ -126,7 +127,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [persist]);
 
   const signUp = useCallback(async (
-    email: string, password: string, name: string, shop_name: string, phone: string,
+    email: string, password: string, name: string, shop_name: string,
+    phone: string, business_category?: string,
   ) => {
     // Phase-2b: collect a stable per-device fingerprint so the backend
     // can deny repeated free trials from the same hardware. Best-effort
@@ -141,6 +143,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       { token: string; trial_denied?: boolean; trial_denied_reason?: string } & User
     >("/auth/signup", {
       email, password, name, shop_name, phone, device_fingerprint,
+      // Phase G — primary business category collected on the signup form
+      // itself. Empty string when the field is left blank (the form
+      // marks it required, but we tolerate older clients gracefully).
+      primary_business_category: business_category || "",
     });
     const { token: tok, trial_denied, trial_denied_reason, ...userFields } = r.data;
     await persist(tok, userFields as User);
