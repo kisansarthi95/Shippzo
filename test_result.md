@@ -14582,3 +14582,121 @@ agent_communication:
           <webhook_name>.
         • Sheet "All" badge gone, shipped sheet rows hidden.
 
+
+
+# ====================================================================
+# Phase C — Edit option on every pending card (+ back-without-save guard)
+# Phase D — Confirm pending row stays until ship-form actually saves
+# ====================================================================
+# User feedback (May 2026):
+#   "આ બધા એકવાર સેવ થયા પછી અને એડિટ કરી શકાતા નથી ડાયરેક્ટ ડીલીટ
+#    થાય છે તો અહીંયા એડિટ નો પણ ઓપ્શન આવવો જોઈએ ... અને એડિટ ઉપર
+#    ક્લિક કરે અને પછી સેવ કર્યા વગર જો બેક આવે તો કન્ફર્મેશન પૂછવું
+#    જોઈએ સેવ ચેન્જ કેન્સલ અને એડિટ કંટીન્યુ"
+#   "જે ડેટા સેવ થતો નથી તો તે ડેટા પાછો ઓર્ડર ની અંદર સીપ ધીસ ઓર્ડરમાં
+#    જતો રહેવો જોઈએ"
+# ====================================================================
+
+frontend:
+  - task: "Phase C — Edit pending order screen + 3-option back-without-save dialog"
+    implemented: true
+    working: "NA"
+    file: "/app/frontend/app/edit-pending/[id].tsx (NEW), /app/frontend/app/(tabs)/orders.tsx (Edit icon on every paste/file/webhook card)"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: |
+            New screen `/app/edit-pending/[id].tsx`:
+              • Loads the source PendingOrder via Api.listPendingOrders
+                + filter by id (the existing client API has no
+                getOne() helper but the lists are tiny).
+              • Renders 18 fields grouped into Customer / Address /
+                Order sections, each pre-filled from the source
+                document.
+              • dirtyRef tracks whether ANY field has been touched
+                so the back-guard knows when to skip the dialog.
+              • Save button → Api.updatePendingOrder (PUT /api/orders/
+                pending/{id}, which already existed) with numeric
+                coercion for amount/token_amount/box_*.
+              • Cancel / hardware-back / header-back → confirmBack()
+                helper. If dirty, shows the 3-option Alert:
+                    Save Changes  → save → router.back()
+                    Discard       → reset dirty, router.back()
+                    Continue      → close dialog, stay on form.
+                If not dirty → silent router.back() (no nag).
+              • BackHandler.addEventListener inside useFocusEffect
+                so Android hardware back is also guarded.
+
+            Orders tab (/app/frontend/app/(tabs)/orders.tsx):
+              • Each unified-card from paste / file / webhook now
+                shows an Edit icon next to the existing Delete icon.
+              • Tap → router.push("/edit-pending/<id>"). Sheet rows
+                deliberately don't carry an Edit affordance because
+                their data lives on the user's Google Sheet, not in
+                pending_orders; the existing "Ship this order" CTA
+                already routes them through /(tabs)/add where the
+                user can edit any field before shipping.
+
+  - task: "Phase D — Pending row stays until ship-form actually saves"
+    implemented: true
+    working: true
+    file: "/app/frontend/app/(tabs)/add.tsx (no change needed — verified existing flow)"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "main"
+        -comment: |
+            Verified Phase D requirement is ALREADY correctly
+            implemented in the existing flow. No code change needed.
+
+            Audit trail:
+            1. User taps "Ship this order" on a pending card.
+            2. shipPasteOrder() routes to /(tabs)/add with prefill
+               + pending_order_id param. NO pending_orders.update
+               or .delete fires here.
+            3. /(tabs)/add stores the param in `pendingOrderId`
+               state (line 722 + 136). Still no DB call.
+            4. User can edit any field, switch couriers, even
+               navigate away — pending_orders row UNTOUCHED.
+            5. ONLY when the user explicitly hits "Save" and the
+               POST /api/shipments call succeeds (line ~1100s),
+               THEN the existing code at line 1129-1138 calls
+               Api.updatePendingOrder(pendingOrderId, {status:
+               "shipped", ...}) so the row stops appearing in the
+               Pending list.
+            6. listPendingOrders queries with status="pending"
+               filter, so once status flips to "shipped" the
+               row disappears — but the document itself still
+               exists for audit (and the shipment_id pointer is
+               stored on it for traceability).
+
+            User's worst-case scenario ("ship dhīs order kari diidhū
+            ane cancel kari diidhū to gāyab thai jashe") cannot
+            happen: there is no API call between tapping
+            "Ship this order" and tapping "Save" on /(tabs)/add.
+
+metadata:
+  test_sequence: 5
+  run_ui: false
+
+test_plan:
+  current_focus:
+    - "Phase C — Edit pending order screen + 3-option back-without-save dialog"
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"
+
+agent_communication:
+    -agent: "main"
+    -comment: |
+      Phase C + Phase D ready for visual review.
+      • Backend: zero changes — PUT /api/orders/pending/{id} already
+        existed and is used by the new Edit screen as-is.
+      • Frontend: one new screen + one Orders-card affordance.
+      Bundle compiles cleanly; app login renders.
+

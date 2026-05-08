@@ -305,11 +305,31 @@ export default function OrdersFromSheet() {
             {row.badgeLabel}
           </Text>
         </View>
-        {row.paste ? (
-          <TouchableOpacity onPress={() => deletePasteOrder(row.paste!)} hitSlop={8}>
-            <PhIcon name="close" size={18} color={colors.textMuted} />
-          </TouchableOpacity>
-        ) : null}
+        <View style={{ flexDirection: "row", gap: 4, alignItems: "center" }}>
+          {/* Phase C — Edit affordance.
+              For paste / file / webhook (which all live in the
+              pending_orders Mongo collection) we route to the new
+              dedicated edit screen. Sheet rows can't be edited
+              in-place (they live on the user's Google Sheet) so
+              we route them through /(tabs)/add with prefill — same
+              path as the "Ship this order" CTA but without firing
+              the actual ship request. */}
+          {row.paste ? (
+            <TouchableOpacity
+              onPress={() => router.push(`/edit-pending/${row.paste!.id}` as any)}
+              hitSlop={8}
+              style={styles.editIconBtn}
+              testID={`edit-${row.key}`}
+            >
+              <PhIcon name="create-outline" size={16} color="#3B82F6" />
+            </TouchableOpacity>
+          ) : null}
+          {row.paste ? (
+            <TouchableOpacity onPress={() => deletePasteOrder(row.paste!)} hitSlop={8}>
+              <PhIcon name="close" size={18} color={colors.textMuted} />
+            </TouchableOpacity>
+          ) : null}
+        </View>
       </View>
       <Text style={styles.unifiedName} numberOfLines={1}>
         {row.customer_name || "(no name)"}
@@ -700,6 +720,10 @@ const styles = StyleSheet.create({
   unifiedItems: { marginTop: 4, fontSize: 13, color: colors.text, fontWeight: "600" },
   unifiedAmount: { marginTop: 6, fontSize: 14, color: colors.text, fontWeight: "800" },
   unifiedExtra: { marginTop: 4, fontSize: 11, color: "#94A3B8", fontStyle: "italic" },
+  editIconBtn: {
+    paddingHorizontal: 6, paddingVertical: 4, borderRadius: 6,
+    backgroundColor: "#EFF6FF", borderWidth: 1, borderColor: "#BFDBFE",
+  },
 
   // Smart Paste queue styles
   pasteQueueWrap: {
