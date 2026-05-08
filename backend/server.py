@@ -2273,6 +2273,13 @@ class PendingOrder(BaseModel):
     created_at: str = Field(default_factory=utcnow_iso)
     processed_at: Optional[str] = None
 
+    # Phase F1 — file-import metadata (filename, format, imported_at,
+    # row_index). Populated by /api/orders/import/commit so the Orders
+    # tab can render the "File Imports" queue badge with provenance.
+    # Optional/nullable so existing paste/sheet/manual rows stay
+    # backwards-compatible.
+    source_meta: Optional[Dict[str, Any]] = None
+
 
 class SmartPasteRequest(BaseModel):
     text: str
