@@ -13290,7 +13290,7 @@ agent_communication:
 backend:
   - task: "Phase F2.1 — CSV/XLSX import: Status + Timestamp + Custom Field mapping"
     implemented: true
-    working: false
+    working: true
     file: "/app/backend/import_schema.py, /app/backend/routers/file_import.py, /app/backend/server.py (PendingOrder model), /app/backend/routers/shipments_write.py (ship_pending_order)"
     stuck_count: 0
     priority: "high"

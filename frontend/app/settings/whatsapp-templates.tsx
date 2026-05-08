@@ -305,7 +305,7 @@ export default function WhatsAppTemplatesSettings() {
                 {/* Phase-15 E: shop / helpline phone numbers — auto-fill
                     {shop_phone} and {helpline} placeholders. */}
                 <Text style={[styles.bizLinkLabel, { marginTop: 14 }]}>
-                  📞 Shop Phone (used as {"{shop_phone}"})
+                  Shop Phone (used as {"{shop_phone}"})
                 </Text>
                 <TextInput
                   style={styles.bizLinkInput}
@@ -317,7 +317,7 @@ export default function WhatsAppTemplatesSettings() {
                   maxLength={15}
                 />
                 <Text style={[styles.bizLinkLabel, { marginTop: 10 }]}>
-                  🆘 Helpline (used as {"{helpline}"} — falls back to shop phone)
+                  Helpline (used as {"{helpline}"} — falls back to shop phone)
                 </Text>
                 <TextInput
                   style={styles.bizLinkInput}
