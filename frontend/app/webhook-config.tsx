@@ -62,6 +62,7 @@ type Config = {
   schema_fields: string[];
   custom_fields: { id: string; label: string }[];
   configured: boolean;
+  recent_samples?: { received_at: string; payload: any }[];
 };
 
 type Preview = {
@@ -326,6 +327,48 @@ export default function WebhookConfigScreen() {
           {/* ── Mapping editor ── */}
           {cfg?.configured ? (
             <>
+              {/* Phase F2.4 — When the sender (e.g. Dukaan) has already
+                  fired a "Test webhook" probe at us BEFORE the user
+                  configured their mapping, we'll have stashed the raw
+                  payload. Surface the most recent one as a one-tap
+                  "Use this payload" shortcut so the mapping flow takes
+                  10 seconds instead of asking the user to copy-paste. */}
+              {(cfg.recent_samples || []).length > 0 && (
+                <View style={styles.recentCard}>
+                  <View style={{ flexDirection: "row", alignItems: "center", gap: 6, marginBottom: 6 }}>
+                    <PhIcon name="check-circle" size={14} color="#16A34A" />
+                    <Text style={styles.recentTitle}>
+                      ✓ Webhook test received! ({cfg.recent_samples!.length} sample{cfg.recent_samples!.length > 1 ? "s" : ""})
+                    </Text>
+                  </View>
+                  <Text style={styles.recentSub}>
+                    Your sender successfully connected. Tap below to auto-fill
+                    the mapping editor with the most recent payload.
+                  </Text>
+                  <TouchableOpacity
+                    style={styles.recentBtn}
+                    onPress={async () => {
+                      const last = cfg.recent_samples![cfg.recent_samples!.length - 1];
+                      try {
+                        const data = await Api.previewWebhookPayload(last.payload);
+                        setPreview(data);
+                        setDraft((d) => {
+                          const out = { ...d };
+                          for (const k of data.keys) {
+                            if (!(k in out) && data.suggested[k]) out[k] = data.suggested[k];
+                          }
+                          return out;
+                        });
+                      } catch (e: any) {
+                        Alert.alert("Couldn't load sample", e?.message || "Try again.");
+                      }
+                    }}
+                  >
+                    <PhIcon name="lightning" size={14} color="#FFFFFF" />
+                    <Text style={styles.recentBtnTxt}>Use last received payload</Text>
+                  </TouchableOpacity>
+                </View>
+              )}
               <View style={styles.sectionRow}>
                 <Text style={styles.sectionTitle}>Field Mapping</Text>
                 <TouchableOpacity
@@ -616,4 +659,17 @@ const styles = StyleSheet.create({
 
   customGroupHeader: { flexDirection: "row", alignItems: "center", gap: 6, paddingTop: 14, paddingBottom: 6, marginTop: 4, borderTopWidth: 1, borderTopColor: "#E5E7EB" },
   customGroupHeaderTxt: { fontSize: 11, fontWeight: "700", color: "#7C3AED", textTransform: "uppercase", letterSpacing: 0.5 },
+
+  // Phase F2.4 — "Use last received Dukaan payload" highlight card.
+  recentCard: {
+    backgroundColor: "#F0FDF4", borderColor: "#BBF7D0", borderWidth: 1,
+    borderRadius: 12, padding: 14, marginTop: 16,
+  },
+  recentTitle: { fontSize: 13, fontWeight: "700", color: "#166534" },
+  recentSub:   { fontSize: 12, color: "#166534", marginBottom: 10 },
+  recentBtn: {
+    flexDirection: "row", alignItems: "center", gap: 6, justifyContent: "center",
+    backgroundColor: "#16A34A", paddingVertical: 10, borderRadius: 8,
+  },
+  recentBtnTxt: { color: "#FFFFFF", fontWeight: "700", fontSize: 13 },
 });

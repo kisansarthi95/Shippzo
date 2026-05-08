@@ -64,6 +64,33 @@ def _gen_secret() -> str:
     return secrets.token_urlsafe(24).rstrip("=")
 
 
+def _build_webhook_url(request: Request, secret: str) -> str:
+    """Construct the externally-reachable webhook URL.
+
+    External webhook senders (Dukaan, Shopify, Zapier, …) often refuse
+    to deliver to plain `http://` callbacks for security reasons.
+    Behind our preview proxy `request.base_url` returns `http://...`
+    even though the public ingress is HTTPS, so we MUST upgrade the
+    scheme using the X-Forwarded-Proto / X-Forwarded-Host headers
+    set by the K8s ingress. We also fall back to the raw `Host`
+    header so the URL points at the public hostname, not the in-
+    cluster service name.
+    """
+    fwd_proto = request.headers.get("x-forwarded-proto", "").split(",")[0].strip()
+    fwd_host  = request.headers.get("x-forwarded-host", "").split(",")[0].strip()
+    fwd_host  = fwd_host or request.headers.get("host", "")
+    # Always default to HTTPS — the preview ingress + production both
+    # serve TLS, plain-HTTP is never the right answer here.
+    proto = (fwd_proto or "https").lower()
+    if proto not in ("https", "http"):
+        proto = "https"
+    if not fwd_host:
+        # Last-resort fallback (should never happen — every prod request
+        # carries Host). Keep request.base_url so dev curl still works.
+        return f"{str(request.base_url).rstrip('/')}/api/webhook/orders/{secret}"
+    return f"{proto}://{fwd_host}/api/webhook/orders/{secret}"
+
+
 def _flatten(obj: Any, prefix: str = "", out: Dict[str, Any] | None = None) -> Dict[str, Any]:
     """Flatten nested JSON objects to dotted-key paths so users can map
     `customer.name` → schema_field directly. Lists are joined as
@@ -114,20 +141,24 @@ def init() -> None:
     ):
         u = await db.users.find_one({"id": current_user["id"]}, {"_id": 0}) or {}
         secret = u.get("webhook_secret") or ""
-        # URL: take origin from request, append /api/webhook/orders/<secret>
-        origin = str(request.base_url).rstrip("/")
-        full_url = f"{origin}/api/webhook/orders/{secret}" if secret else None
+        full_url = _build_webhook_url(request, secret) if secret else None
         custom_fields = await _list_user_custom_fields(current_user["id"])
+        # Phase F2.4 — surface the last received samples so the
+        # Webhook Config UI can offer "Use last received payload" for
+        # easy mapping setup right after the user pastes the URL into
+        # Dukaan / Shopify and hits "Test webhook".
+        recent_samples = u.get("webhook_recent_samples") or []
         return {
-            "secret":         secret,
-            "url":            full_url,
-            "mapping":        u.get("webhook_mapping") or {},
-            "schema_fields":  SCHEMA_FIELDS,
+            "secret":          secret,
+            "url":             full_url,
+            "mapping":         u.get("webhook_mapping") or {},
+            "schema_fields":   SCHEMA_FIELDS,
             "custom_fields":  [
                 {"id": cf.get("id"), "label": cf.get("name") or cf.get("label") or ""}
                 for cf in custom_fields
             ],
-            "configured":     bool(secret),
+            "configured":      bool(secret),
+            "recent_samples":  recent_samples[-5:],   # last 5 only
         }
 
     @webhook_router.post("/me/webhook-config/rotate")
@@ -143,10 +174,10 @@ def init() -> None:
                 "webhook_secret_at":  datetime.now(timezone.utc).isoformat(),
             }},
         )
-        origin = str(request.base_url).rstrip("/")
+        origin_url = _build_webhook_url(request, new_secret)
         return {
             "secret": new_secret,
-            "url":    f"{origin}/api/webhook/orders/{new_secret}",
+            "url":    origin_url,
         }
 
     @webhook_router.put("/me/webhook-config")
@@ -190,15 +221,13 @@ def init() -> None:
             raise HTTPException(status_code=404, detail="Unknown webhook secret")
 
         mapping: Dict[str, str] = u.get("webhook_mapping") or {}
-        if not mapping:
-            raise HTTPException(
-                status_code=409,
-                detail=(
-                    "No mapping configured. Visit Settings → Webhook to map "
-                    "incoming JSON keys to shipment fields."
-                ),
-            )
-
+        # Phase F2.4 — Forgiving ingest. External senders (Dukaan,
+        # Shopify, Zapier, …) often run a "Test webhook" probe BEFORE
+        # the user has a chance to configure column mapping. They mark
+        # the webhook as broken if they don't get a 2xx back. We
+        # therefore accept the payload, persist the latest 10 samples
+        # so the user can use them in the in-app preview UI, and return
+        # 200 OK with a friendly note instead of 409.
         # Webhooks may send a single order OR a `{orders: [...]}` array
         # OR a top-level array. Normalise to a list.
         if isinstance(body, list):
@@ -208,16 +237,65 @@ def init() -> None:
         elif isinstance(body, dict):
             rows = [body]
         else:
-            raise HTTPException(
-                status_code=400,
-                detail="Body must be a JSON object, list, or {orders: [...]}",
-            )
+            # Even truly invalid bodies (e.g. plain string) shouldn't
+            # 5xx the sender's connectivity test — they should see a
+            # graceful 200 with an explanation. (Dukaan UI shows this
+            # as the response body in the "Test webhook" panel.)
+            return {
+                "ok": False,
+                "imported": 0,
+                "skipped": 0,
+                "errors": ["Body must be a JSON object, list, or {orders: [...]}"],
+            }
 
         if len(rows) > 200:
             raise HTTPException(
                 status_code=413,
                 detail="Webhook batch too large (max 200 orders per call)",
             )
+
+        # Always persist the latest received sample (capped at 10) so
+        # the owner can use them in the Webhook Config "Preview" UI to
+        # quickly set up the column mapping after the first real ping
+        # comes in. Best-effort write; a DB hiccup must not prevent
+        # the 200 OK we owe the sender.
+        if rows and isinstance(rows[0], dict):
+            try:
+                await db.users.update_one(
+                    {"id": u["id"]},
+                    {"$push": {
+                        "webhook_recent_samples": {
+                            "$each": [
+                                {
+                                    "received_at": datetime.now(timezone.utc).isoformat(),
+                                    "payload":     rows[0],
+                                }
+                            ],
+                            "$slice": -10,
+                        },
+                    }},
+                )
+            except Exception:
+                _logger.exception("Failed to persist webhook sample")
+
+        if not mapping:
+            # Sender pinged us before the mapping is configured. We
+            # store the sample (above) and respond with success +
+            # explanation so their connectivity test passes. The
+            # owner sees these samples on the next visit to the
+            # Webhook Config screen.
+            return {
+                "ok": True,
+                "imported": 0,
+                "skipped": len(rows),
+                "errors": [
+                    "Connection OK — payload received but no field "
+                    "mapping is configured yet. Open the Shippzo app → "
+                    "Settings → Webhook Ingest to map incoming keys to "
+                    "shipment fields. (We saved this payload as a "
+                    "sample for you.)"
+                ],
+            }
 
         imported = 0
         errors:   List[str] = []

@@ -250,6 +250,39 @@ HEADER_ALIASES: Dict[str, str] = {
     "placed_on":       "created_at_override",
     "ordered_on":      "created_at_override",
     "order_time":      "created_at_override",
+
+    # Phase F2.4 — Dukaan webhook payload aliases. Dukaan's order-
+    # received event sends keys like "order.buyer.name",
+    # "order.shipping_address.address_1", "order.total_cost". After
+    # _flatten() those become dotted paths; we add explicit one-shot
+    # entries for the leaf names so suggest_mapping picks them up.
+    "buyer_name":         "customer_name",
+    "buyer.name":         "customer_name",
+    "buyer_phone":        "customer_phone",
+    "buyer.phone":        "customer_phone",
+    "buyer_email":        "customer_email",
+    "buyer.email":        "customer_email",
+    "shipping_address.address_1": "address",
+    "shipping_address.address_2": "address",
+    "shipping_address.city":      "city",
+    "shipping_address.state":     "state",
+    "shipping_address.pincode":   "pincode",
+    "shipping_address.country":   "state",
+    "address_1":          "address",
+    "address_2":          "address",
+    "total_cost":         "amount",
+    "total":              "amount",
+    "subtotal":           "amount",
+    "order_total":        "amount",
+    "uuid":               "order_id",
+    "display_order_id":   "order_id",
+    "order_status":       "status",
+    "is_cod":             "payment_mode",
+    "payment_method":     "payment_mode",
+    "buyer_address":      "address",
+    "buyer.address":      "address",
+    "shipping_address":   "address",
+    "shipping_address.full_address": "address",
 }
 
 
