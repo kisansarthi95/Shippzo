@@ -41,18 +41,20 @@ const FIELD_LABEL: Record<string, string> = {
   customer_alt_phone: "Alt Phone",
   customer_email:     "Email",
   customer_gstin:     "GSTIN",
-  address_line1:      "Address Line 1",
-  address_line2:      "Address Line 2",
+  // Phase F1.1 — single virtual "address". Map MULTIPLE columns
+  // (e.g. Address Line 1 + Address Line 2 + Landmark) to this field
+  // and they auto-merge with a space separator on import.
+  address:            "Address (line1 + line2 auto-merge)",
   city:               "City",
   state:              "State",
   pincode:            "Pincode",
   items:              "Items",
-  amount:             "Amount (₹)",
-  token_amount:       "Token / Advance (₹)",
-  payment_mode:       "Payment Mode",
+  amount:             "Order Amount (₹)",
+  token_amount:       "Order Token / Advance (₹)",
+  payment_mode:       "Payment Mode (COD / PAID)",
   courier_hint:       "Courier (hint)",
   weight:             "Weight",
-  notes:              "Notes",
+  notes:              "Notes / Remarks",
 };
 
 export default function FileImportScreen() {
@@ -126,6 +128,13 @@ export default function FileImportScreen() {
   };
 
   const mappedCount = useMemo(() => Object.values(mapping).filter(Boolean).length, [mapping]);
+
+  // Phase F1.1 — count of columns mapped to the virtual "address" so
+  // we can show a friendly auto-merge hint.
+  const addressColCount = useMemo(
+    () => Object.values(mapping).filter((f) => f === "address").length,
+    [mapping],
+  );
 
   const commit = async () => {
     if (!picked || !preview) return;
@@ -212,6 +221,17 @@ export default function FileImportScreen() {
             <Text style={styles.helpText}>
               Tap a row to choose which schema field that column maps to. Leave blank to ignore it.
             </Text>
+            {addressColCount >= 2 ? (
+              <View style={{
+                backgroundColor: "#ECFDF5", borderColor: "#A7F3D0", borderWidth: 1,
+                borderRadius: 8, padding: 10, marginBottom: 8, flexDirection: "row", gap: 8,
+              }}>
+                <PhIcon name="information-circle" size={16} color="#047857" />
+                <Text style={{ flex: 1, fontSize: 12, color: "#065F46" }}>
+                  {addressColCount} columns mapped to <Text style={{ fontWeight: "700" }}>Address</Text> — they'll merge with a space separator on import (e.g. line1 + " " + line2).
+                </Text>
+              </View>
+            ) : null}
             {preview.columns.map((c) => {
               const cur = mapping[c] || "";
               return (

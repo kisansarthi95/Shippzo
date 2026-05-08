@@ -31,8 +31,20 @@ from pydantic import BaseModel
 file_import_router = APIRouter(prefix="/api", tags=["file-import"])
 
 # ────────────────────────────────────────────────────────────────────
-# Schema fields the user can map columns to. Mirror PendingOrder so
-# Settings UI can present a single dropdown per column.
+# Schema fields the user can map columns to.
+#
+# Phase F1.1 (2026-05-08): The system stores a delivery address in
+# address_line1 / address_line2 internally, but the IMPORT UX exposes
+# a single virtual "address" field — many CSV/Excel exports already
+# have separate "Address Line 1" / "Address Line 2" columns and asking
+# the user to map both to two distinct schema fields invites
+# truncation / line2 falling off when the user only maps line1.
+# Instead, mapping MULTIPLE columns to "address" auto-merges them
+# (in mapping-iteration order) with a single-space separator and
+# writes the result to address_line1. address_line2 stays blank, but
+# the rest of the system (Sheet append, label rendering) already
+# concatenates line1 + line2 with " ", so downstream renders are
+# unaffected.
 # ────────────────────────────────────────────────────────────────────
 SCHEMA_FIELDS: List[str] = [
     "order_id",
@@ -41,8 +53,7 @@ SCHEMA_FIELDS: List[str] = [
     "customer_alt_phone",
     "customer_email",
     "customer_gstin",
-    "address_line1",
-    "address_line2",
+    "address",                  # ← virtual; persisted to address_line1
     "city",
     "state",
     "pincode",
@@ -232,14 +243,57 @@ def init() -> None:
                 {"id": current_user["id"]}, {"_id": 0, "file_import_mapping": 1},
             ) or {}
         ).get("file_import_mapping") or {}
+        # Heuristic header→field aliases (lowercase, _-collapsed key).
+        # Phase F1.1 — extra entries route any "address line *" / "addr"
+        # variant to the single virtual `address` field so users don't
+        # have to know about line1/line2 plumbing.
+        ALIASES = {
+            "address":         "address",
+            "addr":            "address",
+            "address_line":    "address",
+            "address_line_1":  "address",
+            "address_line_2":  "address",
+            "address_1":       "address",
+            "address_2":       "address",
+            "addressline1":    "address",
+            "addressline2":    "address",
+            "full_address":    "address",
+            "delivery_address":"address",
+            "name":            "customer_name",
+            "customer":        "customer_name",
+            "phone":           "customer_phone",
+            "mobile":          "customer_phone",
+            "contact":         "customer_phone",
+            "alt_phone":       "customer_alt_phone",
+            "email":           "customer_email",
+            "gst":             "customer_gstin",
+            "gstin":           "customer_gstin",
+            "pin":             "pincode",
+            "pin_code":        "pincode",
+            "zip":             "pincode",
+            "amt":             "amount",
+            "total":           "amount",
+            "token":           "token_amount",
+            "advance":         "token_amount",
+            "mode":            "payment_mode",
+            "payment":         "payment_mode",
+            "courier":         "courier_hint",
+            "logistics":       "courier_hint",
+            "wt":              "weight",
+            "remarks":         "notes",
+            "comment":         "notes",
+            "comments":        "notes",
+        }
         suggested: Dict[str, str] = {}
         for c in columns:
             if c in saved:
                 suggested[c] = saved[c]
                 continue
-            cl = c.lower().replace(" ", "_").replace("-", "_")
+            cl = c.lower().strip().replace(" ", "_").replace("-", "_")
             if cl in SCHEMA_FIELDS:
                 suggested[c] = cl
+            elif cl in ALIASES:
+                suggested[c] = ALIASES[cl]
         return {
             "format":         fmt,
             "filename":       file.filename or "",
@@ -282,8 +336,13 @@ def init() -> None:
                 ),
             )
 
-        # Reverse-lookup: schema_field → file_column
-        field_to_col: Dict[str, str] = {}
+        # Reverse-lookup: schema_field → list[file_column].
+        # Phase F1.1 — multiple columns can map to the same field
+        # (specifically the virtual "address" field, which auto-merges
+        # Address Line 1 + Address Line 2 from the source file). For
+        # all other fields the LAST mapping wins (sane fallback if a
+        # user accidentally maps two columns to e.g. `customer_name`).
+        field_to_cols: Dict[str, List[str]] = {}
         for col, field in mapping_obj.items():
             if not field:
                 continue
@@ -292,9 +351,10 @@ def init() -> None:
                     status_code=400,
                     detail=f"Unknown schema field in mapping: {field}",
                 )
-            field_to_col[field] = col
+            field_to_cols.setdefault(field, []).append(col)
 
-        if not field_to_col.get("customer_name") and not field_to_col.get("customer_phone"):
+        if (not field_to_cols.get("customer_name")
+                and not field_to_cols.get("customer_phone")):
             raise HTTPException(
                 status_code=400,
                 detail=(
@@ -340,13 +400,33 @@ def init() -> None:
                     },
                 }
                 # Initialise all schema fields to defaults.
+                # Note: the virtual "address" field doesn't exist in
+                # the PendingOrder schema — we materialise it into
+                # address_line1 below. Storage stays line1 + line2 so
+                # downstream Sheet append + label rendering continue
+                # working unchanged.
                 for field in SCHEMA_FIELDS:
+                    if field == "address":
+                        continue
                     doc[field] = 0.0 if field in NUMERIC_FIELDS else (
                         "COD" if field == "payment_mode" else ""
                     )
-                # Fill from mapped columns.
-                for field, col in field_to_col.items():
-                    raw = row.get(col, "")
+                doc["address_line1"] = ""
+                doc["address_line2"] = ""
+
+                # Fill from mapped columns. For "address", concatenate
+                # all mapped columns in mapping-iteration order with a
+                # single-space separator (line1 + " " + line2 etc.) and
+                # write to address_line1.
+                for field, cols in field_to_cols.items():
+                    if field == "address":
+                        parts = [
+                            (row.get(c, "") or "").strip()
+                            for c in cols
+                        ]
+                        doc["address_line1"] = " ".join(p for p in parts if p)
+                        continue
+                    raw = row.get(cols[-1], "")  # last-mapped wins
                     doc[field] = _normalise_value(field, raw)
                 doc["order_id"] = doc.get("order_id") or doc["master_order_id"]
                 # Skip blank rows (no name AND no phone)
