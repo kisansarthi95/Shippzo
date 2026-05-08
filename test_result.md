@@ -14036,11 +14036,11 @@ agent_communication:
 backend:
   - task: "Phase F2.4/F2.5 — Webhook HTTPS, forgiving ingest, naming"
     implemented: true
-    working: "NA"
-    file: "/app/backend/routers/webhook.py, /app/backend/import_schema.py (Dukaan aliases)"
+    working: true
+    file: "/app/backend/routers/webhook.py, /app/backend/import_schema.py (Dukaan aliases), /app/backend/routers/shipments_write.py (imported_status/imported_at carry-forward), /app/backend/server.py (Shipment model fields)"
     stuck_count: 0
     priority: "high"
-    needs_retesting: true
+    needs_retesting: false
     status_history:
         -working: "NA"
         -agent: "main"
