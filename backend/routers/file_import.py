@@ -27,6 +27,11 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
 
+from import_schema import (
+    SCHEMA_FIELDS, NUMERIC_FIELDS, suggest_mapping,
+    build_pending_doc_from_mapping,
+)
+
 
 file_import_router = APIRouter(prefix="/api", tags=["file-import"])
 
@@ -50,46 +55,13 @@ file_import_router = APIRouter(prefix="/api", tags=["file-import"])
 # fields (Customer Name → Phone → Address → Amount → Token) sit at
 # the top of the field-picker modal where users actually look.
 # ────────────────────────────────────────────────────────────────────
-SCHEMA_FIELDS: List[str] = [
-    # ── Identity (most commonly mapped) ──
-    "customer_name",
-    "customer_phone",
-    "customer_alt_phone",
-    "customer_email",
-    "customer_gstin",
-    # ── Delivery address ──
-    "address",                  # virtual; persisted to address_line1
-    "city",
-    "state",
-    "pincode",
-    # ── Payment ──
-    "amount",
-    "token_amount",
-    "payment_mode",
-    # ── Items / parcel ──
-    "items",
-    "category",
-    "weight",
-    "box_dimensions",           # free-form, e.g. "10x8x4"
-    "box_length",               # numeric (cm)
-    "box_width",                # numeric (cm)
-    "box_height",               # numeric (cm)
-    # ── Misc ──
-    "courier_hint",
-    "order_id",
-    "notes",
-]
-NUMERIC_FIELDS = {
-    "amount", "token_amount",
-    "box_length", "box_width", "box_height",
-    # weight stays as string ("250g", "0.5 kg" etc.) — matches the
-    # existing PendingOrder.weight: str schema.
-}
-PAYMENT_MODE_NORMALISE = {
-    "cod": "COD", "c": "COD", "cash on delivery": "COD",
-    "paid": "PAID", "p": "PAID", "prepaid": "PAID",
-    "online": "PAID", "upi": "PAID",
-}
+# Phase F2 (2026-05-08): SCHEMA_FIELDS, NUMERIC_FIELDS, alias map,
+# value coercion, and the per-row mapping builder all moved to
+# /app/backend/import_schema.py so the new Webhook ingest router
+# (routers/webhook.py) can share the exact same field set + coercions.
+# Update the schema there once; both routers benefit. The previous
+# inline definitions / _normalise_value / _parse_upload row-builder
+# have been removed in favour of the shared helpers.
 
 MAX_SAMPLE_ROWS = 10
 MAX_FILE_BYTES  = 10 * 1024 * 1024     # 10 MB hard limit
