@@ -116,7 +116,7 @@ export default function StageRulesScreen() {
         default_cooldown_hours: defaultCooldown,
         display_channels: { list: chList, banner: chBanner, push: chPush },
       });
-      Alert.alert("Saved", "Stage rules updated.");
+      Alert.alert("Saved", "Status rules updated.");
       load();
     } catch (e: any) {
       Alert.alert("Save failed", e?.response?.data?.detail || e?.message || "Error");
@@ -155,7 +155,7 @@ export default function StageRulesScreen() {
 
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: "#F7F7F9" }}>
-      <Stack.Screen options={{ title: "Stage Rules", headerShown: true }} />
+      <Stack.Screen options={{ title: "Status Rules", headerShown: true }} />
       <KeyboardAvoidingView
         behavior={Platform.OS === "ios" ? "padding" : undefined}
         style={{ flex: 1 }}
@@ -164,16 +164,16 @@ export default function StageRulesScreen() {
         <ScrollView contentContainerStyle={{ padding: 14, paddingBottom: 130 }}>
           {/* Header card */}
           <View style={styles.headerCard}>
-            <Text style={styles.headerTitle}>📋 Stage Rules</Text>
+            <Text style={styles.headerTitle}>📋 Status Rules</Text>
             <Text style={styles.headerSub}>
               SLA tracking, internal alerts, customer messages, and escalation —
-              all configured per pipeline stage. Tap "Edit" on any row to drill in.
+              all configured per pipeline status. Tap "Edit" on any row to drill in.
             </Text>
           </View>
 
           {/* Table header */}
           <View style={styles.tableHeader}>
-            <Text style={[styles.thStage, { flex: 1.6 }]}>Stage</Text>
+            <Text style={[styles.thStage, { flex: 1.6 }]}>Status</Text>
             <Text style={styles.thNum}>SLA</Text>
             <Text style={styles.thNum}>Alert</Text>
             <Text style={styles.thNum}>Msg</Text>
@@ -227,7 +227,7 @@ export default function StageRulesScreen() {
                 {isExpanded && (
                   <View style={styles.drawer}>
                     {/* SLA */}
-                    <Text style={styles.fieldLabel}>SLA — Expected days in this stage</Text>
+                    <Text style={styles.fieldLabel}>SLA — Expected days in this status</Text>
                     <View style={styles.slaRow}>
                       {[1, 2, 3, 5, 7, 10].map((n) => {
                         const active = Number(v.sla_days) === n;

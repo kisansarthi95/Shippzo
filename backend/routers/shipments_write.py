@@ -653,7 +653,10 @@ def init() -> None:
         await wallet_charge(db, current_user, ship_doc["id"], breakdown)
 
         # Two-Way Status Sync: bump the Master Sheet row from "Pending"
-        # to "Dispatched" and stamp the tracking ID into Notice.
+        # to "Ready to Ship" and stamp the tracking ID into Notice.
+        # Phase F2.2 (2026-05-09): formerly wrote literal "Dispatched";
+        # rewritten to "Ready to Ship" so the Sheet matches the app's
+        # canonical user-facing label everywhere.
         sheet_row = order.get("sheet_row_num")
         if (
             sheet_row
@@ -665,7 +668,7 @@ def init() -> None:
             try:
                 sheet_update_row_status(
                     int(sheet_row),
-                    "Dispatched",
+                    "Ready to Ship",
                     extra_notice=(
                         f"Tracking: {tracking_id} · "
                         f"{courier.get('name', '')}"
@@ -673,7 +676,7 @@ def init() -> None:
                 )
                 _logger.info(
                     f"Sheet status sync OK: row={sheet_row} "
-                    f"Pending → Dispatched ({tracking_id})"
+                    f"Pending → Ready to Ship ({tracking_id})"
                 )
             except Exception:
                 _logger.exception(

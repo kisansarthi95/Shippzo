@@ -102,7 +102,7 @@ export default function SlaAlertsScreen() {
     const cleaned = phone.replace(/\D/g, "");
     const text = encodeURIComponent(
       `🚨 ${alert.priority?.toUpperCase()} alert: order ${alert.shipment?.order_id || alert.shipment_id} `
-      + `is ${alert.days_overdue}d past SLA in stage "${alert.stage}".`,
+      + `is ${alert.days_overdue}d past SLA in status "${alert.stage}".`,
     );
     Linking.openURL(`https://wa.me/${cleaned}?text=${text}`);
   };

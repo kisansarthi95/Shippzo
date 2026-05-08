@@ -155,13 +155,17 @@ def init() -> None:
                 "shipment": doc,
             }
         # Atomic conditional update so a parallel scan can't double-flip.
+        # Phase F2.2 (2026-05-09): write the canonical user-facing label
+        # "Ready to Ship" instead of legacy "Dispatch". Read paths still
+        # accept both via STATUS_META aliases so historic rows continue
+        # to surface under the same Ready-to-Ship bucket.
         res = await db.shipments.update_one(
             {
                 "user_id": current_user["id"],
                 "tracking_id": tid,
                 "status": {"$in": ["Pending", "Processing"]},
             },
-            {"$set": {"status": "Dispatch", "dispatched_at": utcnow_iso()}},
+            {"$set": {"status": "Ready to Ship", "dispatched_at": utcnow_iso()}},
         )
         if res.modified_count != 1:
             # Another scan won the race — re-fetch and treat as "already".

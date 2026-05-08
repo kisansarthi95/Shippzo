@@ -397,7 +397,7 @@ export default function BulkMessageScreen() {
             <PhIcon name="checkmark-circle" size={38} color="#10B981" />
             <Text style={styles.emptyText}>
               {tab === "pending"
-                ? "No pending parcels for this stage."
+                ? "No pending parcels for this status."
                 : tab === "sent_today"
                   ? "No messages sent today yet."
                   : "Nothing to show."}

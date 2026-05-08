@@ -1788,7 +1788,7 @@ export default function Dashboard() {
                 <>
                   <View style={styles.bulkMsgHeader}>
                     <Text style={styles.bulkMsgTitle}>🛠 Admin Tools</Text>
-                    <Text style={styles.bulkMsgSub}>SLA breaches, stage rules, sheet sync</Text>
+                    <Text style={styles.bulkMsgSub}>SLA breaches, status rules, sheet sync</Text>
                   </View>
                   <ActionPill
                     testID="quick-admin-sla-alerts"
@@ -1801,7 +1801,7 @@ export default function Dashboard() {
                   <ActionPill
                     testID="quick-admin-stage-rules"
                     icon="settings"
-                    label="Stage Rules + SLA Engine"
+                    label="Status Rules + SLA Engine"
                     onPress={() => router.push("/admin/stage-rules" as any)}
                     tone="neutral"
                     chevron
@@ -1814,7 +1814,7 @@ export default function Dashboard() {
                   same multi-select + sequential-WhatsApp flow. */}
               <View style={styles.bulkMsgHeader}>
                 <Text style={styles.bulkMsgTitle}>📨 Bulk WhatsApp Messages</Text>
-                <Text style={styles.bulkMsgSub}>Tap a stage to send to multiple customers at once</Text>
+                <Text style={styles.bulkMsgSub}>Tap a status to send to multiple customers at once</Text>
               </View>
               {([
                 { ttype: "shipment_sent",         icon: "mail-outline",            label: "Order Received",      tone: "neutral" },

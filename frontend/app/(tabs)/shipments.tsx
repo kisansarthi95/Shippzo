@@ -33,7 +33,7 @@ type StatusFilter =
   | "All"
   | "Pending"
   | "Processing"
-  | "Dispatch"
+  | "Ready to Ship"
   | "Shipped"
   | "Delivered"
   | "Feedback"
@@ -79,16 +79,17 @@ const STATUS_META: Record<
     activeBg: "#FCD34D",
     activeFg: "#7C2D12",
   },
-  "Dispatch": {
-    value: "Dispatch",
-    label: "Ready to Ship",   // displayed label (legacy key kept for compat)
+  // Phase F2.2 (2026-05-09) — formerly keyed as "Dispatch" with a
+  // label override. Renamed to canonical "Ready to Ship" everywhere.
+  // Legacy DB rows still tagged "Dispatch" / "Dispatched" surface
+  // here via the alias list below.
+  "Ready to Ship": {
+    value: "Ready to Ship",
     bg: "#F4E3CF",
     fg: "#8B5E34",
     activeBg: "#F4E3CF",
     activeFg: "#8B5E34",
-    // Legacy synonyms: pre-rename DB rows + the new explicit values
-    // both surface under this same Ready-to-Ship tab.
-    aliases: ["Dispatched", "Ready to Ship", "ReadyToShip", "READY_TO_SHIP"],
+    aliases: ["Dispatch", "Dispatched", "ReadyToShip", "READY_TO_SHIP"],
   },
   "Shipped": {
     value: "Shipped",
@@ -121,7 +122,7 @@ const STATUS_META: Record<
   "Returned":        { value: "Returned",       bg: "#FFEDD5", fg: "#9A3412" },
 };
 const STATUS_FILTER_ORDER: StatusFilter[] = [
-  "All", "Pending", "Processing", "Dispatch", "Shipped", "Delivered", "Feedback",
+  "All", "Pending", "Processing", "Ready to Ship", "Shipped", "Delivered", "Feedback",
   "Modified", "Cancel by buyer", "Cancelled", "Returned",
 ];
 
@@ -258,10 +259,10 @@ export default function Shipments() {
     const st = String(params.status || "");
     if (STATUS_FILTER_ORDER.includes(st as StatusFilter)) {
       setStatus(st as StatusFilter);
-    } else if (st === "Dispatched") {
-      // Legacy alias: older deep-links used "Dispatched" for
-      // the cream-coloured Dispatch tab.
-      setStatus("Dispatch");
+    } else if (st === "Dispatched" || st === "Dispatch") {
+      // Legacy alias: older deep-links used "Dispatch" / "Dispatched"
+      // for the cream-coloured Ready-to-Ship tab.
+      setStatus("Ready to Ship");
     }
     if (params.select === "1") {
       setSelectMode(true);
@@ -391,7 +392,7 @@ export default function Shipments() {
     // Keeps legacy "quick mark" behaviour — toggle Delivered ↔ previous.
     // Users can get the full 8-status picker via the "⋮" chip tap.
     const prev = s.status || "Pending";
-    const newStatus = prev === "Delivered" ? "Dispatched" : "Delivered";
+    const newStatus = prev === "Delivered" ? "Ready to Ship" : "Delivered";
     try {
       await Api.updateShipment(s.id, { status: newStatus });
     } catch (e: any) {
@@ -441,7 +442,7 @@ export default function Shipments() {
   const statusCounts = useMemo(() => {
     const counts: Record<StatusFilter, number> = {
       "All": items.length,
-      "Pending": 0, "Processing": 0, "Dispatch": 0, "Shipped": 0,
+      "Pending": 0, "Processing": 0, "Ready to Ship": 0, "Shipped": 0,
       "Delivered": 0, "Feedback": 0, "Modified": 0,
       "Cancel by buyer": 0, "Cancelled": 0, "Returned": 0,
     };
@@ -812,12 +813,12 @@ export default function Shipments() {
       </View>
 
       {/* Phase-9/10: Contextual "Scan" action card. Visible only when
-          Pending or Dispatch tab is active (All also shows Pending
+          Pending or Ready-to-Ship tab is active (All also shows Pending
           variant as a general shortcut). Colours flip based on mode:
-          Pending→Dispatch = cream + orange CTA, Dispatch→Shipped =
-          purple-tinted + purple CTA per spec. */}
-      {(status === "All" || status === "Pending" || status === "Dispatch") && (() => {
-        const isShipMode = status === "Dispatch";
+          Pending→Ready to Ship = cream + orange CTA, Ready to Ship→Shipped
+          = purple-tinted + purple CTA per spec. */}
+      {(status === "All" || status === "Pending" || status === "Ready to Ship") && (() => {
+        const isShipMode = status === "Ready to Ship";
         return (
           <TouchableOpacity
             activeOpacity={0.85}
@@ -884,11 +885,11 @@ export default function Shipments() {
       })()}
 
       {/* Phase-11: Need Delivery Confirmation card (Shipped → Delivered).
-          Always visible on All / Shipped / Dispatch tabs so the
+          Always visible on All / Shipped / Ready-to-Ship tabs so the
           workflow surface is discoverable even when zero parcels
           are pending — empty-state message keeps the card present
           but visually muted. Tap is disabled when count = 0. */}
-      {(status === "All" || status === "Shipped" || status === "Dispatch") && (
+      {(status === "All" || status === "Shipped" || status === "Ready to Ship") && (
         <TouchableOpacity
           activeOpacity={needConfirmCount > 0 ? 0.85 : 1}
           onPress={() => {
@@ -1691,7 +1692,7 @@ const styles = StyleSheet.create({
   },
   filterPillActive: { backgroundColor: colors.secondary, borderColor: colors.secondary },
 
-  // Phase-9: "Scan to Dispatch" card — cream palette locked per spec.
+  // Phase-9: "Scan & Ready to Ship" card — cream palette locked per spec.
   scanCard: {
     flexDirection: "row",
     alignItems: "center",

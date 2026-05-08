@@ -949,7 +949,7 @@ export default function SettingsScreen() {
                       <View style={[styles.hubIconWrap, { backgroundColor: "#FEE2E2" }]}>
                         <PhIcon name="time-outline" size={22} color="#DC2626" />
                       </View>
-                      <Text style={styles.hubTitle}>Stage Rules</Text>
+                      <Text style={styles.hubTitle}>Status Rules</Text>
                       <View style={styles.adminPill}>
                         <Text style={styles.adminPillTxt}>ADMIN</Text>
                       </View>
