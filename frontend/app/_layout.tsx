@@ -7,6 +7,7 @@ import { Platform, View, ActivityIndicator, Text, LogBox } from "react-native";
 import * as SplashScreen from "expo-splash-screen";
 import { useFonts } from "expo-font";
 import { AuthProvider, useAuth } from "../lib/auth";
+import { Api } from "../lib/api";
 import { FeatureFlagsProvider } from "../lib/feature_flags";
 import { PermissionsProvider } from "../lib/permissions";
 import ErrorBoundary from "../components/ErrorBoundary";
@@ -175,9 +176,33 @@ function AuthGate({ children }: { children: React.ReactNode }) {
     }
   }, [signInWithGoogleSession]);
 
+  // Phase G — onboarding category gate. After login the gate fetches
+  // /api/auth/context once. If `needs_onboarding_category` is true we
+  // bounce the user to the mandatory "What do you sell?" picker. The
+  // flag is fully owner-only on the backend (team members are exempt
+  // and inherit the parent's category), so this single check is safe.
+  const [needsOnboarding, setNeedsOnboarding] = useState<boolean | null>(null);
+  useEffect(() => {
+    if (loading || !user) {
+      setNeedsOnboarding(null);
+      return;
+    }
+    let alive = true;
+    (async () => {
+      try {
+        const ctx = await Api.authContext();
+        if (alive) setNeedsOnboarding(!!ctx.needs_onboarding_category);
+      } catch {
+        if (alive) setNeedsOnboarding(false);   // fail-open
+      }
+    })();
+    return () => { alive = false; };
+  }, [user, loading]);
+
   useEffect(() => {
     if (loading || oauthBusy) return;
     const inAuthGroup = segments[0] === "(auth)";
+    const inOnboarding = segments[0] === "onboarding";
     // 2026-04-30 — /refund-policy is the canonical public legal screen
     // (Terms / Refund / Privacy). Reachable without login so new users
     // can review it from the signup checkbox before creating an account.
@@ -187,8 +212,11 @@ function AuthGate({ children }: { children: React.ReactNode }) {
       router.replace("/(auth)/login");
     } else if (user && inAuthGroup) {
       router.replace("/(tabs)");
+    } else if (user && needsOnboarding === true && !inOnboarding) {
+      // Owner missing primary_business_category → mandatory picker.
+      router.replace("/onboarding/business-category");
     }
-  }, [user, loading, oauthBusy, segments, router]);
+  }, [user, loading, oauthBusy, segments, router, needsOnboarding]);
 
   if (loading || oauthBusy) {
     return (

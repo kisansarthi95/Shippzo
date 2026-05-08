@@ -397,6 +397,10 @@ async def auth_context(current_user: Dict[str, Any] = Depends(get_current_user))
     granted. The frontend reads this once at app boot and uses it to
     drive UI gating (`<Gated permission="...">` / `usePermission`)."""
     team = current_user.get("_team")
+    # Phase G — surface primary_business_category so the auth gate can
+    # redirect new users to /onboarding/business-category before they
+    # land on the dashboard. Empty string when not set.
+    pbc = (current_user.get("primary_business_category") or "").strip()
     return {
         "is_team_member":  bool(team),
         "team_member":     team if team else None,
@@ -407,8 +411,63 @@ async def auth_context(current_user: Dict[str, Any] = Depends(get_current_user))
             "is_admin":   bool(current_user.get("is_admin")),
             "plan":       current_user.get("plan"),
             "shop_name":  current_user.get("shop_name"),
+            "primary_business_category": pbc,
         },
+        # Convenience flag for the splash gate so it doesn't have to
+        # reproduce the same emptiness check on every render.
+        "needs_onboarding_category": (not bool(team)) and (not pbc),
     }
+
+
+# Phase G — "What do you sell?" onboarding category. Lives next to
+# /auth/context above so the gate logic + the writer share a single
+# review surface. POST is idempotent: re-posting the same slug is a
+# no-op; posting a different slug overwrites (so the user can change
+# their mind from Settings later).
+class BusinessCategoryPayload(BaseModel):
+    category: str
+
+
+@auth_router.get("/business-categories")
+async def list_business_categories():
+    """Public list of selectable categories (slug + label + emoji) so
+    the frontend onboarding screen always renders the latest list
+    without bundling a stale duplicate."""
+    from business_categories import BUSINESS_CATEGORIES
+    return {"categories": BUSINESS_CATEGORIES}
+
+
+@auth_router.post("/business-category")
+async def set_business_category(
+    payload: BusinessCategoryPayload,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    """Persist the user's primary business category. Validated against
+    the canonical slug list so analytics aggregations (top sellers,
+    growth, shipment volume) can JOIN on the slug without worrying
+    about free-text noise."""
+    from business_categories import is_valid_category
+    slug = (payload.category or "").strip()
+    if not is_valid_category(slug):
+        raise HTTPException(
+            status_code=400,
+            detail="Unknown business category. Use one of /api/auth/business-categories.",
+        )
+    # Team-member sessions inherit the owner's category — they can't
+    # set their own. Block the write so analytics stay clean.
+    if current_user.get("_team"):
+        raise HTTPException(
+            status_code=403,
+            detail="Only the account owner can set the primary business category.",
+        )
+    await db.users.update_one(
+        {"id": current_user["id"]},
+        {"$set": {
+            "primary_business_category":     slug,
+            "primary_business_category_at":  utcnow_iso(),
+        }},
+    )
+    return {"ok": True, "category": slug}
 
 
 @auth_router.post("/logout")

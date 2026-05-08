@@ -1415,7 +1415,12 @@ export const Api = {
         id: string; name: string; role: string;
         permissions: string[]; email: string;
       } | null;
-      user: { id: string; name: string; email: string; is_admin: boolean; plan: string; shop_name?: string };
+      user: {
+        id: string; name: string; email: string; is_admin: boolean;
+        plan: string; shop_name?: string;
+        primary_business_category?: string;
+      };
+      needs_onboarding_category?: boolean;
     }>("/auth/context").then((r) => r.data),
 
   // ─── Phase 2.5 — Additional Reports ─────────────────────────────
@@ -1808,6 +1813,21 @@ export const Api = {
       .put<{ ok: boolean; name: string }>(
         "/me/webhook-config/name",
         { name },
+      )
+      .then((r) => r.data),
+
+  // ─── Phase G: Onboarding business-category ──────────────────────
+  listBusinessCategories: () =>
+    api
+      .get<{ categories: { slug: string; label: string; icon: string }[] }>(
+        "/auth/business-categories",
+      )
+      .then((r) => r.data),
+  setBusinessCategory: (category: string) =>
+    api
+      .post<{ ok: boolean; category: string }>(
+        "/auth/business-category",
+        { category },
       )
       .then((r) => r.data),
   putWebhookMapping: (mapping: Record<string, string>) =>
