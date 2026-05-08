@@ -14149,3 +14149,142 @@ agent_communication:
         • PendingOrders created via webhook ingest carry
           source_meta.webhook_name = configured name.
 
+
+# Phase F2.4 + F2.5 — Webhook Hardening BACKEND TEST RESULT (2026-05-08)
+
+backend:
+  - task: "Phase F2.4 + F2.5 — Webhook HTTPS / Forgiving Ingest / Naming"
+    implemented: true
+    working: false
+    file: "/app/backend/routers/webhook.py, /app/backend/routers/shipments_write.py, /app/backend/import_schema.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: false
+        -agent: "testing"
+        -comment: |
+            Phase F2.4 + F2.5 BACKEND REGRESSION — 57/59 PASS.
+            Test script: /app/backend_test_phase_f2_4_5.py.
+
+            ✅ ALL PASSING:
+              A) HTTPS URL builder
+                 • A1 rotate without forwarded headers → URL starts with https://
+                   (default scheme correctly forced to https).
+                 • A2 GET with X-Forwarded-Proto:https → URL is https://.
+                   NOTE: X-Forwarded-Host=example.com is overridden by the
+                   K8s ingress (returns the public hostname). This is
+                   expected ingress behavior; the helper still produces a
+                   valid https URL.
+                 • A3 rotate with forwarded headers → URL is https://.
+              B) Forgiving ingest (no mapping)
+                 • B1 POST valid JSON without mapping → 200 OK, body
+                   {ok:true, imported:0, skipped:1, errors:[friendly note]}.
+                   NOT 409.
+                 • B2 GET /me/webhook-config → recent_samples has 1 entry
+                   with the payload after first POST.
+                 • B3 After 13 POSTs, GET /me/webhook-config returns last
+                   5 samples (API slices to last 5; underlying $slice:-10
+                   in DB enforces 10-cap). Latest sample is marker=11 ✓.
+                 • B4 POST raw string body ('"hello"') → 200 with friendly
+                   error in errors[]; NO 400/500.
+                 • B5 Bogus secret → 404.
+              C) Webhook naming
+                 • C1 rotate {name:"Shopify"} → 200, response.name="Shopify".
+                 • C2 GET → name="Shopify".
+                 • C3 PUT /me/webhook-config/name {Dukaan} → 200,
+                   response.name="Dukaan".
+                 • C4 PUT name longer than 32 → silently truncated to 32.
+                 • C5 PUT empty name → name cleared to "".
+                 • C6 Mapping configured + ingest → PendingOrder has
+                   source_meta.webhook_name=="Dukaan".
+              D) Dukaan-specific aliases (POST /me/webhook-config/preview)
+                 ALL 12 expected suggested[]→field mappings verified:
+                   buyer.name→customer_name, buyer.phone→customer_phone,
+                   buyer.email→customer_email,
+                   shipping_address.address_1→address,
+                   shipping_address.address_2→address,
+                   shipping_address.city→city,
+                   shipping_address.state→state,
+                   shipping_address.pincode→pincode,
+                   total_cost→amount, is_cod→payment_mode,
+                   order_status→status, uuid→order_id.
+              E) Phase F2.2 regression
+                 • E1 Ingest without bearer (URL-secret IS auth) → 200.
+                 • E2 Owner endpoints (GET /me/webhook-config, PUT /name,
+                   POST /rotate) all return 401 without bearer.
+                 • E3 Mapping CRUD: unknown field → 400.
+                 • E3b Custom-field mapping (custom:<id>) — custom-field
+                   creation endpoint returned 422 in this env (likely
+                   different field name expected); skipped non-blocking.
+                 • E4 PendingOrder carries imported_status="Delivered" +
+                   imported_at on doc; ship_pending_order produces
+                   shipment with status="Delivered" and delivered_at set.
+
+            ❌ FAILED ASSERTIONS (2):
+              1) E4 shipment.imported_status == "Delivered"
+                 Got: None.
+              2) E4 shipment.imported_at populated
+                 Got: None.
+
+            ROOT CAUSE — /app/backend/routers/shipments_write.py:530-572
+            (function `ship_pending_order`).
+
+            The ship_doc dict copies the imported metadata to derive
+            `status` and `created_at` (and `delivered_at` when
+            status=="Delivered"), but never writes `imported_status` or
+            `imported_at` to the resulting Shipment document:
+
+                _imp_status = (order.get("imported_status") or "").strip()
+                _imp_at     = (order.get("imported_at") or "").strip()
+                _ship_status      = _imp_status if _imp_status else "Pending"
+                _ship_created_at  = _imp_at if _imp_at else utcnow_iso()
+                ship_doc = {
+                    ...
+                    "status":      _ship_status,
+                    "created_at":  _ship_created_at,
+                    ...
+                    # MISSING:
+                    # "imported_status": _imp_status,
+                    # "imported_at":     _imp_at,
+                }
+                if _ship_status == "Delivered" and _imp_at:
+                    ship_doc["delivered_at"] = _imp_at
+
+            The Shipment Pydantic model (server.py:2338-2339) declares
+            both fields with default "". Because they are never set on
+            ship_doc, the response and the persisted document both have
+            empty / None values, breaking the contract:
+            "ship_pending_order copies imported_status + imported_at to
+            Shipment". Direct fix: add the two assignments to ship_doc.
+
+            CLEANUP: 3 resources removed (1 shipment, 2 pending orders).
+            One test pending order remained when ship_pending_order
+            silently succeeded; cleanup also issued a webhook name
+            reset to "" so the test user state is preserved. Webhook
+            mapping was left configured (admin user already had one).
+
+agent_communication:
+    -agent: "testing"
+    -message: |
+      Phase F2.4 + F2.5 backend regression: 57/59 PASS.
+
+      Two FAIL — both in `ship_pending_order` not propagating
+      `imported_status` / `imported_at` onto the Shipment document.
+      All other invariants (HTTPS URL, forgiving ingest, sample
+      capture, raw-body tolerance, naming, Dukaan aliases, owner
+      auth, mapping validation) PASS cleanly.
+
+      Action items:
+        1) /app/backend/routers/shipments_write.py — add
+           `"imported_status": _imp_status,` and
+           `"imported_at": _imp_at,` to the ship_doc dict around
+           line 557. The values are already computed (lines 525-528).
+        2) After fix, only re-run the E4 block of
+           /app/backend/backend_test_phase_f2_4_5.py.
+
+      Phase F1+F2.1 regression script (/app/backend_test_phase_f2_1.py)
+      was NOT re-run in this session — main agent should run it once
+      the imported_status/imported_at fix lands, since that script
+      also asserts on shipment.imported_status post-ship.
+
