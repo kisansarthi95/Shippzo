@@ -41,31 +41,50 @@ file_import_router = APIRouter(prefix="/api", tags=["file-import"])
 # truncation / line2 falling off when the user only maps line1.
 # Instead, mapping MULTIPLE columns to "address" auto-merges them
 # (in mapping-iteration order) with a single-space separator and
-# writes the result to address_line1. address_line2 stays blank, but
-# the rest of the system (Sheet append, label rendering) already
-# concatenates line1 + line2 with " ", so downstream renders are
-# unaffected.
+# writes the result to address_line1.
+#
+# Phase F1.2 (2026-05-08): Mirrored every field in the Add-Shipment
+# form so a user can map ANY column from their CSV/Excel — box size,
+# parcel dimensions (L/W/H), category, plus all customer + payment
+# fields. List is ordered by frequency-of-use so the most common
+# fields (Customer Name → Phone → Address → Amount → Token) sit at
+# the top of the field-picker modal where users actually look.
 # ────────────────────────────────────────────────────────────────────
 SCHEMA_FIELDS: List[str] = [
-    "order_id",
+    # ── Identity (most commonly mapped) ──
     "customer_name",
     "customer_phone",
     "customer_alt_phone",
     "customer_email",
     "customer_gstin",
-    "address",                  # ← virtual; persisted to address_line1
+    # ── Delivery address ──
+    "address",                  # virtual; persisted to address_line1
     "city",
     "state",
     "pincode",
-    "items",
+    # ── Payment ──
     "amount",
     "token_amount",
     "payment_mode",
-    "courier_hint",
+    # ── Items / parcel ──
+    "items",
+    "category",
     "weight",
+    "box_dimensions",           # free-form, e.g. "10x8x4"
+    "box_length",               # numeric (cm)
+    "box_width",                # numeric (cm)
+    "box_height",               # numeric (cm)
+    # ── Misc ──
+    "courier_hint",
+    "order_id",
     "notes",
 ]
-NUMERIC_FIELDS = {"amount", "token_amount"}
+NUMERIC_FIELDS = {
+    "amount", "token_amount",
+    "box_length", "box_width", "box_height",
+    # weight stays as string ("250g", "0.5 kg" etc.) — matches the
+    # existing PendingOrder.weight: str schema.
+}
 PAYMENT_MODE_NORMALISE = {
     "cod": "COD", "c": "COD", "cash on delivery": "COD",
     "paid": "PAID", "p": "PAID", "prepaid": "PAID",
@@ -273,16 +292,42 @@ def init() -> None:
             "zip":             "pincode",
             "amt":             "amount",
             "total":           "amount",
+            "order_amount":    "amount",
+            "order_value":     "amount",
             "token":           "token_amount",
             "advance":         "token_amount",
+            "advance_amount":  "token_amount",
+            "token_amt":       "token_amount",
             "mode":            "payment_mode",
             "payment":         "payment_mode",
             "courier":         "courier_hint",
             "logistics":       "courier_hint",
             "wt":              "weight",
+            "parcel_weight":   "weight",
+            "package_weight":  "weight",
             "remarks":         "notes",
             "comment":         "notes",
             "comments":        "notes",
+            "shipment_notes":  "notes",
+            # Phase F1.2 — box / parcel
+            "box":             "box_dimensions",
+            "box_size":        "box_dimensions",
+            "dimensions":      "box_dimensions",
+            "lwh":             "box_dimensions",
+            "size":            "box_dimensions",
+            "length":          "box_length",
+            "l":               "box_length",
+            "breadth":         "box_width",
+            "width":           "box_width",
+            "w":               "box_width",
+            "height":          "box_height",
+            "h":               "box_height",
+            "category":        "category",
+            "cat":             "category",
+            "item_category":   "category",
+            "item":            "items",
+            "product":         "items",
+            "products":        "items",
         }
         suggested: Dict[str, str] = {}
         for c in columns:

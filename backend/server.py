@@ -2280,6 +2280,16 @@ class PendingOrder(BaseModel):
     # backwards-compatible.
     source_meta: Optional[Dict[str, Any]] = None
 
+    # Phase F1.2 — extra parcel/box fields surfaced from CSV/Excel
+    # imports. These mirror the Add-Shipment form so a user can map
+    # ANY column from their export. Optional, default empty/zero so
+    # existing rows stay valid; consumed downstream by ship-this-order.
+    box_dimensions: str   = ""
+    box_length:    float = 0.0
+    box_width:     float = 0.0
+    box_height:    float = 0.0
+    category:      str   = ""
+
 
 class SmartPasteRequest(BaseModel):
     text: str

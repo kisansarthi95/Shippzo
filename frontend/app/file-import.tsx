@@ -35,25 +35,32 @@ type Preview = Awaited<ReturnType<typeof Api.fileImportPreview>>;
 type PickedFile = { uri: string; name: string; mime: string };
 
 const FIELD_LABEL: Record<string, string> = {
-  order_id:           "Order ID",
+  // Identity
   customer_name:      "Customer Name",
-  customer_phone:     "Customer Phone",
-  customer_alt_phone: "Alt Phone",
-  customer_email:     "Email",
+  customer_phone:     "Customer Phone (mobile)",
+  customer_alt_phone: "Alternate Phone",
+  customer_email:     "Email Address",
   customer_gstin:     "GSTIN",
-  // Phase F1.1 — single virtual "address". Map MULTIPLE columns
-  // (e.g. Address Line 1 + Address Line 2 + Landmark) to this field
-  // and they auto-merge with a space separator on import.
+  // Address (virtual)
   address:            "Address (line1 + line2 auto-merge)",
   city:               "City",
   state:              "State",
   pincode:            "Pincode",
-  items:              "Items",
+  // Payment
   amount:             "Order Amount (₹)",
   token_amount:       "Order Token / Advance (₹)",
   payment_mode:       "Payment Mode (COD / PAID)",
+  // Items / parcel
+  items:              "Items / Products",
+  category:           "Item Category",
+  weight:             "Parcel Weight",
+  box_dimensions:     "Box Size (e.g. 10×8×4)",
+  box_length:         "Box Length",
+  box_width:          "Box Width",
+  box_height:         "Box Height",
+  // Misc
   courier_hint:       "Courier (hint)",
-  weight:             "Weight",
+  order_id:           "Order ID",
   notes:              "Notes / Remarks",
 };
 
