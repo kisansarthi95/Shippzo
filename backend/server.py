@@ -14,7 +14,7 @@ load_dotenv()
 # Phase-1 auth (email+password, JWT, per-user data isolation)
 from auth import (
     SignupRequest, LoginRequest, UserPublic,
-    ForgotPasswordRequest,
+    ForgotPasswordRequest, CompleteProfileRequest,
     hash_password, verify_password, make_token, user_public,
     get_current_user_factory, utcnow_iso as auth_utcnow_iso,
     seed_demo_shipments, seed_default_courier, claim_legacy_data_for_admin,
@@ -419,6 +419,16 @@ async def auth_context(current_user: Dict[str, Any] = Depends(get_current_user))
     # redirect new users to /onboarding/business-category before they
     # land on the dashboard. Empty string when not set.
     pbc = (current_user.get("primary_business_category") or "").strip()
+    # Phase G2 — Google-OAuth signups land with empty business_name /
+    # phone / category because Google only provides email + name. The
+    # frontend uses this aggregate flag to bounce those users to the
+    # "Complete your profile" screen before the dashboard unlocks.
+    # Team members are exempt — they inherit the owner's profile.
+    shop_name = (current_user.get("shop_name") or "").strip()
+    phone     = (current_user.get("phone") or "").strip()
+    needs_profile_completion = (not bool(team)) and (
+        (not shop_name) or (not phone) or (not pbc)
+    )
     return {
         "is_team_member":  bool(team),
         "team_member":     team if team else None,
@@ -428,12 +438,72 @@ async def auth_context(current_user: Dict[str, Any] = Depends(get_current_user))
             "email":      current_user.get("email"),
             "is_admin":   bool(current_user.get("is_admin")),
             "plan":       current_user.get("plan"),
-            "shop_name":  current_user.get("shop_name"),
+            "shop_name":  shop_name,
+            "phone":      phone,
             "primary_business_category": pbc,
         },
         # Convenience flag for the splash gate so it doesn't have to
         # reproduce the same emptiness check on every render.
         "needs_onboarding_category": (not bool(team)) and (not pbc),
+        # Phase G2 — owner is missing one or more of the mandatory
+        # post-Google-signup fields → frontend redirects to
+        # /(auth)/complete-profile instead of the dashboard.
+        "needs_profile_completion": needs_profile_completion,
+    }
+
+
+# Phase G2 — "Complete your profile" — used by the post-Google-signup
+# gate to capture the data Google doesn't provide. POST is idempotent;
+# it can be re-called to fix typos before the user is unblocked.
+@auth_router.post("/complete-profile")
+async def complete_profile(
+    payload: CompleteProfileRequest,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    if current_user.get("_team"):
+        raise HTTPException(
+            status_code=403,
+            detail="Team members inherit the owner's profile.",
+        )
+    from business_categories import is_valid_category
+    slug = (payload.primary_business_category or "").strip()
+    if not is_valid_category(slug):
+        raise HTTPException(
+            status_code=400,
+            detail="Please pick a valid business category.",
+        )
+    # Normalise the phone the same way /signup does — strip non-digits,
+    # require 10–13 digits, store the last 10 (drops country-code
+    # prefixes for forgot-password lookup parity).
+    phone_digits = re.sub(r"\D", "", payload.phone or "")
+    if len(phone_digits) < 10 or len(phone_digits) > 13:
+        raise HTTPException(
+            status_code=400,
+            detail="Please enter a valid 10-digit mobile number.",
+        )
+    phone = phone_digits[-10:]
+    shop_name = (payload.shop_name or "").strip()
+    if not shop_name:
+        raise HTTPException(
+            status_code=400,
+            detail="Business name is required.",
+        )
+    now = utcnow_iso()
+    await db.users.update_one(
+        {"id": current_user["id"]},
+        {"$set": {
+            "shop_name":                     shop_name,
+            "phone":                         phone,
+            "primary_business_category":     slug,
+            "primary_business_category_at":  now,
+            "profile_completed_at":          now,
+        }},
+    )
+    return {
+        "ok": True,
+        "shop_name": shop_name,
+        "phone": phone,
+        "primary_business_category": slug,
     }
 
 

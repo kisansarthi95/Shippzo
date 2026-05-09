@@ -1417,11 +1417,27 @@ export const Api = {
       } | null;
       user: {
         id: string; name: string; email: string; is_admin: boolean;
-        plan: string; shop_name?: string;
+        plan: string; shop_name?: string; phone?: string;
         primary_business_category?: string;
       };
       needs_onboarding_category?: boolean;
+      needs_profile_completion?: boolean;
     }>("/auth/context").then((r) => r.data),
+
+  /** Phase G2 — Submit the missing profile fields after a Google
+   *  sign-in (Business Name, Mobile, Business Category). Backend
+   *  validates the slug + phone format and unblocks the dashboard. */
+  completeProfile: (body: {
+    shop_name: string;
+    phone: string;
+    primary_business_category: string;
+  }) =>
+    api.post<{
+      ok: boolean;
+      shop_name: string;
+      phone: string;
+      primary_business_category: string;
+    }>("/auth/complete-profile", body).then((r) => r.data),
 
   // ─── Phase 2.5 — Additional Reports ─────────────────────────────
   // All four take the same period selector (range chips + custom from/to)

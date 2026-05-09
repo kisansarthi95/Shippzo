@@ -144,12 +144,19 @@ export default function LoginScreen() {
 
             <GoogleSignInButton label="Continue with Google" />
 
-            <View style={styles.footerRow}>
-              <Text style={styles.footerText}>New here?</Text>
-              <TouchableOpacity onPress={() => router.push("/(auth)/signup")}>
-                <Text style={styles.footerLink}>Create an account</Text>
-              </TouchableOpacity>
-            </View>
+            {/* Phase G2 — Make the "Create an account" path clearly
+                tappable for first-touch users who default-landed on
+                login. The outlined button has been promoted from a
+                tiny inline link to a full-width secondary CTA. */}
+            <TouchableOpacity
+              testID="login-create-account"
+              style={styles.signupBtn}
+              onPress={() => router.push("/(auth)/signup")}
+              activeOpacity={0.85}
+            >
+              <PhIcon name="rocket" size={18} color={colors.primary} />
+              <Text style={styles.signupBtnText}>Create new account</Text>
+            </TouchableOpacity>
           </View>
 
           <Text style={styles.hint}>
@@ -213,6 +220,19 @@ const styles = StyleSheet.create({
   dividerLine: { flex: 1, height: 1, backgroundColor: "#E5E7EB" },
   dividerText: { fontSize: 11, fontWeight: "800", color: "#94A3B8", letterSpacing: 2 },
   hint: { marginTop: 16, textAlign: "center", fontSize: 11.5, color: colors.textMuted, paddingHorizontal: 12 },
+  signupBtn: {
+    marginTop: 12,
+    height: 48,
+    borderRadius: 12,
+    backgroundColor: "#fff",
+    borderWidth: 2,
+    borderColor: colors.primary,
+    flexDirection: "row",
+    gap: 8,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  signupBtnText: { color: colors.primary, fontWeight: "800", fontSize: 14 },
 
   // Phase B+C — login mode toggle (owner vs team-member).
   modeRow: {

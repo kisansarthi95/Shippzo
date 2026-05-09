@@ -105,7 +105,12 @@ class SignupRequest(BaseModel):
     email: EmailStr
     password: str = Field(min_length=6, max_length=128)
     name: str = Field(min_length=1, max_length=80)
-    shop_name: str = Field(default="", max_length=80)
+    # Phase G2 — Business name (formerly "shop name") is now MANDATORY
+    # for the email/password signup flow. Google-OAuth signups still
+    # land with an empty business name; they're routed to a
+    # "Complete profile" gate which collects the missing fields before
+    # the dashboard unlocks.
+    shop_name: str = Field(min_length=1, max_length=80)
     phone: str = Field(min_length=10, max_length=15)
     # Phase-2b: opaque per-device hash (mobile install id / web stable
     # uuid). Optional for backwards compatibility — older clients won't
@@ -116,6 +121,15 @@ class SignupRequest(BaseModel):
     # left empty by older clients (which then trigger the post-login
     # onboarding gate as a fallback).
     primary_business_category: str = Field(default="", max_length=64)
+
+
+class CompleteProfileRequest(BaseModel):
+    """Phase G2 — Used by the post-Google-signup "Complete your profile"
+    screen to capture the data Google doesn't provide (business name,
+    phone, primary business category). All three are mandatory."""
+    shop_name: str = Field(min_length=1, max_length=80)
+    phone: str = Field(min_length=10, max_length=15)
+    primary_business_category: str = Field(min_length=1, max_length=64)
 
 
 class LoginRequest(BaseModel):

@@ -7,6 +7,7 @@ import { Platform, View, ActivityIndicator, Text, LogBox } from "react-native";
 import * as SplashScreen from "expo-splash-screen";
 import { useFonts } from "expo-font";
 import { AuthProvider, useAuth } from "../lib/auth";
+import { Api } from "../lib/api";
 import { FeatureFlagsProvider } from "../lib/feature_flags";
 import { PermissionsProvider } from "../lib/permissions";
 import ErrorBoundary from "../components/ErrorBoundary";
@@ -175,25 +176,60 @@ function AuthGate({ children }: { children: React.ReactNode }) {
     }
   }, [signInWithGoogleSession]);
 
-  // Phase G — Owner's primary_business_category is now collected
-  // directly on the signup form (`signup.tsx`). The legacy onboarding
-  // gate / standalone screen has been retired. Google sign-in users
-  // and pre-Phase-G accounts can update their category from settings
-  // if/when we surface that flow; we no longer block them here.
+  // Phase G2 — Owner's primary_business_category + business_name +
+  // mobile are now collected on the signup form (`signup.tsx`). For
+  // Google-OAuth signups (Google only provides email + name), we
+  // bounce the user to /(auth)/complete-profile to fill in the
+  // missing fields BEFORE the dashboard unlocks. The backend exposes
+  // a single `needs_profile_completion` aggregate flag on
+  // /api/auth/context to drive this redirect.
+  const [needsProfile, setNeedsProfile] = useState<boolean | null>(null);
+  useEffect(() => {
+    if (loading || !user) {
+      setNeedsProfile(null);
+      return;
+    }
+    let alive = true;
+    (async () => {
+      try {
+        const ctx = await Api.authContext();
+        if (alive) setNeedsProfile(!!ctx.needs_profile_completion);
+      } catch {
+        if (alive) setNeedsProfile(false); // fail-open
+      }
+    })();
+    return () => { alive = false; };
+  }, [user, loading]);
+
   useEffect(() => {
     if (loading || oauthBusy) return;
     const inAuthGroup = segments[0] === "(auth)";
+    const authSub = String(segments[1] || "");
     // 2026-04-30 — /refund-policy is the canonical public legal screen
     // (Terms / Refund / Privacy). Reachable without login so new users
     // can review it from the signup checkbox before creating an account.
     const publicRoutes = new Set(["refund-policy"]);
     const isPublic = publicRoutes.has(String(segments[0] || ""));
+
     if (!user && !inAuthGroup && !isPublic) {
-      router.replace("/(auth)/login");
-    } else if (user && inAuthGroup) {
-      router.replace("/(tabs)");
+      // Phase G2 — first-touch users land on the welcome screen which
+      // explicitly shows BOTH "Create New Account" and "I have an
+      // account" buttons. Solves the conversion problem where new
+      // users couldn't find signup on the legacy login-first flow.
+      router.replace("/(auth)/welcome" as any);
+    } else if (user && inAuthGroup && authSub !== "complete-profile") {
+      // Logged-in user landed back on welcome/login/signup → bounce
+      // to the dashboard (or complete-profile if the gate flags them).
+      if (needsProfile === true) {
+        router.replace("/(auth)/complete-profile" as any);
+      } else {
+        router.replace("/(tabs)");
+      }
+    } else if (user && needsProfile === true && authSub !== "complete-profile") {
+      // Inside the app but profile is incomplete → mandatory gate.
+      router.replace("/(auth)/complete-profile" as any);
     }
-  }, [user, loading, oauthBusy, segments, router]);
+  }, [user, loading, oauthBusy, segments, router, needsProfile]);
 
   if (loading || oauthBusy) {
     return (

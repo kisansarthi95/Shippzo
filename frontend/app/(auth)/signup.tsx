@@ -10,6 +10,7 @@ import { useRouter } from "expo-router";
 import { useAuth } from "../../lib/auth";
 import { colors } from "../../lib/theme";
 import GoogleSignInButton from "../../components/GoogleSignInButton";
+import BrandHeaderAnimator from "../../components/BrandHeaderAnimator";
 import { Api } from "../../lib/api";
 
 type BusinessCategory = { slug: string; label: string; icon: string };
@@ -19,11 +20,15 @@ export default function SignupScreen() {
   const router = useRouter();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  // Phase G2 — Re-enter password to catch typos. Both fields render
+  // the same eye-toggle pattern but with independent visibility state.
+  const [confirmPassword, setConfirmPassword] = useState("");
   const [name, setName] = useState("");
   const [shop, setShop] = useState("");
   const [phone, setPhone] = useState("");
   const [busy, setBusy] = useState(false);
   const [showPwd, setShowPwd] = useState(false);
+  const [showConfirmPwd, setShowConfirmPwd] = useState(false);
   // Phase G — primary business category. Required on the form. The list
   // is fetched live from /api/auth/business-categories so adding a new
   // category server-side doesn't need a frontend deploy.
@@ -62,10 +67,32 @@ export default function SignupScreen() {
   // up is itself the record of consent.
   const [policyAccepted, setPolicyAccepted] = useState(false);
 
+  // Phase G2 — every field is mandatory; the button stays disabled
+  // until the entire form is well-formed AND the policy box is ticked.
+  const phoneDigitsLen = phone.replace(/\D/g, "").length;
+  const formValid =
+    !!name.trim() &&
+    !!shop.trim() &&
+    !!email.trim() &&
+    phoneDigitsLen >= 10 &&
+    !!businessCategory &&
+    password.length >= 6 &&
+    confirmPassword.length >= 6 &&
+    password === confirmPassword &&
+    policyAccepted;
+
   const submit = async () => {
     const e = email.trim().toLowerCase();
-    if (!e || !password || !name.trim()) {
-      Alert.alert("Missing fields", "Email, password and name are required");
+    if (!name.trim()) {
+      Alert.alert("Name required", "Please enter your name.");
+      return;
+    }
+    if (!shop.trim()) {
+      Alert.alert("Business Name required", "Please enter your business name.");
+      return;
+    }
+    if (!e) {
+      Alert.alert("Email required", "Please enter your email address.");
       return;
     }
     const phoneDigits = phone.replace(/\D/g, "");
@@ -76,14 +103,21 @@ export default function SignupScreen() {
       );
       return;
     }
-    if (password.length < 6) {
-      Alert.alert("Password too short", "Use at least 6 characters");
-      return;
-    }
     if (!businessCategory) {
       Alert.alert(
         "Pick a category",
         "Please tell us what you sell so we can tailor the app for your business.",
+      );
+      return;
+    }
+    if (password.length < 6) {
+      Alert.alert("Password too short", "Use at least 6 characters");
+      return;
+    }
+    if (password !== confirmPassword) {
+      Alert.alert(
+        "Passwords don't match",
+        "Please re-enter the same password in both fields.",
       );
       return;
     }
@@ -125,14 +159,20 @@ export default function SignupScreen() {
         behavior={Platform.OS === "ios" ? "padding" : undefined}
       >
         <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
+          {/* Phase G2 — Replaced the placeholder cube icon with the real
+              Shippzo brand header so the signup screen matches the
+              welcome / login visual identity. */}
           <View style={styles.brand}>
-            <PhIcon name="cube-outline" size={36} color={colors.primary} />
-            <Text style={styles.brandTitle}>Create account</Text>
-            <Text style={styles.brandSub}>Start shipping in minutes — 15 demo orders included</Text>
+            <BrandHeaderAnimator variant="login" />
+            <Text style={styles.brandSub}>
+              Generate Shipping Labels in Just 30 Seconds
+            </Text>
           </View>
 
           <View style={styles.card}>
-            <Text style={styles.label}>Your name</Text>
+            <Text style={styles.label}>
+              Your name <Text style={styles.required}>*</Text>
+            </Text>
             <TextInput
               testID="signup-name"
               value={name}
@@ -142,7 +182,9 @@ export default function SignupScreen() {
               placeholderTextColor="#94A3B8"
             />
 
-            <Text style={[styles.label, { marginTop: 12 }]}>Shop name (optional)</Text>
+            <Text style={[styles.label, { marginTop: 12 }]}>
+              Business Name <Text style={styles.required}>*</Text>
+            </Text>
             <TextInput
               testID="signup-shop"
               value={shop}
@@ -152,7 +194,9 @@ export default function SignupScreen() {
               placeholderTextColor="#94A3B8"
             />
 
-            <Text style={[styles.label, { marginTop: 12 }]}>Email</Text>
+            <Text style={[styles.label, { marginTop: 12 }]}>
+              Email <Text style={styles.required}>*</Text>
+            </Text>
             <TextInput
               testID="signup-email"
               value={email}
@@ -206,7 +250,9 @@ export default function SignupScreen() {
               <PhIcon name="chevron-down" size={18} color="#64748B" />
             </TouchableOpacity>
 
-            <Text style={[styles.label, { marginTop: 12 }]}>Password (min 6)</Text>
+            <Text style={[styles.label, { marginTop: 12 }]}>
+              Password (min 6) <Text style={styles.required}>*</Text>
+            </Text>
             <View style={styles.pwRow}>
               <TextInput
                 testID="signup-password"
@@ -222,13 +268,37 @@ export default function SignupScreen() {
               </TouchableOpacity>
             </View>
 
+            <Text style={[styles.label, { marginTop: 12 }]}>
+              Confirm Password <Text style={styles.required}>*</Text>
+            </Text>
+            <View style={styles.pwRow}>
+              <TextInput
+                testID="signup-confirm-password"
+                value={confirmPassword}
+                onChangeText={setConfirmPassword}
+                placeholder="Re-enter your password"
+                secureTextEntry={!showConfirmPwd}
+                style={[styles.input, { flex: 1 }]}
+                placeholderTextColor="#94A3B8"
+              />
+              <TouchableOpacity style={styles.eyeBtn} onPress={() => setShowConfirmPwd((v) => !v)}>
+                <PhIcon name={showConfirmPwd ? "eye-off" : "eye"} size={20} color="#64748B" />
+              </TouchableOpacity>
+            </View>
+            {/* Inline mismatch hint — only when the user has typed
+                something into BOTH fields and they differ. Avoids
+                shouting at the user mid-typing. */}
+            {confirmPassword.length > 0 && password !== confirmPassword ? (
+              <Text style={styles.errorNote}>Passwords don't match.</Text>
+            ) : null}
+
             <TouchableOpacity
               testID="signup-submit"
-              disabled={busy || !policyAccepted || !businessCategory}
+              disabled={busy || !formValid}
               onPress={submit}
               style={[
                 styles.primaryBtn,
-                (busy || !policyAccepted || !businessCategory) && { opacity: 0.5 },
+                (busy || !formValid) && { opacity: 0.5 },
               ]}
             >
               {busy
@@ -376,6 +446,12 @@ const styles = StyleSheet.create({
   label: { fontSize: 12, fontWeight: "800", color: colors.text, marginBottom: 6, letterSpacing: 0.4 },
   required: { color: "#DC2626", fontWeight: "900" },
   helperNote: { fontSize: 11, color: "#64748B", marginTop: 4, marginBottom: 2, lineHeight: 16 },
+  errorNote: {
+    fontSize: 12,
+    color: "#DC2626",
+    marginTop: 6,
+    fontWeight: "700",
+  },
   input: {
     backgroundColor: "#fff",
     borderWidth: 2,
