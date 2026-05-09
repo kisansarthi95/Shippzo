@@ -61,6 +61,8 @@ from typing import Dict, List
 # Categories used by the admin UI to group checkboxes.
 CATEGORY_ORDER = [
     "Smart Paste",
+    "File Import",
+    "Webhooks",
     "Shipments List",
     "Label Design",
     "Google Sheets",
@@ -77,6 +79,9 @@ CATEGORY_ORDER = [
     "Analytics & SLA",
     "Notifications",
     "Reports",
+    "Team & RBAC",
+    "Coupons & Credits",
+    "Business Profile",
 ]
 
 # The single source of truth. Order is preserved by Python 3.7+ dicts.
@@ -89,6 +94,34 @@ FEATURE_REGISTRY: Dict[str, Dict[str, str]] = {
     "smart_paste_custom_prompt": {"label": "Custom AI instructions",       "category": "Smart Paste"},
     # NEW (2026-04-30) — Pre-save duplicate detection
     "smart_paste_duplicate_check": {"label": "Pre-save duplicate detection", "category": "Smart Paste"},
+    # NEW (2026-05-09 — Phase G3) — Multi-address extraction (parked,
+    # ready to wire when Smart Paste agent grows that capability).
+    "smart_paste_multi_address": {"label": "Multi-address extraction (P3)", "category": "Smart Paste"},
+
+    # ── File Import (NEW category, 2026-05-09 — Phase G3) ────────
+    # CSV / Excel imports with dynamic column mapping. Already shipped
+    # to all users; registry rows let the admin gate by plan if needed
+    # (e.g. "Excel imports only on paid tiers"). Status / Timestamp /
+    # Custom-field column mappings are individually toggleable so the
+    # free tier can stay simple while paid tiers unlock advanced
+    # mapping options.
+    "file_import_csv":                   {"label": "Import orders from CSV",                "category": "File Import"},
+    "file_import_excel":                 {"label": "Import orders from Excel (.xlsx)",      "category": "File Import"},
+    "file_import_status_mapping":        {"label": "Map \"Status\" column from imports",     "category": "File Import"},
+    "file_import_timestamp_mapping":     {"label": "Map \"Order Date / Timestamp\" column",  "category": "File Import"},
+    "file_import_custom_fields_mapping": {"label": "Map dynamic custom-field columns",       "category": "File Import"},
+
+    # ── Webhooks (NEW category, 2026-05-09 — Phase F2/G3) ────────
+    # Webhook ingestion lets stores like Dukaan / Shopify push orders
+    # into Shippzo automatically. Each row is independently toggleable
+    # so the admin can offer "basic webhook receiver" on a low tier and
+    # "auto-mapping + multiple endpoints" only on premium tiers.
+    "webhook_ingestion":          {"label": "Receive orders via webhook URL (master switch)", "category": "Webhooks"},
+    "webhook_multiple_endpoints": {"label": "Multiple named webhooks (Shopify / Dukaan / custom)", "category": "Webhooks"},
+    "webhook_dukaan_auto_map":    {"label": "Auto-detect Dukaan payload (35+ keys)",         "category": "Webhooks"},
+    "webhook_shopify_auto_map":   {"label": "Auto-detect Shopify payload",                   "category": "Webhooks"},
+    "webhook_payload_preview":    {"label": "\"Use last received payload\" extract button",   "category": "Webhooks"},
+    "webhook_custom_key_mapping": {"label": "Manual JSON key → field mapping UI",             "category": "Webhooks"},
 
     # ── Shipments List per-row buttons ───────────────────────────
     "shipment_copy_btn":         {"label": "Copy button",                  "category": "Shipments List"},
@@ -130,6 +163,12 @@ FEATURE_REGISTRY: Dict[str, Dict[str, str]] = {
     "multiple_couriers":         {"label": "More than 1 courier partner",  "category": "Couriers & Tracking"},
     "auto_tracking":             {"label": "Auto-generate tracking ID",    "category": "Couriers & Tracking"},
     "manual_tracking_scan":      {"label": "Scan barcode for tracking",    "category": "Couriers & Tracking"},
+    # NEW (2026-05-09 — Phase G3) — Auto-route orders to a courier
+    # based on rules (state / weight / COD vs prepaid). Big time-saver
+    # for heavy-volume shops; default off for free tier.
+    "courier_rules_engine":      {"label": "Auto-assign courier by rules (state / weight / COD)", "category": "Couriers & Tracking"},
+    # NEW (2026-05-09 — Phase G3) — Per-courier required-field config.
+    "field_requirements_per_courier": {"label": "Per-courier required-field configuration", "category": "Couriers & Tracking"},
 
     # ── Scanner (NEW category, 2026-04-30) ───────────────────────
     "scanner_sound_feedback":    {"label": "Beep / buzz feedback on scan", "category": "Scanner"},
@@ -142,6 +181,12 @@ FEATURE_REGISTRY: Dict[str, Dict[str, str]] = {
     "pending_orders_inbox":      {"label": "Pending Orders tab",           "category": "Customer Intelligence"},
     # NEW (2026-04-30 PM2) — Yellow "Repeat customer" banner with Use button
     "repeat_customer_banner":    {"label": "Repeat customer banner (with Use button)", "category": "Customer Intelligence"},
+    # NEW (2026-05-09 — Phase G3) — Pending Orders inbox enhancements.
+    "pending_orders_unified_list":  {"label": "Unified vertical list (vs old horizontal queues)", "category": "Customer Intelligence"},
+    "pending_orders_source_badges": {"label": "Coloured source badges (PASTE / FILE / SHEET / WEBHOOK)", "category": "Customer Intelligence"},
+    "pending_orders_edit":          {"label": "Edit pending order before saving",                       "category": "Customer Intelligence"},
+    # NEW (2026-05-09 — Phase G3) — Save customer to phone contacts.
+    "contact_save_to_phone":     {"label": "Save customer to phone contacts",                          "category": "Customer Intelligence"},
 
     # ── Offline Mode (NEW category, 2026-04-30) ──────────────────
     "offline_mode":              {"label": "Offline Mode (master switch)", "category": "Offline Mode"},
@@ -200,12 +245,36 @@ FEATURE_REGISTRY: Dict[str, Dict[str, str]] = {
     "push_notifications":          {"label": "Push notifications (Expo)",                   "category": "Notifications"},
     "bulk_messaging_stages":       {"label": "Bulk messaging across all stages",            "category": "Notifications"},
     "bulk_message_select_filter":  {"label": "Filter / search shipments before sending",    "category": "Notifications"},
+    # NEW (2026-05-09 — Phase G3) — Per-event granular notification toggles.
+    "notification_prefs_granular": {"label": "Per-event notification preferences",          "category": "Notifications"},
 
     # ── Reports (NEW category, 2026-05-04 — Phase 2.5) ───────────
     # Per-courier billing / volume / charge reports. Tied to the
     # /me/reports/* endpoints. Default off everywhere — admin enables
     # per plan via the Plan Features admin screen.
     "reports_courier_billing":     {"label": "Courier Billing report (in-app + Excel)",     "category": "Reports"},
+    # NEW (2026-05-09 — Phase G3) — Additional report types.
+    "reports_partner_comparison":  {"label": "Courier Partner Comparison report",            "category": "Reports"},
+    "reports_reconciliation":      {"label": "Reconciliation report (paid vs collected)",    "category": "Reports"},
+    "reports_return_analysis":     {"label": "Return / RTO analysis report",                 "category": "Reports"},
+    "reports_weight_wise":         {"label": "Weight-wise volume report",                    "category": "Reports"},
+
+    # ── Team & RBAC (NEW category, 2026-05-09 — Phase G3) ───────
+    # Owner can invite team members and assign granular per-permission
+    # roles. Inviting is the gate — RBAC is the upgrade.
+    "team_members_invite":         {"label": "Invite team members (sub-users)",              "category": "Team & RBAC"},
+    "team_members_rbac":           {"label": "Granular RBAC permissions per member",         "category": "Team & RBAC"},
+
+    # ── Coupons & Credits (NEW category, 2026-05-09 — Phase G3) ─
+    "coupons_apply":               {"label": "Apply coupon codes (user-side)",               "category": "Coupons & Credits"},
+    "credit_packages_buy":         {"label": "Buy SMS / WhatsApp credit packages",           "category": "Coupons & Credits"},
+
+    # ── Business Profile (NEW category, 2026-05-09 — Phase G3) ──
+    # Phase-G captured the owner's `primary_business_category` at
+    # signup. This flag decides whether that data point gets wired
+    # into the Analytics dashboard as a filter. Off by default —
+    # admin turns it on for tiers that have advanced analytics.
+    "business_category_filter_analytics": {"label": "Use business category as Analytics filter", "category": "Business Profile"},
 }
 
 ALL_KEYS: List[str] = list(FEATURE_REGISTRY.keys())
@@ -218,6 +287,20 @@ DEFAULT_PLAN_FEATURES: Dict[str, List[str]] = {
         "smart_paste_ai", "smart_paste_voice", "smart_paste_image_ocr",
         "smart_paste_chat_refine",
         "smart_paste_duplicate_check",  # NEW — basic safety net for everyone
+        # NEW (Phase G3) — File Import: CSV is universal, basic mappings
+        # included so trial users can validate the import flow.
+        "file_import_csv",
+        "file_import_status_mapping",
+        "file_import_timestamp_mapping",
+        # NEW (Phase G3) — Pending Orders inbox UX improvements are part
+        # of the basic experience for everyone.
+        "pending_orders_unified_list",
+        "pending_orders_source_badges",
+        "pending_orders_edit",
+        # NEW (Phase G3) — Coupon redemption is open to all so we can run
+        # promo campaigns without flipping plans.
+        "coupons_apply",
+        "credit_packages_buy",
         "shipment_copy_btn", "shipment_whatsapp_btn", "shipment_edit_btn",
         "shipment_delete_btn", "shipment_print_btn", "shipment_mark_delivered",
         "label_brand_name", "label_field_toggles",
@@ -234,6 +317,31 @@ DEFAULT_PLAN_FEATURES: Dict[str, List[str]] = {
         "smart_paste_ai", "smart_paste_voice", "smart_paste_image_ocr",
         "smart_paste_chat_refine",
         "smart_paste_duplicate_check",   # NEW
+        # NEW (Phase G3) — File Import (Silver+): Excel + custom field
+        # mapping unlock for paid tiers.
+        "file_import_csv", "file_import_excel",
+        "file_import_status_mapping",
+        "file_import_timestamp_mapping",
+        "file_import_custom_fields_mapping",
+        # NEW (Phase G3) — Webhooks basic: master switch + Dukaan/
+        # Shopify auto-detect (most common stores).
+        "webhook_ingestion",
+        "webhook_dukaan_auto_map",
+        "webhook_shopify_auto_map",
+        # NEW (Phase G3) — Pending Orders & Coupons same as free.
+        "pending_orders_unified_list",
+        "pending_orders_source_badges",
+        "pending_orders_edit",
+        "coupons_apply",
+        "credit_packages_buy",
+        # NEW (Phase G3) — Reports: basic Partner Comparison for Silver+.
+        "reports_partner_comparison",
+        # NEW (Phase G3) — Granular notification prefs.
+        "notification_prefs_granular",
+        # NEW (Phase G3) — Save customer to phone contacts.
+        "contact_save_to_phone",
+        # NEW (Phase G3) — Per-courier required-field config.
+        "field_requirements_per_courier",
         "shipment_copy_btn", "shipment_whatsapp_btn", "shipment_edit_btn",
         "shipment_delete_btn", "shipment_print_btn", "shipment_mark_delivered",
         "csv_export_orders",             # NEW (2026-04-30 PM2) — Silver+
@@ -256,6 +364,38 @@ DEFAULT_PLAN_FEATURES: Dict[str, List[str]] = {
         "smart_paste_ai", "smart_paste_voice", "smart_paste_image_ocr",
         "smart_paste_chat_refine", "smart_paste_custom_prompt",
         "smart_paste_duplicate_check",   # NEW
+        # NEW (Phase G3) — File Import: full mapping suite.
+        "file_import_csv", "file_import_excel",
+        "file_import_status_mapping",
+        "file_import_timestamp_mapping",
+        "file_import_custom_fields_mapping",
+        # NEW (Phase G3) — Webhooks (Gold+): full suite incl. multiple
+        # endpoints + payload preview + auto-mapping.
+        "webhook_ingestion",
+        "webhook_multiple_endpoints",
+        "webhook_dukaan_auto_map",
+        "webhook_shopify_auto_map",
+        "webhook_payload_preview",
+        # NEW (Phase G3) — Pending Orders & utility flags.
+        "pending_orders_unified_list",
+        "pending_orders_source_badges",
+        "pending_orders_edit",
+        "coupons_apply",
+        "credit_packages_buy",
+        # NEW (Phase G3) — Reports: most types unlock at Gold.
+        "reports_partner_comparison",
+        "reports_reconciliation",
+        "reports_return_analysis",
+        # NEW (Phase G3) — Notifications + utility.
+        "notification_prefs_granular",
+        "contact_save_to_phone",
+        "field_requirements_per_courier",
+        # NEW (Phase G3) — Auto-routing engine for high-volume shops.
+        "courier_rules_engine",
+        # NEW (Phase G3) — Team invites at Gold (RBAC stays Platinum).
+        "team_members_invite",
+        # NEW (Phase G3) — Business category as Analytics filter.
+        "business_category_filter_analytics",
         "shipment_copy_btn", "shipment_whatsapp_btn", "shipment_edit_btn",
         "shipment_delete_btn", "shipment_print_btn", "shipment_mark_delivered",
         "shipments_bulk_select",         # NEW (2026-04-30 PM2) — Gold+
