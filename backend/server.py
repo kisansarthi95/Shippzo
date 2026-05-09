@@ -5420,6 +5420,22 @@ except Exception as _wh_exc:
         f"Failed to mount webhook router: {_wh_exc}",
     )
 
+# Phase F3 — multi-webhooks (named, event-typed, unlimited per user).
+# Mounts on top of the v1 routes; the public ingest endpoint lives in
+# routers/webhook.py and consults BOTH stores so old + new URLs work.
+try:
+    from routers.webhooks_multi import (
+        webhooks_multi_router as _webhooks_multi_router,
+        init as _init_webhooks_multi_router,
+    )
+    _init_webhooks_multi_router()
+    app.include_router(_webhooks_multi_router)
+except Exception as _whm_exc:
+    import logging as _lg
+    _lg.getLogger("server.bootstrap").exception(
+        f"Failed to mount webhooks_multi router: {_whm_exc}",
+    )
+
 
 # --------------------------------------------------------------------
 # Auth middleware — requires a valid bearer token on every /api/*

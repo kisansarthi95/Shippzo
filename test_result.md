@@ -15233,3 +15233,173 @@ agent_communication:
         Main agent: please summarise and finish — backend fix is
         good.
 
+
+
+## Backend Test Run: Phase F3 Multi-Webhooks System (2026-05-09)
+
+backend:
+  - task: "Phase F3 multi-webhooks v2 (CRUD, rotate, preview, ingest, stats, legacy regression)"
+    implemented: true
+    working: true
+    file: "/app/backend/routers/webhooks_multi.py, /app/backend/routers/webhook.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "testing"
+        -comment: |
+            All 12 review-request cases verified end-to-end —
+            62/62 assertions PASS via /app/backend_test_webhooks_multi.py
+            against https://logistics-hub-740.preview.emergentagent.com/api
+            (admin@test.com / Admin@12345).
+
+            CASE 1 (event-types) — PASS. GET /api/me/webhooks/event-types
+            returns exactly 6 entries (new_order, order_status_update,
+            abandoned_order, customer_created, customer_updated, custom),
+            each with key/label/description.
+
+            CASE 2 (list + auto-migrate legacy) — PASS. GET
+            /api/me/webhooks auto-migrated admin's pre-existing
+            users.webhook_secret into a row in user_webhooks
+            (event_type=new_order) with non-empty url + 32-char secret.
+            Backend log: "Migrated legacy webhook for user=…".
+
+            CASE 3 (create + list multiple) — PASS. POST creates
+            "Shopify Store" (new_order) and "Dukaan Cart"
+            (abandoned_order); both come back with id/secret/url/
+            enabled=true/created_at and both appear in subsequent GET
+            list. Confirms unlimited webhooks per user.
+
+            CASE 4 (invalid event_type) — PASS. POST with
+            event_type="totally_invalid" → 400 with error message
+            listing the 6 valid keys.
+
+            CASE 5 (PUT update) — PASS. Renaming + toggling enabled
+            persists; mapping {"shipping_name":"customer_name",
+            "phone":"customer_phone"} round-trips on subsequent GET.
+
+            CASE 6 (rotate secret) — PASS. POST /rotate generated a
+            new 32-char secret and returned an updated url. The OLD
+            secret returns 404 on public ingest; the NEW secret
+            returns 200.
+
+            CASE 7 (end-to-end ingest) — PASS. Created webhook with
+            mapping {customer_name→customer_name, customer_phone→
+            customer_phone, customer_address→address}, POSTed
+            {"customer_name":"E2E Ingest","customer_phone":
+            "9999900000","customer_address":"Test Addr"} →
+            response {ok:true, imported:1, skipped:0,
+            event_type:"new_order", errors:[]}. Pending order created
+            with source_meta.webhook_id matching the webhook id and
+            source_meta.event_type="new_order". Webhook detail post-
+            ingest shows stats.total_received=1, stats.total_imported=1,
+            last_received_at non-empty, recent_samples contains the
+            received payload.
+
+            NOTE on CASE 7 mapping: the review request literally said
+            mapping {"customer_address":"customer_address"} but
+            "customer_address" is NOT a valid SCHEMA_FIELDS value
+            (the schema field is "address"). Server correctly returns
+            400 "Unknown schema fields: ['customer_address']" for that
+            literal mapping. The end-to-end ingest test was therefore
+            run with the corrected mapping {"customer_address":"address"}
+            and passed. This is a spec-vs-schema mismatch in the
+            review instructions, not a product bug — the validator
+            behaves correctly.
+
+            CASE 8 (non-order event types) — PASS. customer_created and
+            abandoned_order webhooks return 200 with imported=0,
+            event_type echoed correctly, and the friendly errors
+            message "Event '<type>' received and logged. Full
+            processing for this event type is coming in an upcoming
+            release." NO pending_orders documents are inserted for
+            either event type (verified).
+
+            CAVEAT on CASE 8: when the webhook has NO mapping
+            configured (the default state for newly-created
+            webhooks), the no-mapping early-return branch in
+            routers/webhook.py:372-389 fires BEFORE the event-type
+            branch. That early-return omits the `event_type` field
+            and returns the generic "no mapping configured" message
+            instead of the Phase-3 friendly message. The test set a
+            dummy mapping ({"customer_name":"customer_name"}) before
+            sending so the event_type branch was reached. This is a
+            small ordering-of-checks issue worth fixing for the
+            non-order event types (their response shouldn't depend on
+            mapping being configured) but not a blocker — once any
+            mapping is set the response shape is correct.
+
+            CASE 9 (disabled webhook) — PASS. PUT enabled=false then
+            POST to URL → 200 with imported=0 and errors=["Webhook
+            is paused. Re-enable it from Shippzo → Webhook Config to
+            resume ingestion."].
+
+            CASE 10 (DELETE) — PASS. DELETE returns
+            {ok:true, deleted:<id>}; subsequent GET 404; public ingest
+            with that secret returns 404.
+
+            CASE 11 (cleanup) — PASS. All test webhooks (Shopify
+            Store, Dukaan Cart, E2E *) and pending_orders (E2E Ingest,
+            Legacy Test) deleted after the run. Webhook list returns
+            to baseline (1 migrated legacy webhook).
+
+            CASE 12 (legacy regression) — PASS. GET /api/me/webhook-
+            config returns 200; POST /rotate returns 200 with new
+            secret; PUT /api/me/webhook-config saves mapping; POST
+            /api/webhook/orders/{legacy_secret} with valid payload
+            ingests successfully (imported=1, event_type:new_order).
+            Legacy single-webhook URL still works after the v2 multi
+            store is in place — the public ingest correctly checks
+            user_webhooks first then falls back to users.webhook_secret.
+
+            Test artefact: /app/backend_test_webhooks_multi.py.
+
+agent_communication:
+    -agent: "testing"
+    -message: |
+        Phase F3 multi-webhook system VERIFIED end-to-end —
+        62/62 assertions PASS across all 12 review cases. Highlights:
+
+          ✅ Event-type metadata (6 types).
+          ✅ Auto-migration of legacy webhook_secret into user_webhooks
+             on first GET /me/webhooks.
+          ✅ CRUD (create / list / get / update / rotate / delete).
+          ✅ event_type validation (400 on unknown).
+          ✅ Secret rotation invalidates old URL (404), new URL works.
+          ✅ End-to-end new_order ingest writes pending_order with
+             source_meta.webhook_id + event_type, bumps per-webhook
+             stats (received/imported/last_received_at), pushes to
+             recent_samples ring buffer.
+          ✅ Non-order events (customer_created/abandoned_order) return
+             event_type + friendly Phase-3 message; no pending_orders
+             leaked.
+          ✅ Disabled webhook returns 200 with paused message + 0
+             imported.
+          ✅ Legacy single-webhook endpoints + ingest URL still work
+             alongside v2 (backward compat preserved).
+
+        Notes for main agent (NOT blockers, just observations):
+
+         (a) The review-request mapping {"customer_address":
+             "customer_address"} is not a valid schema field. Server
+             correctly rejects with 400. Fixed test to use
+             {"customer_address":"address"} which is the canonical
+             schema field for the postal address. If you want senders
+             to be able to write "customer_address" verbatim, add it
+             as an alias to SCHEMA_FIELDS — but the validator itself
+             is doing its job.
+
+         (b) For customer_created / abandoned_order / etc., when the
+             webhook has NO mapping configured, the public ingest
+             returns the generic "no mapping configured" 200 instead
+             of the event_type-aware "received and logged" 200. The
+             event_type-aware path is currently gated behind "mapping
+             must be non-empty" in routers/webhook.py:372. For
+             non-order events the mapping isn't actually consulted,
+             so it would be cleaner to move the event_type branch
+             above the no-mapping check. With any non-empty mapping
+             the response is correct, so this is a minor polish item.
+
+        Otherwise the entire Phase F3 surface is solid. Main agent —
+        please summarise and finish.

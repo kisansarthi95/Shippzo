@@ -252,14 +252,47 @@ def init() -> None:
         secret: str = Path(..., min_length=8, max_length=128),
         body: Any = Body(...),
     ):
-        u = await db.users.find_one(
-            {"webhook_secret": secret},
-            {"_id": 0, "id": 1, "webhook_mapping": 1, "webhook_name": 1},
+        # Phase F3 — multi-webhook lookup. Try user_webhooks (v2) FIRST,
+        # then fall back to the legacy users.webhook_secret (v1). This
+        # keeps every old URL working while unlocking the new event-typed
+        # ingest paths. The v2 hit also exposes the per-webhook event
+        # type and per-webhook stats, which the v1 path didn't have.
+        wh_doc: Dict[str, Any] | None = await db.user_webhooks.find_one(
+            {"secret": secret},
+            {"_id": 0},
         )
-        if not u:
-            raise HTTPException(status_code=404, detail="Unknown webhook secret")
-
-        mapping: Dict[str, str] = u.get("webhook_mapping") or {}
+        if wh_doc:
+            if not wh_doc.get("enabled", True):
+                # Paused webhook → 200 OK with explanation so the sender
+                # doesn't mark it as broken / stop retrying. The user
+                # can re-enable from the v2 admin UI without rotating.
+                return {
+                    "ok": True,
+                    "imported": 0,
+                    "skipped":  0,
+                    "errors":   [
+                        "Webhook is paused. Re-enable it from "
+                        "Shippzo → Webhook Config to resume ingestion.",
+                    ],
+                }
+            mapping: Dict[str, str] = wh_doc.get("mapping") or {}
+            user_id     = wh_doc["user_id"]
+            wh_id       = wh_doc.get("id")
+            event_type  = wh_doc.get("event_type") or "new_order"
+            badge_name  = (wh_doc.get("name") or "").strip()
+        else:
+            # Legacy single-webhook path.
+            u = await db.users.find_one(
+                {"webhook_secret": secret},
+                {"_id": 0, "id": 1, "webhook_mapping": 1, "webhook_name": 1},
+            )
+            if not u:
+                raise HTTPException(status_code=404, detail="Unknown webhook secret")
+            mapping     = u.get("webhook_mapping") or {}
+            user_id     = u["id"]
+            wh_id       = None
+            event_type  = "new_order"
+            badge_name  = (u.get("webhook_name") or "").strip()
         # Phase F2.4 — Forgiving ingest. External senders (Dukaan,
         # Shopify, Zapier, …) often run a "Test webhook" probe BEFORE
         # the user has a chance to configure column mapping. They mark
@@ -300,20 +333,39 @@ def init() -> None:
         # the 200 OK we owe the sender.
         if rows and isinstance(rows[0], dict):
             try:
-                await db.users.update_one(
-                    {"id": u["id"]},
-                    {"$push": {
-                        "webhook_recent_samples": {
-                            "$each": [
-                                {
+                if wh_id:
+                    # v2 → write to user_webhooks ring buffer + bump stats.
+                    await db.user_webhooks.update_one(
+                        {"id": wh_id},
+                        {
+                            "$push": {
+                                "recent_samples": {
+                                    "$each": [{
+                                        "received_at": datetime.now(timezone.utc).isoformat(),
+                                        "payload":     rows[0],
+                                    }],
+                                    "$slice": -10,
+                                },
+                            },
+                            "$set": {
+                                "stats.last_received_at": datetime.now(timezone.utc).isoformat(),
+                            },
+                            "$inc": {"stats.total_received": len(rows)},
+                        },
+                    )
+                else:
+                    await db.users.update_one(
+                        {"id": user_id},
+                        {"$push": {
+                            "webhook_recent_samples": {
+                                "$each": [{
                                     "received_at": datetime.now(timezone.utc).isoformat(),
                                     "payload":     rows[0],
-                                }
-                            ],
-                            "$slice": -10,
-                        },
-                    }},
-                )
+                                }],
+                                "$slice": -10,
+                            },
+                        }},
+                    )
             except Exception:
                 _logger.exception("Failed to persist webhook sample")
 
@@ -333,6 +385,30 @@ def init() -> None:
                     "Settings → Webhook Ingest to map incoming keys to "
                     "shipment fields. (We saved this payload as a "
                     "sample for you.)"
+                ],
+            }
+
+        # Phase F3 — event-type-aware processing. Right now only
+        # `new_order` and `custom` create pending_orders documents
+        # (their behaviour is identical at ingest time; "custom" just
+        # means the owner opted out of auto-mapping suggestions). The
+        # other event types (order_status_update / abandoned_order /
+        # customer_created / customer_updated) are accepted, recorded
+        # in the recent_samples ring buffer above, and acknowledged
+        # with a friendly 200 — full processing for those events lives
+        # in Phase F3.2 (status sync) and F3.3 (abandoned + customer
+        # tabs). Returning 200 here lets the sender's connectivity
+        # test pass and lets the owner see real samples in the UI.
+        if event_type not in ("new_order", "custom"):
+            return {
+                "ok": True,
+                "imported": 0,
+                "skipped":  len(rows),
+                "event_type": event_type,
+                "errors": [
+                    f"Event '{event_type}' received and logged. "
+                    "Full processing for this event type is coming in "
+                    "an upcoming release.",
                 ],
             }
 
@@ -366,7 +442,7 @@ def init() -> None:
             } else ""
             doc.update({
                 "id":              str(uuid.uuid4()),
-                "user_id":         u["id"],
+                "user_id":         user_id,
                 "source":          "webhook",
                 "status":          "pending",   # pipeline status
                 "imported_status": imp_status,
@@ -380,22 +456,38 @@ def init() -> None:
                     # The pending-orders UI uses this as the badge label
                     # so the user can tell at a glance which storefront
                     # an order came from.
-                    "webhook_name": (u.get("webhook_name") or "").strip(),
+                    "webhook_name": badge_name,
+                    # Phase F3 — also persist the event type + webhook id
+                    # so the Pending Orders screen can colour-code by
+                    # storefront and the user can drill down.
+                    "webhook_id":   wh_id or "",
+                    "event_type":   event_type,
                 },
             })
             doc["order_id"] = doc.get("order_id") or doc["master_order_id"]
             await db.pending_orders.insert_one(doc)
             imported += 1
 
+        # Phase F3 — bump per-webhook imported counter (v2 only).
+        if wh_id and imported:
+            try:
+                await db.user_webhooks.update_one(
+                    {"id": wh_id},
+                    {"$inc": {"stats.total_imported": imported}},
+                )
+            except Exception:
+                _logger.exception("Failed to bump webhook stats.total_imported")
+
         _logger.info(
-            "webhook ingest: user=%s imported=%d skipped=%d",
-            u["id"], imported, len(rows) - imported,
+            "webhook ingest: user=%s wh=%s event=%s imported=%d skipped=%d",
+            user_id, wh_id or "legacy", event_type, imported, len(rows) - imported,
         )
         return {
-            "ok":       True,
-            "imported": imported,
-            "skipped":  len(rows) - imported,
-            "errors":   errors[:10],
+            "ok":         True,
+            "imported":   imported,
+            "skipped":    len(rows) - imported,
+            "event_type": event_type,
+            "errors":     errors[:10],
         }
 
     # ════════════════════════════════════════════════════════════════
