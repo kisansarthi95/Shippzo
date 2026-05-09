@@ -392,14 +392,127 @@ def init() -> None:
         # Phase F3 — event-type-aware processing. Right now only
         # `new_order` and `custom` create pending_orders documents
         # (their behaviour is identical at ingest time; "custom" just
-        # means the owner opted out of auto-mapping suggestions). The
-        # other event types (order_status_update / abandoned_order /
+        # means the owner opted out of auto-mapping suggestions).
+        # `order_status_update` finds an existing shipment / pending
+        # order by id and updates its status — see the dedicated
+        # branch below. The remaining types (abandoned_order /
         # customer_created / customer_updated) are accepted, recorded
         # in the recent_samples ring buffer above, and acknowledged
         # with a friendly 200 — full processing for those events lives
-        # in Phase F3.2 (status sync) and F3.3 (abandoned + customer
-        # tabs). Returning 200 here lets the sender's connectivity
-        # test pass and lets the owner see real samples in the UI.
+        # in Phase F3.3 (abandoned + customer tabs).
+        if event_type == "order_status_update":
+            # Phase F3.2 — Order Status Update.
+            # The mapping must point at least to:
+            #   • order_id (used to find the existing shipment)
+            #   • status   (the new status to set)
+            # Optional: created_at_override (if the source carries the
+            # transition timestamp; we use that as `dispatched_at`,
+            # `delivered_at` etc. depending on the resolved status).
+            from import_schema import normalise_status, normalise_timestamp
+
+            updated = 0
+            not_found = 0
+            errors_status: List[str] = []
+            now = datetime.now(timezone.utc).isoformat()
+
+            for idx, raw in enumerate(rows):
+                if not isinstance(raw, dict):
+                    errors_status.append(f"row {idx}: not a JSON object")
+                    continue
+                flat = _flatten(raw)
+                try:
+                    doc = build_pending_doc_from_mapping(flat, mapping)
+                except ValueError as e:
+                    errors_status.append(f"row {idx}: {e}")
+                    continue
+
+                order_id = (doc.get("order_id") or "").strip()
+                if not order_id:
+                    errors_status.append(
+                        f"row {idx}: order_id missing — make sure "
+                        "the mapping includes 'order_id'.",
+                    )
+                    continue
+
+                # Resolve the canonical status. We look for a value
+                # mapped explicitly to the schema's `status` cell;
+                # blank / unknown is allowed because the user might
+                # only want to record the timestamp, not a status.
+                new_status_raw = (doc.get("status") or "").strip()
+                new_status = normalise_status(new_status_raw)
+
+                # Optional event timestamp.
+                ts_raw = (doc.get("created_at_override") or "").strip()
+                event_ts = normalise_timestamp(ts_raw) or now
+
+                # Match by master_order_id OR order_id, scoped to this
+                # user. A single ingest can update either a Shipment
+                # (already shipped) or a Pending Order (still in inbox).
+                update_set: Dict[str, Any] = {
+                    "status_updated_at": event_ts,
+                }
+                if new_status:
+                    update_set["status"] = new_status
+                    # Mirror onto well-known timestamp fields so the
+                    # rest of the app's analytics / SLA workers don't
+                    # need to be re-taught the new event-type semantics.
+                    if new_status == "Shipped":
+                        update_set["dispatched_at"] = event_ts
+                    elif new_status == "Delivered":
+                        update_set["delivered_at"] = event_ts
+                    elif new_status == "Returned":
+                        update_set["returned_at"] = event_ts
+
+                # Try shipments first (canonical place for shipped /
+                # delivered orders). Then pending_orders as fallback.
+                ship_filter = {
+                    "user_id": user_id,
+                    "$or": [
+                        {"master_order_id": order_id},
+                        {"order_id":        order_id},
+                        {"id":              order_id},
+                    ],
+                }
+                ship_res = await db.shipments.update_one(
+                    ship_filter, {"$set": update_set},
+                )
+                if ship_res.matched_count == 0:
+                    pend_res = await db.pending_orders.update_one(
+                        ship_filter, {"$set": update_set},
+                    )
+                    if pend_res.matched_count == 0:
+                        not_found += 1
+                        errors_status.append(
+                            f"row {idx}: no shipment / pending order "
+                            f"found for order_id='{order_id}'",
+                        )
+                        continue
+
+                updated += 1
+
+            if wh_id and updated:
+                try:
+                    await db.user_webhooks.update_one(
+                        {"id": wh_id},
+                        {"$inc": {"stats.total_imported": updated}},
+                    )
+                except Exception:
+                    _logger.exception("Failed to bump webhook stats.total_imported")
+
+            _logger.info(
+                "webhook ingest: user=%s wh=%s event=order_status_update "
+                "updated=%d not_found=%d",
+                user_id, wh_id or "legacy", updated, not_found,
+            )
+            return {
+                "ok":         True,
+                "imported":   updated,
+                "skipped":    len(rows) - updated,
+                "not_found":  not_found,
+                "event_type": event_type,
+                "errors":     errors_status[:10],
+            }
+
         if event_type not in ("new_order", "custom"):
             return {
                 "ok": True,

@@ -15403,3 +15403,170 @@ agent_communication:
 
         Otherwise the entire Phase F3 surface is solid. Main agent —
         please summarise and finish.
+
+---
+
+## Backend Test Run: Phase F3.2 — Order Status Update Webhook (2026-05-09)
+
+backend:
+  - task: "Phase F3.2 — Order Status Update event-type webhook flow"
+    implemented: true
+    working: true
+    file: "/app/backend/routers/webhook.py, /app/backend/import_schema.py, /app/backend/routers/webhooks_multi.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "testing"
+        -comment: |
+            All 52 assertions PASS via /app/backend_test.py against
+            https://logistics-hub-740.preview.emergentagent.com/api.
+            Login: admin@test.com / Admin@12345.
+
+            CASE 1 — webhook create + mapping
+              POST /api/me/webhooks {name:"F32 Status WH",
+                event_type:"order_status_update"} returned id + URL +
+                event_type echoed.
+              PUT /api/me/webhooks/{id} body
+                {"mapping":{"order_id":"order_id","status":"status"}}
+                persisted.
+
+            CASE 2 — Shipped
+              Inserted shipments doc id="shp_test_phaseF32_1",
+              user_id=<admin>, master_order_id="ORD-9999",
+              status="Ready to Ship".
+              POST {url} {"order_id":"ORD-9999","status":"shipped"} → 200
+                {"ok":true,"imported":1,"skipped":0,"not_found":0,
+                 "event_type":"order_status_update","errors":[]}.
+              shipments doc → status="Shipped", dispatched_at set
+              (ISO timestamp), status_updated_at set.
+
+            CASE 3 — Delivered
+              POST {"order_id":"ORD-9999","status":"delivered"} → 200
+                imported=1.
+              shipments doc → status="Delivered", delivered_at set.
+
+            CASE 4 — Returned
+              POST {"order_id":"ORD-9999","status":"returned"} → 200
+                imported=1.
+              shipments doc → status="Returned", returned_at set.
+
+            CASE 5 — Free-text status normalisation
+              POST {"order_id":"ORD-9999","status":"OUT FOR DELIVERY"}
+                → 200 imported=1.
+              normalise_status maps "OUT FOR DELIVERY" → "Shipped" per
+              STATUS_ALIASES table in /app/backend/import_schema.py
+              (line 125-126) — comment says "we don't track OFD
+              separately". Status field non-empty as required.
+
+            CASE 6 — Order_id miss
+              POST {"order_id":"ORD-NOT-IN-DB","status":"shipped"} → 200
+                {"ok":true,"imported":0,"skipped":1,"not_found":1,
+                 "event_type":"order_status_update",
+                 "errors":["row 0: no shipment / pending order found "
+                           "for order_id='ORD-NOT-IN-DB'"]}.
+
+            CASE 7 — Pending order match
+              Inserted pending_orders doc id="pend_test_phaseF32_1",
+              user_id=<admin>, master_order_id="PND-1234",
+              status="pending".
+              POST {"order_id":"PND-1234","status":"processing"} → 200
+                imported=1.
+              pending_orders doc → status="Processing",
+              status_updated_at set.
+
+            CASE 8 — Mapping incomplete (no order_id)
+              PUT mapping={"status":"status"}.
+              POST {"order_id":"ORD-9999","status":"delivered"} → 200
+                imported=0, errors[0]="row 0: order_id missing — make "
+                "sure the mapping includes 'order_id'."
+              (build_pending_doc_from_mapping returns order_id="" when
+              the user's mapping doesn't include it; the OSU branch
+              treats blank as a per-row error and continues.)
+
+            CASE 9 — Event timestamp override
+              PUT mapping={"order_id":"order_id","status":"status",
+                            "shipped_at":"created_at_override"}.
+              POST {"order_id":"ORD-9999","status":"shipped",
+                    "shipped_at":"2026-01-15T10:30:00Z"} → 200
+                imported=1.
+              shipments.dispatched_at starts with "2026-01-15"
+              (NOT now()); status_updated_at also "2026-01-15…".
+              Confirms normalise_timestamp() + the per-status mirror
+              onto dispatched_at/delivered_at/returned_at all wire
+              correctly.
+
+            CASE 10 — Bulk update (array body)
+              POST [{"order_id":"ORD-9999","status":"delivered"},
+                    {"order_id":"PND-1234","status":"delivered"}] → 200
+                imported=2.
+              Both shipments + pending_orders docs now have
+              status="Delivered".
+
+            CASE 11 — Regression: new_order webhook
+              Created webhook event_type="new_order" with mapping
+              {name→customer_name, phone→customer_phone, address,
+               city, state, pincode}.
+              POST {name:"Regression Test User", phone:"9876500011",
+                    address:"Test Address Line 1", city:"Mumbai",
+                    state:"MH", pincode:"400001"} → 200 imported=1,
+                    event_type="new_order".
+              pending_orders doc verified: customer_name="Regression
+              Test User", source="webhook".
+
+            CASE 12 — Regression: abandoned_order
+              Created webhook event_type="abandoned_order".
+              POST {name:"Abandoned Test", phone:"9876500022"} → 200
+                {"ok":true,"imported":0,"skipped":1,
+                 "event_type":"abandoned_order",
+                 "errors":["Event 'abandoned_order' received and "
+                           "logged. Full processing for this event "
+                           "type is coming in an upcoming release."]}.
+              No shipment created (count=0). The OSU branch is
+              correctly bypassed; the catch-all "event_type not in
+              (new_order, custom)" path returns the friendly
+              placeholder.
+
+            STATS / SIDE-EFFECTS
+              user_webhooks.stats.total_imported is bumped by the
+              `updated` count after each successful OSU call (verified
+              indirectly — backend log lines like
+                "webhook ingest: user=… wh=… event=order_status_update
+                 updated=1 not_found=0"
+              came through cleanly with the right counts).
+
+            CLEANUP
+              Deleted all 3 test webhooks (F32 Status WH, F32 New Order
+              WH, F32 Abandoned WH). Removed shp_test_phaseF32_1 +
+              pend_test_phaseF32_1 from Mongo. Also cleaned the
+              orphaned "Regression Test User" pending order from
+              CASE 11. Admin's plan untouched.
+
+            VERDICT
+              The Phase F3.2 implementation is solid:
+                • event-type branching is correct
+                • normalise_status handles free-text + canonical inputs
+                • normalise_timestamp accepts ISO 8601 and propagates
+                • dispatched_at / delivered_at / returned_at /
+                  status_updated_at mirrors land where expected
+                • shipments-first / pending-orders-fallback resolution
+                  works for both collections
+                • not_found counter + per-row error message format
+                  exactly match the contract
+                • bulk array input works, per-row failures don't kill
+                  the batch
+                • mapping incomplete is handled gracefully (200 with
+                  per-row error, no 5xx)
+                • new_order regression works
+                • abandoned_order returns 200 with friendly placeholder
+
+agent_communication:
+    -agent: "testing"
+    -message: |
+        Phase F3.2 Order Status Update webhook flow: 52/52 backend
+        assertions PASS. All 12 review-request cases (the 8 numbered
+        + cases 9, 10 timestamp/bulk + 2 regressions) verified end-to-
+        end. No critical issues. Cleanup complete.
+
+
