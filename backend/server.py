@@ -419,15 +419,21 @@ async def auth_context(current_user: Dict[str, Any] = Depends(get_current_user))
     # redirect new users to /onboarding/business-category before they
     # land on the dashboard. Empty string when not set.
     pbc = (current_user.get("primary_business_category") or "").strip()
-    # Phase G2 — Google-OAuth signups land with empty business_name /
-    # phone / category because Google only provides email + name. The
-    # frontend uses this aggregate flag to bounce those users to the
-    # "Complete your profile" screen before the dashboard unlocks.
-    # Team members are exempt — they inherit the owner's profile.
     shop_name = (current_user.get("shop_name") or "").strip()
     phone     = (current_user.get("phone") or "").strip()
-    needs_profile_completion = (not bool(team)) and (
-        (not shop_name) or (not phone) or (not pbc)
+    # Phase G2 (rev-2) — `needs_profile_completion` is now a STRICT
+    # opt-in flag set only when a brand-new Google-OAuth user is
+    # created (auth_provider="google" + missing the data Google
+    # doesn't provide). It is NOT computed from empty fields, because
+    # legacy / demo accounts created before Phase G2 don't have those
+    # fields populated and shouldn't be re-interrogated on every login.
+    # Once the user submits /auth/complete-profile the flag flips to
+    # False and stays there forever — re-logins will never re-trigger
+    # the gate. Form-based email/password signups (`/auth/signup`)
+    # already collect every mandatory field up-front, so the flag is
+    # always False for that path.
+    needs_profile_completion = (not bool(team)) and bool(
+        current_user.get("needs_profile_completion")
     )
     return {
         "is_team_member":  bool(team),
@@ -497,6 +503,11 @@ async def complete_profile(
             "primary_business_category":     slug,
             "primary_business_category_at":  now,
             "profile_completed_at":          now,
+            # Phase G2 (rev-2) — turn the post-Google-signup gate off
+            # so re-logins land directly on the dashboard. The flag
+            # was set at /auth/google/session for new Google users
+            # only; once cleared here it's never re-raised.
+            "needs_profile_completion":      False,
         }},
     )
     return {
@@ -741,6 +752,15 @@ async def auth_google_session(payload: GoogleSessionRequest):
             "shop_name": "",
             "picture": prof.get("picture") or "",
             "auth_provider": "google",
+            # Phase G2 (rev-2) — Google only gives us email + name.
+            # Mark the user as needing the post-signup "Complete your
+            # profile" gate so they fill in Business Name / Mobile /
+            # Category before the dashboard unlocks. Cleared by
+            # /auth/complete-profile. Existing users that log in via
+            # Google a second time DO NOT pass through this branch
+            # (they're matched by email above), so the flag is never
+            # re-raised once they've completed it.
+            "needs_profile_completion": True,
             "is_admin": is_first,
             "plan": trial_spec["plan"],
             "plan_started_at": trial_spec["plan_started_at"],

@@ -1,660 +1,386 @@
-"""
-Phase G2 — Welcome screen + signup mandatory fields + Confirm Password +
-Complete-Profile gate for Google users.
+"""Phase G2 (rev-2) — `needs_profile_completion` flag tests.
 
-Tests the 10 cases from the review request.
-
-Cleans up any pytest_phaseg2_* users + their related rows at the end.
+Covers 5 cases:
+  1. Legacy user with no flag → /auth/context returns false even when
+     shop_name/phone/category are empty.
+  2. Email/password fresh signup → /auth/context returns false; mongo
+     doc has no flag (or it's explicitly False).
+  3. /auth/complete-profile flips the flag from True → False, both in
+     /auth/context response and on the mongo doc.
+  4. Sanity regressions: empty-shop_name signup → 422; business-categories
+     returns 16; login + me work.
+  5. Cleanup all pytest_phaseg2_rev2_* test users + seeded data.
 """
 from __future__ import annotations
 
+import os
 import sys
 import time
-import asyncio
+import uuid
+import json
+from typing import Any, Dict, List, Optional, Tuple
+
 import requests
-from pathlib import Path
+from pymongo import MongoClient
 
-# --- Locate frontend/.env to grab the public backend URL ----------------
-FRONTEND_ENV = Path("/app/frontend/.env")
-PUBLIC_BACKEND_URL = None
-for line in FRONTEND_ENV.read_text().splitlines():
-    if line.strip().startswith("EXPO_PUBLIC_BACKEND_URL="):
-        PUBLIC_BACKEND_URL = line.split("=", 1)[1].strip().strip('"').strip("'")
-        break
-    if line.strip().startswith("REACT_APP_BACKEND_URL="):
-        PUBLIC_BACKEND_URL = line.split("=", 1)[1].strip().strip('"').strip("'")
-        break
+# ---- Config ---------------------------------------------------------
 
-if not PUBLIC_BACKEND_URL:
-    print("FATAL: no EXPO_PUBLIC_BACKEND_URL or REACT_APP_BACKEND_URL in /app/frontend/.env")
-    sys.exit(1)
-
-API = PUBLIC_BACKEND_URL.rstrip("/") + "/api"
-print(f"Testing against: {API}\n")
-
-# --- Mongo connection (for direct DB verification + cleanup) -----------
-MONGO_URL = None
-DB_NAME = None
-for line in Path("/app/backend/.env").read_text().splitlines():
-    if line.strip().startswith("MONGO_URL="):
-        MONGO_URL = line.split("=", 1)[1].strip().strip('"').strip("'")
-    elif line.strip().startswith("DB_NAME="):
-        DB_NAME = line.split("=", 1)[1].strip().strip('"').strip("'")
-
-assert MONGO_URL, "MONGO_URL missing from backend/.env"
-assert DB_NAME, "DB_NAME missing from backend/.env"
-
-from motor.motor_asyncio import AsyncIOMotorClient  # noqa: E402
-
-mongo_client = AsyncIOMotorClient(MONGO_URL)
-db = mongo_client[DB_NAME]
-
-results = []  # list[(case, ok, msg)]
-case_results = {}  # case_id -> bool aggregated for summary table
+FRONTEND_ENV = "/app/frontend/.env"
+BACKEND_ENV  = "/app/backend/.env"
 
 
-def record(case: str, ok: bool, msg: str = "", case_id: str = ""):
-    results.append((case, ok, msg))
-    flag = "PASS" if ok else "FAIL"
-    print(f"[{flag}] {case}: {msg}")
-    if case_id:
-        prev = case_results.get(case_id, True)
-        case_results[case_id] = prev and ok
+def _read_env_file(path: str) -> Dict[str, str]:
+    out: Dict[str, str] = {}
+    if not os.path.exists(path):
+        return out
+    with open(path) as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            k, v = line.split("=", 1)
+            out[k.strip()] = v.strip().strip('"').strip("'")
+    return out
 
 
-def run_async(coro):
+_fe = _read_env_file(FRONTEND_ENV)
+_be = _read_env_file(BACKEND_ENV)
+
+BASE_URL = (
+    _fe.get("EXPO_PUBLIC_BACKEND_URL")
+    or _fe.get("REACT_APP_BACKEND_URL")
+    or "http://localhost:8001"
+).rstrip("/") + "/api"
+
+MONGO_URL = _be.get("MONGO_URL", "mongodb://localhost:27017")
+DB_NAME   = _be.get("DB_NAME",   "test_database")
+
+mongo = MongoClient(MONGO_URL)
+db    = mongo[DB_NAME]
+
+ADMIN_EMAIL    = "admin@test.com"
+ADMIN_PASSWORD = "Admin@12345"
+
+# Marker for cleanup
+TEST_PREFIX = "pytest_phaseg2_rev2_"
+
+results: List[Tuple[str, bool, str]] = []
+
+
+def record(name: str, ok: bool, msg: str = "") -> bool:
+    results.append((name, ok, msg))
+    print(f"{'PASS' if ok else 'FAIL'}  {name} {('— ' + msg) if msg else ''}")
+    return ok
+
+
+def http(method: str, path: str, *, token: Optional[str] = None, json_body: Any = None,
+         expected_status: Optional[int] = None) -> Tuple[int, Any]:
+    url = f"{BASE_URL}{path}"
+    headers = {"Content-Type": "application/json"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    r = requests.request(method, url, headers=headers, json=json_body, timeout=30)
     try:
-        loop = asyncio.get_event_loop()
-        if loop.is_closed():
-            raise RuntimeError("loop closed")
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-    return loop.run_until_complete(coro)
+        body = r.json()
+    except Exception:
+        body = r.text
+    if expected_status is not None and r.status_code != expected_status:
+        print(f"  [http] {method} {path} → {r.status_code} (expected {expected_status})")
+        print(f"  body: {json.dumps(body)[:600]}")
+    return r.status_code, body
 
 
-EMAIL_PREFIX = f"pytest_phaseg2_{int(time.time())}"
+# =====================================================================
+# CASE 1 — Legacy user — no flag, no gate.
+# =====================================================================
 
+def case_1_legacy_user_no_flag() -> None:
+    print("\n=== CASE 1: Legacy user (no flag, no gate) ===")
 
-# ----- CASE 1: signup with empty shop_name → 422 -------------------------
+    # Step 1a: Login as admin@test.com (a pre-Phase G2 account).
+    sc, body = http("POST", "/auth/login",
+                    json_body={"email": ADMIN_EMAIL, "password": ADMIN_PASSWORD})
+    if not record("CASE1.login admin@test.com → 200",
+                  sc == 200 and isinstance(body, dict) and body.get("token"),
+                  f"status={sc}"):
+        return
+    token = body["token"]
+    uid   = body.get("id")
 
-def case1_empty_shop_name():
-    print("\n=== CASE 1: POST /api/auth/signup with shop_name='' → 422 ===")
-    email = f"{EMAIL_PREFIX}_emptyshop@test.com"
-    body = {
-        "email": email,
-        "password": "Test@1234",
-        "name": "G2 Test",
+    # Force the cleanest legacy state on the admin doc — unset needs_profile_completion
+    # and blank shop_name/phone/category so we know the flag is the ONLY thing
+    # gating /auth/context.
+    db.users.update_one({"id": uid}, {"$unset": {"needs_profile_completion": ""}})
+
+    # Snapshot original values so we can restore at the end of the case.
+    orig = db.users.find_one({"id": uid}) or {}
+    orig_shop  = orig.get("shop_name", "")
+    orig_phone = orig.get("phone", "")
+    orig_cat   = orig.get("primary_business_category", "")
+
+    # Force the empty-fields edge case explicitly.
+    db.users.update_one({"id": uid}, {"$set": {
         "shop_name": "",
-        "phone": "9999900001",
-        "primary_business_category": "fashion_apparel",
-        "device_fingerprint": "",
-    }
-    try:
-        r = requests.post(f"{API}/auth/signup", json=body, timeout=20)
-        record(
-            "CASE1 status 422 (Pydantic min_length=1 violation)",
-            r.status_code == 422,
-            f"got {r.status_code}; body={r.text[:200]}",
-            case_id="CASE1",
-        )
-        # Confirm user not created
-        async def _check():
-            return await db.users.find_one({"email": email})
-        u = run_async(_check())
-        record(
-            "CASE1 user not created in Mongo",
-            u is None,
-            "no doc, as expected" if u is None else "doc exists despite 422",
-            case_id="CASE1",
-        )
-    except Exception as e:
-        record("CASE1 exception", False, repr(e), case_id="CASE1")
+        "phone": "",
+        "primary_business_category": "",
+    }, "$unset": {"needs_profile_completion": ""}})
+
+    sc, ctx = http("GET", "/auth/context", token=token)
+    record("CASE1.context status 200", sc == 200, f"status={sc}")
+    record(
+        "CASE1.needs_profile_completion is False even with empty shop/phone/category",
+        isinstance(ctx, dict) and ctx.get("needs_profile_completion") is False,
+        f"needs_profile_completion={ctx.get('needs_profile_completion')!r}",
+    )
+
+    # Verify the doc actually has no `needs_profile_completion` key.
+    refreshed = db.users.find_one({"id": uid}) or {}
+    record(
+        "CASE1.user doc has no needs_profile_completion key",
+        "needs_profile_completion" not in refreshed,
+        f"keys present: needs_profile_completion={refreshed.get('needs_profile_completion')!r}",
+    )
+
+    # Restore original profile values so we don't break other tests.
+    db.users.update_one({"id": uid}, {"$set": {
+        "shop_name": orig_shop,
+        "phone": orig_phone,
+        "primary_business_category": orig_cat,
+    }})
 
 
-# ----- CASE 2: signup happy path ---------------------------------------
+# =====================================================================
+# CASE 2 — Email/password fresh signup — no gate, no flag.
+# =====================================================================
 
-def case2_signup_valid():
-    print("\n=== CASE 2: POST /api/auth/signup ALL VALID FIELDS → 200 ===")
-    email = f"{EMAIL_PREFIX}_valid@test.com"
-    body = {
+case2_state: Dict[str, Any] = {}
+
+
+def case_2_signup_no_flag() -> None:
+    print("\n=== CASE 2: Email/password fresh signup ===")
+
+    suffix = uuid.uuid4().hex[:10]
+    email  = f"{TEST_PREFIX}signup_{suffix}@example.com"
+    password = "TestPass#2026"
+    payload = {
         "email": email,
-        "password": "Test@1234",
-        "name": "G2 Test",
-        "shop_name": "G2 Shop",
-        "phone": "9999900002",
+        "password": password,
+        "name": "Riya Patel",
+        "shop_name": "Riya's Boutique",
+        "phone": "9123456789",
         "primary_business_category": "fashion_apparel",
-        "device_fingerprint": "",
     }
-    token = None
-    try:
-        r = requests.post(f"{API}/auth/signup", json=body, timeout=20)
-        record(
-            "CASE2 signup status 200",
-            r.status_code == 200,
-            f"got {r.status_code}; body={r.text[:300]}",
-            case_id="CASE2",
-        )
-        if r.status_code != 200:
-            return None, email
-        data = r.json()
-        token = data.get("token")
-        record(
-            "CASE2 response includes token",
-            bool(token),
-            f"token_len={len(token or '')}",
-            case_id="CASE2",
-        )
-    except Exception as e:
-        record("CASE2 signup exception", False, repr(e), case_id="CASE2")
-        return None, email
-
-    # Mongo spot-check
-    async def _check():
-        return await db.users.find_one({"email": email})
-    try:
-        u = run_async(_check())
-        record(
-            "CASE2 Mongo: user doc exists",
-            u is not None,
-            f"id={u.get('id') if u else None}",
-            case_id="CASE2",
-        )
-        if u:
-            record(
-                "CASE2 Mongo: shop_name == 'G2 Shop'",
-                u.get("shop_name") == "G2 Shop",
-                f"got {u.get('shop_name')!r}",
-                case_id="CASE2",
-            )
-            record(
-                "CASE2 Mongo: primary_business_category == 'fashion_apparel'",
-                u.get("primary_business_category") == "fashion_apparel",
-                f"got {u.get('primary_business_category')!r}",
-                case_id="CASE2",
-            )
-    except Exception as e:
-        record("CASE2 Mongo check exception", False, repr(e), case_id="CASE2")
-
-    return token, email
-
-
-# ----- CASE 3: complete-profile happy path -------------------------------
-
-def case3_complete_profile_valid(token, email):
-    print("\n=== CASE 3: POST /api/auth/complete-profile valid → 200 ===")
-    if not token:
-        record("CASE3 prerequisite token missing", False, "case2 didn't return token", case_id="CASE3")
+    sc, body = http("POST", "/auth/signup", json_body=payload)
+    if not record("CASE2.signup → 200",
+                  sc == 200 and isinstance(body, dict) and body.get("token"),
+                  f"status={sc}"):
         return
-    body = {
-        "shop_name": "Updated Shop",
-        "phone": "9999900099",
-        "primary_business_category": "electronics_gadgets",
-    }
-    try:
-        r = requests.post(
-            f"{API}/auth/complete-profile",
-            json=body,
-            headers={"Authorization": f"Bearer {token}"},
-            timeout=15,
-        )
-        record(
-            "CASE3 status 200",
-            r.status_code == 200,
-            f"got {r.status_code}; body={r.text[:300]}",
-            case_id="CASE3",
-        )
-        if r.status_code == 200:
-            d = r.json()
-            record("CASE3 ok=true", d.get("ok") is True, f"ok={d.get('ok')!r}", case_id="CASE3")
-            record(
-                "CASE3 echoes shop_name='Updated Shop'",
-                d.get("shop_name") == "Updated Shop",
-                f"got {d.get('shop_name')!r}",
-                case_id="CASE3",
-            )
-            record(
-                "CASE3 echoes phone='9999900099'",
-                d.get("phone") == "9999900099",
-                f"got {d.get('phone')!r}",
-                case_id="CASE3",
-            )
-            record(
-                "CASE3 echoes primary_business_category='electronics_gadgets'",
-                d.get("primary_business_category") == "electronics_gadgets",
-                f"got {d.get('primary_business_category')!r}",
-                case_id="CASE3",
-            )
-    except Exception as e:
-        record("CASE3 exception", False, repr(e), case_id="CASE3")
-        return
+    token = body["token"]
+    uid   = body.get("id")
+    case2_state["email"]    = email
+    case2_state["password"] = password
+    case2_state["uid"]      = uid
+    case2_state["token"]    = token
 
-    # Mongo verification
-    async def _check():
-        return await db.users.find_one({"email": email})
-    try:
-        u = run_async(_check())
-        if u:
-            record(
-                "CASE3 Mongo: shop_name == 'Updated Shop'",
-                u.get("shop_name") == "Updated Shop",
-                f"got {u.get('shop_name')!r}",
-                case_id="CASE3",
-            )
-            record(
-                "CASE3 Mongo: phone == '9999900099' (last 10 digits)",
-                u.get("phone") == "9999900099",
-                f"got {u.get('phone')!r}",
-                case_id="CASE3",
-            )
-            record(
-                "CASE3 Mongo: primary_business_category == 'electronics_gadgets'",
-                u.get("primary_business_category") == "electronics_gadgets",
-                f"got {u.get('primary_business_category')!r}",
-                case_id="CASE3",
-            )
-            record(
-                "CASE3 Mongo: profile_completed_at non-empty ISO timestamp",
-                bool(u.get("profile_completed_at")),
-                f"got {u.get('profile_completed_at')!r}",
-                case_id="CASE3",
-            )
-    except Exception as e:
-        record("CASE3 Mongo check exception", False, repr(e), case_id="CASE3")
+    sc, ctx = http("GET", "/auth/context", token=token)
+    record("CASE2.context status 200", sc == 200, f"status={sc}")
+    record(
+        "CASE2.needs_profile_completion is False after fresh email/password signup",
+        isinstance(ctx, dict) and ctx.get("needs_profile_completion") is False,
+        f"needs_profile_completion={ctx.get('needs_profile_completion')!r}",
+    )
+
+    # On the mongo doc, the field must either be missing or explicitly False.
+    doc = db.users.find_one({"id": uid}) or {}
+    flag_val = doc.get("needs_profile_completion", "<missing>")
+    record(
+        "CASE2.mongo doc has no flag OR explicit False",
+        flag_val == "<missing>" or flag_val is False,
+        f"value={flag_val!r}",
+    )
 
 
-# ----- CASE 4: complete-profile invalid slug → 400 ----------------------
+# =====================================================================
+# CASE 3 — complete-profile clears the flag.
+# =====================================================================
 
-def case4_complete_profile_invalid_slug(token):
-    print("\n=== CASE 4: POST /api/auth/complete-profile invalid slug → 400 ===")
-    if not token:
-        record("CASE4 prerequisite token missing", False, "", case_id="CASE4")
-        return
-    body = {
-        "shop_name": "X Shop",
-        "phone": "9999900099",
-        "primary_business_category": "totally_not_a_slug",
-    }
-    try:
-        r = requests.post(
-            f"{API}/auth/complete-profile",
-            json=body,
-            headers={"Authorization": f"Bearer {token}"},
-            timeout=15,
-        )
-        record(
-            "CASE4 status 400",
-            r.status_code == 400,
-            f"got {r.status_code}; body={r.text[:200]}",
-            case_id="CASE4",
-        )
-        if r.status_code == 400:
-            try:
-                detail = r.json().get("detail", "")
-            except Exception:
-                detail = r.text
-            record(
-                "CASE4 detail mentions 'valid' + 'category'",
-                ("valid" in str(detail).lower()) and ("category" in str(detail).lower()),
-                f"detail={detail!r}",
-                case_id="CASE4",
-            )
-    except Exception as e:
-        record("CASE4 exception", False, repr(e), case_id="CASE4")
+case3_state: Dict[str, Any] = {}
 
 
-# ----- CASE 5: complete-profile bad phone → 400 -------------------------
+def case_3_complete_profile_flips_flag() -> None:
+    print("\n=== CASE 3: /auth/complete-profile clears the flag ===")
 
-def case5_complete_profile_bad_phone(token):
-    print("\n=== CASE 5: POST /api/auth/complete-profile bad phone → 400 ===")
-    if not token:
-        record("CASE5 prerequisite token missing", False, "", case_id="CASE5")
-        return
-    body = {
-        "shop_name": "X Shop",
-        "phone": "12345",
-        "primary_business_category": "electronics_gadgets",
-    }
-    try:
-        r = requests.post(
-            f"{API}/auth/complete-profile",
-            json=body,
-            headers={"Authorization": f"Bearer {token}"},
-            timeout=15,
-        )
-        # Pydantic validates phone min_length=10 → returns 422 BEFORE the
-        # handler runs. The review asks for 400, but Pydantic 422 is the
-        # natural Python answer. Accept either as a "rejected" outcome,
-        # but flag if it's a 422.
-        rejected = r.status_code in (400, 422)
-        record(
-            "CASE5 status 400 (or 422 from Pydantic)",
-            rejected,
-            f"got {r.status_code}; body={r.text[:200]}",
-            case_id="CASE5",
-        )
-        # Try to assert detail mentions mobile/phone
-        try:
-            body_json = r.json()
-            detail = str(body_json.get("detail") or body_json)
-        except Exception:
-            detail = r.text
-        record(
-            "CASE5 detail mentions mobile/phone",
-            ("mobile" in detail.lower()) or ("phone" in detail.lower()) or ("string_too_short" in detail.lower()),
-            f"detail={detail[:200]!r}",
-            case_id="CASE5",
-        )
-    except Exception as e:
-        record("CASE5 exception", False, repr(e), case_id="CASE5")
-
-
-# ----- CASE 6: complete-profile no auth → 401 ---------------------------
-
-def case6_complete_profile_no_auth():
-    print("\n=== CASE 6: POST /api/auth/complete-profile NO TOKEN → 401 ===")
-    body = {
-        "shop_name": "X Shop",
-        "phone": "9999900099",
-        "primary_business_category": "electronics_gadgets",
-    }
-    try:
-        r = requests.post(
-            f"{API}/auth/complete-profile",
-            json=body,
-            timeout=15,
-        )
-        record(
-            "CASE6 status 401 (no auth header)",
-            r.status_code == 401,
-            f"got {r.status_code}; body={r.text[:200]}",
-            case_id="CASE6",
-        )
-    except Exception as e:
-        record("CASE6 exception", False, repr(e), case_id="CASE6")
-
-
-# ----- CASE 7: needs_profile_completion=true ----------------------------
-
-def case7_needs_profile_completion_true():
-    print("\n=== CASE 7: GET /api/auth/context with cleared profile → needs_profile_completion=true ===")
-    email = f"{EMAIL_PREFIX}_needs@test.com"
-    body = {
+    # Use a brand new dedicated user via direct signup, then set the flag in mongo
+    # to simulate a Google-OAuth fresh-create branch.
+    suffix = uuid.uuid4().hex[:10]
+    email  = f"{TEST_PREFIX}gate_{suffix}@example.com"
+    password = "Gated#Test2026"
+    sc, body = http("POST", "/auth/signup", json_body={
         "email": email,
-        "password": "Test@1234",
-        "name": "G2 Needs",
-        "shop_name": "Initial Shop",
-        "phone": "9999900007",
+        "password": password,
+        "name": "Aarav Mehta",
+        "shop_name": "Aarav's Store",
+        "phone": "9876512340",
+        "primary_business_category": "books_stationery",
+    })
+    if not record("CASE3.bootstrap signup → 200",
+                  sc == 200 and isinstance(body, dict) and body.get("token"),
+                  f"status={sc}"):
+        return
+    token = body["token"]
+    uid   = body["id"]
+    case3_state["email"]    = email
+    case3_state["password"] = password
+    case3_state["uid"]      = uid
+
+    # Force the gate ON to mimic a fresh Google user.
+    db.users.update_one({"id": uid}, {"$set": {"needs_profile_completion": True}})
+
+    sc, ctx = http("GET", "/auth/context", token=token)
+    record("CASE3.context after flag forced True → 200", sc == 200, f"status={sc}")
+    record(
+        "CASE3.needs_profile_completion is True after manual flag set",
+        isinstance(ctx, dict) and ctx.get("needs_profile_completion") is True,
+        f"needs_profile_completion={ctx.get('needs_profile_completion')!r}",
+    )
+
+    # Submit complete-profile.
+    sc, cp = http("POST", "/auth/complete-profile", token=token, json_body={
+        "shop_name": "Aarav Books",
+        "phone": "9876512340",
+        "primary_business_category": "books_stationery",
+    })
+    record("CASE3.complete-profile → 200",
+           sc == 200 and isinstance(cp, dict) and cp.get("ok") is True,
+           f"status={sc} body={str(cp)[:200]}")
+
+    # Re-check context.
+    sc, ctx2 = http("GET", "/auth/context", token=token)
+    record("CASE3.context after complete-profile → 200", sc == 200, f"status={sc}")
+    record(
+        "CASE3.needs_profile_completion is False after complete-profile",
+        isinstance(ctx2, dict) and ctx2.get("needs_profile_completion") is False,
+        f"needs_profile_completion={ctx2.get('needs_profile_completion')!r}",
+    )
+
+    # Mongo: flag must be literal False (not missing, not True).
+    doc = db.users.find_one({"id": uid}) or {}
+    record(
+        "CASE3.mongo flag is literal False (present, not missing)",
+        doc.get("needs_profile_completion") is False
+        and "needs_profile_completion" in doc,
+        f"value={doc.get('needs_profile_completion')!r}",
+    )
+
+
+# =====================================================================
+# CASE 4 — Sanity regressions
+# =====================================================================
+
+def case_4_sanity_regressions() -> None:
+    print("\n=== CASE 4: Sanity regressions ===")
+
+    # 4a. POST /auth/signup with empty shop_name → 422.
+    suffix = uuid.uuid4().hex[:10]
+    email_x = f"{TEST_PREFIX}regr_{suffix}@example.com"
+    sc, body = http("POST", "/auth/signup", json_body={
+        "email": email_x,
+        "password": "Whatever#123",
+        "name": "Test Regression",
+        "shop_name": "",
+        "phone": "9012345678",
         "primary_business_category": "fashion_apparel",
-        "device_fingerprint": "",
-    }
-    token = None
-    try:
-        r = requests.post(f"{API}/auth/signup", json=body, timeout=20)
-        if r.status_code != 200:
-            record("CASE7 prerequisite signup failed", False, f"got {r.status_code}", case_id="CASE7")
-            return
-        token = r.json().get("token")
-    except Exception as e:
-        record("CASE7 signup exception", False, repr(e), case_id="CASE7")
-        return
+    })
+    record("CASE4.signup empty shop_name → 422", sc == 422, f"status={sc}")
+    # If for any reason it created the user, still mark for cleanup
+    # (TEST_PREFIX scoping handles that).
 
-    # Clear the three fields directly in Mongo
-    async def _clear():
-        await db.users.update_one(
-            {"email": email},
-            {"$set": {"shop_name": "", "phone": "", "primary_business_category": ""}},
-        )
-    try:
-        run_async(_clear())
-    except Exception as e:
-        record("CASE7 Mongo clear exception", False, repr(e), case_id="CASE7")
-        return
+    # 4b. business-categories returns 16 entries.
+    sc, body = http("GET", "/auth/business-categories")
+    cats = (body or {}).get("categories") if isinstance(body, dict) else None
+    record("CASE4.business-categories → 200", sc == 200, f"status={sc}")
+    record(
+        "CASE4.business-categories has 16 entries",
+        isinstance(cats, list) and len(cats) == 16,
+        f"len={(len(cats) if isinstance(cats, list) else 'N/A')}",
+    )
 
-    # Now hit /auth/context
-    try:
-        r = requests.get(
-            f"{API}/auth/context",
-            headers={"Authorization": f"Bearer {token}"},
-            timeout=15,
-        )
-        record(
-            "CASE7 /auth/context status 200",
-            r.status_code == 200,
-            f"got {r.status_code}; body={r.text[:200]}",
-            case_id="CASE7",
-        )
-        if r.status_code == 200:
-            ctx = r.json()
+    # 4c. login with case-2 credentials → 200.
+    if case2_state.get("email"):
+        sc, body = http("POST", "/auth/login", json_body={
+            "email": case2_state["email"],
+            "password": case2_state["password"],
+        })
+        ok = sc == 200 and isinstance(body, dict) and body.get("token")
+        record("CASE4.login case-2 user → 200", bool(ok), f"status={sc}")
+
+        # 4d. /auth/me → 200.
+        if ok:
+            sc2, me = http("GET", "/auth/me", token=body["token"])
             record(
-                "CASE7 needs_profile_completion == true",
-                ctx.get("needs_profile_completion") is True,
-                f"got {ctx.get('needs_profile_completion')!r}",
-                case_id="CASE7",
+                "CASE4./auth/me → 200",
+                sc2 == 200 and isinstance(me, dict) and me.get("email") == case2_state["email"],
+                f"status={sc2}",
             )
-            user_obj = ctx.get("user") or {}
-            record(
-                "CASE7 user.phone surfaced (empty string)",
-                "phone" in user_obj and user_obj.get("phone") == "",
-                f"user.phone={user_obj.get('phone')!r}",
-                case_id="CASE7",
-            )
-            record(
-                "CASE7 user.shop_name == ''",
-                user_obj.get("shop_name") == "",
-                f"got {user_obj.get('shop_name')!r}",
-                case_id="CASE7",
-            )
-    except Exception as e:
-        record("CASE7 /auth/context exception", False, repr(e), case_id="CASE7")
 
 
-# ----- CASE 8: needs_profile_completion=false ----------------------------
+# =====================================================================
+# CASE 5 — Cleanup
+# =====================================================================
 
-def case8_needs_profile_completion_false():
-    print("\n=== CASE 8: GET /api/auth/context for fully-set user → needs_profile_completion=false ===")
-    # Create a fresh user with all fields set (CASE 2's user was modified
-    # by CASE 3, so we make a separate one for cleanliness).
-    email = f"{EMAIL_PREFIX}_full@test.com"
-    body = {
-        "email": email,
-        "password": "Test@1234",
-        "name": "G2 Full",
-        "shop_name": "Full Shop",
-        "phone": "9999900008",
-        "primary_business_category": "fashion_apparel",
-        "device_fingerprint": "",
-    }
-    token = None
-    try:
-        r = requests.post(f"{API}/auth/signup", json=body, timeout=20)
-        if r.status_code != 200:
-            record("CASE8 prerequisite signup failed", False, f"got {r.status_code}", case_id="CASE8")
-            return
-        token = r.json().get("token")
-    except Exception as e:
-        record("CASE8 signup exception", False, repr(e), case_id="CASE8")
-        return
+def case_5_cleanup() -> None:
+    print("\n=== CASE 5: Cleanup ===")
 
-    try:
-        r = requests.get(
-            f"{API}/auth/context",
-            headers={"Authorization": f"Bearer {token}"},
-            timeout=15,
-        )
-        record(
-            "CASE8 /auth/context status 200",
-            r.status_code == 200,
-            f"got {r.status_code}",
-            case_id="CASE8",
-        )
-        if r.status_code == 200:
-            ctx = r.json()
-            record(
-                "CASE8 needs_profile_completion == false",
-                ctx.get("needs_profile_completion") is False,
-                f"got {ctx.get('needs_profile_completion')!r}",
-                case_id="CASE8",
-            )
-            user_obj = ctx.get("user") or {}
-            record(
-                "CASE8 user.phone == '9999900008' (10 digits)",
-                user_obj.get("phone") == "9999900008",
-                f"got {user_obj.get('phone')!r}",
-                case_id="CASE8",
-            )
-    except Exception as e:
-        record("CASE8 exception", False, repr(e), case_id="CASE8")
+    # Find all pytest_phaseg2_rev2_* users
+    test_users = list(db.users.find({"email": {"$regex": f"^{TEST_PREFIX}"}}))
+    user_ids = [u["id"] for u in test_users]
+    print(f"  found {len(user_ids)} test users to clean")
 
-
-# ----- CASE 9: regression sanity ----------------------------------------
-
-def case9_regression():
-    print("\n=== CASE 9: Sanity regression ===")
-    email = f"{EMAIL_PREFIX}_valid@test.com"
-
-    # 9a — login with case 2 credentials
-    tok = None
-    try:
-        r = requests.post(
-            f"{API}/auth/login",
-            json={"email": email, "password": "Test@1234"},
-            timeout=15,
-        )
-        record("CASE9a /auth/login status 200", r.status_code == 200, f"got {r.status_code}", case_id="CASE9")
-        if r.status_code == 200:
-            tok = r.json().get("token")
-    except Exception as e:
-        record("CASE9a login exception", False, repr(e), case_id="CASE9")
-
-    # 9b — /auth/me with valid token
-    if tok:
-        try:
-            r = requests.get(
-                f"{API}/auth/me",
-                headers={"Authorization": f"Bearer {tok}"},
-                timeout=15,
-            )
-            record(
-                "CASE9b /auth/me status 200",
-                r.status_code == 200,
-                f"got {r.status_code}",
-                case_id="CASE9",
-            )
-            if r.status_code == 200:
-                me = r.json()
-                record(
-                    "CASE9b /auth/me surfaces primary_business_category",
-                    "primary_business_category" in me,
-                    f"value={me.get('primary_business_category')!r}",
-                    case_id="CASE9",
-                )
-        except Exception as e:
-            record("CASE9b /auth/me exception", False, repr(e), case_id="CASE9")
-
-    # 9c — /auth/business-categories
-    try:
-        r = requests.get(f"{API}/auth/business-categories", timeout=15)
-        record("CASE9c /auth/business-categories status 200", r.status_code == 200, f"got {r.status_code}", case_id="CASE9")
-        if r.status_code == 200:
-            cats = r.json().get("categories", [])
-            record(
-                "CASE9c categories has 16 entries",
-                len(cats) == 16,
-                f"got {len(cats)}",
-                case_id="CASE9",
-            )
-    except Exception as e:
-        record("CASE9c business-categories exception", False, repr(e), case_id="CASE9")
-
-    # 9d — webhook bogus path → 404 (or other 4xx, no 5xx)
-    try:
-        r = requests.post(
-            f"{API}/webhook/orders/__bogus__",
-            json={"customer_name": "X", "customer_phone": "9999999999"},
-            timeout=15,
-        )
-        # Review specifies 404 — accept any 4xx as long as not 5xx
-        record(
-            "CASE9d /webhook/orders/__bogus__ returns 404",
-            r.status_code == 404,
-            f"got {r.status_code}; body={r.text[:160]}",
-            case_id="CASE9",
-        )
-        record(
-            "CASE9d webhook returns no 5xx",
-            r.status_code < 500,
-            f"got {r.status_code}",
-            case_id="CASE9",
-        )
-    except Exception as e:
-        record("CASE9d webhook exception", False, repr(e), case_id="CASE9")
-
-
-# ----- CLEANUP -----------------------------------------------------------
-
-async def cleanup():
-    print("\n=== CASE 10 (CLEANUP): removing pytest_phaseg2_* test artefacts ===")
-    pattern = {"email": {"$regex": r"^pytest_phaseg2_"}}
-    users = await db.users.find(pattern, {"_id": 0, "id": 1, "email": 1}).to_list(50)
-    user_ids = [u["id"] for u in users]
-    print(f"Found {len(user_ids)} test users to clean up")
     if user_ids:
-        cond = {"user_id": {"$in": user_ids}}
-        for coll in (
-            "pending_orders", "shipments", "couriers", "settings",
-            "wallet_transactions", "wallets", "team_members", "wallet",
-        ):
-            try:
-                res = await db[coll].delete_many(cond)
-                if res.deleted_count:
-                    print(f"  - {coll}: deleted {res.deleted_count}")
-            except Exception as e:
-                print(f"  - {coll}: cleanup failed: {e!r}")
-    res = await db.users.delete_many(pattern)
-    print(f"  - users: deleted {res.deleted_count}")
-    return res.deleted_count
+        # Delete seeded data
+        s_del = db.shipments.delete_many({"user_id": {"$in": user_ids}})
+        c_del = db.couriers.delete_many({"user_id": {"$in": user_ids}})
+        w_del = db.wallets.delete_many({"user_id": {"$in": user_ids}})
+        wt_del = db.wallet_transactions.delete_many({"user_id": {"$in": user_ids}})
+        st_del = db.settings.delete_many({"user_id": {"$in": user_ids}})
+        po_del = db.pending_orders.delete_many({"user_id": {"$in": user_ids}})
+        u_del = db.users.delete_many({"id": {"$in": user_ids}})
+
+        print(f"  shipments={s_del.deleted_count} couriers={c_del.deleted_count} "
+              f"wallets={w_del.deleted_count} wallet_tx={wt_del.deleted_count} "
+              f"settings={st_del.deleted_count} pending={po_del.deleted_count} "
+              f"users={u_del.deleted_count}")
+
+    # Sanity: post-cleanup, no test users remain
+    remaining = db.users.count_documents({"email": {"$regex": f"^{TEST_PREFIX}"}})
+    record("CASE5.no pytest_phaseg2_rev2_* users remain", remaining == 0,
+           f"remaining={remaining}")
 
 
-# ----- RUNNER ------------------------------------------------------------
+def main() -> int:
+    print(f"Backend URL: {BASE_URL}")
+    print(f"Mongo:       {MONGO_URL}  /  DB: {DB_NAME}")
 
-def main():
-    case1_empty_shop_name()
-    token, email = case2_signup_valid()
-    case3_complete_profile_valid(token, email)
-    case4_complete_profile_invalid_slug(token)
-    case5_complete_profile_bad_phone(token)
-    case6_complete_profile_no_auth()
-    case7_needs_profile_completion_true()
-    case8_needs_profile_completion_false()
-    case9_regression()
-
-    cleanup_ok = True
     try:
-        run_async(cleanup())
-    except Exception as e:
-        print(f"Cleanup failed: {e!r}")
-        cleanup_ok = False
-    case_results["CASE10"] = cleanup_ok
+        case_1_legacy_user_no_flag()
+        case_2_signup_no_flag()
+        case_3_complete_profile_flips_flag()
+        case_4_sanity_regressions()
+    finally:
+        case_5_cleanup()
 
-    print("\n" + "=" * 60)
     passed = sum(1 for _, ok, _ in results if ok)
-    total = len(results)
-    print(f"RESULTS: {passed}/{total} assertions passed")
-    print("=" * 60)
-    print("\nPER-CASE SUMMARY:")
-    for cid in sorted(case_results.keys()):
-        flag = "PASS" if case_results[cid] else "FAIL"
-        print(f"  {cid}: {flag}")
-    failures = [(c, m) for c, ok, m in results if not ok]
-    if failures:
-        print("\nFAILURES:")
-        for c, m in failures:
-            print(f"  - {c} :: {m}")
-        sys.exit(1)
-    print("\nALL TESTS PASSED")
-    sys.exit(0)
+    total  = len(results)
+    print("\n" + "=" * 70)
+    print(f"RESULT: {passed}/{total} assertions passed")
+    print("=" * 70)
+    if passed != total:
+        for name, ok, msg in results:
+            if not ok:
+                print(f"  FAIL  {name} — {msg}")
+        return 1
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

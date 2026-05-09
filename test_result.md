@@ -15109,3 +15109,127 @@ agent_communication:
         Main agent: All Phase G2 backend behaviour matches the
         contract. Please summarise + finish.
 
+
+---
+
+## Backend Test Run: Phase G2 (rev-2) `needs_profile_completion` Flag Fix (2026-05-09)
+
+backend:
+  - task: "Phase G2 (rev-2): needs_profile_completion is an opt-in flag, not computed from empty fields"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "testing"
+        -comment: |
+            All 21/21 assertions PASS via /app/backend_test.py against
+            https://logistics-hub-740.preview.emergentagent.com/api.
+            Verified all 5 cases from the review request:
+
+            CASE 1 — Legacy user, no flag, no gate ✅
+              • Login admin@test.com → 200 (token issued).
+              • Forced cleanest legacy state via direct mongo: $unset
+                needs_profile_completion + $set shop_name="", phone="",
+                primary_business_category="".
+              • GET /api/auth/context → 200 with
+                needs_profile_completion=false even though all 3 fields
+                were empty. Confirms the new "explicit opt-in flag"
+                semantics (auth_context() reads bool(user.get(...)) and
+                no longer derives from empty-fields).
+              • Mongo doc verified to have NO needs_profile_completion
+                key after the test — proves the legacy/pre-Phase-G2
+                document shape works without the flag at all.
+              • Original shop_name/phone/category restored after the
+                case so subsequent flows aren't affected.
+
+            CASE 2 — Email/password fresh signup, no gate, no flag ✅
+              • POST /api/auth/signup with full valid payload (email,
+                password, name, shop_name="Riya's Boutique",
+                phone="9123456789", primary_business_category=
+                "fashion_apparel") → 200 + token.
+              • GET /api/auth/context with that token → 200,
+                needs_profile_completion=false.
+              • Direct mongo check on the new user doc:
+                `needs_profile_completion` key is MISSING entirely
+                (value=<missing>) — confirms /auth/signup never sets
+                the flag. The email/password path is not regressed.
+
+            CASE 3 — complete-profile clears the flag ✅
+              • Bootstrap a fresh user via /auth/signup, then directly
+                $set needs_profile_completion=True on the mongo doc to
+                simulate the brand-new Google-OAuth create branch.
+              • GET /auth/context → needs_profile_completion=true.
+              • POST /api/auth/complete-profile with valid body
+                (shop_name="Aarav Books", phone="9876512340",
+                primary_business_category="books_stationery") →
+                200 with body {"ok": True, ...}.
+              • GET /auth/context AGAIN → needs_profile_completion=
+                false. Gate flips off in the same session.
+              • Mongo verification: doc.needs_profile_completion is
+                literal False (not missing, not True) — confirms the
+                handler explicitly writes False so re-logins never
+                re-raise the gate.
+
+            CASE 4 — Sanity regressions ✅
+              • POST /api/auth/signup with shop_name="" → 422 (Pydantic
+                Field(min_length=1) rejects). Mandatory shop_name
+                still enforced.
+              • GET /api/auth/business-categories → 200 with exactly
+                16 entries (matches BUSINESS_CATEGORIES in
+                business_categories.py).
+              • POST /api/auth/login with case-2 credentials → 200.
+              • GET /api/auth/me → 200, email matches.
+
+            CASE 5 — Cleanup ✅
+              • Found 2 pytest_phaseg2_rev2_* users; deleted 30
+                shipments, 2 couriers, 2 wallets, 0 wallet_tx,
+                0 settings, 0 pending_orders, 2 users.
+              • Final users count for the prefix = 0. Zero test
+                artefacts remain.
+
+            CONCLUSION: The Phase G2 (rev-2) fix is correct and
+            complete. Legacy/demo users with no flag stay unblocked,
+            email/password signup never gets the flag, brand-new
+            Google users hit the gate (set in /auth/google/session
+            create branch — not exercised here because that requires
+            a real Emergent Auth session_id, but the code path is
+            visible at line 763), and /auth/complete-profile flips
+            the gate off permanently with a literal-False write.
+            No regressions on signup-validation, login, /me, or
+            business-categories.
+
+agent_communication:
+    -agent: "testing"
+    -message: |
+        Phase G2 (rev-2) backend fix VERIFIED. 21/21 assertions
+        passed via /app/backend_test.py against the production
+        preview URL.
+
+        ✅ Case 1 — Legacy admin user (admin@test.com, no flag,
+           empty shop/phone/category) → /auth/context returns
+           needs_profile_completion=false.
+        ✅ Case 2 — Email/password fresh signup → flag missing on
+           mongo doc; /auth/context returns false.
+        ✅ Case 3 — Force flag=True via mongo, /auth/context shows
+           true; POST /auth/complete-profile flips it; /auth/context
+           returns false; mongo has literal False.
+        ✅ Case 4 — Empty shop_name → 422; business-categories=16;
+           login + /auth/me work.
+        ✅ Case 5 — All pytest_phaseg2_rev2_* users + their
+           shipments/couriers/wallets cleaned up.
+
+        Note on the Google-OAuth fresh-create branch (line 763):
+        not directly exercised because that requires a real
+        Emergent Auth session_id (test creds aren't available for
+        that). Code review confirms the flag is set ONLY inside
+        the `if user is None` create branch and is NOT touched
+        when an existing email is matched, which matches the
+        contract.
+
+        Main agent: please summarise and finish — backend fix is
+        good.
+
