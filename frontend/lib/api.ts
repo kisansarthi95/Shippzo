@@ -1853,6 +1853,69 @@ export const Api = {
         { mapping },
       )
       .then((r) => r.data),
+
+  // ─── Phase F3: Multi-webhook (named, event-typed, unlimited) ───────
+  listWebhookEventTypes: () =>
+    api
+      .get<{
+        event_types: { key: string; label: string; description: string }[];
+      }>("/me/webhooks/event-types")
+      .then((r) => r.data),
+  listWebhooks: () =>
+    api
+      .get<{
+        webhooks: {
+          id: string; name: string; event_type: string; secret: string;
+          enabled: boolean; mapping: Record<string, string>;
+          created_at: string; secret_rotated_at: string;
+          stats: { total_received: number; total_imported: number; last_received_at: string };
+          recent_samples: { received_at: string; payload: any }[];
+          url: string;
+        }[];
+        count: number;
+      }>("/me/webhooks")
+      .then((r) => r.data),
+  createWebhook: (body: { name: string; event_type: string }) =>
+    api
+      .post<{
+        id: string; name: string; event_type: string; secret: string;
+        enabled: boolean; mapping: Record<string, string>;
+        created_at: string; secret_rotated_at: string;
+        stats: any; recent_samples: any[]; url: string;
+      }>("/me/webhooks", body)
+      .then((r) => r.data),
+  getWebhook: (id: string) =>
+    api
+      .get<any>(`/me/webhooks/${id}`)
+      .then((r) => r.data),
+  updateWebhook: (
+    id: string,
+    body: Partial<{
+      name: string; event_type: string; enabled: boolean;
+      mapping: Record<string, string>;
+    }>,
+  ) =>
+    api
+      .put<any>(`/me/webhooks/${id}`, body)
+      .then((r) => r.data),
+  rotateWebhook: (id: string) =>
+    api
+      .post<any>(`/me/webhooks/${id}/rotate`)
+      .then((r) => r.data),
+  deleteWebhook: (id: string) =>
+    api
+      .delete<{ ok: boolean; deleted: string }>(`/me/webhooks/${id}`)
+      .then((r) => r.data),
+  previewWebhookV2: (id: string, payload: any) =>
+    api
+      .post<{
+        keys: string[];
+        sample_values: Record<string, string>;
+        schema_fields: { key: string; label: string }[];
+        custom_fields: { id: string; label: string }[];
+        suggested: Record<string, string>;
+      }>(`/me/webhooks/${id}/preview`, payload)
+      .then((r) => r.data),
   previewWebhookPayload: (payload: any) =>
     api
       .post<{

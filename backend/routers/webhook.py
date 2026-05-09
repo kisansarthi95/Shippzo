@@ -369,7 +369,7 @@ def init() -> None:
             except Exception:
                 _logger.exception("Failed to persist webhook sample")
 
-        if not mapping:
+        if not mapping and event_type in ("new_order", "custom"):
             # Sender pinged us before the mapping is configured. We
             # store the sample (above) and respond with success +
             # explanation so their connectivity test passes. The
@@ -379,6 +379,7 @@ def init() -> None:
                 "ok": True,
                 "imported": 0,
                 "skipped": len(rows),
+                "event_type": event_type,
                 "errors": [
                     "Connection OK — payload received but no field "
                     "mapping is configured yet. Open the Shippzo app → "

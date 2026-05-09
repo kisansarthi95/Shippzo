@@ -320,6 +320,32 @@ export default function WebhookConfigScreen() {
             </View>
           </View>
 
+          {/* Phase F3 — Multi-webhook entry point. The legacy single-
+              webhook editor below still works (and is auto-migrated to
+              the v2 store on first load), but most users want one
+              webhook per storefront / event-type, so we steer them
+              into the new manager up front. */}
+          <TouchableOpacity
+            testID="link-manage-multi-webhooks"
+            style={styles.multiBanner}
+            onPress={() => router.push("/webhooks" as any)}
+            activeOpacity={0.85}
+          >
+            <View style={styles.multiBannerIcon}>
+              <Text style={{ fontSize: 22 }}>🔌</Text>
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.multiBannerTitle}>
+                Manage multiple webhooks →
+              </Text>
+              <Text style={styles.multiBannerSub}>
+                Create unlimited named webhooks per event type
+                (New Order, Status Update, Abandoned Cart, Custom…).
+              </Text>
+            </View>
+            <PhIcon name="chevron-right" size={18} color="#FF6B00" />
+          </TouchableOpacity>
+
           {/* ── Webhook URL block ── */}
           <Text style={styles.sectionTitle}>Your Webhook URL</Text>
           {cfg?.configured ? (
@@ -682,6 +708,26 @@ const styles = StyleSheet.create({
   },
   introTitle: { fontSize: 14, fontWeight: "700", color: "#9A3412", marginBottom: 2 },
   introSub:   { fontSize: 12, color: "#9A3412", lineHeight: 16 },
+
+  // Phase F3 — multi-webhook entry banner
+  multiBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    backgroundColor: "#fff",
+    borderWidth: 2,
+    borderColor: "#FF6B00",
+    borderRadius: 14,
+    padding: 14,
+    marginBottom: 16,
+  },
+  multiBannerIcon: {
+    width: 40, height: 40, borderRadius: 10,
+    backgroundColor: "#FFF7ED",
+    alignItems: "center", justifyContent: "center",
+  },
+  multiBannerTitle: { fontSize: 14, fontWeight: "800", color: "#9A3412", marginBottom: 2 },
+  multiBannerSub:   { fontSize: 12, color: "#9A3412", lineHeight: 16 },
 
   sectionRow: {
     flexDirection: "row", justifyContent: "space-between", alignItems: "center",
