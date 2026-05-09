@@ -462,11 +462,10 @@ export default function OrdersFromSheet() {
       <ScrollView
         horizontal
         showsHorizontalScrollIndicator={false}
-        style={{ flexGrow: 0, height: 48 }}
+        style={{ flexGrow: 0, maxHeight: 52 }}
         contentContainerStyle={{
           paddingHorizontal: 12,
           paddingBottom: 8,
-          gap: 8,
           alignItems: "center",
         }}
       >
@@ -645,7 +644,9 @@ const styles = StyleSheet.create({
   filterPill: {
     paddingHorizontal: 14, paddingVertical: 8,
     borderWidth: 2, borderColor: "#E5E7EB",
-    borderRadius: 999, backgroundColor: "#fff",
+    borderRadius: 20, backgroundColor: "#fff",
+    flexShrink: 0,
+    marginRight: 8,
   },
   filterPillActive: { backgroundColor: colors.secondary, borderColor: colors.secondary },
   filterText: { fontWeight: "700", fontSize: 13, color: colors.text },
