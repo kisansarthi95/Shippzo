@@ -143,6 +143,9 @@ class UserPublic(BaseModel):
     phone: str = ""
     is_admin: bool = False
     plan: str = "free_trial"
+    # Phase G — primary business category (slug). Empty string for
+    # legacy accounts and Google sign-in users who haven't picked one.
+    primary_business_category: str = ""
     created_at: str
 
 
@@ -397,5 +400,8 @@ def user_public(u: Dict[str, Any]) -> Dict[str, Any]:
         "phone": u.get("phone", ""),
         "is_admin": bool(u.get("is_admin", False)),
         "plan": u.get("plan", "free_trial"),
+        # Phase G — surface the slug so the client can show
+        # category-aware analytics / settings without an extra round-trip.
+        "primary_business_category": (u.get("primary_business_category") or ""),
         "created_at": u.get("created_at", ""),
     }

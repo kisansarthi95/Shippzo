@@ -14687,12 +14687,58 @@ metadata:
 backend:
   - task: "Phase G — Business category collection on POST /api/auth/signup"
     implemented: true
-    working: false
+    working: true
     file: "/app/backend/server.py (auth_signup, lines 252-387), /app/backend/auth.py (SignupRequest, UserPublic), /app/backend/business_categories.py"
-    stuck_count: 1
+    stuck_count: 0
     priority: "high"
     needs_retesting: false
     status_history:
+        -working: true
+        -agent: "testing"
+        -comment: |
+            RE-TEST after fix (2026-05-09): 32/32 assertions PASS via
+            /app/backend_test.py against
+            https://logistics-hub-740.preview.emergentagent.com/api.
+
+            Both bugs from the previous run are resolved:
+              • server.py user_doc now includes primary_business_category
+                + primary_business_category_at (lines 357-358).
+              • auth.py UserPublic model + user_public() helper both
+                surface primary_business_category, so /auth/me now
+                returns the field.
+
+            ✅ CASE 1 — GET /api/auth/business-categories: 200 publicly,
+              16 entries with slug+label+icon, fashion_apparel present.
+            ✅ CASE 2 — fashion_apparel signup: 200 + token. /auth/me
+              returns "fashion_apparel". /auth/context confirms the same.
+              Direct Mongo read shows users.primary_business_category =
+              "fashion_apparel" (was None in the previous run).
+            ✅ CASE 2b — electronics_gadgets spot-check: signup 200,
+              /auth/me returns "electronics_gadgets", Mongo doc has the
+              slug AND a non-empty primary_business_category_at
+              timestamp ("2026-05-09T08:29:41.587194+00:00").
+            ✅ CASE 3 — invalid slug: 400 with detail "Please pick a
+              valid business category." No user document created.
+            ✅ CASE 4 — backward-compat: empty-string AND omitted-field
+              both return 200. user_public() returns "" via the
+              `(u.get("primary_business_category") or "")` coalesce, and
+              the persisted doc has primary_business_category="" (not
+              missing, not null) since pbc="" lands in user_doc.
+            ✅ CASE 5 — regression sanity:
+              • POST /auth/login (200), GET /auth/me with valid token
+                (200), bogus bearer token → 401.
+              • Webhook spot-check: /api/webhook/orders/<bad-secret>
+                returns 404 "Unknown webhook secret" (route mounted,
+                clean 4xx). /api/webhooks/* (plural) hits the auth gate
+                and returns 401 — also a 4xx, so both paths are sane.
+
+            CLEANUP: 4 pytest_phaseg_* users (CASE2 fashion, CASE2b
+            electronics, CASE4a empty, CASE4b omitted) + their seeded
+            data (60 shipments / 4 couriers / 4 wallets) were removed
+            at end of run. No test artefacts remain.
+
+            Phase G is now fully signed off — implementation matches
+            the review contract end-to-end.
         -working: false
         -agent: "testing"
         -comment: |
@@ -14849,4 +14895,29 @@ agent_communication:
       200 (backward-compat preserved), login + me + webhook regression
       sanity all green. Cleanup removed 3 test users + 45 demo
       shipments.
+
+    -agent: "testing"
+    -message: |
+      Phase G RE-TEST after fix complete — 32/32 assertions PASS.
+
+      Both bugs from the previous run are now resolved:
+        1. server.py user_doc persists primary_business_category
+           + primary_business_category_at (verified via direct Mongo
+           query — value present, timestamp non-empty).
+        2. UserPublic + user_public() surface the field — GET /auth/me
+           now returns primary_business_category for both
+           "fashion_apparel" and the "electronics_gadgets" spot-check.
+
+      All review cases pass:
+        • CASE 1 — public list of 16 categories ✅
+        • CASE 2 — fashion_apparel signup + persistence + /auth/me ✅
+        • CASE 2b — electronics_gadgets spot-check ✅
+        • CASE 3 — invalid slug → 400 (no user created) ✅
+        • CASE 4 — empty + omitted backward-compat → 200 ✅
+        • CASE 5 — login/me/bad-token/webhook regression ✅
+
+      Cleanup removed 4 pytest_phaseg_* users + 60 seeded shipments / 4
+      couriers / 4 wallets. No artefacts remain.
+
+      Phase G is signed off — main agent can summarise and finish.
 

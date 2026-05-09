@@ -210,6 +210,64 @@ def case2_signup_valid():
     return token
 
 
+# ----- CASE 2b: spot-check a different slug -----------------------------
+
+def case2b_signup_electronics():
+    print("\n=== CASE 2b: spot-check signup with 'electronics_gadgets' ===")
+    email = f"{EMAIL_PREFIX}_electronics@test.com"
+    body = {
+        "email": email,
+        "password": "Test@1234",
+        "name": "PG Test E",
+        "shop_name": "PG Electronics Shop",
+        "phone": "9999900005",
+        "primary_business_category": "electronics_gadgets",
+        "device_fingerprint": "",
+    }
+    try:
+        r = requests.post(f"{API}/auth/signup", json=body, timeout=20)
+        record(
+            "CASE2b signup status 200 with electronics_gadgets",
+            r.status_code == 200,
+            f"got {r.status_code}; body={r.text[:200]}",
+        )
+        if r.status_code != 200:
+            return
+        token = r.json().get("token")
+
+        # /auth/me check
+        r = requests.get(
+            f"{API}/auth/me",
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=15,
+        )
+        if r.status_code == 200:
+            me = r.json()
+            record(
+                "CASE2b /auth/me primary_business_category == 'electronics_gadgets'",
+                me.get("primary_business_category") == "electronics_gadgets",
+                f"got {me.get('primary_business_category')!r}",
+            )
+
+        # Mongo check
+        async def _check():
+            return await db.users.find_one({"email": email})
+        u = run_async(_check())
+        if u:
+            record(
+                "CASE2b Mongo: primary_business_category == 'electronics_gadgets'",
+                u.get("primary_business_category") == "electronics_gadgets",
+                f"got {u.get('primary_business_category')!r}",
+            )
+            record(
+                "CASE2b Mongo: primary_business_category_at non-empty",
+                bool(u.get("primary_business_category_at")),
+                f"got {u.get('primary_business_category_at')!r}",
+            )
+    except Exception as e:
+        record("CASE2b exception", False, repr(e))
+
+
 # ----- CASE 3: invalid category -----------------------------------------
 
 def case3_signup_invalid():
@@ -398,6 +456,7 @@ async def cleanup():
 def main():
     case1_business_categories()
     case2_signup_valid()
+    case2b_signup_electronics()
     case3_signup_invalid()
     case4_signup_empty()
     case5_regression()

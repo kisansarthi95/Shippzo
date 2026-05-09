@@ -350,6 +350,12 @@ async def auth_signup(payload: SignupRequest):
         "plan": plan_for_user,
         "plan_started_at": plan_started,
         "plan_expires_at": plan_expires,
+        # Phase G — primary business category collected on the signup form.
+        # `pbc` is the validated slug (or "" if the older client omitted it).
+        # Persisted alongside a timestamp so analytics can compute "users
+        # who picked a category in the last N days" without joining audit logs.
+        "primary_business_category":    pbc,
+        "primary_business_category_at": (now if pbc else ""),
         "created_at": now,
     }
     await db.users.insert_one(user_doc)
