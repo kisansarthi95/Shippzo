@@ -462,7 +462,7 @@ export default function OrdersFromSheet() {
       <ScrollView
         horizontal
         showsHorizontalScrollIndicator={false}
-        style={{ flexGrow: 0, maxHeight: 48 }}
+        style={{ flexGrow: 0, height: 48 }}
         contentContainerStyle={{
           paddingHorizontal: 12,
           paddingBottom: 8,
