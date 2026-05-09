@@ -176,12 +176,14 @@ export default function WebhooksScreen() {
   };
 
   const editMapping = (wh: Webhook) => {
-    // For now we route to the existing /webhook-config screen, which
-    // already has the "key → schema field" matrix UI. A v2 version of
-    // that screen scoped to a single user_webhooks row is a follow-up.
+    // Phase F3 — route to the per-webhook mapping editor scoped to
+    // this specific user_webhooks row. Each webhook gets its own
+    // mapping (Dukaan's `shipping_name` ≠ Shopify's
+    // `shipping_address.first_name` — and certainly ≠ a custom
+    // webhook's user-defined keys).
     router.push({
-      pathname: "/webhook-config",
-      params: { wh_id: wh.id, name: wh.name },
+      pathname: "/webhook-mapping",
+      params: { wh_id: wh.id },
     } as any);
   };
 
