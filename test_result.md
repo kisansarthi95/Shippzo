@@ -14684,10 +14684,113 @@ metadata:
   test_sequence: 5
   run_ui: false
 
+backend:
+  - task: "Phase G — Business category collection on POST /api/auth/signup"
+    implemented: true
+    working: false
+    file: "/app/backend/server.py (auth_signup, lines 252-387), /app/backend/auth.py (SignupRequest, UserPublic), /app/backend/business_categories.py"
+    stuck_count: 1
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: false
+        -agent: "testing"
+        -comment: |
+            Phase G end-to-end signup integration tested via
+            /app/backend_test.py against
+            https://logistics-hub-740.preview.emergentagent.com/api.
+            24/27 assertions passed. CRITICAL bug found in the persist
+            path of /api/auth/signup.
+
+            ✅ PASSING (CASE 1 — GET /api/auth/business-categories):
+              - Status 200 without any auth header (publicly reachable).
+              - Response shape: {"categories": [...]}.
+              - Exactly 16 entries, every entry has slug+label+icon.
+              - "fashion_apparel" slug present.
+
+            ✅ PASSING (CASE 3 — invalid category):
+              - POST /auth/signup with primary_business_category=
+                "totally_not_real_slug" returns 400 with detail
+                "Please pick a valid business category." (matches the
+                "valid business category" substring required by the
+                review).
+              - No user document created on rejection — confirmed via
+                Mongo lookup.
+
+            ✅ PASSING (CASE 4 — backward-compat):
+              - Empty-string category → 200 + token (preserves older
+                clients that don't send the field).
+              - Field omitted entirely → 200 + token. Both branches
+                exercise the `if pbc:` guard correctly.
+
+            ✅ PASSING (CASE 5 — regression sanity):
+              - POST /auth/login (200) and GET /auth/me with returned
+                token (200) still work.
+              - GET /auth/me with a bogus bearer token returns 401.
+              - POST /api/webhook/orders/<bad_secret> returns 404
+                "Unknown webhook secret" (route mounted, no 5xx). The
+                review request mentioned /api/webhooks/... (plural)
+                but the real mount is /api/webhook/... (singular) —
+                /webhooks/* hits the auth gate at /api/* and returns
+                401, also a clean 4xx.
+
+            ❌ FAILING (CASE 2 — VALID-category happy path PERSISTENCE BUG):
+              The signup endpoint accepts the request and returns 200 +
+              token, but the validated `primary_business_category`
+              value is NEVER WRITTEN to the user document.
+
+              Evidence:
+                * POST /auth/signup body included
+                  primary_business_category="fashion_apparel" → 200 OK.
+                * Direct Mongo query
+                  db.users.find_one({"email": ...}) returned a user
+                  document where users.primary_business_category is
+                  ABSENT (None / not set).
+                * GET /auth/context (which DOES surface the field)
+                  returned user.primary_business_category="" for the
+                  same user — proving the value isn't persisted, not
+                  that /auth/me lacks the key.
+
+              ROOT CAUSE — server.py line 268-275 validates the slug
+              into a local variable `pbc`, but the user_doc dict
+              constructed at line 338-354 does NOT include it. So the
+              validated value is silently dropped on the floor before
+              insert_one() runs.
+
+              FIX REQUIRED (one line in server.py auth_signup):
+                Add into user_doc at line ~353:
+                  "primary_business_category": pbc,
+                  "primary_business_category_at": (now if pbc else ""),
+
+              SECONDARY ISSUE — review request says GET /auth/me must
+              surface primary_business_category, but UserPublic model
+              in auth.py (line 137-146) and user_public() helper
+              (line 389-401) don't include the field. /auth/context
+              already exposes it; /auth/me does not. To match the
+              review contract the field needs to be added to UserPublic
+              + user_public() output.
+
+              Failed assertions:
+                - "CASE2 /auth/me surfaces 'primary_business_category'"
+                  (missing key)
+                - "CASE2 /auth/context user.primary_business_category
+                  == 'fashion_apparel'" (got empty string)
+                - "CASE2 Mongo: primary_business_category ==
+                  'fashion_apparel'" (got None)
+
+            CLEANUP: 3 pytest_phaseg_* users + their seeded shipments
+            (45) / couriers (3) / wallets (3) were deleted at end of
+            run. No test artefacts remain.
+
+metadata:
+  test_sequence: 6
+  run_ui: false
+
 test_plan:
   current_focus:
-    - "Phase C — Edit pending order screen + 3-option back-without-save dialog"
-  stuck_tasks: []
+    - "Phase G — Business category collection on POST /api/auth/signup"
+  stuck_tasks:
+    - "Phase G — Business category collection on POST /api/auth/signup"
   test_all: false
   test_priority: "high_first"
 
@@ -14699,4 +14802,51 @@ agent_communication:
         existed and is used by the new Edit screen as-is.
       • Frontend: one new screen + one Orders-card affordance.
       Bundle compiles cleanly; app login renders.
+
+    -agent: "main"
+    -comment: |
+      Phase G — Business category collection moved INTO the signup form
+      (replacing the separate /onboarding/business-category screen).
+      
+      Frontend changes:
+      • /app/frontend/app/(auth)/signup.tsx — added a "What do you sell?"
+        modal-style dropdown (testID `signup-business-category`) right
+        below Mobile Number. Categories fetched live from
+        GET /api/auth/business-categories. Selected slug is now passed
+        as the 6th argument to signUp() in the AuthContext.
+        Submit button is disabled until a category is picked.
+      • /app/frontend/app/_layout.tsx — removed the dangling AuthGate
+        redirect to /onboarding/business-category (screen deleted).
+      • /app/frontend/app/onboarding/business-category.tsx — DELETED
+        (no longer needed, category is now collected on signup).
+      
+      Backend: NO new changes in this round. The existing /signup route
+      already accepts `primary_business_category` and validates it against
+      business_categories.VALID_SLUGS. Please re-test this end-to-end.
+
+    -agent: "testing"
+    -message: |
+      Phase G backend testing complete (24/27 assertions). Two bugs
+      identified that the main agent must fix before re-testing:
+
+      1. CRITICAL — server.py auth_signup() (line 252-387) validates
+         primary_business_category into local `pbc` but never writes
+         it to user_doc (line 338-354). Result: signup with a valid
+         category returns 200, but the value is silently lost — the
+         user document stays without the field, so /auth/context and
+         later analytics never see it. Add the missing key to user_doc
+         (one-line fix).
+
+      2. SECONDARY — GET /auth/me does not surface
+         primary_business_category (UserPublic model + user_public()
+         lack the field). The review request explicitly asks /auth/me
+         to expose it. Either add the field to UserPublic + the
+         user_public() helper, or change the review contract to use
+         /auth/context (which already surfaces it).
+
+      All other cases pass cleanly: GET /auth/business-categories is
+      public + 16 entries, invalid slug → 400, empty/omitted slug →
+      200 (backward-compat preserved), login + me + webhook regression
+      sanity all green. Cleanup removed 3 test users + 45 demo
+      shipments.
 

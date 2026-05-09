@@ -1,14 +1,18 @@
-import React, { useState } from "react";
+import React, { useState, useEffect, useMemo } from "react";
 import PhIcon from "../../components/PhIcon";
 import {
   View, Text, TextInput, TouchableOpacity, StyleSheet,
   KeyboardAvoidingView, Platform, ScrollView, ActivityIndicator, Alert,
+  Modal, FlatList,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
 import { useAuth } from "../../lib/auth";
 import { colors } from "../../lib/theme";
 import GoogleSignInButton from "../../components/GoogleSignInButton";
+import { Api } from "../../lib/api";
+
+type BusinessCategory = { slug: string; label: string; icon: string };
 
 export default function SignupScreen() {
   const { signUp } = useAuth();
@@ -20,6 +24,38 @@ export default function SignupScreen() {
   const [phone, setPhone] = useState("");
   const [busy, setBusy] = useState(false);
   const [showPwd, setShowPwd] = useState(false);
+  // Phase G — primary business category. Required on the form. The list
+  // is fetched live from /api/auth/business-categories so adding a new
+  // category server-side doesn't need a frontend deploy.
+  const [categories, setCategories] = useState<BusinessCategory[]>([]);
+  const [businessCategory, setBusinessCategory] = useState<string>("");
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [pickerSearch, setPickerSearch] = useState("");
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const data = await Api.listBusinessCategories();
+        if (alive) setCategories(data.categories || []);
+      } catch {
+        // Non-fatal — user can still sign up, server just won't validate
+        // an empty category and the post-login gate (if any) catches it.
+      }
+    })();
+    return () => { alive = false; };
+  }, []);
+
+  const selectedCategory = useMemo(
+    () => categories.find((c) => c.slug === businessCategory),
+    [categories, businessCategory],
+  );
+
+  const filteredCategories = useMemo(() => {
+    const q = pickerSearch.trim().toLowerCase();
+    if (!q) return categories;
+    return categories.filter((c) => c.label.toLowerCase().includes(q));
+  }, [categories, pickerSearch]);
   // 2026-04-30 — Privacy / Terms acceptance. New users MUST check this
   // before the "Create account" button is enabled. Stored only locally
   // for this flow; backend doesn't need to persist it because signing
@@ -44,6 +80,13 @@ export default function SignupScreen() {
       Alert.alert("Password too short", "Use at least 6 characters");
       return;
     }
+    if (!businessCategory) {
+      Alert.alert(
+        "Pick a category",
+        "Please tell us what you sell so we can tailor the app for your business.",
+      );
+      return;
+    }
     if (!policyAccepted) {
       Alert.alert(
         "Please accept Terms & Privacy",
@@ -53,7 +96,9 @@ export default function SignupScreen() {
     }
     setBusy(true);
     try {
-      const res = await signUp(e, password, name.trim(), shop.trim(), phoneDigits);
+      const res = await signUp(
+        e, password, name.trim(), shop.trim(), phoneDigits, businessCategory,
+      );
       if (res?.trial_denied) {
         // Phase-2b: friendly notice — signup succeeded, free trial wasn't
         // granted because this device already used one. We don't reveal
@@ -137,6 +182,30 @@ export default function SignupScreen() {
               We'll use this to help you reset your password if you forget it, and for urgent support.
             </Text>
 
+            <Text style={[styles.label, { marginTop: 12 }]}>
+              What do you sell? <Text style={styles.required}>*</Text>
+            </Text>
+            <TouchableOpacity
+              testID="signup-business-category"
+              style={styles.dropdown}
+              onPress={() => { setPickerSearch(""); setPickerOpen(true); }}
+              activeOpacity={0.8}
+            >
+              {selectedCategory ? (
+                <View style={styles.dropdownValueRow}>
+                  <Text style={styles.dropdownIcon}>{selectedCategory.icon}</Text>
+                  <Text style={styles.dropdownText} numberOfLines={1}>
+                    {selectedCategory.label}
+                  </Text>
+                </View>
+              ) : (
+                <Text style={styles.dropdownPlaceholder}>
+                  Select your business category
+                </Text>
+              )}
+              <PhIcon name="chevron-down" size={18} color="#64748B" />
+            </TouchableOpacity>
+
             <Text style={[styles.label, { marginTop: 12 }]}>Password (min 6)</Text>
             <View style={styles.pwRow}>
               <TextInput
@@ -155,9 +224,12 @@ export default function SignupScreen() {
 
             <TouchableOpacity
               testID="signup-submit"
-              disabled={busy || !policyAccepted}
+              disabled={busy || !policyAccepted || !businessCategory}
               onPress={submit}
-              style={[styles.primaryBtn, (busy || !policyAccepted) && { opacity: 0.5 }]}
+              style={[
+                styles.primaryBtn,
+                (busy || !policyAccepted || !businessCategory) && { opacity: 0.5 },
+              ]}
             >
               {busy
                 ? <ActivityIndicator color="#fff" />
@@ -216,6 +288,74 @@ export default function SignupScreen() {
           </View>
         </ScrollView>
       </KeyboardAvoidingView>
+
+      {/* Phase G — Business category picker modal. Modal pattern keeps
+          the signup form short while still surfacing all 16 categories
+          (with search) when the user taps the dropdown. */}
+      <Modal
+        visible={pickerOpen}
+        animationType="slide"
+        transparent
+        onRequestClose={() => setPickerOpen(false)}
+      >
+        <View style={styles.modalBackdrop}>
+          <View style={styles.modalSheet}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>What do you sell?</Text>
+              <TouchableOpacity
+                onPress={() => setPickerOpen(false)}
+                style={styles.modalCloseBtn}
+                hitSlop={{ top: 8, right: 8, bottom: 8, left: 8 }}
+              >
+                <PhIcon name="close" size={20} color="#475569" />
+              </TouchableOpacity>
+            </View>
+            <View style={styles.modalSearchWrap}>
+              <PhIcon name="search" size={16} color="#94A3B8" />
+              <TextInput
+                value={pickerSearch}
+                onChangeText={setPickerSearch}
+                placeholder="Search categories"
+                placeholderTextColor="#94A3B8"
+                style={styles.modalSearch}
+                autoCorrect={false}
+              />
+            </View>
+            <FlatList
+              data={filteredCategories}
+              keyExtractor={(item) => item.slug}
+              keyboardShouldPersistTaps="handled"
+              ItemSeparatorComponent={() => <View style={styles.modalSep} />}
+              ListEmptyComponent={
+                <Text style={styles.modalEmpty}>No matches.</Text>
+              }
+              renderItem={({ item }) => {
+                const isSelected = item.slug === businessCategory;
+                return (
+                  <TouchableOpacity
+                    testID={`category-option-${item.slug}`}
+                    style={[
+                      styles.modalRow,
+                      isSelected && styles.modalRowSelected,
+                    ]}
+                    onPress={() => {
+                      setBusinessCategory(item.slug);
+                      setPickerOpen(false);
+                    }}
+                    activeOpacity={0.7}
+                  >
+                    <Text style={styles.modalRowIcon}>{item.icon}</Text>
+                    <Text style={styles.modalRowLabel}>{item.label}</Text>
+                    {isSelected ? (
+                      <PhIcon name="checkmark" size={18} color={colors.primary} />
+                    ) : null}
+                  </TouchableOpacity>
+                );
+              }}
+            />
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -282,4 +422,89 @@ const styles = StyleSheet.create({
   checkboxOn: { backgroundColor: colors.primary, borderColor: colors.primary },
   policyText: { flex: 1, fontSize: 12, color: "#475569", lineHeight: 17 },
   policyLink: { color: colors.primary, fontWeight: "800", textDecorationLine: "underline" },
+  // Phase G — Business category dropdown
+  dropdown: {
+    backgroundColor: "#fff",
+    borderWidth: 2,
+    borderColor: "#E5E7EB",
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    height: 46,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 8,
+  },
+  dropdownValueRow: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  dropdownIcon: { fontSize: 18 },
+  dropdownText: { flex: 1, fontSize: 15, color: colors.text, fontWeight: "600" },
+  dropdownPlaceholder: { flex: 1, fontSize: 15, color: "#94A3B8" },
+  // Modal picker
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: "rgba(15,23,42,0.45)",
+    justifyContent: "flex-end",
+  },
+  modalSheet: {
+    backgroundColor: "#fff",
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    paddingTop: 14,
+    paddingHorizontal: 16,
+    paddingBottom: 22,
+    maxHeight: "85%",
+    minHeight: "55%",
+  },
+  modalHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: 12,
+  },
+  modalTitle: { fontSize: 17, fontWeight: "800", color: colors.text },
+  modalCloseBtn: {
+    width: 32, height: 32, borderRadius: 16,
+    backgroundColor: "#F1F5F9",
+    alignItems: "center", justifyContent: "center",
+  },
+  modalSearchWrap: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    backgroundColor: "#F8FAFC",
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    height: 42,
+    marginBottom: 10,
+  },
+  modalSearch: {
+    flex: 1,
+    fontSize: 14,
+    color: colors.text,
+    paddingVertical: 0,
+  },
+  modalSep: { height: 1, backgroundColor: "#F1F5F9" },
+  modalRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    paddingVertical: 14,
+    paddingHorizontal: 6,
+  },
+  modalRowSelected: { backgroundColor: "#FFF7ED", borderRadius: 10 },
+  modalRowIcon: { fontSize: 22 },
+  modalRowLabel: { flex: 1, fontSize: 15, color: colors.text, fontWeight: "600" },
+  modalEmpty: {
+    textAlign: "center",
+    color: "#94A3B8",
+    paddingVertical: 24,
+    fontSize: 13,
+  },
 });
