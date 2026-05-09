@@ -1,29 +1,25 @@
 """
-Phase F3.2 — Order Status Update event-type webhook flow tests.
+Phase F3.2 (rev-2) — Order Status Update auto-detection tests.
 
-Tests the public ingest endpoint at /api/webhook/orders/{secret} when the
-configured webhook has event_type="order_status_update". Validates:
-  • Status normalisation (Shipped, Delivered, Returned, free-text fallback).
-  • Mirror onto well-known timestamp fields (dispatched_at / delivered_at /
-    returned_at / status_updated_at).
-  • Order-id miss → imported=0, not_found=1, friendly error.
-  • Pending order branch (matched in db.pending_orders).
-  • Mapping incomplete (no order_id mapping) → imported=0 + error.
-  • Event timestamp override via mapped `created_at_override` cell.
-  • Bulk array body.
-  • Regression: new_order still creates pending_orders, abandoned_order
-    returns 200 imported=0 with friendly placeholder.
+Verifies that the public webhook ingest at /api/webhook/orders/{secret}
+auto-detects order_id / status / timestamp from common payload key names
+when the user has NOT configured an explicit field mapping for an
+`order_status_update` webhook. Also verifies:
+
+  • User-configured mapping STILL wins (auto-detect only fills gaps).
+  • Auto-detect can't find order_id → 200 imported=0 with friendly error.
+  • new_order event_type is unaffected (still REQUIRES a mapping).
+
+Login: admin@test.com / Admin@12345.
 """
 from __future__ import annotations
 
-import os
-import sys
-import uuid
 import asyncio
 from datetime import datetime, timezone
 
 import requests
 from motor.motor_asyncio import AsyncIOMotorClient
+
 
 BACKEND_URL = "https://logistics-hub-740.preview.emergentagent.com"
 API = f"{BACKEND_URL}/api"
@@ -34,24 +30,26 @@ ADMIN_PASSWORD = "Admin@12345"
 MONGO_URL = "mongodb://localhost:27017"
 DB_NAME = "test_database"
 
-# --- helper assert with counter ---
+TEST_SHIP_ID = "shp_f32rev2"
+TEST_SHIP_MOID = "OSU-AUTO-1"
+
 PASSED = 0
 FAILED = 0
-FAIL_DETAILS = []
+FAIL_DETAILS: list[tuple[str, object]] = []
 
 
 def check(cond: bool, msg: str, ctx: object = "") -> None:
     global PASSED, FAILED
     if cond:
         PASSED += 1
-        print(f"  ✅ {msg}")
+        print(f"  PASS  {msg}")
     else:
         FAILED += 1
         FAIL_DETAILS.append((msg, ctx))
-        print(f"  ❌ {msg}  ctx={ctx!r}")
+        print(f"  FAIL  {msg}  ctx={ctx!r}")
 
 
-# ── 1. Login ────────────────────────────────────────────────────────
+# ── helpers ─────────────────────────────────────────────────────────
 def login() -> tuple[str, str]:
     r = requests.post(
         f"{API}/auth/login",
@@ -63,84 +61,55 @@ def login() -> tuple[str, str]:
     return j["token"], j["id"]
 
 
-# ── 2. Mongo helpers (run async) ────────────────────────────────────
-async def insert_test_shipment(user_id: str) -> None:
+async def reset_test_shipment(user_id: str, status: str = "Ready to Ship") -> None:
     client = AsyncIOMotorClient(MONGO_URL)
     db = client[DB_NAME]
     now = datetime.now(timezone.utc).isoformat()
-    await db.shipments.delete_many({"id": "shp_test_phaseF32_1"})
+    await db.shipments.delete_many({"id": TEST_SHIP_ID})
     await db.shipments.insert_one({
-        "id":              "shp_test_phaseF32_1",
+        "id":              TEST_SHIP_ID,
         "user_id":          user_id,
-        "master_order_id": "ORD-9999",
-        "status":          "Ready to Ship",
-        "customer_name":   "F32 Test",
+        "master_order_id": TEST_SHIP_MOID,
+        "status":          status,
+        "customer_name":   "Auto Test",
         "customer_phone":  "9000000000",
         "created_at":      now,
     })
     client.close()
 
 
-async def insert_test_pending(user_id: str) -> None:
+async def fetch_shipment() -> dict:
     client = AsyncIOMotorClient(MONGO_URL)
     db = client[DB_NAME]
-    now = datetime.now(timezone.utc).isoformat()
-    await db.pending_orders.delete_many({"id": "pend_test_phaseF32_1"})
-    await db.pending_orders.insert_one({
-        "id":              "pend_test_phaseF32_1",
-        "user_id":          user_id,
-        "master_order_id": "PND-1234",
-        "status":          "pending",
-        "customer_name":   "F32 Pending",
-        "customer_phone":  "9000000001",
-        "created_at":      now,
-    })
+    doc = await db.shipments.find_one({"id": TEST_SHIP_ID}, {"_id": 0})
+    client.close()
+    return doc or {}
+
+
+async def cleanup() -> None:
+    client = AsyncIOMotorClient(MONGO_URL)
+    db = client[DB_NAME]
+    await db.shipments.delete_many({"id": TEST_SHIP_ID})
     client.close()
 
 
-async def fetch_shipment(shp_id: str) -> dict | None:
-    client = AsyncIOMotorClient(MONGO_URL)
-    db = client[DB_NAME]
-    doc = await db.shipments.find_one({"id": shp_id}, {"_id": 0})
-    client.close()
-    return doc
-
-
-async def fetch_pending(pend_id: str) -> dict | None:
-    client = AsyncIOMotorClient(MONGO_URL)
-    db = client[DB_NAME]
-    doc = await db.pending_orders.find_one({"id": pend_id}, {"_id": 0})
-    client.close()
-    return doc
-
-
-async def cleanup_db(extra_pending_ids: list[str]) -> None:
-    client = AsyncIOMotorClient(MONGO_URL)
-    db = client[DB_NAME]
-    await db.shipments.delete_many({"id": "shp_test_phaseF32_1"})
-    await db.pending_orders.delete_many({"id": "pend_test_phaseF32_1"})
-    if extra_pending_ids:
-        await db.pending_orders.delete_many({"id": {"$in": extra_pending_ids}})
-    client.close()
-
-
-# ── 3. Webhook helpers ──────────────────────────────────────────────
+# ── webhook helpers ─────────────────────────────────────────────────
 def create_webhook(token: str, name: str, event_type: str) -> dict:
     r = requests.post(
         f"{API}/me/webhooks",
-        json={"name": name, "event_type": event_type},
         headers={"Authorization": f"Bearer {token}"},
+        json={"name": name, "event_type": event_type},
         timeout=20,
     )
     r.raise_for_status()
     return r.json()
 
 
-def update_webhook_mapping(token: str, wh_id: str, mapping: dict) -> dict:
+def update_mapping(token: str, wh_id: str, mapping: dict) -> dict:
     r = requests.put(
         f"{API}/me/webhooks/{wh_id}",
-        json={"mapping": mapping},
         headers={"Authorization": f"Bearer {token}"},
+        json={"mapping": mapping},
         timeout=20,
     )
     r.raise_for_status()
@@ -148,304 +117,194 @@ def update_webhook_mapping(token: str, wh_id: str, mapping: dict) -> dict:
 
 
 def delete_webhook(token: str, wh_id: str) -> None:
-    r = requests.delete(
+    requests.delete(
         f"{API}/me/webhooks/{wh_id}",
         headers={"Authorization": f"Bearer {token}"},
         timeout=20,
     )
-    r.raise_for_status()
 
 
-def post_webhook(url: str, body) -> dict:
-    r = requests.post(url, json=body, timeout=20)
-    return {"status": r.status_code, "body": r.json() if r.status_code != 500 else r.text}
+def post_to_webhook(url: str, body) -> requests.Response:
+    return requests.post(url, json=body, timeout=20)
 
 
-# ── 4. Test orchestration ───────────────────────────────────────────
-def main() -> int:
-    print("\n=== Phase F3.2 Order Status Update Webhook Tests ===\n")
-    print(f"Backend: {API}")
-    print(f"Admin:   {ADMIN_EMAIL}")
-    print()
-
-    print("[step 0] Logging in as admin…")
-    token, admin_id = login()
-    print(f"  → admin_id={admin_id}\n")
-
-    # ───────────────────────────────────────────────────────────
-    # CASE 1 — Create webhook with event_type="order_status_update"
-    # ───────────────────────────────────────────────────────────
-    print("[case 1] Create OSU webhook + set mapping {order_id, status}")
-    wh = create_webhook(token, "F32 Status WH", "order_status_update")
-    wh_id  = wh["id"]
-    wh_url = wh["url"]
-    check(bool(wh_id), "webhook id returned", wh)
-    check(bool(wh_url), "webhook url returned", wh_url)
-    check(wh["event_type"] == "order_status_update", "event_type stored", wh.get("event_type"))
-
-    # Set mapping
-    upd = update_webhook_mapping(
-        token, wh_id, {"order_id": "order_id", "status": "status"},
-    )
-    check(upd.get("mapping") == {"order_id": "order_id", "status": "status"},
-          "mapping persisted", upd.get("mapping"))
-    print()
-
-    # ───────────────────────────────────────────────────────────
-    # Insert test shipment + pending
-    # ───────────────────────────────────────────────────────────
-    print("[setup] Inserting shipment shp_test_phaseF32_1 (ORD-9999) & "
-          "pending pend_test_phaseF32_1 (PND-1234)…")
-    asyncio.run(insert_test_shipment(admin_id))
-    asyncio.run(insert_test_pending(admin_id))
-    print()
-
-    # ───────────────────────────────────────────────────────────
-    # CASE 2 — POST status="shipped" → imported=1, dispatched_at set
-    # ───────────────────────────────────────────────────────────
-    print("[case 2] POST {order_id:'ORD-9999', status:'shipped'}")
-    res2 = post_webhook(wh_url, {"order_id": "ORD-9999", "status": "shipped"})
-    check(res2["status"] == 200, "HTTP 200", res2)
-    body2 = res2["body"]
-    check(body2.get("imported") == 1, "imported=1", body2)
-    check(body2.get("event_type") == "order_status_update", "event_type echoed", body2)
-    check(body2.get("not_found", -1) == 0, "not_found=0", body2)
-
-    shp = asyncio.run(fetch_shipment("shp_test_phaseF32_1"))
-    check(shp is not None, "shipment exists", None)
-    check(shp.get("status") == "Shipped", "status=Shipped", shp.get("status"))
-    check(bool(shp.get("dispatched_at")), "dispatched_at set", shp.get("dispatched_at"))
-    check(bool(shp.get("status_updated_at")), "status_updated_at set",
-          shp.get("status_updated_at"))
-    print()
-
-    # ───────────────────────────────────────────────────────────
-    # CASE 3 — Delivered
-    # ───────────────────────────────────────────────────────────
-    print("[case 3] POST {order_id:'ORD-9999', status:'delivered'}")
-    res3 = post_webhook(wh_url, {"order_id": "ORD-9999", "status": "delivered"})
-    check(res3["status"] == 200, "HTTP 200", res3)
-    check(res3["body"].get("imported") == 1, "imported=1", res3["body"])
-    shp = asyncio.run(fetch_shipment("shp_test_phaseF32_1"))
-    check(shp.get("status") == "Delivered", "status=Delivered", shp.get("status"))
-    check(bool(shp.get("delivered_at")), "delivered_at set", shp.get("delivered_at"))
-    print()
-
-    # ───────────────────────────────────────────────────────────
-    # CASE 4 — Returned
-    # ───────────────────────────────────────────────────────────
-    print("[case 4] POST {order_id:'ORD-9999', status:'returned'}")
-    res4 = post_webhook(wh_url, {"order_id": "ORD-9999", "status": "returned"})
-    check(res4["status"] == 200, "HTTP 200", res4)
-    check(res4["body"].get("imported") == 1, "imported=1", res4["body"])
-    shp = asyncio.run(fetch_shipment("shp_test_phaseF32_1"))
-    check(shp.get("status") == "Returned", "status=Returned", shp.get("status"))
-    check(bool(shp.get("returned_at")), "returned_at set", shp.get("returned_at"))
-    print()
-
-    # ───────────────────────────────────────────────────────────
-    # CASE 5 — Free-text status normalisation
-    # ───────────────────────────────────────────────────────────
-    print("[case 5] POST {order_id:'ORD-9999', status:'OUT FOR DELIVERY'}")
-    res5 = post_webhook(wh_url, {"order_id": "ORD-9999", "status": "OUT FOR DELIVERY"})
-    check(res5["status"] == 200, "HTTP 200", res5)
-    check(res5["body"].get("imported") == 1, "imported=1", res5["body"])
-    shp = asyncio.run(fetch_shipment("shp_test_phaseF32_1"))
-    check(bool(shp.get("status")), "status non-empty", shp.get("status"))
-    # Note: 'OUT FOR DELIVERY' maps to 'Shipped' per import_schema STATUS_ALIASES
-    print(f"  ℹ status normalised to: '{shp.get('status')}'")
-    print()
-
-    # ───────────────────────────────────────────────────────────
-    # CASE 6 — Order_id miss
-    # ───────────────────────────────────────────────────────────
-    print("[case 6] POST {order_id:'ORD-NOT-IN-DB', status:'shipped'} → not_found=1")
-    res6 = post_webhook(wh_url, {"order_id": "ORD-NOT-IN-DB", "status": "shipped"})
-    check(res6["status"] == 200, "HTTP 200", res6)
-    body6 = res6["body"]
-    check(body6.get("imported") == 0, "imported=0", body6)
-    check(body6.get("not_found") == 1, "not_found=1", body6)
-    errs = body6.get("errors") or []
-    check(len(errs) >= 1 and "no shipment / pending order found" in errs[0],
-          "error mentions 'no shipment / pending order found'", errs)
-    print()
-
-    # ───────────────────────────────────────────────────────────
-    # CASE 7 — Pending order match
-    # ───────────────────────────────────────────────────────────
-    print("[case 7] POST {order_id:'PND-1234', status:'processing'}")
-    res7 = post_webhook(wh_url, {"order_id": "PND-1234", "status": "processing"})
-    check(res7["status"] == 200, "HTTP 200", res7)
-    check(res7["body"].get("imported") == 1, "imported=1", res7["body"])
-    pend = asyncio.run(fetch_pending("pend_test_phaseF32_1"))
-    check(pend.get("status") == "Processing", "pending status=Processing",
-          pend.get("status"))
-    check(bool(pend.get("status_updated_at")), "status_updated_at set",
-          pend.get("status_updated_at"))
-    print()
-
-    # ───────────────────────────────────────────────────────────
-    # CASE 8 — Mapping incomplete (no order_id key)
-    # ───────────────────────────────────────────────────────────
-    print("[case 8] PUT mapping={status: status} (no order_id) + POST")
-    update_webhook_mapping(token, wh_id, {"status": "status"})
-    res8 = post_webhook(wh_url, {"order_id": "ORD-9999", "status": "delivered"})
-    check(res8["status"] == 200, "HTTP 200", res8)
-    body8 = res8["body"]
-    check(body8.get("imported") == 0, "imported=0", body8)
-    errs8 = body8.get("errors") or []
-    check(len(errs8) >= 1 and "order_id" in errs8[0].lower(),
-          "error mentions order_id missing", errs8)
-    print()
-
-    # ───────────────────────────────────────────────────────────
-    # CASE 9 — Event timestamp override
-    # ───────────────────────────────────────────────────────────
-    print("[case 9] mapping incl. shipped_at→created_at_override; POST with shipped_at")
-    update_webhook_mapping(token, wh_id, {
-        "order_id":   "order_id",
-        "status":     "status",
-        "shipped_at": "created_at_override",
-    })
-    res9 = post_webhook(wh_url, {
-        "order_id":   "ORD-9999",
-        "status":     "shipped",
-        "shipped_at": "2026-01-15T10:30:00Z",
-    })
-    check(res9["status"] == 200, "HTTP 200", res9)
-    check(res9["body"].get("imported") == 1, "imported=1", res9["body"])
-    shp = asyncio.run(fetch_shipment("shp_test_phaseF32_1"))
-    disp = shp.get("dispatched_at") or ""
-    check(disp.startswith("2026-01-15"), "dispatched_at = 2026-01-15…",
-          disp)
-    su = shp.get("status_updated_at") or ""
-    check(su.startswith("2026-01-15"), "status_updated_at = 2026-01-15…", su)
-    print()
-
-    # ───────────────────────────────────────────────────────────
-    # CASE 10 — Bulk update (array body)
-    # ───────────────────────────────────────────────────────────
-    print("[case 10] POST array of 2 → imported=2")
-    res10 = post_webhook(wh_url, [
-        {"order_id": "ORD-9999",  "status": "delivered"},
-        {"order_id": "PND-1234",  "status": "delivered"},
-    ])
-    check(res10["status"] == 200, "HTTP 200", res10)
-    check(res10["body"].get("imported") == 2, "imported=2", res10["body"])
-    shp = asyncio.run(fetch_shipment("shp_test_phaseF32_1"))
-    pend = asyncio.run(fetch_pending("pend_test_phaseF32_1"))
-    check(shp.get("status") == "Delivered", "shipment now Delivered",
-          shp.get("status"))
-    check(pend.get("status") == "Delivered", "pending now Delivered",
-          pend.get("status"))
-    print()
-
-    # ───────────────────────────────────────────────────────────
-    # CASE 11 — Regression: new_order still creates pending_orders
-    # ───────────────────────────────────────────────────────────
-    print("[case 11] regression — new_order webhook smoke test")
-    wh_no = create_webhook(token, "F32 New Order WH", "new_order")
-    update_webhook_mapping(token, wh_no["id"], {
-        "name":     "customer_name",
-        "phone":    "customer_phone",
-        "address":  "address",
-        "city":     "city",
-        "state":    "state",
-        "pincode":  "pincode",
-    })
-    res11 = post_webhook(wh_no["url"], {
-        "name":    "Regression Test User",
-        "phone":   "9876500011",
-        "address": "Test Address Line 1",
-        "city":    "Mumbai",
-        "state":   "MH",
-        "pincode": "400001",
-    })
-    check(res11["status"] == 200, "HTTP 200", res11)
-    check(res11["body"].get("imported") == 1, "imported=1", res11["body"])
-    check(res11["body"].get("event_type") == "new_order", "event_type=new_order",
-          res11["body"].get("event_type"))
-
-    # Find the new pending order to clean up later
-    async def _find_pend():
-        client2 = AsyncIOMotorClient(MONGO_URL)
-        db2 = client2[DB_NAME]
-        d = await db2.pending_orders.find_one(
-            {"user_id": admin_id, "customer_phone": "9876500011"}, {"_id": 0}
-        )
-        client2.close()
-        return d
-    new_pend = asyncio.run(_find_pend())
-    extra_pending_ids = []
-    if new_pend:
-        extra_pending_ids.append(new_pend["id"])
-        check(new_pend.get("customer_name") == "Regression Test User",
-              "pending order created with correct name", new_pend.get("customer_name"))
-    else:
-        check(False, "pending order created (lookup failed)", None)
-    print()
-
-    # ───────────────────────────────────────────────────────────
-    # CASE 12 — Regression: abandoned_order returns 200 imported=0
-    # ───────────────────────────────────────────────────────────
-    print("[case 12] regression — abandoned_order returns 200 imported=0")
-    wh_ab = create_webhook(token, "F32 Abandoned WH", "abandoned_order")
-    update_webhook_mapping(token, wh_ab["id"], {
-        "name":  "customer_name",
-        "phone": "customer_phone",
-    })
-    res12 = post_webhook(wh_ab["url"], {
-        "name":  "Abandoned Test",
-        "phone": "9876500022",
-    })
-    check(res12["status"] == 200, "HTTP 200", res12)
-    body12 = res12["body"]
-    check(body12.get("imported") == 0, "imported=0", body12)
-    check(body12.get("event_type") == "abandoned_order", "event_type echoed", body12)
-    errs12 = body12.get("errors") or []
-    check(len(errs12) >= 1, "errors present (placeholder msg)", errs12)
-    if errs12:
-        check("upcoming release" in errs12[0].lower() or
-              "coming" in errs12[0].lower(),
-              "errors hint at future release", errs12[0])
-
-    # Confirm no shipment was created for abandoned_order
-    async def _count_ab():
-        client3 = AsyncIOMotorClient(MONGO_URL)
-        db3 = client3[DB_NAME]
-        n = await db3.shipments.count_documents(
-            {"user_id": admin_id, "customer_phone": "9876500022"}
-        )
-        client3.close()
-        return n
-    ab_ship = asyncio.run(_count_ab())
-    check(ab_ship == 0, "abandoned_order did NOT create a shipment", ab_ship)
-    print()
-
-    # ───────────────────────────────────────────────────────────
-    # CLEANUP
-    # ───────────────────────────────────────────────────────────
-    print("[cleanup] Deleting test webhooks + test docs…")
+# ── main test runner ───────────────────────────────────────────────
+async def run_async(token: str, user_id: str) -> None:
+    osu_wh = None
+    new_order_wh = None
     try:
-        delete_webhook(token, wh_id)
-        delete_webhook(token, wh_no["id"])
-        delete_webhook(token, wh_ab["id"])
-    except Exception as e:
-        print(f"  ⚠ webhook cleanup error: {e}")
-    asyncio.run(cleanup_db(extra_pending_ids))
-    print("  → cleanup done")
-    print()
+        # CASE 1: insert shipment
+        print("\n[Setup] Insert test shipment shp_f32rev2 (status='Ready to Ship')")
+        await reset_test_shipment(user_id, "Ready to Ship")
+        doc = await fetch_shipment()
+        check(doc.get("master_order_id") == TEST_SHIP_MOID,
+              "Setup: shipment exists with master_order_id=OSU-AUTO-1", doc.get("master_order_id"))
 
-    # ───────────────────────────────────────────────────────────
-    print("\n" + "=" * 60)
+        # CASE 2: Create webhook with event_type=order_status_update, NO mapping
+        print("\n[CASE 2] Create OSU webhook with no mapping; POST {order_id, status:'shipped'}")
+        osu_wh = create_webhook(token, "F32rev2 OSU WH", "order_status_update")
+        check(osu_wh.get("event_type") == "order_status_update",
+              "CASE 2: webhook created with event_type=order_status_update", osu_wh.get("event_type"))
+        check(osu_wh.get("mapping") == {},
+              "CASE 2: webhook has empty mapping by default", osu_wh.get("mapping"))
+        check(bool(osu_wh.get("url")),
+              "CASE 2: public URL returned", osu_wh.get("url"))
+
+        wh_url = osu_wh["url"]
+        wh_id = osu_wh["id"]
+
+        # POST baseline payload — order_id+status keys
+        r = post_to_webhook(wh_url, {"order_id": TEST_SHIP_MOID, "status": "shipped"})
+        check(r.status_code == 200, "CASE 2: HTTP 200", (r.status_code, r.text[:200]))
+        j = r.json()
+        check(j.get("imported") == 1, "CASE 2: imported=1 (auto-detect order_id/status)", j)
+        check(j.get("not_found") == 0, "CASE 2: not_found=0", j)
+        check(j.get("event_type") == "order_status_update", "CASE 2: event_type echoed", j)
+
+        doc = await fetch_shipment()
+        check(doc.get("status") == "Shipped",
+              "CASE 2: shipment.status normalised to 'Shipped'", doc.get("status"))
+        check(bool(doc.get("dispatched_at")),
+              "CASE 2: dispatched_at set on Shipped", doc.get("dispatched_at"))
+
+        # CASE 3: alternate field names — id + state
+        print("\n[CASE 3] POST {id:'OSU-AUTO-1', state:'delivered'}")
+        r = post_to_webhook(wh_url, {"id": TEST_SHIP_MOID, "state": "delivered"})
+        check(r.status_code == 200, "CASE 3: HTTP 200", (r.status_code, r.text[:200]))
+        j = r.json()
+        check(j.get("imported") == 1, "CASE 3: imported=1 (id+state auto-detected)", j)
+        doc = await fetch_shipment()
+        check(doc.get("status") == "Delivered",
+              "CASE 3: shipment.status='Delivered'", doc.get("status"))
+        check(bool(doc.get("delivered_at")),
+              "CASE 3: delivered_at set", doc.get("delivered_at"))
+
+        # CASE 4: Shopify-style — orderID + fulfillment_status + event_at
+        print("\n[CASE 4] POST {orderID, fulfillment_status:'returned', event_at:'2026-02-01T...'}")
+        r = post_to_webhook(wh_url, {
+            "orderID": TEST_SHIP_MOID,
+            "fulfillment_status": "returned",
+            "event_at": "2026-02-01T10:00:00Z",
+        })
+        check(r.status_code == 200, "CASE 4: HTTP 200", (r.status_code, r.text[:200]))
+        j = r.json()
+        check(j.get("imported") == 1, "CASE 4: imported=1 (camelCase + fulfillment_status + event_at)", j)
+        doc = await fetch_shipment()
+        check(doc.get("status") == "Returned",
+              "CASE 4: shipment.status='Returned'", doc.get("status"))
+        ret_at = doc.get("returned_at") or ""
+        check(ret_at.startswith("2026-02-01"),
+              "CASE 4: returned_at starts with '2026-02-01' (event_at honoured)", ret_at)
+        sua = doc.get("status_updated_at") or ""
+        check(sua.startswith("2026-02-01"),
+              "CASE 4: status_updated_at also reflects event_at", sua)
+
+        # CASE 5: partial user mapping — only order_id, status auto-detected
+        print("\n[CASE 5] PUT mapping={'order_id':'order_id'} (no status); POST shipped")
+        # Reset status so we can verify the change clearly
+        await reset_test_shipment(user_id, "Ready to Ship")
+        update_mapping(token, wh_id, {"order_id": "order_id"})
+        r = post_to_webhook(wh_url, {"order_id": TEST_SHIP_MOID, "status": "shipped"})
+        check(r.status_code == 200, "CASE 5: HTTP 200", (r.status_code, r.text[:200]))
+        j = r.json()
+        check(j.get("imported") == 1,
+              "CASE 5: imported=1 (status auto-detected even though mapping omits it)", j)
+        doc = await fetch_shipment()
+        check(doc.get("status") == "Shipped",
+              "CASE 5: shipment.status='Shipped' (auto-detected)", doc.get("status"))
+
+        # CASE 6: Power-user override — custom dotted-path mapping
+        print("\n[CASE 6] PUT mapping={'event.payload.order.id':'order_id', 'event.payload.status':'status'}; POST nested")
+        update_mapping(token, wh_id, {
+            "event.payload.order.id": "order_id",
+            "event.payload.status":   "status",
+        })
+        r = post_to_webhook(wh_url, {
+            "event": {"payload": {"order": {"id": TEST_SHIP_MOID}, "status": "delivered"}}
+        })
+        check(r.status_code == 200, "CASE 6: HTTP 200", (r.status_code, r.text[:200]))
+        j = r.json()
+        check(j.get("imported") == 1,
+              "CASE 6: imported=1 (user-mapped dotted paths win over auto)", j)
+        doc = await fetch_shipment()
+        check(doc.get("status") == "Delivered",
+              "CASE 6: shipment.status='Delivered' (via user mapping)", doc.get("status"))
+
+        # CASE 7: Auto-detect can't find order_id at all
+        print("\n[CASE 7] Reset mapping to empty; POST {random_key, another}")
+        update_mapping(token, wh_id, {})
+        r = post_to_webhook(wh_url, {"random_key": "X", "another": "Y"})
+        check(r.status_code == 200, "CASE 7: HTTP 200", (r.status_code, r.text[:200]))
+        j = r.json()
+        check(j.get("imported") == 0, "CASE 7: imported=0", j)
+        errs = j.get("errors") or []
+        check(len(errs) >= 1, "CASE 7: at least one error returned", errs)
+        joined = " | ".join(errs).lower()
+        check("couldn't find an order id" in joined or "couldn’t find an order id" in joined or "find an order id" in joined,
+              "CASE 7: error mentions \"couldn't find an order id\"", errs)
+
+        # CASE 8: Regression — new_order webhook still REQUIRES mapping
+        print("\n[CASE 8] new_order webhook with empty mapping; POST any payload")
+        new_order_wh = create_webhook(token, "F32rev2 NewOrder WH", "new_order")
+        check(new_order_wh.get("mapping") == {},
+              "CASE 8: new_order webhook starts with empty mapping", new_order_wh.get("mapping"))
+        r = post_to_webhook(new_order_wh["url"], {
+            "name": "Auto Detect Should Not Apply",
+            "phone": "9000000099",
+            "address": "Some Address",
+            "city": "Somewhere",
+            "state": "MH",
+            "pincode": "400001",
+        })
+        check(r.status_code == 200, "CASE 8: HTTP 200", (r.status_code, r.text[:200]))
+        j = r.json()
+        check(j.get("imported") == 0,
+              "CASE 8: imported=0 (auto-detect MUST NOT apply for new_order)", j)
+        errs = j.get("errors") or []
+        joined = " | ".join(errs).lower()
+        check("no field mapping is configured" in joined or "field mapping" in joined,
+              "CASE 8: error message about \"no field mapping is configured\"", errs)
+
+    finally:
+        # Cleanup
+        print("\n[Cleanup] Deleting test webhooks + shipment")
+        if osu_wh:
+            try:
+                delete_webhook(token, osu_wh["id"])
+                print(f"  - deleted OSU webhook {osu_wh['id']}")
+            except Exception as e:
+                print(f"  - failed to delete OSU webhook: {e}")
+        if new_order_wh:
+            try:
+                delete_webhook(token, new_order_wh["id"])
+                print(f"  - deleted new_order webhook {new_order_wh['id']}")
+            except Exception as e:
+                print(f"  - failed to delete new_order webhook: {e}")
+        try:
+            await cleanup()
+            print(f"  - deleted test shipment {TEST_SHIP_ID}")
+        except Exception as e:
+            print(f"  - cleanup error: {e}")
+
+
+def main() -> None:
+    print(f"Backend: {BACKEND_URL}")
+    print(f"Login as: {ADMIN_EMAIL}")
+    token, user_id = login()
+    print(f"Logged in. user_id={user_id}")
+
+    asyncio.run(run_async(token, user_id))
+
+    print("\n" + "=" * 70)
     print(f"RESULT: {PASSED} passed, {FAILED} failed")
-    print("=" * 60)
     if FAIL_DETAILS:
-        print("\nFAILED ASSERTIONS:")
+        print("\nFailures:")
         for msg, ctx in FAIL_DETAILS:
-            print(f"  ❌ {msg}\n      ctx={ctx!r}")
-    return 0 if FAILED == 0 else 1
+            print(f"  - {msg}  ctx={ctx!r}")
+    print("=" * 70)
+    if FAILED:
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    main()

@@ -293,6 +293,31 @@ export default function WebhookMappingScreen() {
             </View>
           </View>
 
+          {/* Phase F3.2 (rev-2) — Order Status Update doesn't need
+              the heavy mapping screen. We auto-detect order_id /
+              status / timestamp from common key names at ingest time,
+              so 99% of users can ignore this screen entirely. We
+              still render it (in case the source uses a non-standard
+              key like `event.payload.order.id`) but lead with a
+              reassurance banner so the user doesn't feel lost. */}
+          {webhook.event_type === "order_status_update" ? (
+            <View style={styles.osuBanner}>
+              <Text style={styles.osuBannerEmoji}>✨</Text>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.osuBannerTitle}>
+                  No mapping needed in most cases!
+                </Text>
+                <Text style={styles.osuBannerSub}>
+                  We automatically look for{" "}
+                  <Text style={styles.osuBannerCode}>order_id</Text>,{" "}
+                  <Text style={styles.osuBannerCode}>status</Text>, and a
+                  timestamp in the payload. Open this screen ONLY if your
+                  source uses unusual key names.
+                </Text>
+              </View>
+            </View>
+          ) : null}
+
           {/* ── Sample source picker ─────────────────────────────── */}
           <View style={styles.actionRow}>
             <TouchableOpacity
@@ -539,6 +564,30 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8,
   },
   copyBtnTxt: { color: colors.primary, fontWeight: "800", fontSize: 12 },
+
+  // Phase F3.2 (rev-2) — Order Status Update reassurance banner.
+  // Tells the user that mapping is auto-detected so they don't waste
+  // time configuring fields that are already handled.
+  osuBanner: {
+    flexDirection: "row",
+    gap: 12,
+    backgroundColor: "#ECFDF5",
+    borderWidth: 1, borderColor: "#A7F3D0",
+    borderRadius: 12,
+    padding: 14,
+  },
+  osuBannerEmoji: { fontSize: 22 },
+  osuBannerTitle: {
+    fontSize: 14, fontWeight: "800", color: "#065F46", marginBottom: 4,
+  },
+  osuBannerSub: { fontSize: 12, color: "#065F46", lineHeight: 17 },
+  osuBannerCode: {
+    fontFamily: "monospace",
+    fontWeight: "700",
+    backgroundColor: "#D1FAE5",
+    paddingHorizontal: 4,
+    borderRadius: 4,
+  },
 
   actionRow: { flexDirection: "row", gap: 8 },
   sampleBtn: {

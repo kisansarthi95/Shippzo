@@ -408,6 +408,14 @@ def init() -> None:
             # Optional: created_at_override (if the source carries the
             # transition timestamp; we use that as `dispatched_at`,
             # `delivered_at` etc. depending on the resolved status).
+            #
+            # Phase F3.2 (rev-2) — Auto-detection. When the user's
+            # mapping is missing for this simple event type (the most
+            # common case — almost every store uses `order_id` /
+            # `status` / `state` literally), we synthesise a sensible
+            # default mapping by scanning the row's keys ourselves.
+            # This means a brand-new "Status Update" webhook works out
+            # of the box without the user opening the mapping screen.
             from import_schema import normalise_status, normalise_timestamp
 
             updated = 0
@@ -415,35 +423,78 @@ def init() -> None:
             errors_status: List[str] = []
             now = datetime.now(timezone.utc).isoformat()
 
+            # Source-key candidates we scan for in order: most-specific
+            # first, falling through to generic ones. Done lazily per-
+            # row because nested dicts produce different flattened key
+            # spaces and we don't want to assume anything.
+            ORDER_ID_CANDIDATES = (
+                "master_order_id", "order_number", "order_id",
+                "orderId", "orderID", "order_no", "id",
+            )
+            STATUS_CANDIDATES = (
+                "status", "order_status", "fulfillment_status",
+                "state", "stage",
+            )
+            TIMESTAMP_CANDIDATES = (
+                "updated_at", "shipped_at", "delivered_at",
+                "status_updated_at", "event_at", "created_at",
+                "timestamp", "date",
+            )
+
+            def _pick(flat: Dict[str, Any], candidates: tuple) -> str:
+                """Walk the candidate list and return the first matching
+                key's value (case-insensitive). Empty string if nothing
+                matched — caller decides if that's fatal."""
+                low = {k.lower(): k for k in flat.keys()}
+                for cand in candidates:
+                    real = low.get(cand.lower())
+                    if real and flat.get(real) not in (None, ""):
+                        return str(flat[real]).strip()
+                return ""
+
             for idx, raw in enumerate(rows):
                 if not isinstance(raw, dict):
                     errors_status.append(f"row {idx}: not a JSON object")
                     continue
                 flat = _flatten(raw)
-                try:
-                    doc = build_pending_doc_from_mapping(flat, mapping)
-                except ValueError as e:
-                    errors_status.append(f"row {idx}: {e}")
-                    continue
 
-                order_id = (doc.get("order_id") or "").strip()
+                # Try the user-configured mapping first; if it doesn't
+                # produce both an order_id and a status we fall back to
+                # the auto-detector. This keeps power users who DO want
+                # custom mapping (e.g. `event.payload.order.id`) happy
+                # while Just Working for the 99% case.
+                order_id  = ""
+                new_status_raw = ""
+                event_ts_raw   = ""
+
+                if mapping:
+                    try:
+                        doc = build_pending_doc_from_mapping(flat, mapping)
+                        order_id        = (doc.get("order_id") or "").strip()
+                        new_status_raw  = (doc.get("status")   or "").strip()
+                        event_ts_raw    = (doc.get("created_at_override") or "").strip()
+                    except ValueError:
+                        pass   # fall through to auto
+
+                if not order_id:
+                    order_id = _pick(flat, ORDER_ID_CANDIDATES)
+                if not new_status_raw:
+                    new_status_raw = _pick(flat, STATUS_CANDIDATES)
+                if not event_ts_raw:
+                    event_ts_raw = _pick(flat, TIMESTAMP_CANDIDATES)
+
                 if not order_id:
                     errors_status.append(
-                        f"row {idx}: order_id missing — make sure "
-                        "the mapping includes 'order_id'.",
+                        f"row {idx}: couldn't find an order id in the "
+                        "payload (looked for order_id, id, order_number, "
+                        "master_order_id, …).",
                     )
                     continue
 
-                # Resolve the canonical status. We look for a value
-                # mapped explicitly to the schema's `status` cell;
-                # blank / unknown is allowed because the user might
-                # only want to record the timestamp, not a status.
-                new_status_raw = (doc.get("status") or "").strip()
                 new_status = normalise_status(new_status_raw)
 
-                # Optional event timestamp.
-                ts_raw = (doc.get("created_at_override") or "").strip()
-                event_ts = normalise_timestamp(ts_raw) or now
+                # Normalise the timestamp; default to "now" if none.
+                event_ts = normalise_timestamp(event_ts_raw) or now
 
                 # Match by master_order_id OR order_id, scoped to this
                 # user. A single ingest can update either a Shipment
@@ -463,8 +514,6 @@ def init() -> None:
                     elif new_status == "Returned":
                         update_set["returned_at"] = event_ts
 
-                # Try shipments first (canonical place for shipped /
-                # delivered orders). Then pending_orders as fallback.
                 ship_filter = {
                     "user_id": user_id,
                     "$or": [

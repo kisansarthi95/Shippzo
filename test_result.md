@@ -15570,3 +15570,142 @@ agent_communication:
         end. No critical issues. Cleanup complete.
 
 
+
+
+## Backend Test Run: Phase F3.2 (rev-2) Order Status Update Auto-Detection (2026-05-09)
+
+backend:
+  - task: "Phase F3.2 (rev-2) — order_status_update auto-detect order_id/status/timestamp without explicit mapping"
+    implemented: true
+    working: true
+    file: "/app/backend/routers/webhook.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "testing"
+        -comment: |
+            All 33 assertions PASS via /app/backend_test.py against
+            https://logistics-hub-740.preview.emergentagent.com/api.
+            Login: admin@test.com / Admin@12345.
+
+            COVERAGE — every numbered case in the rev-2 review request
+            verified end-to-end against the live shipments collection.
+
+            CASE 2 — auto-detect default keys (order_id + status)
+              Inserted db.shipments doc id="shp_f32rev2",
+              master_order_id="OSU-AUTO-1", status="Ready to Ship".
+              Created webhook event_type="order_status_update" with
+              empty mapping ({}). POST {"order_id":"OSU-AUTO-1",
+              "status":"shipped"} → 200 {"ok":true,"imported":1,
+              "skipped":0,"not_found":0,
+              "event_type":"order_status_update","errors":[]}.
+              Mongo verified: status="Shipped", dispatched_at populated.
+
+            CASE 3 — alternate key names (id + state)
+              POST {"id":"OSU-AUTO-1","state":"delivered"} → 200
+              imported=1. shipments.status="Delivered",
+              delivered_at set. Confirms the ORDER_ID_CANDIDATES
+              fallback to "id" and STATUS_CANDIDATES fallback to
+              "state" both work case-insensitively.
+
+            CASE 4 — Shopify-style payload
+              POST {"orderID":"OSU-AUTO-1",
+                    "fulfillment_status":"returned",
+                    "event_at":"2026-02-01T10:00:00Z"} → 200
+              imported=1. Verified: status="Returned",
+              returned_at="2026-02-01T10:00:00+00:00" (starts with
+              "2026-02-01"), status_updated_at also reflects the
+              event timestamp (NOT now()). Confirms camelCase
+              orderID detection, fulfillment_status detection, and
+              event_at timestamp detection + propagation onto the
+              correct mirror field (returned_at).
+
+            CASE 5 — partial user mapping (gap-filled by auto)
+              PUT mapping={"order_id":"order_id"} (status omitted).
+              POST {"order_id":"OSU-AUTO-1","status":"shipped"} → 200
+              imported=1. shipments.status="Shipped" — confirms
+              the implementation tries the user mapping first, finds
+              order_id, but auto-detects status because the user
+              mapping doesn't cover it. (Test explicitly resets the
+              shipment to "Ready to Ship" beforehand to avoid
+              false-positive carry-over from CASE 3.)
+
+            CASE 6 — power-user override (custom dotted-path)
+              PUT mapping={"event.payload.order.id":"order_id",
+                           "event.payload.status":"status"}.
+              POST {"event":{"payload":{"order":{"id":"OSU-AUTO-1"},
+                                         "status":"delivered"}}} → 200
+              imported=1. shipments.status="Delivered". Confirms
+              build_pending_doc_from_mapping resolves the flattened
+              dotted keys correctly and the user mapping wins over
+              auto-detection.
+
+            CASE 7 — auto-detect can't find order_id
+              PUT mapping back to {}. POST {"random_key":"X",
+              "another":"Y"} → 200 {"ok":true,"imported":0,
+              "skipped":1,"not_found":0,
+              "errors":["row 0: couldn't find an order id in the
+                        payload (looked for order_id, id,
+                        order_number, master_order_id, …)."]}.
+              The error message exactly matches the contract
+              promised in the review request.
+
+            CASE 8 — Regression: new_order STILL requires mapping
+              Created a SECOND webhook event_type="new_order" with
+              empty mapping. POST {"name":"Auto Detect Should Not
+              Apply","phone":"9000000099","address":"Some Address",
+              "city":"Somewhere","state":"MH","pincode":"400001"} →
+              200 {"ok":true,"imported":0,"skipped":1,
+              "event_type":"new_order","errors":["Connection OK —
+              payload received but no field mapping is configured
+              yet. Open the Shippzo app → Settings → Webhook
+              Ingest to map incoming keys to shipment fields. (We
+              saved this payload as a sample for you.)"]}.
+              Confirms auto-detection is SCOPED to
+              order_status_update only and new_order behaviour is
+              unchanged.
+
+            IMPLEMENTATION REVIEW (/app/backend/routers/webhook.py
+            lines 392–563):
+              • Auto-detect uses ORDER_ID_CANDIDATES =
+                (master_order_id, order_number, order_id, orderId,
+                 orderID, order_no, id) — case-insensitive lookup
+                via _pick(flat, candidates) on the FLATTENED row.
+              • STATUS_CANDIDATES = (status, order_status,
+                fulfillment_status, state, stage).
+              • TIMESTAMP_CANDIDATES = (updated_at, shipped_at,
+                delivered_at, status_updated_at, event_at,
+                created_at, timestamp, date).
+              • User mapping is ALWAYS tried first (when present);
+                each missing field falls through to the auto-detector
+                independently. This keeps power-user mappings intact
+                while letting brand-new webhooks with no mapping
+                "Just Work".
+              • Empty-mapping early return at line 372 is correctly
+                gated on event_type in ("new_order","custom") so
+                order_status_update flows past it into the auto-detect
+                branch.
+              • Backend log line confirmed for each case:
+                "webhook ingest: user=… wh=… event=order_status_update
+                 updated=N not_found=N".
+
+            CLEANUP — Deleted both test webhooks (OSU + new_order)
+            and removed shp_f32rev2 from db.shipments. No artefacts
+            left behind. Admin user state untouched.
+
+            VERDICT — Phase F3.2 (rev-2) auto-detection enhancement
+            is solid, fully matches the review-request contract, and
+            does not regress any existing behaviour.
+
+agent_communication:
+    -agent: "testing"
+    -message: |
+        Phase F3.2 (rev-2) Order Status Update auto-detection: 33/33
+        backend assertions PASS. All 8 review-request cases verified.
+        Auto-detection correctly fills gaps without overriding
+        user-configured mappings, the missing-order-id error message
+        matches the spec, and the new_order regression case confirms
+        auto-detection is properly scoped to order_status_update only.
+        Cleanup done.
