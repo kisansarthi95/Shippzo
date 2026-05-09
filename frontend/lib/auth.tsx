@@ -24,6 +24,9 @@ export type User = {
   phone?: string;
   is_admin?: boolean;
   plan?: string;
+  /** Phase G — slug picked during signup. Empty string for legacy /
+   *  Google-OAuth accounts that pre-date the field. */
+  primary_business_category?: string;
   created_at: string;
 };
 
