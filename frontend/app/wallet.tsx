@@ -28,6 +28,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { Stack, useFocusEffect, useRouter } from "expo-router";
 import { Api, CreditHistoryEntry, Wallet, api } from "../lib/api";
 import { colors } from "../lib/theme";
+import { useFeatureFlag } from "../lib/feature_flags";
 
 type CreditPackage = {
   amount_inr: number;
@@ -39,6 +40,9 @@ type CreditPackage = {
 
 export default function WalletScreen() {
   const router = useRouter();
+  // Phase F3.6 — gate "Top up credits" by feature flag. Hidden for
+  // free trial / starter tiers. Admin always sees it.
+  const flagWalletTopup = useFeatureFlag("wallet_topup");
   const [wallet, setWallet] = useState<Wallet | null>(null);
   const [history, setHistory] = useState<CreditHistoryEntry[]>([]);
   const [loading, setLoading] = useState(true);
@@ -149,14 +153,16 @@ export default function WalletScreen() {
             </View>
           </View>
 
-          <TouchableOpacity
-            testID="wallet-topup-btn"
-            style={styles.topupBtn}
-            onPress={() => setPurchaseOpen(true)}
-          >
-            <PhIcon name="add-circle" size={18} color={colors.primary} />
-            <Text style={styles.topupTxt}>Top up credits</Text>
-          </TouchableOpacity>
+          {flagWalletTopup ? (
+            <TouchableOpacity
+              testID="wallet-topup-btn"
+              style={styles.topupBtn}
+              onPress={() => setPurchaseOpen(true)}
+            >
+              <PhIcon name="add-circle" size={18} color={colors.primary} />
+              <Text style={styles.topupTxt}>Top up credits</Text>
+            </TouchableOpacity>
+          ) : null}
         </View>
 
         {/* Rate card */}

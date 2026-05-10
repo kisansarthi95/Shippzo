@@ -20,6 +20,7 @@ import * as Sharing from "expo-sharing";
 import { Api, SenderAddress, Shipment, Courier } from "../../lib/api";
 import { buildLabelHtml, LabelOptions, pageDimensionsFor } from "../../lib/label";
 import { colors } from "../../lib/theme";
+import { useFeatureFlag } from "../../lib/feature_flags";
 
 type PerPage = 1 | 2 | 4 | "thermal" | "barcode";
 
@@ -138,6 +139,10 @@ function wrapHtmlForScreenPreview(html: string): string {
 
 export default function LabelScreen() {
   const router = useRouter();
+  // Phase F3.6 — gate the "Preview / Share PDF" button. Free tier
+  // can still print directly (Print button stays visible) but PDF
+  // download is reserved for paid tiers.
+  const flagPdfDownload = useFeatureFlag("pdf_download");
   const { id } = useLocalSearchParams<{ id: string }>();
   const [shipment, setShipment] = useState<Shipment | null>(null);
   const [sender, setSender] = useState<SenderAddress | null>(null);
@@ -428,16 +433,18 @@ export default function LabelScreen() {
         </View>
 
         <View style={styles.ctaRow}>
-          <TouchableOpacity
-            testID="preview-pdf-btn"
-            style={styles.secondaryBtn}
-            onPress={previewPdf}
-          >
-            <PhIcon name="eye-outline" size={18} color={colors.text} />
-            <Text style={styles.secondaryBtnText}>
-              {Platform.OS === "web" ? "Preview PDF" : "Preview / Share"}
-            </Text>
-          </TouchableOpacity>
+          {flagPdfDownload ? (
+            <TouchableOpacity
+              testID="preview-pdf-btn"
+              style={styles.secondaryBtn}
+              onPress={previewPdf}
+            >
+              <PhIcon name="eye-outline" size={18} color={colors.text} />
+              <Text style={styles.secondaryBtnText}>
+                {Platform.OS === "web" ? "Preview PDF" : "Preview / Share"}
+              </Text>
+            </TouchableOpacity>
+          ) : null}
           <TouchableOpacity
             testID="print-btn"
             style={styles.primaryBtn}

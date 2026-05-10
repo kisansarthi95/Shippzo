@@ -16053,6 +16053,38 @@ frontend:
             action bar (Call / WhatsApp / Confirm). Confirm calls
             the existing recover endpoint.
 
+## Phase F3.6 — Top 8 strategic Feature Flag UI gates (2026-05-10)
+
+frontend:
+  - task: "Phase F3.6 — Wrap 8 strategic feature flags in UI"
+    implemented: true
+    working: "NA"
+    file: "/app/frontend/app/wallet.tsx, settings/team-members.tsx, webhooks.tsx, label/[id].tsx, plans.tsx, (tabs)/index.tsx"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: false
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: |
+            Wrapped 8 user-visible UI gates with useFeatureFlag()
+            so plan-feature toggles (admin Plan Features console)
+            now actually hide/show the affected UI elements:
+
+            1. wallet_topup           → wallet.tsx "Top up credits" button
+            2. team_members_invite    → settings/team-members.tsx Add/Buy CTAs
+            3. webhook_multiple_endpoints → webhooks.tsx "+ New" button
+            4. pdf_download           → label/[id].tsx "Preview / Share PDF" button
+                                         (Print button stays on for free tier)
+            5. coupons_apply          → plans.tsx coupon entry box
+            6. analytics_dashboard    → homepage Analytics tile
+            7. sla_alerts_dashboard   → homepage SLA Alerts admin tile
+            8. reports_courier_billing → homepage Courier Billing tile
+
+            All gates fail-safe: if feature_flags lib defaults to
+            true, the UI shows as before. Frontend bundles cleanly
+            (4288 modules, no errors).
+
 ## Phase F3.5 — Bulk Abandoned Cart Recovery (homepage tile + bulk WhatsApp send) (2026-05-10)
 
 backend:

@@ -242,6 +242,10 @@ export default function Dashboard() {
   // Plan-gated: hide duplicate-banner UI when admin disables this feature.
   const flagDupCheck = useFeatureFlag("smart_paste_duplicate_check");
   const flagRepeatBanner = useFeatureFlag("repeat_customer_banner");
+  // Phase F3.6 — homepage tile gates (analytics / sla / courier billing).
+  const flagAnalyticsDashboard = useFeatureFlag("analytics_dashboard");
+  const flagSlaAlertsDash      = useFeatureFlag("sla_alerts_dashboard");
+  const flagCourierBilling     = useFeatureFlag("reports_courier_billing");
 
   // Phase-15: debounced city → state/pincode lookup. Triggers ~600 ms
   // after the user stops typing in the City field, only when:
@@ -1754,32 +1758,37 @@ export default function Dashboard() {
                   Orders, revenue, courier-wise & state-wise breakdowns
                 </Text>
               </View>
-              <ActionPill
-                testID="quick-analytics"
-                icon="stats-chart"
-                label="Open Analytics Dashboard"
-                onPress={() => router.push("/analytics" as any)}
-                tone="violet"
-                chevron
-              />
+              {flagAnalyticsDashboard ? (
+                <ActionPill
+                  testID="quick-analytics"
+                  icon="stats-chart"
+                  label="Open Analytics Dashboard"
+                  onPress={() => router.push("/analytics" as any)}
+                  tone="violet"
+                  chevron
+                />
+              ) : null}
 
               {/* Phase 2.5 — Courier Billing Report.
-                  Visible to all users (admin can hide via Plan Features
-                  feature flag `reports_courier_billing` if desired). */}
-              <View style={styles.bulkMsgHeader}>
-                <Text style={styles.bulkMsgTitle}>📋 Reports & Bills</Text>
-                <Text style={styles.bulkMsgSub}>
-                  Per-courier monthly bills (Excel + share)
-                </Text>
-              </View>
-              <ActionPill
-                testID="quick-courier-billing"
-                icon="document-text"
-                label="Courier Billing Report"
-                onPress={() => router.push("/reports/courier-billing" as any)}
-                tone="neutral"
-                chevron
-              />
+                  Phase F3.6 — gated by feature flag reports_courier_billing. */}
+              {flagCourierBilling ? (
+                <>
+                  <View style={styles.bulkMsgHeader}>
+                    <Text style={styles.bulkMsgTitle}>📋 Reports & Bills</Text>
+                    <Text style={styles.bulkMsgSub}>
+                      Per-courier monthly bills (Excel + share)
+                    </Text>
+                  </View>
+                  <ActionPill
+                    testID="quick-courier-billing"
+                    icon="document-text"
+                    label="Courier Billing Report"
+                    onPress={() => router.push("/reports/courier-billing" as any)}
+                    tone="neutral"
+                    chevron
+                  />
+                </>
+              ) : null}
 
               {/* Phase I — Admin-only quick links to power tools.
                   Hidden for regular users so the dashboard stays
@@ -1790,14 +1799,16 @@ export default function Dashboard() {
                     <Text style={styles.bulkMsgTitle}>🛠 Admin Tools</Text>
                     <Text style={styles.bulkMsgSub}>SLA breaches, status rules, sheet sync</Text>
                   </View>
-                  <ActionPill
-                    testID="quick-admin-sla-alerts"
-                    icon="alert-circle"
-                    label="SLA Alerts Console"
-                    onPress={() => router.push("/admin/sla-alerts" as any)}
-                    tone="warning"
-                    chevron
-                  />
+                  {flagSlaAlertsDash ? (
+                    <ActionPill
+                      testID="quick-admin-sla-alerts"
+                      icon="alert-circle"
+                      label="SLA Alerts Console"
+                      onPress={() => router.push("/admin/sla-alerts" as any)}
+                      tone="warning"
+                      chevron
+                    />
+                  ) : null}
                   <ActionPill
                     testID="quick-admin-stage-rules"
                     icon="settings"

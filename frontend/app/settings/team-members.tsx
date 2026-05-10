@@ -26,6 +26,7 @@ import {
 import { Stack, router, useLocalSearchParams } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Api } from "../../lib/api";
+import { useFeatureFlag } from "../../lib/feature_flags";
 
 // Common job titles offered as quick-select chips. Free-text input
 // remains available so admins aren't locked into these labels.
@@ -91,6 +92,11 @@ export default function TeamMembersScreen() {
   const [perms, setPerms] = useState<Set<string>>(new Set());
   const [saving, setSaving] = useState(false);
   const [extraToken, setExtraToken] = useState<string | null>(null);
+
+  // Phase F3.6 — gate the "Add Team Member" CTA behind a feature
+  // flag. Free-tier accounts see the page (so they understand what
+  // they'd unlock) but the action button is hidden.
+  const flagInvite = useFeatureFlag("team_members_invite");
 
   // Buy-extra sheet
   const [buyOpen, setBuyOpen] = useState(false);
@@ -354,13 +360,15 @@ export default function TeamMembersScreen() {
           ))
         )}
 
-        {/* Quota CTA */}
-        {quota.can_add_free ? (
+        {/* Quota CTA. Phase F3.6 — feature flag gates the action
+            buttons themselves; the upgrade card still renders so
+            free-tier accounts understand what their plan unlocks. */}
+        {flagInvite && quota.can_add_free ? (
           <TouchableOpacity style={styles.addBtn} onPress={openAdd}>
             <PhIcon name="add-circle" size={20} color="#fff" />
             <Text style={styles.addBtnTxt}>Add Team Member (Free)</Text>
           </TouchableOpacity>
-        ) : quota.can_buy_extra ? (
+        ) : flagInvite && quota.can_buy_extra ? (
           <TouchableOpacity style={styles.buyBtn} onPress={() => setBuyOpen(true)}>
             <PhIcon name="cart" size={20} color="#fff" />
             <Text style={styles.addBtnTxt}>

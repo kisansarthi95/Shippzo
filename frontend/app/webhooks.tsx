@@ -23,6 +23,7 @@ import { useRouter, Stack } from "expo-router";
 import PhIcon from "../components/PhIcon";
 import { Api } from "../lib/api";
 import { colors } from "../lib/theme";
+import { useFeatureFlag } from "../lib/feature_flags";
 
 type EventType = { key: string; label: string; description: string };
 type Webhook = {
@@ -56,6 +57,10 @@ const EVENT_BADGE: Record<string, { bg: string; fg: string; emoji: string }> = {
 
 export default function WebhooksScreen() {
   const router = useRouter();
+  // Phase F3.6 — flag to gate the "+ New" button. Free tier sees
+  // their existing webhook(s) but cannot create extra ones; paid
+  // tiers get unlimited.
+  const flagMultipleWebhooks = useFeatureFlag("webhook_multiple_endpoints");
   const [loading, setLoading]         = useState(true);
   const [refreshing, setRefreshing]   = useState(false);
   const [eventTypes, setEventTypes]   = useState<EventType[]>([]);
@@ -219,15 +224,19 @@ export default function WebhooksScreen() {
               source app.
             </Text>
           </View>
-          <TouchableOpacity
-            testID="btn-create-webhook"
-            style={styles.addBtn}
-            onPress={() => { setNewName(""); setNewEventType("new_order"); setCreateOpen(true); }}
-            activeOpacity={0.85}
-          >
-            <PhIcon name="add" size={18} color="#fff" />
-            <Text style={styles.addBtnText}>New</Text>
-          </TouchableOpacity>
+          {/* Phase F3.6 — gate the "+ New" CTA. Free tier shows
+              their existing webhook(s) but cannot add more. */}
+          {flagMultipleWebhooks ? (
+            <TouchableOpacity
+              testID="btn-create-webhook"
+              style={styles.addBtn}
+              onPress={() => { setNewName(""); setNewEventType("new_order"); setCreateOpen(true); }}
+              activeOpacity={0.85}
+            >
+              <PhIcon name="add" size={18} color="#fff" />
+              <Text style={styles.addBtnText}>New</Text>
+            </TouchableOpacity>
+          ) : null}
         </View>
 
         {webhooks.length === 0 ? (

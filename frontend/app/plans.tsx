@@ -37,6 +37,7 @@ import {
   PlanPricingEntry,
   CountdownConfig,
 } from "../lib/api";
+import { useFeatureFlag } from "../lib/feature_flags";
 import { colors } from "../lib/theme";
 import { useAuth } from "../lib/auth";
 
@@ -64,6 +65,11 @@ function formatExpiryDate(iso?: string | null): string {
 
 export default function PlansScreen() {
   const router = useRouter();
+  // Phase F3.6 — gate the coupon entry box. Free trial accounts
+  // cannot apply coupons (until they upgrade). couponsApply also
+  // hides the green "applied" pill so existing redeemed coupons
+  // don't bleed through.
+  const flagCouponsApply = useFeatureFlag("coupons_apply");
   const { refresh } = useAuth();
   const [plans, setPlans] = useState<PlanSpec[]>([]);
   const [current, setCurrent] = useState<PlanKey>("free_trial");
@@ -467,7 +473,9 @@ export default function PlansScreen() {
         {/* 2026-04-30 — "Have a coupon?" entry. Persists in memory for
             the current visit and gets passed through to /checkout via
             params.coupon. The actual discount is applied server-side
-            on /plans/razorpay/create-order. */}
+            on /plans/razorpay/create-order.
+            Phase F3.6 — gated by coupons_apply feature flag. */}
+        {flagCouponsApply ? (
         <View style={styles.couponBox}>
           {appliedCoupon ? (
             <View style={styles.couponAppliedRow}>
@@ -521,6 +529,7 @@ export default function PlansScreen() {
             <Text style={styles.couponErrTxt}>{couponError}</Text>
           ) : null}
         </View>
+        ) : null}
 
         {loading ? (
           <ActivityIndicator style={{ marginTop: 40 }} color={colors.primary} />
