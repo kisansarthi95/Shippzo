@@ -877,4 +877,72 @@ const styles = StyleSheet.create({
     marginTop: 4,
     fontStyle: "italic",
   },
+
+  // Phase-13 — Plan Limits summary + grouped Order Limits styles.
+  // The JSX between lines ~458 and 652 already references these
+  // class names; this block fills in the missing definitions so the
+  // chips render properly and the grouped sections breathe.
+  summaryRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 6,
+    marginBottom: 12,
+  },
+  summaryChip: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 20,
+    flexShrink: 0,
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+    backgroundColor: "#F8FAFC",
+  },
+  summaryChipDirty: {
+    borderColor: "#FCD34D",
+    backgroundColor: "#FFFBEB",
+  },
+  summaryLbl: {
+    fontSize: 10.5,
+    fontWeight: "700",
+    color: "#64748B",
+    letterSpacing: 0.2,
+    textTransform: "uppercase",
+  },
+  summaryVal: {
+    fontSize: 12.5,
+    fontWeight: "800",
+    color: "#0F172A",
+  },
+  groupHeader: {
+    fontSize: 12,
+    fontWeight: "800",
+    color: "#475569",
+    marginTop: 14,
+    marginBottom: 8,
+    letterSpacing: 0.2,
+  },
+  hintRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 8,
+    marginTop: 4,
+  },
+  resetBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 3,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 6,
+    backgroundColor: "#F1F5F9",
+  },
+  resetBtnTxt: {
+    fontSize: 10,
+    fontWeight: "700",
+    color: "#6B7280",
+  },
 });
