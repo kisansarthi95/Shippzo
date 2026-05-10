@@ -283,7 +283,143 @@ HEADER_ALIASES: Dict[str, str] = {
     "buyer.address":      "address",
     "shipping_address":   "address",
     "shipping_address.full_address": "address",
+
+    # Phase F3.4 — Shopify / Dukaan / Meesho / WooCommerce nested-path
+    # aliases. After suggest_mapping() prefix-strips known root +
+    # address-container prefixes (see PREFIXES_TO_STRIP below) the
+    # tail-only key is tried against this dict. So entries here are
+    # written as the LEAF + parent (where it disambiguates), e.g.
+    # "billing_address.zip" survives even after "order." is stripped.
+    "first_name":          "customer_name",
+    "last_name":           "customer_name",
+    "full_name":           "customer_name",
+    "fullname":            "customer_name",
+    "customer_first_name": "customer_name",
+    "customer_last_name":  "customer_name",
+    "customer_full_name":  "customer_name",
+    "customer.first_name": "customer_name",
+    "customer.last_name":  "customer_name",
+    "customer.full_name":  "customer_name",
+    "customer.name":       "customer_name",
+    "customer.email":      "customer_email",
+    "customer.phone":      "customer_phone",
+    "billing_address.first_name": "customer_name",
+    "billing_address.last_name":  "customer_name",
+    "billing_address.full_name":  "customer_name",
+    "billing_address.name":       "customer_name",
+    "billing_address.phone":      "customer_phone",
+    "billing_address.email":      "customer_email",
+    "billing_address.address1":   "address",
+    "billing_address.address_1":  "address",
+    "billing_address.address2":   "address",
+    "billing_address.address_2":  "address",
+    "billing_address.line1":      "address",
+    "billing_address.line2":      "address",
+    "billing_address.area":       "address",
+    "billing_address.landmark":   "address",
+    "billing_address.locality":   "address",
+    "billing_address.city":       "city",
+    "billing_address.state":      "state",
+    "billing_address.province":   "state",
+    "billing_address.zip":        "pincode",
+    "billing_address.postcode":   "pincode",
+    "billing_address.postal_code":"pincode",
+    "billing_address.pincode":    "pincode",
+    "shipping_address.first_name":"customer_name",
+    "shipping_address.last_name": "customer_name",
+    "shipping_address.full_name": "customer_name",
+    "shipping_address.name":      "customer_name",
+    "shipping_address.phone":     "customer_phone",
+    "shipping_address.email":     "customer_email",
+    "shipping_address.address1":  "address",
+    "shipping_address.address2":  "address",
+    "shipping_address.line1":     "address",
+    "shipping_address.line2":     "address",
+    "shipping_address.area":      "address",
+    "shipping_address.landmark":  "address",
+    "shipping_address.locality":  "address",
+    "shipping_address.province":  "state",
+    "shipping_address.zip":       "pincode",
+    "shipping_address.postcode":  "pincode",
+    "shipping_address.postal_code":"pincode",
+    "default_address.first_name": "customer_name",
+    "default_address.last_name":  "customer_name",
+    "default_address.address1":   "address",
+    "default_address.city":       "city",
+    "default_address.province":   "state",
+    "default_address.state":      "state",
+    "default_address.zip":        "pincode",
+    "default_address.phone":      "customer_phone",
+    # Bare leaf aliases (kick in after prefix stripping)
+    "province":            "state",
+    "region":              "state",
+    "country":             "state",
+    "locality":            "city",
+    "area":                "address",
+    "landmark":            "address",
+    "address1":            "address",
+    "address2":            "address",
+    "addressline":         "address",
+    "line1":               "address",
+    "line2":               "address",
+    "postcode":            "pincode",
+    "postal_code":         "pincode",
+    "area_code":           "pincode",
+    # Money — Shopify uses "total_price"/"subtotal_price"
+    "total_price":         "amount",
+    "subtotal_price":      "amount",
+    "grand_total":         "amount",
+    "price":               "amount",
+    # Order id variants
+    "display_id":          "order_id",
+    "order_number":        "order_id",
+    "order_no":            "order_id",
+    "name_":               "order_id",   # Shopify ships order # as `name`
+    # Status variants
+    "financial_status":    "status",
+    "fulfillment_status":  "status",
+    "fulfilment_status":   "status",
+    # Items (Shopify line_items / WooCommerce line_items)
+    "line_items":          "items",
+    "lineitems":           "items",
+    "skus":                "items",
 }
+
+
+# Phase F3.4 — Common nested-path prefixes that suggest_mapping()
+# strips before alias lookup. Order matters: longest first so that
+# `order.billing_address.first_name` matches the more specific rule
+# before falling back to just stripping `order.`.
+PREFIXES_TO_STRIP: List[str] = [
+    "order.customer.",
+    "order.buyer.",
+    "order.billing_address.",
+    "order.shipping_address.",
+    "order.default_address.",
+    "checkout.customer.",
+    "checkout.billing_address.",
+    "checkout.shipping_address.",
+    "data.order.",
+    "data.customer.",
+    "data.billing_address.",
+    "data.shipping_address.",
+    "payload.order.",
+    "payload.customer.",
+    "event.order.",
+    "event.customer.",
+    "order.",
+    "checkout.",
+    "data.",
+    "payload.",
+    "event.",
+    "customer.",
+    "buyer.",
+    "billing_address.",
+    "shipping_address.",
+    "default_address.",
+    "billing.",
+    "shipping.",
+]
 
 
 def normalise_status(raw: Any) -> str:
@@ -427,6 +563,13 @@ def suggest_mapping(
     saved-default first, then HEADER_ALIASES + lowercase-snake_case
     direct match.
 
+    Phase F3.4 — for nested webhook payloads (Shopify / Dukaan / Meesho /
+    WooCommerce) the keys arrive as dotted paths
+    (`order.billing_address.first_name`). suggest_mapping now tries
+    EVERY prefix-stripped candidate plus the bare leaf segment so the
+    user gets a pre-populated field-mapping screen instead of a wall
+    of empty "Select…" dropdowns.
+
     `custom_fields` is an optional list of the user's CustomLabelField
     dicts (need at least `id` + `label` keys). If a column header matches
     a custom field's label, we auto-suggest "custom:<id>".
@@ -442,19 +585,117 @@ def suggest_mapping(
         if lbl:
             custom_lookup[lbl] = f"custom:{cf.get('id')}"
             custom_lookup[lbl.replace(" ", "_")] = f"custom:{cf.get('id')}"
+
+    # Track which schema fields already have an unambiguous suggestion so
+    # we don't pile every name-fragment column onto customer_name when a
+    # cleaner full_name column is also present. Maps target → "clean" |
+    # "fragment" so first_name/last_name pairs can still BOTH be
+    # mapped (the build path joins them) when no full_name source exists.
+    suggested_quality: Dict[str, str] = {}
+
+    def _name_quality(leaf: str) -> str:
+        """`clean` = single-source name (full_name, name);
+        `fragment` = part of a multi-column name (first_name, last_name)."""
+        if leaf in ("first_name", "last_name"):
+            return "fragment"
+        return "clean"
+
+    def _candidates(cl: str) -> List[str]:
+        """Generate normalised lookup candidates for a single column,
+        widest → narrowest. We want suffix-stripped variants tried in
+        order so that the most specific path (e.g.
+        `billing_address.first_name`) wins before a bare `first_name`
+        leaf-match."""
+        cands: List[str] = [cl]
+        # Successive prefix strips (longest-prefix-first).
+        for p in PREFIXES_TO_STRIP:
+            if cl.startswith(p) and len(cl) > len(p):
+                cands.append(cl[len(p):])
+        # Final fallback: just the LEAF segment (after last dot).
+        if "." in cl:
+            cands.append(cl.rsplit(".", 1)[-1])
+        # De-dupe while preserving order.
+        seen: Set[str] = set()
+        uniq: List[str] = []
+        for x in cands:
+            if x and x not in seen:
+                seen.add(x)
+                uniq.append(x)
+        return uniq
+
+    # Two-pass pipeline:
+    #   Pass 1 — anything that's an EXACT canonical schema field match
+    #            after normalisation. Highest confidence.
+    #   Pass 2 — alias/leaf-resolved matches with duplicate suppression
+    #            for known multi-source fields (customer_name).
+    pending: List[tuple[str, List[str]]] = []
     for c in columns:
         if c in saved and saved[c]:
             out[c] = saved[c]
+            suggested_quality[saved[c]] = "clean"
             continue
         cl = c.lower().strip().replace(" ", "_").replace("-", "_")
-        if cl in SCHEMA_FIELDS:
-            out[c] = cl
-        elif cl in HEADER_ALIASES:
-            out[c] = HEADER_ALIASES[cl]
-        elif cl.replace("_", " ") in custom_lookup:
-            out[c] = custom_lookup[cl.replace("_", " ")]
-        elif cl in custom_lookup:
-            out[c] = custom_lookup[cl]
+        cands = _candidates(cl)
+
+        # Pass 1: direct schema-field hit on any candidate.
+        matched = None
+        for cand in cands:
+            if cand in SCHEMA_FIELDS:
+                matched = cand
+                break
+        if matched:
+            out[c] = matched
+            suggested_quality[matched] = "clean"
+            continue
+        # Defer alias matching — we want exact schema hits to win.
+        pending.append((c, cands))
+
+    # Pass 2: alias / custom-field / leaf resolution.
+    for c, cands in pending:
+        matched = None
+        matched_via = ""
+        for cand in cands:
+            if cand in HEADER_ALIASES:
+                matched = HEADER_ALIASES[cand]
+                matched_via = cand
+                break
+            if cand in custom_lookup:
+                matched = custom_lookup[cand]
+                matched_via = cand
+                break
+            if cand.replace("_", " ") in custom_lookup:
+                matched = custom_lookup[cand.replace("_", " ")]
+                matched_via = cand
+                break
+        if not matched:
+            continue
+        # Suppress duplicate name suggestions: skip first/last name
+        # fragments only when a CLEAN customer_name source (full_name /
+        # name) was already suggested. If only fragments exist, keep
+        # both first AND last so build_pending_doc joins them.
+        if matched == "customer_name":
+            leaf = matched_via.rsplit(".", 1)[-1] if "." in matched_via else matched_via
+            this_quality = _name_quality(leaf)
+            prev_quality = suggested_quality.get(matched)
+            if prev_quality == "clean" and this_quality == "fragment":
+                continue
+            # Update tracking so a later "clean" source overrides
+            # earlier fragment quality.
+            if not prev_quality or this_quality == "clean":
+                suggested_quality[matched] = this_quality
+        elif matched == "address":
+            # Address is joined in build_pending_doc, so multiple
+            # cols (address1 + area + landmark) are intentionally
+            # allowed — no suppression.
+            suggested_quality[matched] = "clean"
+        else:
+            if matched in suggested_quality:
+                # Plain duplicate (e.g. two `phone` fields) — keep first.
+                # Last-wins in build_pending_doc means the second one
+                # would silently override; suppressing is safer.
+                continue
+            suggested_quality[matched] = "clean"
+        out[c] = matched
     return out
 
 
@@ -522,6 +763,25 @@ def build_pending_doc_from_mapping(
             parts = [str(row.get(c) or "").strip() for c in cols]
             out["address_line1"] = " ".join(p for p in parts if p)
             continue
+        # Phase F3.4 — when the same payload offers multiple
+        # customer_name sources (e.g. first_name + last_name),
+        # join them so we get "First Last" instead of just whichever
+        # column happened to be processed last. Drop empty parts and
+        # de-dupe so a payload that has BOTH `full_name` and
+        # `first_name`/`last_name` mapped to customer_name doesn't
+        # render "First Last First Last".
+        if field == "customer_name" and len(cols) > 1:
+            seen: Set[str] = set()
+            parts: List[str] = []
+            for c in cols:
+                v = str(row.get(c) or "").strip()
+                if v and v.lower() not in seen:
+                    seen.add(v.lower())
+                    parts.append(v)
+            joined = " ".join(parts)
+            if joined:
+                out[field] = normalise_value(field, joined)
+                continue
         out[field] = normalise_value(field, row.get(cols[-1]))
 
     # Custom-field values flow into the dict — string-coerced.

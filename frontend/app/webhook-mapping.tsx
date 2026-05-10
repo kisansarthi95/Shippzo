@@ -48,6 +48,11 @@ export default function WebhookMappingScreen() {
   const [keys, setKeys]             = useState<string[]>([]);
   const [sampleVals, setSampleVals] = useState<Record<string, any>>({});
   const [mapping, setMapping]       = useState<Record<string, string>>({});
+  // Phase F3.4 — track which keys were auto-suggested by the backend so
+  // we can render a green "✓ Auto" badge next to them. Keys the user
+  // manually picked (or had saved from a previous session) won't get
+  // the badge — they're already obviously theirs.
+  const [autoKeys, setAutoKeys]     = useState<Set<string>>(new Set());
   const [schemaFields, setSchemaFields] = useState<SchemaFieldOpt[]>([]);
   const [customFields, setCustomFields] = useState<{ id: string; label: string }[]>([]);
 
@@ -91,6 +96,21 @@ export default function WebhookMappingScreen() {
           const preview = await Api.previewWebhookV2(String(wh_id), latest);
           setKeys(preview.keys || []);
           setSampleVals(preview.sample_values || {});
+          // Phase F3.4 — apply backend suggestions for any keys the
+          // user hasn't already mapped (saved mapping wins). Track the
+          // newly-suggested keys in `autoKeys` so the matrix can
+          // render a green "✓ Auto" badge next to them.
+          const saved = wh.mapping || {};
+          const merged: Record<string, string> = { ...saved };
+          const fresh = new Set<string>();
+          for (const [k, v] of Object.entries(preview.suggested || {})) {
+            if (!merged[k] && v) {
+              merged[k] = v as string;
+              fresh.add(k);
+            }
+          }
+          setMapping(merged);
+          setAutoKeys(fresh);
         } catch {
           // Non-fatal — user can still paste a fresh sample.
         }
@@ -125,10 +145,15 @@ export default function WebhookMappingScreen() {
       // Apply suggested mapping for any keys we DON'T already have a
       // user-set mapping for. Existing user choices are preserved.
       const merged = { ...mapping };
+      const fresh = new Set(autoKeys);
       for (const [k, v] of Object.entries(preview.suggested || {})) {
-        if (!merged[k]) merged[k] = v as string;
+        if (!merged[k] && v) {
+          merged[k] = v as string;
+          fresh.add(k);
+        }
       }
       setMapping(merged);
+      setAutoKeys(fresh);
       Alert.alert("Loaded", `Detected ${(preview.keys || []).length} keys from the last payload.`);
     } catch (e: any) {
       Alert.alert("Failed", e?.message || "Try again.");
@@ -153,10 +178,15 @@ export default function WebhookMappingScreen() {
       setKeys(preview.keys || []);
       setSampleVals(preview.sample_values || {});
       const merged = { ...mapping };
+      const fresh = new Set(autoKeys);
       for (const [k, v] of Object.entries(preview.suggested || {})) {
-        if (!merged[k]) merged[k] = v as string;
+        if (!merged[k] && v) {
+          merged[k] = v as string;
+          fresh.add(k);
+        }
       }
       setMapping(merged);
+      setAutoKeys(fresh);
       setPasteOpen(false);
       setPasteText("");
     } catch (e: any) {
@@ -359,6 +389,7 @@ export default function WebhookMappingScreen() {
           ) : (
             keys.map((k) => {
               const selected = selectedFieldFor(k);
+              const isAuto   = autoKeys.has(k) && !!selected;
               const sample   = sampleVals[k];
               const sampleStr = sample === null || sample === undefined
                 ? ""
@@ -368,7 +399,23 @@ export default function WebhookMappingScreen() {
               return (
                 <View key={k} style={styles.row}>
                   <View style={{ flex: 1 }}>
-                    <Text style={styles.rowKey} numberOfLines={1}>{k}</Text>
+                    <View style={{ flexDirection: "row", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                      <Text style={styles.rowKey} numberOfLines={1}>{k}</Text>
+                      {isAuto ? (
+                        <View
+                          style={{
+                            backgroundColor: "#DCFCE7",
+                            paddingHorizontal: 6, paddingVertical: 2,
+                            borderRadius: 6,
+                          }}
+                          testID={`auto-badge-${k}`}
+                        >
+                          <Text style={{ fontSize: 9, fontWeight: "800", color: "#166534" }}>
+                            ✓ AUTO
+                          </Text>
+                        </View>
+                      ) : null}
+                    </View>
                     {sampleStr ? (
                       <Text style={styles.rowSample} numberOfLines={1}>
                         e.g. {sampleStr}
@@ -379,14 +426,30 @@ export default function WebhookMappingScreen() {
                     style={[
                       styles.fieldBtn,
                       selected && styles.fieldBtnActive,
+                      isAuto && {
+                        borderColor: "#22C55E", backgroundColor: "#F0FDF4",
+                      },
                     ]}
-                    onPress={() => { setPickerKey(k); setPickerSearch(""); }}
+                    onPress={() => {
+                      // User is overriding an auto-suggestion → drop
+                      // the AUTO badge so they don't get confused.
+                      if (autoKeys.has(k)) {
+                        setAutoKeys((prev) => {
+                          const next = new Set(prev);
+                          next.delete(k);
+                          return next;
+                        });
+                      }
+                      setPickerKey(k);
+                      setPickerSearch("");
+                    }}
                     activeOpacity={0.8}
                   >
                     <Text
                       style={[
                         styles.fieldBtnTxt,
                         selected && { color: colors.primary, fontWeight: "800" },
+                        isAuto && { color: "#166534" },
                       ]}
                       numberOfLines={1}
                     >
@@ -395,7 +458,7 @@ export default function WebhookMappingScreen() {
                     <PhIcon
                       name="chevron-down"
                       size={14}
-                      color={selected ? colors.primary : "#94A3B8"}
+                      color={isAuto ? "#22C55E" : (selected ? colors.primary : "#94A3B8")}
                     />
                   </TouchableOpacity>
                 </View>

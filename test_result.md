@@ -16047,6 +16047,280 @@ frontend:
         -working: "NA"
         -agent: "main"
         -comment: |
+            Orders tab now exposes a 6th filter chip "🛒 Abandoned (N)"
+            alongside Smart Paste / File / Sheet / Webhook. When
+            selected, abandoned-cart rows render with a 3-button
+            action bar (Call / WhatsApp / Confirm). Confirm calls
+            the existing recover endpoint.
+
+## Phase F3.4 — Auto-suggest webhook field mapping (2026-05-10)
+
+backend:
+  - task: "Phase F3.4 — Smart webhook mapping suggestions for nested Shopify/Dukaan/Meesho payloads"
+    implemented: true
+    working: true
+    file: "/app/backend/import_schema.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: |
+            REVIEW REQUEST FOR TESTING AGENT.
+            Login: admin@test.com / Admin@12345.
+
+            BACKGROUND: User complained that when opening webhook
+            field-mapping screen, ALL dropdowns are "Select…" and
+            they have to scroll through 100+ fields to manually
+            map each one. The Shopify/Dukaan webhook keys arrive
+            as dotted paths like `order.billing_address.first_name`
+            which the old suggest_mapping() couldn't recognise.
+
+            CHANGES:
+              1. New PREFIXES_TO_STRIP list (28 entries) covering
+                 `order.`, `order.customer.`, `order.billing_address.`,
+                 `order.shipping_address.`, `data.`, `payload.`, etc.
+                 Longest-prefix-first so specific paths win.
+              2. suggest_mapping() now generates multiple lookup
+                 candidates per column: full path → prefix-stripped →
+                 leaf segment. Two-pass pipeline:
+                   Pass 1: exact SCHEMA_FIELDS hit (highest confidence).
+                   Pass 2: HEADER_ALIASES + custom-field lookup +
+                           leaf-only fallback.
+              3. Duplicate suppression with quality tracking:
+                 - customer_name: track 'clean' vs 'fragment' source.
+                   Skip first/last name fragments only when a clean
+                   full_name was already suggested. If only fragments
+                   exist, keep BOTH so build path joins them.
+                 - address: NEVER suppress (build path joins).
+                 - everything else: first match wins.
+              4. ~70 new HEADER_ALIASES for Shopify/Dukaan/Meesho/
+                 WooCommerce nested paths and bare leaves
+                 (first_name, full_name, billing_address.zip, area,
+                 landmark, total_price, line_items, financial_status,
+                 etc.).
+              5. build_pending_doc_from_mapping() now joins+dedupes
+                 multiple cols mapped to customer_name (so
+                 first_name + last_name = "First Last", and
+                 having BOTH full_name + first/last mapped doesn't
+                 duplicate — same value collapses).
+
+            CASES TO VERIFY:
+              (A) suggest_mapping() with a Shopify-style key list
+                  (`order.customer.full_name`, `order.billing_address.zip`,
+                  `order.billing_address.city`, `order.line_items`,
+                  `order.financial_status`, `order.total_price`,
+                  `order.email`) returns AT LEAST these mappings:
+                    customer_name, pincode, city, items, status,
+                    amount, customer_email
+              (B) suggest_mapping() with `order.customer.first_name`
+                  + `order.customer.last_name` (NO full_name) →
+                  BOTH map to customer_name. Then
+                  build_pending_doc_from_mapping() with row values
+                  "Nayan", "Bhut" produces customer_name="Nayan Bhut".
+              (C) suggest_mapping() with `order.customer.full_name`
+                  + `order.customer.first_name`+`order.customer.last_name`
+                  → all three map to customer_name (the dedupe in
+                  build path handles "Nayan Bhut" + "Nayan" + "Bhut"
+                  = just "Nayan Bhut").
+              (D) Multiple address parts: `billing_address.address1`
+                  + `billing_address.area` + `billing_address.landmark`
+                  → all three map to address (NO suppression for
+                  address). build path joins them with " ".
+              (E) Plain phone duplicates: `order.customer.phone` AND
+                  `order.billing_address.phone` → only the FIRST one
+                  (customer.phone) gets customer_phone; the second
+                  is left unmapped (user can override manually).
+              (F) Items normalisation regression: build path for
+                  field=items with line_items=[{title:'Shoes',quantity:2}]
+                  → "Shoes x2" (already verified earlier — confirm
+                  unchanged).
+              (G) Saved mapping precedence: a key with an existing
+                  saved mapping in `saved` dict is NOT overridden
+                  by suggest_mapping (existing user choice always
+                  wins).
+              (H) Existing 90/90 webhook + 33-case auto-detect
+                  regression suites must still pass.
+
+            Cleanup: nothing to clean — these are pure-function
+            tests against import_schema.py + a couple of pending
+            order build paths.
+        -working: true
+        -agent: "testing"
+        -comment: |
+            Phase F3.4 — All 57 assertions PASS via /app/backend_test.py
+            against https://logistics-hub-740.preview.emergentagent.com/api.
+
+            PURE-FUNCTION TESTS (cases A-G, all PASS):
+            • Smoke: PREFIXES_TO_STRIP has 28 entries; specificity
+              ordering verified (`order.customer.` and
+              `order.billing_address.` both come BEFORE `order.`). 11
+              new HEADER_ALIASES spot-checked (first_name, last_name,
+              full_name, billing_address.zip → pincode,
+              billing_address.area → address, billing_address.landmark
+              → address, total_price → amount, line_items → items,
+              financial_status → status, fulfillment_status → status,
+              shipping_address.address1 → address). ✅
+            • CASE A — Shopify 9-key payload: ALL 9 keys auto-mapped
+              correctly. order.customer.full_name → customer_name,
+              order.billing_address.zip → pincode, .city → city,
+              .state → state, .address1 → address, order.line_items
+              → items, order.financial_status → status,
+              order.total_price → amount, order.email →
+              customer_email. ✅
+            • CASE B — first_name + last_name (no full_name): BOTH
+              map to customer_name. build_pending_doc_from_mapping
+              with row {first_name:'Nayan', last_name:'Bhut'} →
+              customer_name='Nayan Bhut'. ✅
+            • CASE C — full_name + first_name + last_name: only
+              full_name → customer_name; first_name and last_name
+              SKIPPED (clean source already won, fragments
+              suppressed). ✅
+            • CASE D — Multiple address parts (address1 + area +
+              landmark): all THREE map to address (no suppression).
+              build_pending_doc joins them →
+              "Veer Bhagatsinh Marg Dhan Bay Chowk Talaja". ✅
+            • CASE E — Phone duplicates: order.customer.phone gets
+              customer_phone; order.billing_address.phone is left
+              UNMAPPED (first match wins). ✅
+            • CASE F — Items normalisation regression:
+              build_pending_doc_from_mapping with mapping
+              {line_items:'items'} and row containing
+              [{title:'Shoes',quantity:2},{title:'Belt',quantity:1}]
+              → items='Shoes x2, Belt x1'. ✅
+            • CASE G — Saved mapping precedence: saved={'order.
+              customer.full_name':'address'} (intentionally wrong)
+              wins over auto-suggest customer_name. Returned
+              {'order.customer.full_name':'address'}. ✅
+
+            LIVE API TESTS (case H — admin@test.com login):
+            • POST /api/auth/login → 200, JWT obtained.
+            • GET /api/me/webhooks → 200 (5 pre-existing webhooks).
+            • POST /api/me/webhooks {name:'F34 Shopify Test',
+              event_type:'new_order', source_app:'shopify'} → 200.
+              Created webhook has id, source_app='shopify',
+              event_type='new_order', non-empty 32-char secret.
+            • POST /api/me/webhooks/{id}/preview with full Shopify-
+              shaped payload (order.customer.{full_name,email,phone},
+              order.billing_address.{first_name,last_name,address1,
+              city,state,zip,phone}, order.{line_items,
+              financial_status,total_price,email}) → 200. _flatten
+              produced 14 dotted-path keys. `suggested` dict has 10
+              entries — every expected mapping landed:
+                 order.customer.full_name → customer_name
+                 order.customer.email     → customer_email
+                 order.customer.phone     → customer_phone
+                 order.billing_address.address1 → address
+                 order.billing_address.city → city
+                 order.billing_address.state → state
+                 order.billing_address.zip → pincode
+                 order.line_items → items
+                 order.financial_status → status
+                 order.total_price → amount
+              order.email + order.billing_address.{first_name,
+              last_name,phone} are intentionally NOT mapped because
+              cleaner sources (customer.email, customer.full_name,
+              customer.phone) already won — exactly the
+              duplicate-suppression behaviour the spec mandates. ✅
+            • Phase F3.3 regression: GET /api/me/customers and
+              GET /api/me/abandoned-carts both return 200. ✅
+            • Cleanup: DELETE /api/me/webhooks/{id} → 200 (post-test
+              count returns to 5; no test artefacts left). ✅
+
+            SUMMARY: 57/57 assertions pass. Phase F3.4 backend
+            implementation is solid — Shopify/Dukaan/Meesho nested
+            paths now auto-map cleanly, customer_name fragments are
+            joined by build_pending_doc, address parts concatenated
+            with " ", phone/email duplicates suppressed (first wins),
+            and saved user choices always override the suggester.
+
+frontend:
+  - task: "Phase F3.4 — Auto-suggest indicator on webhook-mapping screen"
+    implemented: true
+    working: "NA"
+    file: "/app/frontend/app/webhook-mapping.tsx"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: false
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: |
+            On first paint of /webhook-mapping?wh_id=X, the screen
+            now applies suggested mappings (saved mapping wins),
+            tracks each auto-suggested key in `autoKeys` state, and
+            renders a green "✓ AUTO" badge next to the field name +
+            green-tinted dropdown for those rows. As soon as the user
+            taps the dropdown to override, the badge clears so they
+            don't get confused which choice was theirs vs the
+            backend's. useLastReceived() and submitPaste() also
+            update the autoKeys set the same way.
+
+agent_communication:
+    -agent: "main"
+    -message: |
+        Phase F3.4 webhook auto-suggest is code-complete. Backend
+        suggest_mapping() now handles dotted-path Shopify/Dukaan
+        payloads via prefix stripping + leaf fallback + 70 new
+        aliases. Quick sanity test on the user's real Shopify keys
+        showed 15/20 fields auto-suggested (vs 0/20 before). Local
+        build_pending_doc test produced clean output:
+            customer_name = 'Nayankumar Bhut'
+            pincode = '364140', city = 'Bhavnagar',
+            address_line1 = 'Veer Bhagatsinh Marg Dhan Bay Chowk Talaja'
+        Please run the (A)-(H) cases listed above using
+        admin@test.com / Admin@12345. NO database mutation needed —
+        these are pure-function tests + 1-2 webhook preview API
+        calls.
+    -agent: "testing"
+    -message: |
+        Phase F3.4 backend testing COMPLETE — 57/57 assertions PASS
+        via /app/backend_test.py against
+        https://logistics-hub-740.preview.emergentagent.com/api.
+
+        Pure-function tests (A-G):
+          ✅ A — Shopify 9-key payload: all 9 keys mapped
+            (customer_name, pincode, city, state, address, items,
+             status, amount, customer_email).
+          ✅ B — first_name+last_name (no full_name) → BOTH map to
+            customer_name; build path joins to "Nayan Bhut".
+          ✅ C — full_name + first/last → only full_name kept
+            (fragments suppressed once a clean source wins).
+          ✅ D — address1 + area + landmark all map to address;
+            build path joins → "Veer Bhagatsinh Marg Dhan Bay Chowk Talaja".
+          ✅ E — duplicate phones: only first wins
+            (order.customer.phone), billing_address.phone unmapped.
+          ✅ F — line_items dict-list normalised to "Shoes x2, Belt x1".
+          ✅ G — saved mapping (deliberately wrong 'address') still
+            wins over auto-suggest customer_name.
+
+        Live API (H):
+          ✅ POST /api/me/webhooks (new_order, source_app=shopify) →
+            200 with id+secret+url.
+          ✅ POST /me/webhooks/{id}/preview with full Shopify-shaped
+            JSON → 200, 14 flattened keys, 10 auto-mapped including
+            customer_name/email/phone, address, city, state, pincode,
+            items, status, amount.
+          ✅ Phase F3.3 regressions (GET /me/customers, /me/abandoned-
+            carts) → both 200.
+          ✅ Cleanup DELETE /me/webhooks/{id} → 200.
+
+        No database mutation left behind. No regressions detected.
+        Phase F3.4 is fully working — main agent can summarise/finish.
+
+frontend:
+  - task: "Phase F3.3.1 — Abandoned filter chip in Orders tab + Call/WhatsApp/Confirm per-card actions"
+    implemented: true
+    working: "NA"
+    file: "/app/frontend/app/(tabs)/orders.tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: |
             Added per user request (user found Settings-only
             location too buried). Orders tab now shows a 6th
             filter chip "🛒 Abandoned (N)" alongside Smart Paste /
