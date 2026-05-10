@@ -5436,6 +5436,34 @@ except Exception as _whm_exc:
         f"Failed to mount webhooks_multi router: {_whm_exc}",
     )
 
+# Phase F3.3 — Abandoned Carts (populated by abandoned_order webhooks).
+try:
+    from routers.abandoned_carts import (
+        abandoned_carts_router as _abandoned_carts_router,
+        init as _init_abandoned_carts_router,
+    )
+    _init_abandoned_carts_router()
+    app.include_router(_abandoned_carts_router)
+except Exception as _ac_exc:
+    import logging as _lg
+    _lg.getLogger("server.bootstrap").exception(
+        f"Failed to mount abandoned_carts router: {_ac_exc}",
+    )
+
+# Phase F3.3 — Customers (populated by customer_created/updated webhooks).
+try:
+    from routers.customers import (
+        customers_router as _customers_router,
+        init as _init_customers_router,
+    )
+    _init_customers_router()
+    app.include_router(_customers_router)
+except Exception as _cu_exc:
+    import logging as _lg
+    _lg.getLogger("server.bootstrap").exception(
+        f"Failed to mount customers router: {_cu_exc}",
+    )
+
 
 # --------------------------------------------------------------------
 # Auth middleware — requires a valid bearer token on every /api/*

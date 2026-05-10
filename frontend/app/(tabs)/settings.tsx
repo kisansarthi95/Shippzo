@@ -1612,9 +1612,50 @@ export default function SettingsScreen() {
               </View>
               <PhIcon name="chevron-forward" size={16} color="#FF6B00" />
             </TouchableOpacity>
-            {/* Phase-5: Service Account share panel — keeps user's
-                Sheet PRIVATE. Shown only on the connect view (not when
-                already connected). */}
+            {/* Phase F3.3 — Abandoned Carts. Surfaces cart events
+                ingested via webhooks with event_type=abandoned_order. */}
+            <TouchableOpacity
+              testID="open-abandoned-carts"
+              onPress={() => router.push("/abandoned-carts" as any)}
+              style={{
+                flexDirection: "row", alignItems: "center", gap: 10,
+                backgroundColor: "#FFF7EE", borderColor: "#FED7AA", borderWidth: 1,
+                borderRadius: 10, padding: 12, marginBottom: 12,
+              }}
+            >
+              <PhIcon name="cart" size={18} color="#9A3412" />
+              <View style={{ flex: 1 }}>
+                <Text style={{ fontWeight: "700", color: "#9A3412", fontSize: 13 }}>
+                  Abandoned Carts
+                </Text>
+                <Text style={{ fontSize: 11, color: "#FF6B00", marginTop: 1 }}>
+                  Recover carts captured via webhooks → Pending Order
+                </Text>
+              </View>
+              <PhIcon name="chevron-forward" size={16} color="#FF6B00" />
+            </TouchableOpacity>
+            {/* Phase F3.3 — Customers. Surfaces customer_created /
+                customer_updated webhook events. */}
+            <TouchableOpacity
+              testID="open-customers"
+              onPress={() => router.push("/customers" as any)}
+              style={{
+                flexDirection: "row", alignItems: "center", gap: 10,
+                backgroundColor: "#EEF2FF", borderColor: "#C7D2FE", borderWidth: 1,
+                borderRadius: 10, padding: 12, marginBottom: 12,
+              }}
+            >
+              <PhIcon name="people" size={18} color="#3730A3" />
+              <View style={{ flex: 1 }}>
+                <Text style={{ fontWeight: "700", color: "#3730A3", fontSize: 13 }}>
+                  Customers
+                </Text>
+                <Text style={{ fontSize: 11, color: "#4F46E5", marginTop: 1 }}>
+                  Customer profiles synced from your store via webhooks
+                </Text>
+              </View>
+              <PhIcon name="chevron-forward" size={16} color="#4F46E5" />
+            </TouchableOpacity>
             {sheetStatus !== "connected" && saEmail ? (
               <View style={styles.saShareBox} testID="sa-share-box">
                 <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>

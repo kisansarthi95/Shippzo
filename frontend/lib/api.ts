@@ -1926,6 +1926,121 @@ export const Api = {
         suggested: Record<string, string>;
       }>("/me/webhook-config/preview", payload)
       .then((r) => r.data),
+
+  // ── Phase F3.3 — Abandoned Carts ──────────────────────────────────
+  abandonedCartStats: () =>
+    api
+      .get<{
+        abandoned: number;
+        recovered: number;
+        dismissed: number;
+        total_value: number;
+        recovered_value: number;
+      }>("/me/abandoned-carts/stats")
+      .then((r) => r.data),
+  listAbandonedCarts: (params?: {
+    status?: "abandoned" | "recovered" | "dismissed";
+    source_app?: string;
+    q?: string;
+    limit?: number;
+    offset?: number;
+  }) =>
+    api
+      .get<{ carts: AbandonedCart[]; count: number; total: number }>(
+        "/me/abandoned-carts",
+        { params },
+      )
+      .then((r) => r.data),
+  getAbandonedCart: (id: string) =>
+    api
+      .get<AbandonedCart & { items_raw?: any[] }>(`/me/abandoned-carts/${id}`)
+      .then((r) => r.data),
+  recoverAbandonedCart: (id: string) =>
+    api
+      .post<{ ok: boolean; pending_order_id: string; master_order_id: string }>(
+        `/me/abandoned-carts/${id}/recover`,
+      )
+      .then((r) => r.data),
+  dismissAbandonedCart: (id: string) =>
+    api
+      .post<{ ok: boolean; id: string }>(`/me/abandoned-carts/${id}/dismiss`)
+      .then((r) => r.data),
+  deleteAbandonedCart: (id: string) =>
+    api
+      .delete<{ ok: boolean; deleted: string }>(`/me/abandoned-carts/${id}`)
+      .then((r) => r.data),
+
+  // ── Phase F3.3 — Customers ────────────────────────────────────────
+  customerStats: () =>
+    api
+      .get<{
+        total: number;
+        total_spent: number;
+        by_source: { source_app: string; count: number; total_spent: number }[];
+      }>("/me/customers/stats")
+      .then((r) => r.data),
+  listCustomers: (params?: {
+    source_app?: string;
+    q?: string;
+    limit?: number;
+    offset?: number;
+  }) =>
+    api
+      .get<{ customers: Customer[]; count: number; total: number }>(
+        "/me/customers",
+        { params },
+      )
+      .then((r) => r.data),
+  getCustomer: (id: string) =>
+    api.get<Customer>(`/me/customers/${id}`).then((r) => r.data),
+  deleteCustomer: (id: string) =>
+    api.delete<{ ok: boolean; deleted: string }>(`/me/customers/${id}`)
+      .then((r) => r.data),
+};
+
+export type AbandonedCart = {
+  id: string;
+  external_cart_id: string;
+  customer_name: string;
+  customer_phone: string;
+  customer_email: string;
+  address: string;
+  city: string;
+  state: string;
+  pincode: string;
+  cart_value: number;
+  items_count: number;
+  items_summary: string;
+  abandoned_at: string;
+  recovery_url: string;
+  status: "abandoned" | "recovered" | "dismissed";
+  recovered_at: string | null;
+  dismissed_at: string | null;
+  pending_order_id: string | null;
+  created_at: string;
+  updated_at: string;
+  source_app: string;
+  webhook_name: string;
+};
+
+export type Customer = {
+  id: string;
+  external_customer_id: string;
+  customer_name: string;
+  customer_phone: string;
+  customer_email: string;
+  address: string;
+  city: string;
+  state: string;
+  pincode: string;
+  orders_count: number;
+  total_spent: number;
+  source_created_at: string;
+  created_at: string;
+  updated_at: string;
+  source_app: string;
+  webhook_name: string;
+  last_event: string;
 };
 
 export type CustomField = {

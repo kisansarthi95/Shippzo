@@ -623,6 +623,398 @@ def init() -> None:
             }
 
         if event_type not in ("new_order", "custom"):
+            # Phase F3.3 — Abandoned cart + Customer event processing.
+            # The remaining v2 event types (abandoned_order /
+            # customer_created / customer_updated) get full structured
+            # storage here so the dedicated UIs (Abandoned Carts screen
+            # + Customers screen) can list / search / recover them.
+            #
+            # All three flows use auto-detect heuristics on the
+            # FLATTENED payload first, then layer in any explicit
+            # user-mapping on top (so power users can still override).
+            from import_schema import normalise_timestamp
+
+            def _pick(flat: Dict[str, Any], candidates: tuple) -> str:
+                low = {k.lower(): k for k in flat.keys()}
+                for cand in candidates:
+                    real = low.get(cand.lower())
+                    if real and flat.get(real) not in (None, ""):
+                        return str(flat[real]).strip()
+                return ""
+
+            now_iso = datetime.now(timezone.utc).isoformat()
+
+            if event_type == "abandoned_order":
+                CART_ID_CANDIDATES = (
+                    "cart_id", "abandoned_checkout_id", "checkout_id",
+                    "cart_token", "token", "id", "order_id",
+                )
+                NAME_CANDIDATES = (
+                    "customer_name", "customer.name", "name",
+                    "billing_name", "shipping_name",
+                    "billing_address.name", "shipping_address.name",
+                    "customer.first_name", "first_name",
+                )
+                LASTNAME_CANDIDATES = (
+                    "customer.last_name", "last_name",
+                    "billing_address.last_name", "shipping_address.last_name",
+                )
+                PHONE_CANDIDATES = (
+                    "customer_phone", "customer.phone", "phone",
+                    "mobile", "contact_phone", "billing_phone",
+                    "shipping_phone", "billing_address.phone",
+                    "shipping_address.phone",
+                )
+                EMAIL_CANDIDATES = (
+                    "customer_email", "customer.email", "email",
+                    "contact_email", "buyer_email",
+                )
+                VALUE_CANDIDATES = (
+                    "total_price", "subtotal_price", "total",
+                    "cart_total", "total_amount", "value", "amount",
+                    "grand_total",
+                )
+                ABANDONED_AT_CANDIDATES = (
+                    "abandoned_at", "abandoned_checkout_at",
+                    "updated_at", "created_at", "timestamp",
+                )
+                RECOVERY_URL_CANDIDATES = (
+                    "abandoned_checkout_url", "recovery_url",
+                    "checkout_url", "abandoned_url", "url",
+                )
+                ITEMS_CANDIDATES = (
+                    "items", "line_items", "products", "cart_items",
+                    "skus",
+                )
+                ADDRESS_CANDIDATES = (
+                    "address", "shipping_address.address1",
+                    "billing_address.address1", "address_line1",
+                    "address1", "shipping_address",
+                )
+                CITY_CANDIDATES = (
+                    "city", "shipping_address.city",
+                    "billing_address.city",
+                )
+                STATE_CANDIDATES = (
+                    "state", "province", "shipping_address.province",
+                    "billing_address.province",
+                    "shipping_address.state",
+                )
+                PIN_CANDIDATES = (
+                    "pincode", "postal_code", "zip",
+                    "shipping_address.zip", "billing_address.zip",
+                    "shipping_address.postal_code",
+                )
+
+                imported = 0
+                skipped = 0
+                errors_ac: List[str] = []
+
+                for idx, raw in enumerate(rows):
+                    if not isinstance(raw, dict):
+                        errors_ac.append(f"row {idx}: not a JSON object")
+                        skipped += 1
+                        continue
+                    flat = _flatten(raw)
+
+                    cart_id = _pick(flat, CART_ID_CANDIDATES)
+                    name    = _pick(flat, NAME_CANDIDATES)
+                    last    = _pick(flat, LASTNAME_CANDIDATES)
+                    if name and last and last.lower() not in name.lower():
+                        name = f"{name} {last}".strip()
+                    phone   = _pick(flat, PHONE_CANDIDATES)
+                    email   = _pick(flat, EMAIL_CANDIDATES)
+                    value_s = _pick(flat, VALUE_CANDIDATES)
+                    try:
+                        cart_value = float(str(value_s).replace(",", "")) if value_s else 0.0
+                    except Exception:
+                        cart_value = 0.0
+                    abandoned_at = normalise_timestamp(
+                        _pick(flat, ABANDONED_AT_CANDIDATES),
+                    ) or now_iso
+                    recovery_url = _pick(flat, RECOVERY_URL_CANDIDATES)
+                    address = _pick(flat, ADDRESS_CANDIDATES)
+                    city    = _pick(flat, CITY_CANDIDATES)
+                    state   = _pick(flat, STATE_CANDIDATES)
+                    pincode = _pick(flat, PIN_CANDIDATES)
+
+                    items_raw = None
+                    for c in ITEMS_CANDIDATES:
+                        if c in raw and isinstance(raw[c], list):
+                            items_raw = raw[c]
+                            break
+                    items_count = len(items_raw) if isinstance(items_raw, list) else 0
+                    items_summary = ""
+                    if items_raw:
+                        names = []
+                        for it in items_raw[:5]:
+                            if isinstance(it, dict):
+                                t = (it.get("title") or it.get("name")
+                                     or it.get("product_name") or "").strip()
+                                if t:
+                                    names.append(t)
+                        if names:
+                            items_summary = ", ".join(names)
+                            if items_count > len(names):
+                                items_summary += f" (+{items_count - len(names)} more)"
+                        else:
+                            items_summary = f"{items_count} item(s)"
+
+                    if not cart_id and not phone and not email and not name:
+                        errors_ac.append(
+                            f"row {idx}: couldn't locate cart_id / "
+                            "customer_phone / customer_email / "
+                            "customer_name in the payload",
+                        )
+                        skipped += 1
+                        continue
+
+                    # Source-strict upsert. Same external_cart_id from
+                    # the same source_app collapses into one row (latest
+                    # snapshot wins).
+                    upsert_filter: Dict[str, Any] = {"user_id": user_id}
+                    if cart_id:
+                        upsert_filter["external_cart_id"] = cart_id
+                        upsert_filter["source_meta.source_app"] = source_app or ""
+                    else:
+                        upsert_filter["customer_phone"] = phone or ""
+                        upsert_filter["customer_email"] = email or ""
+                        upsert_filter["source_meta.source_app"] = source_app or ""
+
+                    set_doc = {
+                        "user_id":          user_id,
+                        "external_cart_id": cart_id,
+                        "customer_name":    name,
+                        "customer_phone":   phone,
+                        "customer_email":   email,
+                        "address":          address,
+                        "city":             city,
+                        "state":            state,
+                        "pincode":          pincode,
+                        "cart_value":       cart_value,
+                        "items_count":      items_count,
+                        "items_summary":    items_summary,
+                        "items_raw":        items_raw or [],
+                        "abandoned_at":     abandoned_at,
+                        "recovery_url":     recovery_url,
+                        "status":           "abandoned",
+                        "updated_at":       now_iso,
+                        "source_meta": {
+                            "webhook_id":   wh_id or "",
+                            "webhook_name": badge_name,
+                            "source_app":   source_app,
+                            "received_at":  now_iso,
+                        },
+                    }
+                    set_on_insert = {
+                        "id":            str(uuid.uuid4()),
+                        "created_at":    now_iso,
+                        "recovered_at":  None,
+                        "dismissed_at":  None,
+                        "pending_order_id": None,
+                    }
+                    await db.abandoned_carts.update_one(
+                        upsert_filter,
+                        {
+                            "$set":         set_doc,
+                            "$setOnInsert": set_on_insert,
+                        },
+                        upsert=True,
+                    )
+                    imported += 1
+
+                if wh_id and imported:
+                    try:
+                        await db.user_webhooks.update_one(
+                            {"id": wh_id},
+                            {"$inc": {"stats.total_imported": imported}},
+                        )
+                    except Exception:
+                        _logger.exception("Failed to bump abandoned-cart stats")
+
+                _logger.info(
+                    "webhook ingest: user=%s wh=%s event=abandoned_order "
+                    "imported=%d skipped=%d", user_id, wh_id or "legacy",
+                    imported, skipped,
+                )
+                return {
+                    "ok":         True,
+                    "imported":   imported,
+                    "skipped":    skipped,
+                    "event_type": event_type,
+                    "errors":     errors_ac[:10],
+                }
+
+            if event_type in ("customer_created", "customer_updated"):
+                CUST_ID_CANDIDATES = (
+                    "customer_id", "id", "customer.id", "user_id",
+                    "buyer_id",
+                )
+                NAME_CANDIDATES = (
+                    "customer_name", "customer.name", "name",
+                    "first_name", "customer.first_name",
+                )
+                LASTNAME_CANDIDATES = (
+                    "customer.last_name", "last_name",
+                )
+                PHONE_CANDIDATES = (
+                    "customer_phone", "customer.phone", "phone",
+                    "mobile", "contact_phone",
+                )
+                EMAIL_CANDIDATES = (
+                    "customer_email", "customer.email", "email",
+                )
+                ADDRESS_CANDIDATES = (
+                    "default_address.address1",
+                    "addresses.0.address1", "address",
+                    "address_line1", "address1",
+                )
+                CITY_CANDIDATES = (
+                    "default_address.city", "addresses.0.city", "city",
+                )
+                STATE_CANDIDATES = (
+                    "default_address.province",
+                    "default_address.state", "state", "province",
+                )
+                PIN_CANDIDATES = (
+                    "default_address.zip", "default_address.postal_code",
+                    "pincode", "zip", "postal_code",
+                )
+                ORDERS_CANDIDATES = (
+                    "orders_count", "total_orders", "order_count",
+                )
+                SPENT_CANDIDATES = (
+                    "total_spent", "lifetime_spend",
+                    "lifetime_value", "ltv",
+                )
+                CREATED_CANDIDATES = (
+                    "created_at", "customer.created_at",
+                )
+                UPDATED_CANDIDATES = (
+                    "updated_at", "customer.updated_at",
+                )
+
+                imported = 0
+                skipped = 0
+                errors_cu: List[str] = []
+
+                for idx, raw in enumerate(rows):
+                    if not isinstance(raw, dict):
+                        errors_cu.append(f"row {idx}: not a JSON object")
+                        skipped += 1
+                        continue
+                    flat = _flatten(raw)
+
+                    ext_cust_id = _pick(flat, CUST_ID_CANDIDATES)
+                    name = _pick(flat, NAME_CANDIDATES)
+                    last = _pick(flat, LASTNAME_CANDIDATES)
+                    if name and last and last.lower() not in name.lower():
+                        name = f"{name} {last}".strip()
+                    phone = _pick(flat, PHONE_CANDIDATES)
+                    email = _pick(flat, EMAIL_CANDIDATES)
+
+                    if not ext_cust_id and not phone and not email:
+                        errors_cu.append(
+                            f"row {idx}: couldn't locate customer_id / "
+                            "phone / email in the payload",
+                        )
+                        skipped += 1
+                        continue
+
+                    address = _pick(flat, ADDRESS_CANDIDATES)
+                    city    = _pick(flat, CITY_CANDIDATES)
+                    state   = _pick(flat, STATE_CANDIDATES)
+                    pincode = _pick(flat, PIN_CANDIDATES)
+                    try:
+                        orders_count = int(_pick(flat, ORDERS_CANDIDATES) or 0)
+                    except Exception:
+                        orders_count = 0
+                    try:
+                        total_spent = float(
+                            str(_pick(flat, SPENT_CANDIDATES) or 0).replace(",", ""),
+                        )
+                    except Exception:
+                        total_spent = 0.0
+                    src_created = normalise_timestamp(
+                        _pick(flat, CREATED_CANDIDATES),
+                    ) or ""
+                    src_updated = normalise_timestamp(
+                        _pick(flat, UPDATED_CANDIDATES),
+                    ) or now_iso
+
+                    # Upsert key: prefer (user_id, source_app, ext_cust_id);
+                    # fall back to (user_id, source_app, phone) when
+                    # ext_cust_id is missing.
+                    upsert_filter: Dict[str, Any] = {
+                        "user_id": user_id,
+                        "source_meta.source_app": source_app or "",
+                    }
+                    if ext_cust_id:
+                        upsert_filter["external_customer_id"] = ext_cust_id
+                    elif phone:
+                        upsert_filter["customer_phone"] = phone
+                    else:
+                        upsert_filter["customer_email"] = email
+
+                    set_doc = {
+                        "user_id":              user_id,
+                        "external_customer_id": ext_cust_id,
+                        "customer_name":        name,
+                        "customer_phone":       phone,
+                        "customer_email":       email,
+                        "address":              address,
+                        "city":                 city,
+                        "state":                state,
+                        "pincode":              pincode,
+                        "orders_count":         orders_count,
+                        "total_spent":          total_spent,
+                        "source_created_at":    src_created,
+                        "updated_at":           src_updated,
+                        "source_meta": {
+                            "webhook_id":   wh_id or "",
+                            "webhook_name": badge_name,
+                            "source_app":   source_app,
+                            "last_event":   event_type,
+                            "received_at":  now_iso,
+                        },
+                    }
+                    set_on_insert = {
+                        "id":         str(uuid.uuid4()),
+                        "created_at": now_iso,
+                    }
+                    await db.customers.update_one(
+                        upsert_filter,
+                        {
+                            "$set":         set_doc,
+                            "$setOnInsert": set_on_insert,
+                        },
+                        upsert=True,
+                    )
+                    imported += 1
+
+                if wh_id and imported:
+                    try:
+                        await db.user_webhooks.update_one(
+                            {"id": wh_id},
+                            {"$inc": {"stats.total_imported": imported}},
+                        )
+                    except Exception:
+                        _logger.exception("Failed to bump customer stats")
+
+                _logger.info(
+                    "webhook ingest: user=%s wh=%s event=%s "
+                    "imported=%d skipped=%d", user_id, wh_id or "legacy",
+                    event_type, imported, skipped,
+                )
+                return {
+                    "ok":         True,
+                    "imported":   imported,
+                    "skipped":    skipped,
+                    "event_type": event_type,
+                    "errors":     errors_cu[:10],
+                }
+
+            # Truly unknown event types (future-proofing) — ack with 200.
             return {
                 "ok": True,
                 "imported": 0,

@@ -15795,6 +15795,297 @@ agent_communication:
         regression of the rev-2 auto-detect suite. Use
         admin@test.com / Admin@12345.
 
+## Backend Test Run: Phase F3.3 — Abandoned Carts + Customers (2026-05-10)
+
+backend:
+  - task: "Phase F3.3 — abandoned_order webhook → db.abandoned_carts; recover/dismiss/list/stats endpoints"
+    implemented: true
+    working: true
+    file: "/app/backend/routers/webhook.py, /app/backend/routers/abandoned_carts.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "testing"
+        -comment: |
+            All 51 assertions PASSED for the abandoned-cart suite via
+            /app/backend_test.py against
+            https://logistics-hub-740.preview.emergentagent.com/api.
+            Verified end-to-end:
+
+            (A) Created webhook event_type='abandoned_order' source_app='shopify'.
+                POST Shopify-style abandoned-checkout payload to public URL →
+                200 imported=1, event_type='abandoned_order', skipped=0.
+                GET /api/me/abandoned-carts returns 1 row with:
+                  • source_app='shopify'
+                  • cart_value=1499
+                  • customer_name='Riya Sharma' (first+last joined)
+                  • customer_email='riya.sharma@example.com'
+                  • customer_phone contains 9812345670
+                  • items_summary populated ("Saree — Indigo Cotton, Bag — Jute Tote")
+                  • abandoned_at, recovery_url populated
+                  • external_cart_id matches submitted id
+                  • status='abandoned'.
+            (B) Repeat same payload → imported=1 (upsert), total still 1.
+                Source-strict upsert key (user_id + external_cart_id +
+                source_meta.source_app) prevents duplicates.
+            (C) GET /api/me/abandoned-carts/stats →
+                  abandoned=1, recovered=0, total_value=1499.
+            (D) POST /api/me/abandoned-carts/{id}/recover → 200 with
+                ok=true, pending_order_id, master_order_id. Verified the
+                pending_orders doc was actually created with:
+                  • customer_name='Riya Sharma'
+                  • amount=1499
+                  • source='abandoned_cart'.
+                Cart row updated: status='recovered',
+                pending_order_id back-ref populated.
+            (E) Recover again → ok=true, already_recovered=true, SAME
+                pending_order_id returned (no duplicate insert).
+            (F) Filter source_app=dukaan → total=0; source_app=shopify
+                → total=1. Source filter works.
+            (G) Created a 2nd fresh cart, POST .../dismiss → 200 with
+                ok=true, status='dismissed', dismissed_at populated.
+            (H) Posted bare payload with NO cart_id, phone, email or
+                name → skipped=1, imported=0, errors[0] contains
+                "couldn't locate cart_id" (matches contract).
+
+            CLEANUP: deleted 2 abandoned_carts rows, 1 pending_orders
+            row (the recovery), and 1 user_webhooks row. No test
+            artefacts remain.
+        -working: "NA"
+        -agent: "main"
+        -comment: |
+            REVIEW REQUEST FOR TESTING AGENT.
+            Login: admin@test.com / Admin@12345.
+
+            New backend behaviour:
+              1. Webhook ingest with event_type=abandoned_order now
+                 fully parses the payload using auto-detection on
+                 the FLATTENED keys (cart_id, customer name/phone/
+                 email, cart_value, abandoned_at, recovery_url,
+                 items_summary, address). Upserts into
+                 db.abandoned_carts keyed by
+                 (user_id, external_cart_id, source_meta.source_app)
+                 so the same cart from the same source collapses to
+                 one row (latest snapshot wins).
+              2. New router /api/me/abandoned-carts:
+                 - GET stats (counts + total_value + recovered_value)
+                 - GET list (filter status, source_app, q, paged)
+                 - GET single
+                 - POST {id}/recover  → creates pending_orders doc,
+                                       marks cart recovered + stores
+                                       pending_order_id back-ref.
+                 - POST {id}/dismiss  → status=dismissed, dismissed_at
+                 - DELETE {id}        → hard delete
+
+            CASES TO VERIFY:
+              (A) Create a webhook with event_type=abandoned_order
+                  and source_app=shopify. POST a Shopify-style
+                  abandoned-checkout payload to the public ingest
+                  URL → 200 imported=1. GET /api/me/abandoned-carts
+                  returns the row with cart_value, customer_name,
+                  customer_phone, customer_email, items_summary,
+                  abandoned_at, source_app=shopify.
+              (B) Same payload again → upsert (no duplicate). Total
+                  count remains 1.
+              (C) Stats endpoint returns abandoned=1,
+                  recovered=0, total_value matching the cart_value.
+              (D) POST /api/me/abandoned-carts/{id}/recover →
+                  returns ok=true, pending_order_id, master_order_id.
+                  GET /api/me/abandoned-carts now shows status=
+                  "recovered" with pending_order_id populated. A
+                  pending_orders doc exists for the user with the
+                  cart's customer + amount + items.
+              (E) POST /api/me/abandoned-carts/{id}/recover again
+                  → ok=true with already_recovered=true, same
+                  pending_order_id.
+              (F) Filter by source_app=dukaan returns 0 rows;
+                  filter by source_app=shopify returns 1.
+              (G) POST /api/me/abandoned-carts/{id2}/dismiss on a
+                  fresh cart → status=dismissed, dismissed_at set.
+              (H) Webhook ingest with cart payload missing every
+                  identifying field (no cart_id, phone, email, name)
+                  → response says skipped=1 and errors[0] contains
+                  "couldn't locate cart_id" wording.
+
+            Cleanup: delete created webhook + all
+            db.abandoned_carts rows + any pending_orders doc
+            created by recovery.
+
+  - task: "Phase F3.3 — customer_created/customer_updated webhook → db.customers; list/stats endpoints"
+    implemented: true
+    working: true
+    file: "/app/backend/routers/webhook.py, /app/backend/routers/customers.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "testing"
+        -comment: |
+            All 39 assertions PASSED for the customer suite via
+            /app/backend_test.py against
+            https://logistics-hub-740.preview.emergentagent.com/api.
+            Combined with the abandoned-cart suite, the full Phase F3.3
+            run is 90/90 PASS, 0 FAIL.
+
+            (A) Created webhook event_type='customer_created'
+                source_app='shopify'. POST Shopify-style customer
+                payload (id + first_name + last_name + email + phone +
+                orders_count + total_spent + default_address) → 200,
+                imported=1, event_type='customer_created'.
+                GET /api/me/customers → total=1, populated row:
+                  • source_app='shopify'
+                  • external_customer_id matches input
+                  • customer_name='Priya Patel' (first+last joined)
+                  • email + phone match
+                  • orders_count=3, total_spent=5499
+                  • last_event='customer_created'.
+            (B) Created a 2nd webhook event_type='customer_updated'
+                source_app='shopify'. POST same external customer ID
+                with orders_count=5, total_spent=8999 → imported=1.
+                GET total still 1 (UPSERT correctly hit existing row),
+                last_event='customer_updated', orders_count=5,
+                total_spent=8999. Source-strict matching key collapsed
+                them into one row.
+            (C) Created a 3rd webhook source_app='dukaan'. POST same
+                external customer ID → imported=1, total now 2 (separate
+                row). Both rows carry the same external_customer_id
+                but different source_app values — confirms source-strict
+                isolation as designed.
+            (D) GET /api/me/customers/stats → total=2, total_spent
+                14498 (8999+5499), by_source breakdown contains both
+                {shopify,1,8999} and {dukaan,1,5499}.
+            (E) Filter list by source_app=shopify → total=1.
+            (F) Search q=9876543210 → returned the matching customer
+                (phone match works).
+            (G) DELETE /api/me/customers/{id} → 200; subsequent GET
+                returned 404; stats.total dropped to 1.
+            (H) POSTed customer payload missing customer_id, phone AND
+                email → skipped=1, imported=0, errors[0] contains
+                "couldn't locate customer_id / phone / email"
+                (matches contract).
+
+            CLEANUP: deleted 1 customers row + 3 user_webhooks rows
+            (cust-shop, cust-shop-upd, cust-dukaan). No test
+            artefacts remain.
+        -working: "NA"
+        -agent: "main"
+        -comment: |
+            REVIEW REQUEST FOR TESTING AGENT.
+            Login: admin@test.com / Admin@12345.
+
+            New backend behaviour:
+              1. Webhook ingest with event_type=customer_created OR
+                 customer_updated upserts into db.customers. Auto-
+                 detect on the FLATTENED payload picks up:
+                 customer_id (from `customer_id`, `id`, `customer.id`,
+                 ...), customer_name (joins first_name + last_name
+                 if needed), phone, email, address fields,
+                 orders_count, total_spent, source_created_at.
+                 Upsert key: (user_id, source_app, external_customer_id)
+                 with phone/email fallback when no customer_id.
+              2. New router /api/me/customers:
+                 - GET stats (total + total_spent + by_source list
+                   with source_app, count, total_spent per group)
+                 - GET list (filter source_app, q, paged)
+                 - GET single
+                 - DELETE {id}
+
+            CASES TO VERIFY:
+              (A) Create a customer_created webhook with
+                  source_app=shopify. POST a Shopify-style customer
+                  payload → 200 imported=1. GET /api/me/customers
+                  returns the row populated.
+              (B) POST customer_updated event for the SAME
+                  external_customer_id with new orders_count +
+                  total_spent → upsert wins, count still 1, the row
+                  shows last_event="customer_updated" and the new
+                  spend totals.
+              (C) Different source_app=dukaan with the SAME external
+                  customer ID creates a SEPARATE row (source-strict
+                  isolation) — total now 2.
+              (D) Stats endpoint returns total=2 with by_source:
+                  [{shopify,1,...},{dukaan,1,...}] and the correct
+                  total_spent sum.
+              (E) Filter list by source_app=shopify returns 1 row.
+              (F) Search q=<phone> returns the matching customer.
+              (G) DELETE /api/me/customers/{id} → ok=true; subsequent
+                  GET 404s. count drops to 1.
+              (H) customer_created with payload missing customer_id,
+                  phone AND email → skipped=1 with errors[0] saying
+                  "couldn't locate customer_id / phone / email".
+
+            Cleanup: delete created webhook + all db.customers rows.
+
+agent_communication:
+    -agent: "main"
+    -message: |
+        Phase F3.3 is code-complete. Two new collections
+        (abandoned_carts + customers), two new routers, and
+        the webhook ingest path now fully processes
+        abandoned_order / customer_created / customer_updated
+        events with auto-detection on the flattened payload.
+        Frontend exposes /abandoned-carts and /customers screens
+        with stats banners, source-app filter chips, search, and
+        per-cart recover/dismiss/delete actions. Settings tab
+        has new tiles linking to both screens. Please run the
+        cases listed above using admin@test.com / Admin@12345.
+    -agent: "testing"
+    -message: |
+        Phase F3.3 — Abandoned Carts + Customers backend testing
+        COMPLETE. 90/90 assertions PASS, 0 FAIL via
+        /app/backend_test.py against
+        https://logistics-hub-740.preview.emergentagent.com/api.
+
+        ABANDONED CARTS — 51/51 PASS:
+          (A) Webhook (event_type=abandoned_order, source_app=shopify)
+              ingest of Shopify abandoned-checkout payload → list
+              shows the row with parsed customer_name (first+last
+              joined), email, phone, items_summary, abandoned_at,
+              recovery_url, cart_value=1499, source_app=shopify.
+          (B) Repeat → upsert (count stays 1).
+          (C) Stats: abandoned=1, recovered=0, total_value=1499.
+          (D) /recover → ok=true, pending_order_id, master_order_id.
+              Verified pending_orders doc created with correct
+              customer + amount=1499 + source='abandoned_cart'.
+              Cart row marks status=recovered + pending_order_id
+              back-ref.
+          (E) Recover-again → already_recovered=true with same
+              pending_order_id (idempotent).
+          (F) source_app=dukaan → 0; source_app=shopify → 1.
+          (G) Dismiss fresh cart → status=dismissed, dismissed_at
+              populated.
+          (H) Empty payload → skipped=1, error contains
+              "couldn't locate cart_id".
+
+        CUSTOMERS — 39/39 PASS:
+          (A) customer_created webhook (shopify) ingest → list shows
+              row with name (first+last joined), email, phone,
+              orders_count=3, total_spent=5499, last_event=
+              customer_created.
+          (B) customer_updated for SAME ext_cust_id → upsert (count
+              still 1), last_event=customer_updated, orders_count=5,
+              total_spent=8999.
+          (C) Same ext_cust_id with source_app=dukaan → SEPARATE row
+              (total=2). Source-strict isolation works.
+          (D) Stats: total=2, total_spent=14498, by_source
+              [{shopify,1,8999}, {dukaan,1,5499}].
+          (E) source_app=shopify → 1.
+          (F) Search q=<phone> returns matching customer.
+          (G) DELETE → 200; subsequent GET → 404; total drops to 1.
+          (H) Missing customer_id+phone+email → skipped=1, error
+              contains "couldn't locate customer_id / phone / email".
+
+        CLEANUP — fully successful: all 4 test webhooks deleted, 0
+        residual abandoned_carts rows, 0 residual customers rows,
+        0 residual pending_orders (recovery doc removed). No test
+        artefacts remain.
+
+        Both new routers + webhook event-processing branches are
+        production-ready. Ready for main agent to summarise/finish.
+
 ---
 
 ## Backend Test Run: Phase F3.2 (rev-3) Source-Aware Webhook Matching (2026-05-10)
