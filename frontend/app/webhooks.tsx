@@ -29,6 +29,7 @@ type Webhook = {
   id: string;
   name: string;
   event_type: string;
+  source_app?: string;
   secret: string;
   url: string;
   enabled: boolean;
@@ -100,10 +101,12 @@ export default function WebhooksScreen() {
       await Api.createWebhook({
         name:       newName.trim(),
         event_type: newEventType,
+        source_app: newSourceApp || undefined,
       });
       setCreateOpen(false);
       setNewName("");
       setNewEventType("new_order");
+      setNewSourceApp("");
       await load();
     } catch (e: any) {
       Alert.alert(
@@ -269,6 +272,13 @@ export default function WebhooksScreen() {
                         </Text>
                       </View>
                     ) : null}
+                    {wh.source_app ? (
+                      <View style={[styles.eventBadge, { backgroundColor: "#E0E7FF" }]}>
+                        <Text style={[styles.eventBadgeTxt, { color: "#3730A3" }]}>
+                          🏷 {wh.source_app.charAt(0).toUpperCase() + wh.source_app.slice(1)}
+                        </Text>
+                      </View>
+                    ) : null}
                   </View>
                 </View>
                 <Switch
@@ -375,6 +385,48 @@ export default function WebhooksScreen() {
             />
             <Text style={styles.hint}>
               Shown as the source badge on every order received from this webhook.
+            </Text>
+
+            <Text style={[styles.label, { marginTop: 14 }]}>
+              Source App
+            </Text>
+            <View style={styles.sourceRow}>
+              {[
+                { key: "",           label: "None" },
+                { key: "shopify",    label: "Shopify" },
+                { key: "dukaan",     label: "Dukaan" },
+                { key: "meesho",     label: "Meesho" },
+                { key: "woocommerce",label: "Woo" },
+                { key: "other",      label: "Other" },
+              ].map((opt) => {
+                const sel = newSourceApp === opt.key;
+                return (
+                  <TouchableOpacity
+                    key={opt.key || "_none"}
+                    testID={`source-app-${opt.key || "none"}`}
+                    onPress={() => setNewSourceApp(opt.key)}
+                    style={[
+                      styles.sourceChip,
+                      sel && styles.sourceChipSel,
+                    ]}
+                    activeOpacity={0.75}
+                  >
+                    <Text
+                      style={[
+                        styles.sourceChipTxt,
+                        sel && styles.sourceChipTxtSel,
+                      ]}
+                    >
+                      {opt.label}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+            <Text style={styles.hint}>
+              Optional. Tagging the source app keeps order-IDs from
+              Shopify/Dukaan/etc. from colliding when you receive
+              status updates.
             </Text>
 
             <Text style={[styles.label, { marginTop: 14 }]}>
@@ -552,6 +604,24 @@ const styles = StyleSheet.create({
   },
   hint: { fontSize: 11, color: colors.textMuted, marginTop: 4, lineHeight: 16 },
   sep:  { height: 1, backgroundColor: "#F1F5F9" },
+  sourceRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+    marginTop: 2,
+  },
+  sourceChip: {
+    paddingHorizontal: 12, paddingVertical: 8,
+    borderRadius: 999,
+    borderWidth: 1.5, borderColor: "#E5E7EB",
+    backgroundColor: "#fff",
+  },
+  sourceChipSel: {
+    borderColor: colors.primary,
+    backgroundColor: "#FFF7ED",
+  },
+  sourceChipTxt: { fontSize: 12, fontWeight: "700", color: "#475569" },
+  sourceChipTxtSel: { color: colors.primary },
   evtRow: {
     flexDirection: "row", alignItems: "center", gap: 10,
     paddingVertical: 12, paddingHorizontal: 6,
