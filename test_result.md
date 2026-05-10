@@ -15896,3 +15896,146 @@ agent_communication:
           • rev-2 auto-detect suite still green when source_app="".
         All test artefacts cleaned up (3 webhooks + 4 pending +
         1 shipment). Ready for main agent to summarise/finish.
+
+
+## Frontend Test Run: Phase F3.2 (rev-3) Webhooks Screen Source App Picker UI (2026-05-10)
+
+frontend:
+  - task: "Phase F3.2 (rev-3) — Webhooks screen Source App picker UI"
+    implemented: true
+    working: true
+    file: "/app/frontend/app/webhooks.tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: |
+            Frontend implementation for Source App picker on Webhooks screen.
+            Added 6 chip buttons (None, Shopify, Dukaan, Meesho, Woo, Other)
+            with testIDs for each. Source badge (🏷 + app name) displays on
+            webhook cards in indigo/purple color. Single-selection behavior
+            implemented (only one chip selected at a time).
+        -working: true
+        -agent: "testing"
+        -comment: |
+            All UI tests PASSED via Playwright on mobile viewport (390×844).
+            Verified end-to-end:
+            
+            TEST ENVIRONMENT:
+            - URL: https://logistics-hub-740.preview.emergentagent.com
+            - Credentials: admin@test.com / Admin@12345
+            - Viewport: iPhone 12 (390×844)
+            
+            ✅ STEP 1: LOGIN FLOW — PASS
+            - Welcome screen → "I already have an account" → Login screen
+            - Email and password fields functional
+            - "Log in" button clickable and working
+            - Successfully authenticated and redirected to dashboard
+            
+            ✅ STEP 2: NAVIGATION TO WEBHOOKS — PASS
+            - Successfully navigated to /webhooks
+            - Page title "Webhooks" visible
+            - "+ New" button present (testID="btn-create-webhook")
+            
+            ✅ STEP 3: CREATE WEBHOOK MODAL — PASS
+            - Modal opens on clicking "+ New" button
+            - Modal title "New Webhook" displayed
+            - Modal slides up from bottom (mobile-optimized)
+            
+            ✅ STEP 4: SOURCE APP PICKER UI — PASS (ALL REQUIREMENTS MET)
+            - Name input field present (testID="new-webhook-name")
+            - Source App section label visible
+            - All 6 chips present in correct order:
+              1. None (testID="source-app-none")
+              2. Shopify (testID="source-app-shopify")
+              3. Dukaan (testID="source-app-dukaan")
+              4. Meesho (testID="source-app-meesho")
+              5. Woo (testID="source-app-woocommerce")
+              6. Other (testID="source-app-other")
+            - Chip selection behavior verified:
+              * Tapping a chip highlights it (orange border + light orange bg)
+              * Only ONE chip selected at a time (verified by tapping
+                Shopify → Dukaan → Shopify; each tap deselects previous)
+            - Hint text present: "Optional. Tagging the source app keeps
+              order-IDs from Shopify/Dukaan/etc. from colliding when you
+              receive status updates."
+            - Event Type list present below Source App section
+            - All event types visible with emoji badges and descriptions
+            
+            ✅ STEP 5: CREATE WEBHOOK WITH SOURCE APP — PASS
+            - Filled name: "Test Shopify WH"
+            - Selected source app: Shopify (chip highlighted)
+            - Selected event type: Order Status Update
+              (testID="event-type-order_status_update")
+            - Clicked "Create webhook" button
+              (testID="confirm-create-webhook")
+            - Modal closed successfully
+            - Webhook created and appeared in list
+            
+            ✅ STEP 6: SOURCE BADGE ON CARD — PASS
+            - Webhook card "Test Shopify WH" found in list
+            - Source badge displayed: "🏷 Shopify"
+            - Badge color: indigo/purple (as specified)
+            - Event type badge also present: "🔄 Order Status Update"
+            
+            ✅ STEP 7: CLEANUP — PASS
+            - Delete button clicked on test webhook card
+            - Confirmation dialog appeared
+            - Deletion confirmed
+            - Webhook removed from list
+            
+            MOBILE RESPONSIVENESS:
+            ✅ All UI elements render correctly in 390×844 viewport
+            ✅ Touch targets appropriately sized
+            ✅ Modal slides from bottom (native mobile feel)
+            ✅ Chips wrap correctly in available space
+            ✅ No horizontal scrolling required
+            ✅ Text readable without zooming
+            
+            SCREENSHOTS CAPTURED:
+            1. webhooks-03-after-login.png — Dashboard after login
+            2. webhooks-04-webhooks-screen.png — Webhooks list screen
+            3. webhooks-05-create-modal.png — Create modal with all fields
+            4. webhooks-06-shopify-selected.png — Shopify chip selected
+            5. webhooks-07-dukaan-selected.png — Dukaan chip selected
+            6. webhooks-08-before-create.png — Ready to create webhook
+            7. webhooks-09-after-create.png — After webhook creation
+            8. webhooks-10-webhook-card.png — Webhook card with badges
+            9. webhooks-11-delete-confirm.png — Delete confirmation
+            10. webhooks-12-after-delete.png — After deletion
+            
+            NO ISSUES FOUND:
+            - All testIDs present and working
+            - All UI elements render correctly
+            - Single-selection behavior works as expected
+            - Source badge displays correctly on cards
+            - No console errors during test
+            - No visual glitches or layout issues
+            
+            FINAL RESULT: 7/7 test steps PASSED.
+            The Source App picker UI is fully functional and meets all
+            requirements from the review request.
+
+agent_communication:
+    -agent: "testing"
+    -message: |
+        Phase F3.2 (rev-3) Webhooks Screen Source App Picker UI test
+        COMPLETE — 7/7 steps PASSED.
+        
+        ✅ ALL REQUIREMENTS MET:
+        1. Navigation to /webhooks works
+        2. Create Webhook Modal opens correctly
+        3. Source App Picker UI verified:
+           • 6 chips in order: None, Shopify, Dukaan, Meesho, Woo, Other
+           • All testIDs correct (source-app-*)
+           • Single-selection behavior works (only one chip at a time)
+           • Hint text present
+           • Event Type list present
+        4. Webhook creation with Source App works
+        5. Source badge (🏷 Shopify) displays on card in indigo/purple
+        6. Cleanup successful
+        
+        Tested on mobile viewport (390×844). 10 screenshots captured.
+        No issues found. Ready for main agent to summarize and finish.
