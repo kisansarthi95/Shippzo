@@ -665,7 +665,8 @@ const styles = StyleSheet.create({
   },
 
   chip: {
-    paddingHorizontal: 12, paddingVertical: 7, borderRadius: 999,
+    paddingHorizontal: 12, paddingVertical: 7, borderRadius: 20,
+    flexShrink: 0,
     backgroundColor: "#F3F4F6", borderWidth: 1, borderColor: "#E5E7EB",
   },
   chipActive: { backgroundColor: "#7C3AED", borderColor: "#7C3AED" },

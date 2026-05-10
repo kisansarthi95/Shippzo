@@ -628,7 +628,8 @@ const styles = StyleSheet.create({
   scopeTxtActive: { color: "#fff" },
 
   chip: {
-    paddingHorizontal: 14, paddingVertical: 7, borderRadius: 999,
+    paddingHorizontal: 14, paddingVertical: 7, borderRadius: 20,
+    flexShrink: 0,
     backgroundColor: "#fff", borderWidth: 1, borderColor: "#E5E7EB",
   },
   chipActive: { backgroundColor: "#1F4FBF", borderColor: "#1F4FBF" },
@@ -639,7 +640,8 @@ const styles = StyleSheet.create({
   },
   filterPill: {
     flexDirection: "row", alignItems: "center", gap: 5,
-    paddingHorizontal: 10, paddingVertical: 7, borderRadius: 999,
+    paddingHorizontal: 10, paddingVertical: 7, borderRadius: 20,
+    flexShrink: 0,
     backgroundColor: "#fff", borderWidth: 1, borderColor: "#E5E7EB",
     maxWidth: 160,
   },

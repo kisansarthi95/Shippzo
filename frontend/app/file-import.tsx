@@ -396,7 +396,7 @@ const styles = StyleSheet.create({
   colRow:   { flexDirection: "row", alignItems: "center", paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: "#F1F5F9" },
   colHeader: { fontSize: 14, fontWeight: "600", color: "#0F172A" },
   colSample: { fontSize: 11, color: "#94A3B8", marginTop: 2 },
-  fieldPill: { flexDirection: "row", alignItems: "center", gap: 4, backgroundColor: "#F1F5F9", paddingHorizontal: 10, paddingVertical: 6, borderRadius: 999 },
+  fieldPill: { flexDirection: "row", alignItems: "center", gap: 4, backgroundColor: "#F1F5F9", paddingHorizontal: 10, paddingVertical: 6, borderRadius: 20, flexShrink: 0 },
   fieldPillTxt: { fontSize: 12, fontWeight: "600", color: "#0F172A" },
   toggleRow: { flexDirection: "row", alignItems: "center", marginTop: 16, paddingTop: 16, borderTopWidth: 1, borderTopColor: "#F1F5F9" },
   toggleTitle: { fontSize: 13, fontWeight: "600", color: "#0F172A" },

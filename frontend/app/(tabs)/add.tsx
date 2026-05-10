@@ -2664,7 +2664,8 @@ const styles = StyleSheet.create({
   flexLabel: { fontSize: 12, fontWeight: "800", color: "#6B21A8", marginBottom: 6 },
   flexEmpty: { fontSize: 11, color: "#9CA3AF", fontStyle: "italic" },
   flexChip: {
-    paddingHorizontal: 11, paddingVertical: 7, borderRadius: 999,
+    paddingHorizontal: 11, paddingVertical: 7, borderRadius: 20,
+    flexShrink: 0,
     backgroundColor: "#fff", borderWidth: 1, borderColor: "#D8B4FE",
   },
   flexChipActive: { backgroundColor: "#7C3AED", borderColor: "#7C3AED" },

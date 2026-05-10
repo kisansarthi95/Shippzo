@@ -3753,7 +3753,8 @@ const styles = StyleSheet.create({
   cfPosPill: {
     paddingHorizontal: 10,
     paddingVertical: 6,
-    borderRadius: 999,
+    borderRadius: 20,
+    flexShrink: 0,
     borderWidth: 1,
     borderColor: "#E5E7EB",
     backgroundColor: "#fff",

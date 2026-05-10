@@ -673,7 +673,8 @@ const styles = StyleSheet.create({
   },
   chipsWrap: { flexDirection: "row", flexWrap: "wrap", gap: 6, marginTop: 8 },
   roleChip: {
-    paddingHorizontal: 10, paddingVertical: 6, borderRadius: 999,
+    paddingHorizontal: 10, paddingVertical: 6, borderRadius: 20,
+    flexShrink: 0,
     backgroundColor: "#fff", borderWidth: 1, borderColor: "#E5E7EB",
   },
   roleChipActive: { backgroundColor: "#1F4FBF", borderColor: "#1F4FBF" },
