@@ -352,6 +352,41 @@ def normalise_value(field: str, raw: Any) -> Any:
         return normalise_status(raw)
     if field == "created_at_override":
         return normalise_timestamp(raw)
+    if field == "items" and isinstance(raw, list):
+        # Phase F3.3.1+ — pretty-format Shopify/Dukaan-style line_items.
+        # Each entry is typically a dict with `title` / `name` /
+        # `product_name` and a `quantity`. Render as
+        # "Title xQty, Title xQty, ..." for clean display in the
+        # Pending Order card / Smart Paste / Webhook downstream UI.
+        # Falls back to str(raw) if no recognisable name key is found
+        # in any element (preserves backward-compatibility for exotic
+        # payload shapes).
+        parts: List[str] = []
+        for it in raw:
+            if not isinstance(it, dict):
+                # Mixed list (string + dict) — bail out to legacy behaviour.
+                parts = []
+                break
+            name = (
+                it.get("title")
+                or it.get("name")
+                or it.get("product_name")
+                or ""
+            )
+            name = str(name).strip()
+            if not name:
+                # No name key in this element → abort, fall back below.
+                parts = []
+                break
+            qty_raw = it.get("quantity")
+            try:
+                qty = int(qty_raw) if qty_raw not in (None, "") else 1
+            except (TypeError, ValueError):
+                qty = 1
+            parts.append(f"{name} x{qty}")
+        if parts:
+            return ", ".join(parts)
+        return str(raw)
     if raw is None:
         return 0.0 if field in NUMERIC_FIELDS else ""
     s = str(raw).strip()
