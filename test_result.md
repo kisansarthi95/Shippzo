@@ -16032,6 +16032,37 @@ agent_communication:
         per-cart recover/dismiss/delete actions. Settings tab
         has new tiles linking to both screens. Please run the
         cases listed above using admin@test.com / Admin@12345.
+
+## Phase F3.3.1 — Abandoned Carts in Orders Tab (per-card actions) (2026-05-10)
+
+frontend:
+  - task: "Phase F3.3.1 — Abandoned filter chip in Orders tab + Call/WhatsApp/Confirm per-card actions"
+    implemented: true
+    working: "NA"
+    file: "/app/frontend/app/(tabs)/orders.tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: |
+            Added per user request (user found Settings-only
+            location too buried). Orders tab now shows a 6th
+            filter chip "🛒 Abandoned (N)" alongside Smart Paste /
+            File / Sheet / Webhook. When selected, abandoned-cart
+            rows render with their own action bar:
+              • 📞 Call    — tel: deep link
+              • 💬 WhatsApp — wa.me deep link with a pre-filled
+                Gujarati recovery message that includes the
+                customer name + cart value + items_summary
+              • ✓ Confirm   — calls existing
+                /api/me/abandoned-carts/{id}/recover, refreshes
+                the inbox, and toasts the new master_order_id
+            Ship-this-order button is HIDDEN on abandoned cards
+            so the owner is forced to confirm first (user explicitly
+            requested this). Backend API surface is unchanged
+            (already verified with 90/90 tests in earlier run).
     -agent: "testing"
     -message: |
         Phase F3.3 — Abandoned Carts + Customers backend testing

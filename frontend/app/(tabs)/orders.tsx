@@ -3,11 +3,11 @@ import PhIcon from "../../components/PhIcon";
 import {
   View, Text, StyleSheet, TextInput, TouchableOpacity,
   FlatList, RefreshControl, ActivityIndicator, Alert, Modal,
-  ScrollView,
+  ScrollView, Linking,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useFocusEffect, useRouter } from "expo-router";
-import { Api, SheetOrder, PendingOrder, Courier } from "../../lib/api";
+import { Api, SheetOrder, PendingOrder, Courier, AbandonedCart } from "../../lib/api";
 import { colors } from "../../lib/theme";
 
 type Filter = "pending" | "shipped" | "all";   // legacy — retained for type-import compat
@@ -35,19 +35,25 @@ export default function OrdersFromSheet() {
   // Phase F2.5 — friendly webhook label (e.g. "Shopify"). Falls back
   // to "WEBHOOK" pill when the user hasn't named theirs yet.
   const [webhookName, setWebhookName]   = useState<string>("");
+  // Phase F3.3 — Abandoned carts (webhook event_type=abandoned_order).
+  // Surfaces alongside Pending orders with Call / WhatsApp / Confirm
+  // actions instead of the regular "Ship this order" button.
+  const [abandonedCarts, setAbandonedCarts] = useState<AbandonedCart[]>([]);
+  const [confirmingCartId, setConfirmingCartId] = useState<string | null>(null);
   const [couriers, setCouriers] = useState<Courier[]>([]);
   const [shipModalOrder, setShipModalOrder] = useState<PendingOrder | null>(null);
   const [shipping, setShipping] = useState(false);
   // Phase B — unified source filter. "all" shows every pending row
   // from every channel mixed together; the others narrow to one
   // channel. Cards are sorted newest-first regardless of filter.
+  // Phase F3.3 — `abandoned` is its own filter (separate collection).
   const [sourceFilter, setSourceFilter] = useState<
-    "all" | "paste" | "file" | "sheet" | "webhook"
+    "all" | "paste" | "file" | "sheet" | "webhook" | "abandoned"
   >("all");
 
   const loadPasteOrders = useCallback(async () => {
     try {
-      const [pos, fos, wos, cs, wcfg] = await Promise.all([
+      const [pos, fos, wos, cs, wcfg, ac] = await Promise.all([
         Api.listPendingOrders({ source: "paste",   status: "pending" }),
         Api.listPendingOrders({ source: "file",    status: "pending" }),
         Api.listPendingOrders({ source: "webhook", status: "pending" }),
@@ -55,14 +61,89 @@ export default function OrdersFromSheet() {
         // Webhook name lookup is best-effort — a brand-new account
         // won't have one yet, in which case we fall back to "WEBHOOK".
         Api.getWebhookConfig().catch(() => null),
+        // Phase F3.3 — pull active abandoned carts so the new
+        // "Abandoned" filter chip can show a count + render cards.
+        Api.listAbandonedCarts({ status: "abandoned", limit: 200 })
+          .catch(() => ({ carts: [], count: 0, total: 0 })),
       ]);
       setPasteOrders(pos);
       setFileOrders(fos);
       setWebhookOrders(wos);
       setCouriers(cs);
       setWebhookName((wcfg as any)?.name || "");
+      setAbandonedCarts((ac as any)?.carts || []);
     } catch {/* ignore */}
   }, []);
+
+  // Phase F3.3 — Abandoned cart actions.
+  const callPhone = (phone: string) => {
+    const cleaned = (phone || "").replace(/[^+\d]/g, "");
+    if (!cleaned) {
+      Alert.alert("No phone", "This cart has no customer phone number.");
+      return;
+    }
+    Linking.openURL(`tel:${cleaned}`);
+  };
+
+  const whatsappAbandoned = (cart: AbandonedCart) => {
+    const cleaned = (cart.customer_phone || "").replace(/[^+\d]/g, "");
+    if (!cleaned) {
+      Alert.alert("No phone", "This cart has no customer phone number.");
+      return;
+    }
+    // wa.me requires a phone in international format (no +). For
+    // Indian numbers we prepend 91 if it's missing.
+    let waPhone = cleaned.replace(/^\+/, "");
+    if (waPhone.length === 10) waPhone = `91${waPhone}`;
+    const name  = cart.customer_name || "ગ્રાહક";
+    const value = cart.cart_value
+      ? `₹${Math.round(cart.cart_value).toLocaleString("en-IN")}`
+      : "";
+    const items = cart.items_summary ? `\n📦 ${cart.items_summary}` : "";
+    const msg =
+      `નમસ્તે ${name} 🙏\n\n` +
+      `તમે અમારા સ્ટોર પર ઓર્ડર છોડી દીધો છે${value ? ` (${value})` : ""}.${items}\n\n` +
+      `કૃપા કરી ઓર્ડર કન્ફર્મ કરવા આ મેસેજ માં Reply કરો અથવા call કરો. ` +
+      `અમે તમારા ઓર્ડરની રાહ જોઈએ છીએ! 🛒`;
+    const url = `https://wa.me/${waPhone}?text=${encodeURIComponent(msg)}`;
+    Linking.openURL(url).catch(() =>
+      Alert.alert("WhatsApp", "Couldn't open WhatsApp. Is it installed?"),
+    );
+  };
+
+  const confirmAbandoned = (cart: AbandonedCart) => {
+    Alert.alert(
+      "Confirm this order?",
+      `${cart.customer_name || "Customer"} · ${
+        cart.cart_value ? "₹" + Math.round(cart.cart_value).toLocaleString("en-IN") : ""
+      }\n\nThis moves the cart into your Pending Orders queue so you can ship it.`,
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Confirm",
+          onPress: async () => {
+            setConfirmingCartId(cart.id);
+            try {
+              const r = await Api.recoverAbandonedCart(cart.id);
+              await loadPasteOrders();
+              setSourceFilter("all");
+              Alert.alert(
+                "Confirmed ✓",
+                `Order ${r.master_order_id} created — open the All / File filter to ship it.`,
+              );
+            } catch (e: any) {
+              Alert.alert(
+                "Confirmation failed",
+                e?.response?.data?.detail || e?.message || "Try again.",
+              );
+            } finally {
+              setConfirmingCartId(null);
+            }
+          },
+        },
+      ],
+    );
+  };
 
   const shipPasteOrder = (order: PendingOrder) => {
     // Same flow as Sheet orders — navigate to Add with prefill.
@@ -164,7 +245,7 @@ export default function OrdersFromSheet() {
   // available, falling back to spreadsheet row index for sheet rows.
   type UnifiedRow = {
     key: string;
-    source: "paste" | "file" | "sheet" | "webhook";
+    source: "paste" | "file" | "sheet" | "webhook" | "abandoned";
     badgeLabel: string;
     badgeBg: string;
     badgeFg: string;
@@ -180,6 +261,7 @@ export default function OrdersFromSheet() {
     extra?: string;            // small footnote (e.g. "from invoice.csv")
     paste?: PendingOrder;      // present for paste/file/webhook
     sheet?: SheetOrder;        // present for sheet
+    abandoned?: AbandonedCart; // present for abandoned carts (Phase F3.3)
   };
 
   const unifiedRows: UnifiedRow[] = (() => {
@@ -292,6 +374,35 @@ export default function OrdersFromSheet() {
       }
     }
 
+    // Phase F3.3 — Abandoned carts (separate collection, but the
+    // user wants them inline so they can recover/contact in one
+    // place). Source-only filter — never bleed into "all".
+    if (sourceFilter === "abandoned") {
+      for (const ac of abandonedCarts) {
+        const sourceLbl = ac.source_app
+          ? ac.source_app.charAt(0).toUpperCase() + ac.source_app.slice(1)
+          : "Cart";
+        out.push({
+          key: `abandoned|${ac.id}`,
+          source: "abandoned",
+          badgeLabel: `🛒 ${sourceLbl.toUpperCase()}`,
+          badgeBg: "#FED7AA",
+          badgeFg: "#9A3412",
+          sortTime: Date.parse(ac.abandoned_at || ac.created_at) || 0,
+          customer_name: ac.customer_name,
+          customer_phone: ac.customer_phone,
+          city: ac.city,
+          state: ac.state,
+          pincode: ac.pincode,
+          items: ac.items_summary,
+          amount: ac.cart_value,
+          payment_mode: "",
+          extra: ac.customer_email || "",
+          abandoned: ac,
+        });
+      }
+    }
+
     // Newest first.
     out.sort((a, b) => b.sortTime - a.sortTime);
     return out;
@@ -352,22 +463,68 @@ export default function OrdersFromSheet() {
       {!!row.extra && (
         <Text style={styles.unifiedExtra} numberOfLines={1}>{row.extra}</Text>
       )}
-      <TouchableOpacity
-        style={[
-          styles.shipBtn,
-          row.source === "file"    && { backgroundColor: "#10B981" },
-          row.source === "sheet"   && { backgroundColor: "#1D4ED8" },
-          row.source === "webhook" && { backgroundColor: "#C2410C" },
-        ]}
-        onPress={() => {
-          if (row.sheet) shipNow(row.sheet);
-          else if (row.paste) shipPasteOrder(row.paste);
-        }}
-        testID={`ship-${row.key}`}
-      >
-        <PhIcon name="rocket-outline" size={14} color="#fff" />
-        <Text style={styles.shipBtnText}>Ship this order</Text>
-      </TouchableOpacity>
+      {row.source === "abandoned" && row.abandoned ? (
+        // Phase F3.3 — Abandoned cart actions: Call + WhatsApp +
+        // Confirm. The Ship button is intentionally hidden because
+        // abandoned carts aren't real orders yet — owner needs to
+        // confirm them first.
+        <View style={styles.abandonedActions}>
+          <TouchableOpacity
+            style={[styles.abActBtn, styles.abActCall]}
+            onPress={() => callPhone(row.abandoned!.customer_phone)}
+            testID={`call-${row.key}`}
+            activeOpacity={0.85}
+          >
+            <PhIcon name="phone" size={14} color="#1E40AF" />
+            <Text style={styles.abActCallTxt}>Call</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.abActBtn, styles.abActWa]}
+            onPress={() => whatsappAbandoned(row.abandoned!)}
+            testID={`wa-${row.key}`}
+            activeOpacity={0.85}
+          >
+            <PhIcon name="logo-whatsapp" size={14} color="#fff" />
+            <Text style={styles.abActWaTxt}>WhatsApp</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[
+              styles.abActBtn, styles.abActConfirm,
+              confirmingCartId === row.abandoned.id && { opacity: 0.5 },
+            ]}
+            onPress={() => confirmAbandoned(row.abandoned!)}
+            disabled={confirmingCartId === row.abandoned.id}
+            testID={`confirm-${row.key}`}
+            activeOpacity={0.85}
+          >
+            {confirmingCartId === row.abandoned.id ? (
+              <ActivityIndicator size="small" color="#fff" />
+            ) : (
+              <>
+                <PhIcon name="checkmark" size={14} color="#fff" />
+                <Text style={styles.abActConfirmTxt}>Confirm</Text>
+              </>
+            )}
+          </TouchableOpacity>
+        </View>
+      ) : (
+        <TouchableOpacity
+          style={[
+            styles.shipBtn,
+            row.source === "file"    && { backgroundColor: "#10B981" },
+            row.source === "sheet"   && { backgroundColor: "#1D4ED8" },
+            row.source === "webhook" && { backgroundColor: "#C2410C" },
+          ]}
+          onPress={() => {
+            if (row.sheet) shipNow(row.sheet);
+            else if (row.paste) shipPasteOrder(row.paste);
+          }}
+          testID={`ship-${row.key}`}
+        >
+          <PhIcon name="rocket-outline" size={14} color="#fff" />
+          <Text style={styles.shipBtnText}>Ship this order</Text>
+        </TouchableOpacity>
+      )}
     </View>
   );
 
@@ -475,6 +632,7 @@ export default function OrdersFromSheet() {
           { k: "file",    label: `📄 File${fileOrders.length ? ` (${fileOrders.length})` : ""}` },
           { k: "sheet",   label: `📊 Sheet${connected ? ` (${orders.filter(o => !o.already_shipped).length})` : ""}` },
           { k: "webhook", label: `🔌 ${(webhookName || "Webhook")}${webhookOrders.length ? ` (${webhookOrders.length})` : ""}` },
+          { k: "abandoned", label: `🛒 Abandoned${abandonedCarts.length ? ` (${abandonedCarts.length})` : ""}` },
         ] as const).map((f) => {
           const active = sourceFilter === f.k;
           return (
@@ -792,6 +950,28 @@ const styles = StyleSheet.create({
     borderRadius: 8,
   },
   shipBtnText: { color: "#fff", fontSize: 12, fontWeight: "800" },
+
+  // Phase F3.3 — Abandoned cart actions: Call + WhatsApp + Confirm.
+  abandonedActions: {
+    flexDirection: "row",
+    gap: 6,
+    marginTop: 8,
+  },
+  abActBtn: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 4,
+    paddingVertical: 9,
+    borderRadius: 8,
+  },
+  abActCall: { backgroundColor: "#DBEAFE" },
+  abActCallTxt: { color: "#1E40AF", fontSize: 12, fontWeight: "800" },
+  abActWa:   { backgroundColor: "#22C55E" },
+  abActWaTxt:   { color: "#fff", fontSize: 12, fontWeight: "800" },
+  abActConfirm: { backgroundColor: "#9A3412" },
+  abActConfirmTxt: { color: "#fff", fontSize: 12, fontWeight: "800" },
 
   // Modal
   modalOverlay: {
