@@ -64,6 +64,7 @@ export default function WebhooksScreen() {
   const [createOpen, setCreateOpen]   = useState(false);
   const [newName, setNewName]         = useState("");
   const [newEventType, setNewEventType] = useState("new_order");
+  const [newSourceApp, setNewSourceApp] = useState("");
   const [creating, setCreating]       = useState(false);
 
   const load = useCallback(async () => {

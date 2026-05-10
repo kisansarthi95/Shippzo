@@ -280,6 +280,7 @@ def init() -> None:
             wh_id       = wh_doc.get("id")
             event_type  = wh_doc.get("event_type") or "new_order"
             badge_name  = (wh_doc.get("name") or "").strip()
+            source_app  = (wh_doc.get("source_app") or "").strip().lower()
         else:
             # Legacy single-webhook path.
             u = await db.users.find_one(
@@ -293,6 +294,7 @@ def init() -> None:
             wh_id       = None
             event_type  = "new_order"
             badge_name  = (u.get("webhook_name") or "").strip()
+            source_app  = ""
         # Phase F2.4 — Forgiving ingest. External senders (Dukaan,
         # Shopify, Zapier, …) often run a "Test webhook" probe BEFORE
         # the user has a chance to configure column mapping. They mark
@@ -514,22 +516,80 @@ def init() -> None:
                     elif new_status == "Returned":
                         update_set["returned_at"] = event_ts
 
-                ship_filter = {
+                # Match by external_order_id, master_order_id, OR
+                # internal id — scoped to this user. A single ingest
+                # can update either a Shipment (already shipped) or a
+                # Pending Order (still in inbox).
+                base_or = [
+                    {"external_order_id": order_id},
+                    {"master_order_id":   order_id},
+                    {"order_id":          order_id},
+                    {"id":                order_id},
+                ]
+
+                # Phase F3.2 (rev-3) — Source-strict matching.
+                # If the status-update webhook has a `source_app` set,
+                # we ONLY update orders that came from a webhook with
+                # the SAME source_app. This prevents Dukaan #123's
+                # status update from accidentally touching Shopify
+                # #123. Webhooks without a source_app fall back to
+                # the legacy behaviour (any matching order_id).
+                ship_filter: Dict[str, Any] = {
                     "user_id": user_id,
-                    "$or": [
-                        {"master_order_id": order_id},
-                        {"order_id":        order_id},
-                        {"id":              order_id},
-                    ],
+                    "$or":     base_or,
                 }
+                if source_app:
+                    ship_filter["source_meta.source_app"] = source_app
+
                 ship_res = await db.shipments.update_one(
                     ship_filter, {"$set": update_set},
                 )
                 if ship_res.matched_count == 0:
+                    # Phase F3.2 (rev-3) — Pending-order auto-update.
+                    # When a status update lands on a still-pending
+                    # order (i.e. the user hasn't shipped it yet), we
+                    # apply the status BUT also raise `needs_review`
+                    # so the orange banner on the Pending Orders card
+                    # warns the user that the source app says the
+                    # order has progressed externally. They can either
+                    # accept it (cancel the local pending) or process
+                    # the order normally (which clears the flag).
+                    pend_set = {
+                        **update_set,
+                        "needs_review":              True,
+                        "needs_review_reason":       (
+                            f"Source reported status='{new_status or new_status_raw}' "
+                            "while order is still pending."
+                        ),
+                        "needs_review_at":           event_ts,
+                    }
                     pend_res = await db.pending_orders.update_one(
-                        ship_filter, {"$set": update_set},
+                        ship_filter, {"$set": pend_set},
                     )
-                    if pend_res.matched_count == 0:
+                    if pend_res.matched_count == 0 and source_app:
+                        # Strict match missed → try one more time without
+                        # the source filter so legacy / pre-rev-3 orders
+                        # (created before source_app was tracked) still
+                        # pick up updates. Logged as a soft-warning.
+                        loose_filter: Dict[str, Any] = {
+                            "user_id": user_id,
+                            "$or":     base_or,
+                        }
+                        ship_res2 = await db.shipments.update_one(
+                            loose_filter, {"$set": update_set},
+                        )
+                        if ship_res2.matched_count == 0:
+                            pend_res2 = await db.pending_orders.update_one(
+                                loose_filter, {"$set": pend_set},
+                            )
+                            if pend_res2.matched_count == 0:
+                                not_found += 1
+                                errors_status.append(
+                                    f"row {idx}: no shipment / pending "
+                                    f"order found for order_id='{order_id}'",
+                                )
+                                continue
+                    elif pend_res.matched_count == 0:
                         not_found += 1
                         errors_status.append(
                             f"row {idx}: no shipment / pending order "
@@ -612,6 +672,12 @@ def init() -> None:
                 "imported_at":     imp_at,
                 "master_order_id": await generate_master_order_id(),
                 "created_at":      now,
+                # Phase F3.2 (rev-3) — preserve the source app's
+                # ORIGINAL order id BEFORE we fall through to using
+                # the internal master_order_id below. Status updates
+                # later use this as their primary match key (so the
+                # Dukaan #123 doesn't collide with Shopify #123).
+                "external_order_id": (doc.get("order_id") or "").strip(),
                 "source_meta": {
                     "received_at":  now,
                     "remote_keys":  list(flat.keys())[:30],
@@ -625,6 +691,12 @@ def init() -> None:
                     # storefront and the user can drill down.
                     "webhook_id":   wh_id or "",
                     "event_type":   event_type,
+                    # Phase F3.2 (rev-3) — Source-strict matching key.
+                    # Lowercased canonical source identifier (e.g.
+                    # "dukaan", "shopify"). Empty string means the
+                    # owner didn't tag this webhook with a source app
+                    # → status updates fall back to global match.
+                    "source_app":   source_app,
                 },
             })
             doc["order_id"] = doc.get("order_id") or doc["master_order_id"]

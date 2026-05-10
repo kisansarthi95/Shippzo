@@ -113,6 +113,13 @@ EVENT_KEYS: List[str] = [e["key"] for e in EVENT_TYPES]
 class WebhookCreatePayload(BaseModel):
     name: str = Field(min_length=1, max_length=32)
     event_type: str = Field(default="new_order", max_length=32)
+    # Phase F3.2 (rev-3) — Source-strict matching for status updates.
+    # User picks the storefront/source this webhook is associated with
+    # (e.g. "dukaan", "shopify", "woocommerce", or any custom string).
+    # Both the new_order AND order_status_update webhooks for the same
+    # source should share the same `source_app` value so status updates
+    # only target orders that came from the same source.
+    source_app: str = Field(default="", max_length=32)
 
 
 class WebhookUpdatePayload(BaseModel):
@@ -120,6 +127,7 @@ class WebhookUpdatePayload(BaseModel):
     event_type: Optional[str] = Field(default=None, max_length=32)
     enabled: Optional[bool] = None
     mapping: Optional[Dict[str, str]] = None
+    source_app: Optional[str] = Field(default=None, max_length=32)
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -150,6 +158,7 @@ def _serialise_webhook(w: Dict[str, Any], request: Request | None = None) -> Dic
         "id":               w.get("id"),
         "name":             w.get("name") or "",
         "event_type":       w.get("event_type") or "new_order",
+        "source_app":       w.get("source_app") or "",
         "secret":           w.get("secret") or "",
         "enabled":          bool(w.get("enabled", True)),
         "mapping":          w.get("mapping") or {},
@@ -261,6 +270,7 @@ def init() -> None:
             "user_id":    current_user["id"],
             "name":       payload.name.strip()[:32],
             "event_type": payload.event_type,
+            "source_app": (payload.source_app or "").strip().lower()[:32],
             "secret":     secret,
             "mapping":    {},
             "enabled":    True,
@@ -328,6 +338,10 @@ def init() -> None:
             update["event_type"] = payload.event_type
         if payload.enabled is not None:
             update["enabled"] = bool(payload.enabled)
+        if payload.source_app is not None:
+            # Phase F3.2 (rev-3) — normalised to lowercase so source-
+            # strict matching is case-insensitive.
+            update["source_app"] = payload.source_app.strip().lower()[:32]
         if payload.mapping is not None:
             custom_fields = await _list_user_custom_fields(current_user["id"])
             cf_ids = {cf.get("id") for cf in custom_fields if cf.get("id")}

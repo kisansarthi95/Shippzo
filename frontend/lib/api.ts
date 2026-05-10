@@ -1875,7 +1875,7 @@ export const Api = {
         count: number;
       }>("/me/webhooks")
       .then((r) => r.data),
-  createWebhook: (body: { name: string; event_type: string }) =>
+  createWebhook: (body: { name: string; event_type: string; source_app?: string }) =>
     api
       .post<{
         id: string; name: string; event_type: string; secret: string;
