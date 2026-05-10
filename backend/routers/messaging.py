@@ -53,6 +53,7 @@ TEMPLATE_TYPES = [
     "delivery_confirmation",  # X days later — "did you receive?".
     "delivery_done",          # After customer confirms received (thanks msg).
     "feedback_request",       # After Feedback stage — asks for a review/rating.
+    "abandoned_recovery",     # Phase F3.5 — Abandoned cart recovery ping.
 ]
 
 # Bundled defaults. {var} placeholders are substituted client-side at send time.
@@ -150,6 +151,38 @@ DEFAULT_TEMPLATES: Dict[str, Dict[str, str]] = {
             "⭐ Rate us on Google: {google_review_url}\n"
             "🛒 Review on website: {website_url}\n\n"
             "Thank you! 🙏"
+        ),
+    },
+    # Phase F3.5 — Abandoned-cart recovery ping. Fires only on
+    # rows in db.abandoned_carts (status=abandoned). Variables:
+    # {customer_name}, {amount}, {items}, {shop_name}.
+    "abandoned_recovery": {
+        "gu": (
+            "નમસ્તે {customer_name} 🙏\n"
+            "તમે અમારા સ્ટોર પર ઓર્ડર છોડી દીધો છે.\n"
+            "🛒 {items}\n"
+            "💰 ₹{amount}\n\n"
+            "ઓર્ડર પૂરો કરવા Reply કરો અથવા call કરો.\n"
+            "આભાર!\n"
+            "— {shop_name}"
+        ),
+        "hi": (
+            "नमस्ते {customer_name} 🙏\n"
+            "आपने हमारे स्टोर पर ऑर्डर अधूरा छोड़ दिया है।\n"
+            "🛒 {items}\n"
+            "💰 ₹{amount}\n\n"
+            "ऑर्डर पूरा करने के लिए Reply करें या call करें।\n"
+            "धन्यवाद!\n"
+            "— {shop_name}"
+        ),
+        "en": (
+            "Hi {customer_name} 🙏\n"
+            "You left an order incomplete in our store.\n"
+            "🛒 {items}\n"
+            "💰 ₹{amount}\n\n"
+            "Reply to this message or call us to complete your order.\n"
+            "Thank you!\n"
+            "— {shop_name}"
         ),
     },
 }
@@ -1323,6 +1356,18 @@ def init() -> None:
             "label":         "Feedback / Review",
             "icon":          "⭐",
         },
+        # Phase F3.5 — Abandoned-cart recovery uses a SEPARATE
+        # collection (db.abandoned_carts) so we mark it with
+        # `data_source: "abandoned_carts"`. The eligible / mark-sent /
+        # reset / dashboard-counts handlers branch on this flag.
+        "abandoned_recovery": {
+            "statuses":      [],   # not used — abandoned_carts has its own status
+            "since_field":   None,
+            "min_days":      0,
+            "label":         "Abandoned Cart Recovery",
+            "icon":          "🛒",
+            "data_source":   "abandoned_carts",
+        },
     }
 
     def _msg_log(shipment: Dict[str, Any], ttype: str) -> Dict[str, str]:
@@ -1345,6 +1390,61 @@ def init() -> None:
         if ttype not in _BULK_FILTERS:
             raise HTTPException(400, f"Unknown bulk template type '{ttype}'")
         cfg = _BULK_FILTERS[ttype]
+
+        # Phase F3.5 — abandoned_recovery sources from db.abandoned_carts
+        # not db.shipments. Shape each cart to look like a Shipment row
+        # (id, customer_phone, customer_name, customer_email, address,
+        # city, state, pincode, amount, items, order_id) so the existing
+        # frontend bulk-message screen renders them with no special-
+        # casing.
+        if cfg.get("data_source") == "abandoned_carts":
+            carts = await db.abandoned_carts.find(
+                {"user_id": current_user["id"], "status": "abandoned"},
+                {"_id": 0},
+            ).sort("abandoned_at", -1).to_list(5000)
+            eligible: List[Dict[str, Any]] = []
+            sent_today_count = 0
+            pending_count = 0
+            for c in carts:
+                row = {
+                    "id":              c.get("id"),
+                    "customer_name":   c.get("customer_name") or "",
+                    "customer_phone":  c.get("customer_phone") or "",
+                    "customer_email":  c.get("customer_email") or "",
+                    "address_line1":   c.get("address") or "",
+                    "city":            c.get("city") or "",
+                    "state":           c.get("state") or "",
+                    "pincode":         c.get("pincode") or "",
+                    "amount":          float(c.get("cart_value") or 0.0),
+                    "items":           c.get("items_summary") or "",
+                    "order_id":        c.get("external_cart_id") or "",
+                    "tracking_id":     "",
+                    "courier":         "",
+                    "bulk_msg_log":    c.get("bulk_msg_log") or {},
+                    "_days_since":     0,
+                }
+                if _msg_sent_today(row, ttype):
+                    sent_today_count += 1
+                    row["_msg_sent_today"] = True
+                else:
+                    pending_count += 1
+                    row["_msg_sent_today"] = False
+                row["_last_msg"] = _msg_log(row, ttype)
+                eligible.append(row)
+            return {
+                "ttype":      ttype,
+                "label":      cfg["label"],
+                "icon":       cfg["icon"],
+                "min_days":   0,
+                "statuses":   ["abandoned"],
+                "shipments":  eligible,
+                "counts": {
+                    "list":         len(eligible),
+                    "sent_today":   sent_today_count,
+                    "pending":      pending_count,
+                },
+            }
+
         min_days = (
             threshold_days if (threshold_days is not None and threshold_days >= 0)
             else cfg["min_days"]
@@ -1411,6 +1511,42 @@ def init() -> None:
         ids = [i for i in (payload.shipment_ids or []) if i]
         if not ids:
             return {"updated": 0, "skipped": 0, "updated_ids": [], "skipped_ids": []}
+        cfg = _BULK_FILTERS[ttype]
+
+        # Phase F3.5 — abandoned_recovery flips bulk_msg_log on
+        # db.abandoned_carts instead of db.shipments.
+        if cfg.get("data_source") == "abandoned_carts":
+            rows = await db.abandoned_carts.find(
+                {"user_id": current_user["id"], "id": {"$in": ids}},
+                {"_id": 0, "id": 1, "bulk_msg_log": 1},
+            ).to_list(len(ids))
+            today = utcnow_iso()[:10]
+            updated_ids: List[str] = []
+            skipped_ids: List[str] = []
+            for r in rows:
+                log_entry = ((r.get("bulk_msg_log") or {}).get(ttype) or {})
+                sent_at = str(log_entry.get("sent_at") or "")
+                if log_entry.get("status") == "sent" and sent_at[:10] == today:
+                    skipped_ids.append(r["id"])
+                    continue
+                updated_ids.append(r["id"])
+            if updated_ids:
+                now = utcnow_iso()
+                await db.abandoned_carts.update_many(
+                    {"user_id": current_user["id"], "id": {"$in": updated_ids}},
+                    {"$set": {
+                        f"bulk_msg_log.{ttype}.status":  "sent",
+                        f"bulk_msg_log.{ttype}.sent_at": now,
+                    }},
+                )
+            return {
+                "ttype":         ttype,
+                "updated":       len(updated_ids),
+                "skipped":       len(skipped_ids),
+                "updated_ids":   updated_ids,
+                "skipped_ids":   skipped_ids,
+            }
+
         rows = await db.shipments.find(
             {"user_id": current_user["id"], "id": {"$in": ids}},
             {"_id": 0, "id": 1, "bulk_msg_log": 1, "dispatch_msg_status": 1, "dispatch_msg_sent_at": 1},
@@ -1463,6 +1599,19 @@ def init() -> None:
         ids = [i for i in (payload.shipment_ids or []) if i]
         if not ids:
             return {"updated": 0}
+        cfg = _BULK_FILTERS[ttype]
+
+        # Phase F3.5 — abandoned_recovery → reset on db.abandoned_carts.
+        if cfg.get("data_source") == "abandoned_carts":
+            res = await db.abandoned_carts.update_many(
+                {"user_id": current_user["id"], "id": {"$in": ids}},
+                {"$set": {
+                    f"bulk_msg_log.{ttype}.status":  "pending",
+                    f"bulk_msg_log.{ttype}.sent_at": "",
+                }},
+            )
+            return {"updated": int(res.modified_count)}
+
         unset_ops = {
             f"bulk_msg_log.{ttype}.status":  "pending",
             f"bulk_msg_log.{ttype}.sent_at": "",
@@ -1485,6 +1634,29 @@ def init() -> None:
         {ttype: {label, icon, pending, list}} for every type."""
         out: Dict[str, Any] = {}
         for ttype, cfg in _BULK_FILTERS.items():
+            # Phase F3.5 — abandoned_recovery counts come from
+            # db.abandoned_carts (status=abandoned).
+            if cfg.get("data_source") == "abandoned_carts":
+                carts = await db.abandoned_carts.find(
+                    {"user_id": current_user["id"], "status": "abandoned"},
+                    {"_id": 0, "bulk_msg_log": 1},
+                ).to_list(5000)
+                today = utcnow_iso()[:10]
+                list_n = len(carts)
+                pending_n = 0
+                for r in carts:
+                    log = ((r.get("bulk_msg_log") or {}).get(ttype) or {})
+                    if log.get("status") == "sent" and str(log.get("sent_at") or "")[:10] == today:
+                        continue
+                    pending_n += 1
+                out[ttype] = {
+                    "label":   cfg["label"],
+                    "icon":    cfg["icon"],
+                    "list":    list_n,
+                    "pending": pending_n,
+                }
+                continue
+
             q = {
                 "user_id": current_user["id"],
                 "status":  {"$in": cfg["statuses"]},

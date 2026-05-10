@@ -48,6 +48,7 @@ const VALID_TYPES = new Set([
   "delivery_confirmation",
   "delivery_done",
   "feedback_request",
+  "abandoned_recovery",
 ]);
 
 const LANG_OPTIONS = [

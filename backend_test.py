@@ -1,455 +1,433 @@
 """
-Phase F3.4 — Smart webhook field-mapping suggestion tests.
+Backend tests — Phase F3.5 Bulk Abandoned Cart Recovery messaging.
 
-Pure-function tests against /app/backend/import_schema.py (cases A-G) +
-live API smoke for /api/me/webhooks + preview endpoint (case H).
-
-Run with:  cd /app && python backend_test.py
+Verifies the new abandoned_recovery template type in
+/app/backend/routers/messaging.py.
 """
 from __future__ import annotations
 
-import json
-import os
 import sys
-import traceback
+import asyncio
+from datetime import datetime, timezone
 from typing import Any, Dict, List
 
-# Make backend importable
-sys.path.insert(0, "/app/backend")
-
-import requests  # noqa: E402
-
-from import_schema import (  # noqa: E402
-    HEADER_ALIASES,
-    PREFIXES_TO_STRIP,
-    build_pending_doc_from_mapping,
-    suggest_mapping,
-)
-
+import requests
+from motor.motor_asyncio import AsyncIOMotorClient
 
 BASE = "https://logistics-hub-740.preview.emergentagent.com/api"
 EMAIL = "admin@test.com"
 PASSWORD = "Admin@12345"
 
+MONGO_URL = "mongodb://localhost:27017"
+DB_NAME = "test_database"
 
-# ── Tiny assert harness ─────────────────────────────────────────────
-PASSED: List[str] = []
-FAILED: List[str] = []
-
-
-def check(label: str, cond: bool, detail: str = "") -> None:
-    if cond:
-        PASSED.append(label)
-        print(f"  ✅ {label}")
-    else:
-        FAILED.append(f"{label} :: {detail}")
-        print(f"  ❌ {label} :: {detail}")
+TEST_CART_IDS = ["c1", "c2"]
 
 
-def section(title: str) -> None:
-    print(f"\n=== {title} ===")
-
-
-# ── Case A — Shopify keys: 9-key mapping ────────────────────────────
-def case_a() -> None:
-    section("Case A — Shopify nested keys → all 9 fields auto-mapped")
-    keys = [
-        "order.customer.full_name",
-        "order.billing_address.zip",
-        "order.billing_address.city",
-        "order.billing_address.state",
-        "order.billing_address.address1",
-        "order.line_items",
-        "order.financial_status",
-        "order.total_price",
-        "order.email",
-    ]
-    expected: Dict[str, str] = {
-        "order.customer.full_name":      "customer_name",
-        "order.billing_address.zip":     "pincode",
-        "order.billing_address.city":    "city",
-        "order.billing_address.state":   "state",
-        "order.billing_address.address1": "address",
-        "order.line_items":              "items",
-        "order.financial_status":        "status",
-        "order.total_price":             "amount",
-        "order.email":                   "customer_email",
-    }
-    out = suggest_mapping(keys)
-    print(f"  suggest_mapping output: {json.dumps(out, indent=2)}")
-    for k, v in expected.items():
-        check(f"A: {k} → {v}", out.get(k) == v, f"got {out.get(k)!r}")
-
-
-# ── Case B — first/last fragments only ──────────────────────────────
-def case_b() -> None:
-    section("Case B — first_name + last_name BOTH map to customer_name")
-    keys = ["order.customer.first_name", "order.customer.last_name"]
-    out = suggest_mapping(keys)
-    print(f"  suggest_mapping output: {json.dumps(out, indent=2)}")
-    check(
-        "B: first_name → customer_name",
-        out.get("order.customer.first_name") == "customer_name",
-        f"got {out.get('order.customer.first_name')!r}",
-    )
-    check(
-        "B: last_name → customer_name",
-        out.get("order.customer.last_name") == "customer_name",
-        f"got {out.get('order.customer.last_name')!r}",
-    )
-    # Now test build path joins them
-    row = {
-        "order.customer.first_name": "Nayan",
-        "order.customer.last_name":  "Bhut",
-    }
-    doc = build_pending_doc_from_mapping(row, out)
-    print(f"  pending doc: customer_name={doc.get('customer_name')!r}")
-    check(
-        "B: build_pending_doc joins first+last → 'Nayan Bhut'",
-        doc.get("customer_name") == "Nayan Bhut",
-        f"got {doc.get('customer_name')!r}",
-    )
-
-
-# ── Case C — clean wins, fragments suppressed ───────────────────────
-def case_c() -> None:
-    section("Case C — full_name + first_name + last_name: only full_name kept")
-    keys = [
-        "order.customer.full_name",
-        "order.customer.first_name",
-        "order.customer.last_name",
-    ]
-    out = suggest_mapping(keys)
-    print(f"  suggest_mapping output: {json.dumps(out, indent=2)}")
-    check(
-        "C: full_name → customer_name",
-        out.get("order.customer.full_name") == "customer_name",
-        f"got {out.get('order.customer.full_name')!r}",
-    )
-    check(
-        "C: first_name SKIPPED (clean source already won)",
-        out.get("order.customer.first_name") is None
-        or out.get("order.customer.first_name") == "",
-        f"got {out.get('order.customer.first_name')!r}",
-    )
-    check(
-        "C: last_name SKIPPED (clean source already won)",
-        out.get("order.customer.last_name") is None
-        or out.get("order.customer.last_name") == "",
-        f"got {out.get('order.customer.last_name')!r}",
-    )
-
-
-# ── Case D — multiple address parts NEVER suppressed ───────────────
-def case_d() -> None:
-    section("Case D — address1 + area + landmark all map to address")
-    keys = [
-        "order.billing_address.address1",
-        "order.billing_address.area",
-        "order.billing_address.landmark",
-    ]
-    out = suggest_mapping(keys)
-    print(f"  suggest_mapping output: {json.dumps(out, indent=2)}")
-    for k in keys:
-        check(
-            f"D: {k} → address",
-            out.get(k) == "address",
-            f"got {out.get(k)!r}",
-        )
-    # build path joins the three address columns with " "
-    row = {
-        "order.billing_address.address1": "Veer Bhagatsinh Marg",
-        "order.billing_address.area":     "Dhan Bay Chowk",
-        "order.billing_address.landmark": "Talaja",
-    }
-    doc = build_pending_doc_from_mapping(row, out)
-    print(f"  pending doc: address_line1={doc.get('address_line1')!r}")
-    check(
-        "D: build_pending_doc joins all three → 'Veer Bhagatsinh Marg Dhan Bay Chowk Talaja'",
-        doc.get("address_line1") == "Veer Bhagatsinh Marg Dhan Bay Chowk Talaja",
-        f"got {doc.get('address_line1')!r}",
-    )
-
-
-# ── Case E — phone duplicates: first wins ──────────────────────────
-def case_e() -> None:
-    section("Case E — phone duplicates: only first wins")
-    keys = [
-        "order.customer.phone",
-        "order.billing_address.phone",
-    ]
-    out = suggest_mapping(keys)
-    print(f"  suggest_mapping output: {json.dumps(out, indent=2)}")
-    check(
-        "E: order.customer.phone → customer_phone",
-        out.get("order.customer.phone") == "customer_phone",
-        f"got {out.get('order.customer.phone')!r}",
-    )
-    second = out.get("order.billing_address.phone")
-    check(
-        "E: order.billing_address.phone NOT mapped (duplicate suppressed)",
-        second is None or second == "",
-        f"got {second!r}",
-    )
-
-
-# ── Case F — items normalisation regression ─────────────────────────
-def case_f() -> None:
-    section("Case F — items normalisation: line_items → 'Title xQty, ...'")
-    mapping = {"line_items": "items"}
-    row = {
-        "line_items": [
-            {"title": "Shoes", "quantity": 2},
-            {"title": "Belt",  "quantity": 1},
-        ],
-    }
-    doc = build_pending_doc_from_mapping(row, mapping)
-    print(f"  pending doc: items={doc.get('items')!r}")
-    check(
-        "F: line_items pretty-formatted",
-        doc.get("items") == "Shoes x2, Belt x1",
-        f"got {doc.get('items')!r}",
-    )
-
-
-# ── Case G — saved mapping precedence ───────────────────────────────
-def case_g() -> None:
-    section("Case G — saved mapping wins over auto-suggest")
-    saved = {"order.customer.full_name": "address"}  # deliberately wrong override
-    keys = ["order.customer.full_name"]
-    out = suggest_mapping(keys, saved=saved)
-    print(f"  suggest_mapping output: {json.dumps(out, indent=2)}")
-    check(
-        "G: saved choice 'address' wins (not customer_name)",
-        out.get("order.customer.full_name") == "address",
-        f"got {out.get('order.customer.full_name')!r}",
-    )
-
-
-# ── Smoke: import_schema constants ──────────────────────────────────
-def case_constants() -> None:
-    section("Smoke — PREFIXES_TO_STRIP + HEADER_ALIASES integrity")
-    check(
-        "PREFIXES_TO_STRIP has at least 28 entries",
-        len(PREFIXES_TO_STRIP) >= 28,
-        f"got {len(PREFIXES_TO_STRIP)}",
-    )
-    # Specificity check: more-specific paths (e.g. "order.customer.")
-    # must appear BEFORE the generic root ("order.") so first-match wins.
-    def _idx(p: str) -> int:
-        return PREFIXES_TO_STRIP.index(p) if p in PREFIXES_TO_STRIP else -1
-    check(
-        "PREFIXES_TO_STRIP: order.customer. before order.",
-        _idx("order.customer.") < _idx("order.") and _idx("order.") >= 0,
-        f"order.customer.={_idx('order.customer.')} order.={_idx('order.')}",
-    )
-    check(
-        "PREFIXES_TO_STRIP: order.billing_address. before order.",
-        _idx("order.billing_address.") < _idx("order."),
-        "ordering wrong",
-    )
-    # Spot-check key new aliases
-    expected_aliases = {
-        "first_name":             "customer_name",
-        "last_name":              "customer_name",
-        "full_name":              "customer_name",
-        "billing_address.zip":    "pincode",
-        "billing_address.area":   "address",
-        "billing_address.landmark": "address",
-        "total_price":            "amount",
-        "line_items":             "items",
-        "financial_status":       "status",
-        "fulfillment_status":     "status",
-        "shipping_address.address1": "address",
-    }
-    for k, v in expected_aliases.items():
-        check(
-            f"alias {k} → {v}",
-            HEADER_ALIASES.get(k) == v,
-            f"got {HEADER_ALIASES.get(k)!r}",
-        )
-
-
-# ── Case H — Live API regression + preview endpoint ─────────────────
-def login() -> str:
+def login() -> Dict[str, Any]:
     r = requests.post(
         f"{BASE}/auth/login",
         json={"email": EMAIL, "password": PASSWORD},
-        timeout=20,
+        timeout=30,
     )
     r.raise_for_status()
-    body = r.json()
-    return body["token"]
+    return r.json()
 
 
-def case_h_live(token: str) -> None:
-    section("Case H — Live /api/me/webhooks + preview regression")
-    h = {"Authorization": f"Bearer {token}"}
-    # 1. List existing webhooks (regression)
-    r = requests.get(f"{BASE}/me/webhooks", headers=h, timeout=20)
-    check("H: GET /me/webhooks 200", r.status_code == 200, f"status={r.status_code}")
-    if r.status_code != 200:
-        return
-    list_body = r.json()
-    pre_count = list_body.get("count", 0)
-    print(f"  Pre-test webhook count: {pre_count}")
+def hdrs(token: str) -> Dict[str, str]:
+    return {"Authorization": f"Bearer {token}"}
 
-    # 2. Create webhook (event_type=new_order, source_app=shopify)
+
+def now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+async def insert_carts(owner_uid: str) -> None:
+    client = AsyncIOMotorClient(MONGO_URL)
+    db = client[DB_NAME]
+    await db.abandoned_carts.delete_many(
+        {"user_id": owner_uid, "id": {"$in": TEST_CART_IDS}}
+    )
+    docs = [
+        {
+            "id": "c1",
+            "user_id": owner_uid,
+            "status": "abandoned",
+            "external_cart_id": "COL-1",
+            "customer_name": "Test A",
+            "customer_phone": "9999900001",
+            "customer_email": "a@x.com",
+            "address": "Addr1",
+            "city": "Bhavnagar",
+            "state": "Gujarat",
+            "pincode": "364140",
+            "cart_value": 599.0,
+            "items_summary": "Shoes x1",
+            "source_meta": {"source_app": "shopify"},
+            "abandoned_at": now_iso(),
+            "created_at": now_iso(),
+        },
+        {
+            "id": "c2",
+            "user_id": owner_uid,
+            "status": "abandoned",
+            "external_cart_id": "COL-2",
+            "customer_name": "Test B",
+            "customer_phone": "9999900002",
+            "customer_email": "b@x.com",
+            "address": "Addr2",
+            "city": "Bhavnagar",
+            "state": "Gujarat",
+            "pincode": "364140",
+            "cart_value": 1299.0,
+            "items_summary": "Shirts x2",
+            "source_meta": {"source_app": "shopify"},
+            "abandoned_at": now_iso(),
+            "created_at": now_iso(),
+        },
+    ]
+    await db.abandoned_carts.insert_many(docs)
+    client.close()
+
+
+async def cleanup_carts(owner_uid: str) -> None:
+    client = AsyncIOMotorClient(MONGO_URL)
+    db = client[DB_NAME]
+    res = await db.abandoned_carts.delete_many(
+        {"user_id": owner_uid, "id": {"$in": TEST_CART_IDS}}
+    )
+    client.close()
+    print(f"  cleanup: removed {res.deleted_count} abandoned_carts test docs")
+
+
+def section(title: str) -> None:
+    print(f"\n{'='*70}\n{title}\n{'='*70}")
+
+
+PASS = 0
+FAIL = 0
+ERRORS: List[str] = []
+
+
+def check(label: str, cond: bool, info: str = "") -> None:
+    global PASS, FAIL
+    if cond:
+        PASS += 1
+        print(f"  PASS  {label}")
+    else:
+        FAIL += 1
+        msg = f"  FAIL  {label}" + (f"  [{info}]" if info else "")
+        print(msg)
+        ERRORS.append(label + (f": {info}" if info else ""))
+
+
+def main() -> None:
+    section("LOGIN")
+    j = login()
+    token = j["token"]
+    owner_uid = j["id"]
+    print(f"  user_id={owner_uid}  email={j.get('email')}  is_admin={j.get('is_admin')}")
+    H = hdrs(token)
+
+    # ----- (A) GET /me/whatsapp-templates  -----
+    section("(A) GET /me/whatsapp-templates → abandoned_recovery has gu/hi/en")
+    r = requests.get(f"{BASE}/me/whatsapp-templates", headers=H, timeout=30)
+    check("/me/whatsapp-templates 200", r.status_code == 200, f"got {r.status_code}: {r.text[:200]}")
+    body = r.json() if r.status_code == 200 else {}
+    types = body.get("types") or []
+    check("'abandoned_recovery' in types[]", "abandoned_recovery" in types, f"types={types}")
+    admin_tpl = (body.get("admin_templates") or {}).get("abandoned_recovery") or {}
+    for L in ("gu", "hi", "en"):
+        check(
+            f"admin_templates.abandoned_recovery.{L} non-empty",
+            isinstance(admin_tpl.get(L), str) and len(admin_tpl[L].strip()) > 0,
+            f"value={admin_tpl.get(L)!r}",
+        )
+    defaults = (body.get("defaults") or {}).get("abandoned_recovery") or {}
+    for L in ("gu", "hi", "en"):
+        check(
+            f"defaults.abandoned_recovery.{L} non-empty",
+            isinstance(defaults.get(L), str) and len(defaults[L].strip()) > 0,
+        )
+
+    # Pre-clean
+    asyncio.run(cleanup_carts(owner_uid))
+
+    # ----- (B) GET eligible (clean state) -----
+    section("(B) GET /me/bulk-message/eligible?ttype=abandoned_recovery (clean)")
+    r = requests.get(
+        f"{BASE}/me/bulk-message/eligible",
+        params={"ttype": "abandoned_recovery"},
+        headers=H,
+        timeout=30,
+    )
+    check("eligible (clean) 200", r.status_code == 200, f"got {r.status_code}: {r.text[:200]}")
+    if r.status_code == 200:
+        b = r.json()
+        check("ttype == abandoned_recovery", b.get("ttype") == "abandoned_recovery")
+        check(
+            "label == 'Abandoned Cart Recovery'",
+            b.get("label") == "Abandoned Cart Recovery",
+            f"got {b.get('label')!r}",
+        )
+        check("icon == cart emoji", b.get("icon") == "🛒", f"got {b.get('icon')!r}")
+        check("min_days == 0", b.get("min_days") == 0, f"got {b.get('min_days')!r}")
+        check(
+            "statuses == ['abandoned']",
+            b.get("statuses") == ["abandoned"],
+            f"got {b.get('statuses')!r}",
+        )
+        check("shipments == []", b.get("shipments") == [], f"got {b.get('shipments')!r}")
+        c = b.get("counts") or {}
+        check("counts.list == 0", c.get("list") == 0, f"got {c}")
+        check("counts.sent_today == 0", c.get("sent_today") == 0, f"got {c}")
+        check("counts.pending == 0", c.get("pending") == 0, f"got {c}")
+
+    # Capture baseline counts for delivery_confirmation regression
+    section("REGRESSION BASELINE — delivery_confirmation BEFORE inserts")
+    r0 = requests.get(
+        f"{BASE}/me/bulk-message/eligible",
+        params={"ttype": "delivery_confirmation"},
+        headers=H,
+        timeout=30,
+    )
+    base_dc = r0.json() if r0.status_code == 200 else {}
+    base_counts_dc = base_dc.get("counts") or {}
+    print(f"  baseline delivery_confirmation counts: {base_counts_dc}")
+    check("delivery_confirmation baseline 200", r0.status_code == 200)
+
+    # Capture baseline dashboard counts
+    rdb = requests.get(f"{BASE}/me/bulk-message/dashboard-counts", headers=H, timeout=30)
+    base_dash = rdb.json() if rdb.status_code == 200 else {}
+    print(f"  baseline dashboard keys: {sorted(base_dash.keys()) if isinstance(base_dash, dict) else 'N/A'}")
+
+    # ----- (C) Insert carts then GET eligible -----
+    section("(C) Insert 2 abandoned_carts; GET eligible should return 2 shaped rows")
+    asyncio.run(insert_carts(owner_uid))
+    r = requests.get(
+        f"{BASE}/me/bulk-message/eligible",
+        params={"ttype": "abandoned_recovery"},
+        headers=H,
+        timeout=30,
+    )
+    check("eligible (with 2 carts) 200", r.status_code == 200, f"got {r.status_code}")
+    if r.status_code == 200:
+        b = r.json()
+        ships = b.get("shipments") or []
+        check("shipments has 2 rows", len(ships) == 2, f"got {len(ships)}")
+        c = b.get("counts") or {}
+        check("counts.list == 2", c.get("list") == 2, f"got {c}")
+        check("counts.sent_today == 0", c.get("sent_today") == 0, f"got {c}")
+        check("counts.pending == 2", c.get("pending") == 2, f"got {c}")
+        c1 = next((s for s in ships if s.get("id") == "c1"), None)
+        check("c1 row exists", c1 is not None)
+        if c1:
+            check("c1.customer_name == 'Test A'", c1.get("customer_name") == "Test A", f"got {c1.get('customer_name')!r}")
+            check("c1.customer_phone == '9999900001'", c1.get("customer_phone") == "9999900001")
+            check("c1.customer_email == 'a@x.com'", c1.get("customer_email") == "a@x.com")
+            check("c1.address_line1 == 'Addr1'", c1.get("address_line1") == "Addr1")
+            check("c1.city == 'Bhavnagar'", c1.get("city") == "Bhavnagar")
+            check("c1.state == 'Gujarat'", c1.get("state") == "Gujarat")
+            check("c1.pincode == '364140'", c1.get("pincode") == "364140")
+            check("c1.amount == 599.0", float(c1.get("amount") or -1) == 599.0, f"got {c1.get('amount')!r}")
+            check("c1.items == 'Shoes x1'", c1.get("items") == "Shoes x1")
+            check("c1.order_id == 'COL-1'", c1.get("order_id") == "COL-1")
+            check("c1.tracking_id == ''", c1.get("tracking_id") == "")
+            check("c1.courier == ''", c1.get("courier") == "")
+            check("c1._msg_sent_today == False", c1.get("_msg_sent_today") is False)
+            check("c1._days_since == 0", c1.get("_days_since") == 0)
+
+        c2 = next((s for s in ships if s.get("id") == "c2"), None)
+        check("c2 row exists", c2 is not None)
+        if c2:
+            check("c2.amount == 1299.0", float(c2.get("amount") or -1) == 1299.0)
+            check("c2.customer_phone == '9999900002'", c2.get("customer_phone") == "9999900002")
+
+    # ----- (D) mark-sent first time -----
+    section("(D) POST /me/bulk-message/mark-sent (c1, c2) → updated=2")
     r = requests.post(
-        f"{BASE}/me/webhooks",
-        headers=h,
-        json={"name": "F34 Shopify Test", "event_type": "new_order", "source_app": "shopify"},
-        timeout=20,
+        f"{BASE}/me/bulk-message/mark-sent",
+        headers=H,
+        json={"ttype": "abandoned_recovery", "shipment_ids": ["c1", "c2"]},
+        timeout=30,
     )
-    check(
-        "H: POST /me/webhooks 200",
-        r.status_code == 200,
-        f"status={r.status_code} body={r.text[:200]}",
+    check("mark-sent 200", r.status_code == 200, f"got {r.status_code}: {r.text[:200]}")
+    if r.status_code == 200:
+        b = r.json()
+        check("mark-sent updated == 2", b.get("updated") == 2, f"got {b}")
+        check("mark-sent skipped == 0", b.get("skipped") == 0, f"got {b}")
+        check(
+            "mark-sent updated_ids contains c1+c2",
+            set(b.get("updated_ids") or []) == {"c1", "c2"},
+        )
+
+    # GET eligible after mark-sent
+    r = requests.get(
+        f"{BASE}/me/bulk-message/eligible",
+        params={"ttype": "abandoned_recovery"},
+        headers=H,
+        timeout=30,
     )
-    if r.status_code != 200:
-        return
-    wh = r.json()
-    wh_id = wh.get("id")
-    check("H: created webhook has id", bool(wh_id), f"got {wh}")
-    check("H: source_app=shopify", wh.get("source_app") == "shopify", f"got {wh.get('source_app')}")
-    check("H: event_type=new_order", wh.get("event_type") == "new_order", f"got {wh.get('event_type')}")
-    check("H: secret is non-empty", bool(wh.get("secret")), "no secret")
+    check("eligible after mark-sent 200", r.status_code == 200)
+    if r.status_code == 200:
+        b = r.json()
+        c = b.get("counts") or {}
+        check("counts.sent_today == 2", c.get("sent_today") == 2, f"got {c}")
+        check("counts.pending == 0", c.get("pending") == 0, f"got {c}")
+        ships = b.get("shipments") or []
+        check(
+            "all rows have _msg_sent_today=True",
+            len(ships) == 2 and all(s.get("_msg_sent_today") is True for s in ships),
+        )
 
-    if not wh_id:
-        return
+    # ----- (E) mark-sent again → skipped=2 -----
+    section("(E) POST /me/bulk-message/mark-sent same body → skipped=2")
+    r = requests.post(
+        f"{BASE}/me/bulk-message/mark-sent",
+        headers=H,
+        json={"ttype": "abandoned_recovery", "shipment_ids": ["c1", "c2"]},
+        timeout=30,
+    )
+    check("mark-sent 2nd 200", r.status_code == 200, f"got {r.status_code}: {r.text[:200]}")
+    if r.status_code == 200:
+        b = r.json()
+        check("2nd mark-sent updated == 0", b.get("updated") == 0, f"got {b}")
+        check("2nd mark-sent skipped == 2", b.get("skipped") == 2, f"got {b}")
+        check(
+            "2nd mark-sent skipped_ids set == {c1,c2}",
+            set(b.get("skipped_ids") or []) == {"c1", "c2"},
+        )
 
-    try:
-        # 3. POST preview with sample Shopify-style order JSON
-        sample = {
-            "order": {
-                "customer": {
-                    "full_name": "Nayankumar Bhut",
-                    "email":     "nayan@example.com",
-                    "phone":     "9998887770",
-                },
-                "billing_address": {
-                    "first_name": "Nayankumar",
-                    "last_name":  "Bhut",
-                    "address1":   "20, Dev Atelier",
-                    "city":       "Bhavnagar",
-                    "state":      "Gujarat",
-                    "zip":        "364140",
-                    "phone":      "9998887770",
-                },
-                "line_items": [
-                    {"title": "Shoes", "quantity": 2},
-                    {"title": "Belt",  "quantity": 1},
-                ],
-                "financial_status": "paid",
-                "total_price":      "1750",
-                "email":            "nayan@example.com",
-            },
+    # ----- (F) reset → updated=2; eligible.pending=2 again -----
+    section("(F) POST /me/bulk-message/reset → updated=2")
+    r = requests.post(
+        f"{BASE}/me/bulk-message/reset",
+        headers=H,
+        json={"ttype": "abandoned_recovery", "shipment_ids": ["c1", "c2"]},
+        timeout=30,
+    )
+    check("reset 200", r.status_code == 200, f"got {r.status_code}: {r.text[:200]}")
+    if r.status_code == 200:
+        b = r.json()
+        check("reset updated == 2", b.get("updated") == 2, f"got {b}")
+    r = requests.get(
+        f"{BASE}/me/bulk-message/eligible",
+        params={"ttype": "abandoned_recovery"},
+        headers=H,
+        timeout=30,
+    )
+    if r.status_code == 200:
+        c = r.json().get("counts") or {}
+        check("after reset counts.pending == 2", c.get("pending") == 2, f"got {c}")
+        check("after reset counts.sent_today == 0", c.get("sent_today") == 0, f"got {c}")
+
+    # ----- (G) Dashboard counts include abandoned_recovery + others unchanged -----
+    section("(G) GET /me/bulk-message/dashboard-counts")
+    r = requests.get(f"{BASE}/me/bulk-message/dashboard-counts", headers=H, timeout=30)
+    check("dashboard-counts 200", r.status_code == 200)
+    if r.status_code == 200:
+        d = r.json()
+        keys_required = {
+            "shipment_sent",
+            "dispatch_confirmation",
+            "delivery_confirmation",
+            "delivery_done",
+            "feedback_request",
+            "abandoned_recovery",
         }
-        r = requests.post(
-            f"{BASE}/me/webhooks/{wh_id}/preview",
-            headers=h,
-            json=sample,
-            timeout=20,
+        check(
+            "dashboard has all 6 keys",
+            keys_required.issubset(set(d.keys())),
+            f"got {sorted(d.keys())}",
         )
-        check("H: POST preview 200", r.status_code == 200, f"status={r.status_code} body={r.text[:300]}")
-        if r.status_code == 200:
-            body = r.json()
-            keys = body.get("keys", [])
-            suggested = body.get("suggested", {})
-            print(f"  preview keys ({len(keys)}): {keys}")
-            print(f"  preview suggested ({len(suggested)}): {json.dumps(suggested, indent=2)}")
-            # Verify several key auto-mappings landed in `suggested`
-            expected_in_preview = {
-                "order.customer.full_name":      "customer_name",
-                "order.billing_address.zip":     "pincode",
-                "order.billing_address.city":    "city",
-                "order.billing_address.state":   "state",
-                "order.billing_address.address1": "address",
-                "order.financial_status":        "status",
-                "order.total_price":             "amount",
-            }
-            for k, v in expected_in_preview.items():
-                check(
-                    f"H: preview suggested[{k}] = {v}",
-                    suggested.get(k) == v,
-                    f"got {suggested.get(k)!r}",
-                )
-            # In live preview, payload contained BOTH order.customer.email
-            # AND order.email. Per duplicate-suppression spec, the FIRST
-            # match wins (customer.email), so order.email may legitimately
-            # remain unmapped. Just verify customer.email got mapped.
+        ar = d.get("abandoned_recovery") or {}
+        check("abandoned_recovery.list == 2", ar.get("list") == 2, f"got {ar}")
+        check("abandoned_recovery.pending == 2", ar.get("pending") == 2, f"got {ar}")
+        check(
+            "abandoned_recovery.label == 'Abandoned Cart Recovery'",
+            ar.get("label") == "Abandoned Cart Recovery",
+        )
+        check("abandoned_recovery.icon == cart emoji", ar.get("icon") == "🛒")
+
+        for k in [
+            "shipment_sent",
+            "dispatch_confirmation",
+            "delivery_confirmation",
+            "delivery_done",
+            "feedback_request",
+        ]:
+            base = base_dash.get(k) or {}
+            now = d.get(k) or {}
             check(
-                "H: preview suggested[order.customer.email] = customer_email",
-                suggested.get("order.customer.email") == "customer_email",
-                f"got {suggested.get('order.customer.email')!r}",
+                f"dashboard '{k}' list unchanged",
+                base.get("list") == now.get("list"),
+                f"baseline={base.get('list')} now={now.get('list')}",
             )
             check(
-                "H: preview suggested[order.customer.phone] = customer_phone",
-                suggested.get("order.customer.phone") == "customer_phone",
-                f"got {suggested.get('order.customer.phone')!r}",
+                f"dashboard '{k}' pending unchanged",
+                base.get("pending") == now.get("pending"),
+                f"baseline={base.get('pending')} now={now.get('pending')}",
             )
-            # line_items either flattens or stays as list, we accept both
-            li_key = "order.line_items"
-            if li_key in keys:
-                check(
-                    f"H: preview suggested[{li_key}] = items",
-                    suggested.get(li_key) == "items",
-                    f"got {suggested.get(li_key)!r}",
-                )
 
-        # 4. Regression: GET /me/customers + /me/abandoned-carts (Phase F3.3)
-        r = requests.get(f"{BASE}/me/customers", headers=h, timeout=20)
+    # ----- (H) Regression: shipment-based ttype unaffected -----
+    section("(H) REGRESSION — delivery_confirmation eligible AFTER abandoned ops")
+    r = requests.get(
+        f"{BASE}/me/bulk-message/eligible",
+        params={"ttype": "delivery_confirmation"},
+        headers=H,
+        timeout=30,
+    )
+    check("delivery_confirmation eligible 200", r.status_code == 200)
+    if r.status_code == 200:
+        b = r.json()
+        c = b.get("counts") or {}
         check(
-            "H: GET /me/customers 200 (F3.3 regression)",
-            r.status_code == 200,
-            f"status={r.status_code}",
+            "delivery_confirmation counts.list unchanged",
+            c.get("list") == base_counts_dc.get("list"),
+            f"baseline={base_counts_dc.get('list')} now={c.get('list')}",
         )
-        r = requests.get(f"{BASE}/me/abandoned-carts", headers=h, timeout=20)
         check(
-            "H: GET /me/abandoned-carts 200 (F3.3 regression)",
-            r.status_code == 200,
-            f"status={r.status_code}",
+            "delivery_confirmation counts.pending unchanged",
+            c.get("pending") == base_counts_dc.get("pending"),
+            f"baseline={base_counts_dc.get('pending')} now={c.get('pending')}",
         )
-    finally:
-        # 5. Cleanup — delete webhook
-        r = requests.delete(f"{BASE}/me/webhooks/{wh_id}", headers=h, timeout=20)
-        check("H: DELETE webhook 200", r.status_code == 200, f"status={r.status_code}")
+        check(
+            "delivery_confirmation counts.sent_today unchanged",
+            c.get("sent_today") == base_counts_dc.get("sent_today"),
+            f"baseline={base_counts_dc.get('sent_today')} now={c.get('sent_today')}",
+        )
+        ids = {s.get("id") for s in (b.get("shipments") or [])}
+        check(
+            "delivery_confirmation has NO c1/c2 ids (no cross-collection contamination)",
+            "c1" not in ids and "c2" not in ids,
+            f"intersection={ids & set(TEST_CART_IDS)}",
+        )
 
+    section("(H2) REGRESSION — mark-sent for delivery_confirmation with fake IDs")
+    r = requests.post(
+        f"{BASE}/me/bulk-message/mark-sent",
+        headers=H,
+        json={"ttype": "delivery_confirmation", "shipment_ids": ["c1", "c2"]},
+        timeout=30,
+    )
+    check("mark-sent (delivery_confirmation, fake IDs) 200", r.status_code == 200)
+    if r.status_code == 200:
+        b = r.json()
+        check("mark-sent d_c updated == 0", b.get("updated") == 0, f"got {b}")
+        check("mark-sent d_c skipped == 0", b.get("skipped") == 0, f"got {b}")
 
-# ── Main ────────────────────────────────────────────────────────────
-def main() -> int:
-    print("=" * 72)
-    print("Phase F3.4 — Smart webhook field-mapping suggestion tests")
-    print("=" * 72)
+    # CLEANUP
+    section("CLEANUP")
+    asyncio.run(cleanup_carts(owner_uid))
 
-    # Pure-function tests
-    case_constants()
-    case_a()
-    case_b()
-    case_c()
-    case_d()
-    case_e()
-    case_f()
-    case_g()
-
-    # Live API
-    try:
-        token = login()
-        case_h_live(token)
-    except Exception as e:
-        FAILED.append(f"H_login: {e}")
-        traceback.print_exc()
-
-    # Summary
-    print("\n" + "=" * 72)
-    print(f"PASSED: {len(PASSED)}    FAILED: {len(FAILED)}")
-    if FAILED:
-        print("\nFAILURES:")
-        for f in FAILED:
-            print(f"  - {f}")
-    print("=" * 72)
-    return 0 if not FAILED else 1
+    section(f"RESULTS: {PASS} passed, {FAIL} failed")
+    if FAIL:
+        print("\nFAILED:")
+        for e in ERRORS:
+            print(f"  - {e}")
+        sys.exit(1)
+    sys.exit(0)
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    main()

@@ -16053,6 +16053,115 @@ frontend:
             action bar (Call / WhatsApp / Confirm). Confirm calls
             the existing recover endpoint.
 
+## Phase F3.5 — Bulk Abandoned Cart Recovery (homepage tile + bulk WhatsApp send) (2026-05-10)
+
+backend:
+  - task: "Phase F3.5 — abandoned_recovery added to TEMPLATE_TYPES + _BULK_FILTERS; eligible/mark-sent/reset/dashboard-counts branch on data_source=abandoned_carts"
+    implemented: true
+    working: "NA"
+    file: "/app/backend/routers/messaging.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: |
+            REVIEW REQUEST FOR TESTING AGENT.
+            Login: admin@test.com / Admin@12345.
+
+            CHANGES:
+              1. Added `abandoned_recovery` to TEMPLATE_TYPES list
+                 (sixth bulk message type alongside the 5 shipment-
+                 stage ones).
+              2. Added Gujarati / Hindi / English DEFAULT_TEMPLATES
+                 with variables {customer_name}, {amount}, {items},
+                 {shop_name}.
+              3. Added `abandoned_recovery` to _BULK_FILTERS with
+                 a NEW config flag `data_source: "abandoned_carts"`
+                 (existing 5 ttypes implicitly use shipments).
+              4. Branched 4 endpoints on data_source flag:
+                 - GET /api/me/bulk-message/eligible?ttype=abandoned_recovery
+                   → queries db.abandoned_carts (status=abandoned),
+                     shapes each cart as a shipment-like row
+                     (id, customer_name, customer_phone, address,
+                     city, state, pincode, amount=cart_value,
+                     items=items_summary, order_id=external_cart_id,
+                     bulk_msg_log) and runs the same
+                     _msg_sent_today / counts logic.
+                 - POST /api/me/bulk-message/mark-sent (ttype=abandoned_recovery)
+                   → updates db.abandoned_carts.bulk_msg_log instead
+                     of db.shipments.
+                 - POST /api/me/bulk-message/reset (ttype=abandoned_recovery)
+                   → resets db.abandoned_carts.bulk_msg_log entry.
+                 - GET /api/me/bulk-message/dashboard-counts
+                   → includes abandoned_recovery counts (list +
+                     pending today) computed from db.abandoned_carts.
+              5. The other 5 ttypes still query db.shipments —
+                 unchanged behaviour, must still pass regression.
+
+            CASES TO VERIFY:
+              (A) GET /api/me/bulk-message/templates returns
+                  abandoned_recovery with all 3 langs populated.
+              (B) GET /api/me/bulk-message/eligible?ttype=abandoned_recovery
+                  with NO carts → empty shipments[] + counts
+                  {list:0, sent_today:0, pending:0}.
+              (C) Insert 2 abandoned_carts directly (status=abandoned).
+                  GET eligible → returns 2 rows shaped like shipments
+                  with {customer_name, customer_phone, amount,
+                  items, order_id} populated. counts.list=2,
+                  counts.pending=2.
+              (D) POST mark-sent with ttype=abandoned_recovery and
+                  the 2 cart ids → returns updated=2. Now GET
+                  eligible → counts.sent_today=2, counts.pending=0.
+                  Each cart row has _msg_sent_today=true.
+              (E) POST reset with same ids → returns updated=2.
+                  GET eligible → counts.pending=2 again.
+              (F) GET dashboard-counts → response includes
+                  abandoned_recovery key with {list:2, pending:2}
+                  AND the existing 5 shipment-based ttypes are
+                  unaffected by the new code path.
+              (G) Regression: the existing
+                  shipment_sent/dispatch_confirmation/etc. flows
+                  must still work normally (eligible, mark-sent,
+                  reset) on db.shipments — no impact from the new
+                  data_source branch.
+
+            CLEANUP: delete inserted abandoned_carts rows.
+
+frontend:
+  - task: "Phase F3.5 — Homepage tile for Abandoned Cart Recovery + bulk-message screen wiring"
+    implemented: true
+    working: "NA"
+    file: "/app/frontend/app/(tabs)/index.tsx, /app/frontend/app/bulk-message/[type].tsx"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: false
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: |
+            Added "abandoned_recovery" to VALID_TYPES set in the
+            bulk-message screen so /bulk-message/abandoned_recovery
+            renders. Added a sixth ActionPill on the homepage Bulk
+            WhatsApp Messages section with cart-outline icon +
+            "Abandoned Cart Recovery" label + warning tone, badge
+            sourced from bulkCounts[abandoned_recovery].pending.
+
+agent_communication:
+    -agent: "main"
+    -message: |
+        Phase F3.5 backend code-complete. abandoned_recovery is
+        now a first-class bulk-message ttype but sources its
+        rows from db.abandoned_carts via a data_source flag in
+        _BULK_FILTERS. Existing 5 ttypes are unaffected. Homepage
+        has a new tile linking to /bulk-message/abandoned_recovery.
+        Please verify cases (A)-(G) above using
+        admin@test.com / Admin@12345. Regression on the existing
+        5 ttypes is critical — please run a quick smoke test on
+        shipment_sent or delivery_confirmation eligible/mark-sent
+        to confirm no behaviour change.
+
 ## Phase F3.4 — Auto-suggest webhook field mapping (2026-05-10)
 
 backend:
@@ -16635,3 +16744,102 @@ agent_communication:
         
         Tested on mobile viewport (390×844). 10 screenshots captured.
         No issues found. Ready for main agent to summarize and finish.
+
+---
+
+## Backend Test Run: Phase F3.5 Bulk Abandoned Cart Recovery messaging (2026-05-10)
+
+backend:
+  - task: "Phase F3.5: Bulk Abandoned Cart Recovery Messaging (abandoned_recovery template type)"
+    implemented: true
+    working: true
+    file: "/app/backend/routers/messaging.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "testing"
+        -comment: |
+            All 82 assertions PASSED via /app/backend_test.py against
+            https://logistics-hub-740.preview.emergentagent.com/api.
+            Login admin@test.com / Admin@12345 → user_id=cb27b8d3-49c9-4f12-9d7f-f5f6114aa8df.
+
+            VERIFIED:
+            (A) GET /api/me/whatsapp-templates →
+                - 'abandoned_recovery' present in `types` array.
+                - admin_templates.abandoned_recovery has gu/hi/en — all 3
+                  populated with non-empty Gujarati / Hindi / English copy
+                  containing {customer_name}, {items}, {amount}, {shop_name}
+                  placeholders.
+                - defaults.abandoned_recovery also populated for all 3 langs.
+            (B) GET /api/me/bulk-message/eligible?ttype=abandoned_recovery
+                (clean state, no carts) returned exactly:
+                  {ttype:"abandoned_recovery",
+                   label:"Abandoned Cart Recovery",
+                   icon:"🛒",
+                   min_days:0,
+                   statuses:["abandoned"],
+                   shipments:[],
+                   counts:{list:0, sent_today:0, pending:0}}
+            (C) Inserted 2 abandoned_carts directly into db.abandoned_carts
+                via Motor (c1: cart_value=599.0, COL-1, Test A, Bhavnagar,
+                c2: cart_value=1299.0, COL-2). GET eligible returned:
+                  - shipments has 2 rows.
+                  - counts.list=2, counts.sent_today=0, counts.pending=2.
+                - Each row shaped correctly with mapped fields:
+                  id="c1", customer_name="Test A", customer_phone="9999900001",
+                  customer_email="a@x.com", address_line1="Addr1",
+                  city="Bhavnagar", state="Gujarat", pincode="364140",
+                  amount=599.0 (float), items="Shoes x1", order_id="COL-1",
+                  tracking_id="", courier="", _msg_sent_today=False,
+                  _days_since=0. c2 shape verified the same way (amount=1299.0,
+                  customer_phone="9999900002").
+            (D) POST /api/me/bulk-message/mark-sent
+                  body={"ttype":"abandoned_recovery", "shipment_ids":["c1","c2"]}
+                returned updated=2, skipped=0, updated_ids={c1,c2}.
+                Subsequent GET eligible: counts.sent_today=2, counts.pending=0;
+                both rows now show _msg_sent_today=True. Confirms bulk_msg_log
+                is being written on db.abandoned_carts (NOT on db.shipments).
+            (E) POST /api/me/bulk-message/mark-sent same body second time →
+                updated=0, skipped=2, skipped_ids={c1,c2}. Same-day duplicate
+                guard works correctly on the abandoned_carts branch.
+            (F) POST /api/me/bulk-message/reset
+                  body={"ttype":"abandoned_recovery", "shipment_ids":["c1","c2"]}
+                returned updated=2. Subsequent GET eligible: counts.pending=2,
+                counts.sent_today=0. Reset path on db.abandoned_carts works.
+            (G) GET /api/me/bulk-message/dashboard-counts response keys:
+                  abandoned_recovery, delivery_confirmation, delivery_done,
+                  dispatch_confirmation, feedback_request, shipment_sent
+                — all 6 ttypes present. abandoned_recovery shows
+                  {label:"Abandoned Cart Recovery", icon:"🛒",
+                   list:2, pending:2}.
+                The other 5 keys' list/pending values are IDENTICAL to the
+                pre-test baseline snapshot — no cross-collection contamination.
+            (H) REGRESSION — delivery_confirmation eligible AFTER all
+                abandoned-cart operations:
+                  baseline counts: {list:2, sent_today:0, pending:2}
+                  after-test counts: {list:2, sent_today:0, pending:2}
+                — IDENTICAL. None of the returned shipment ids are c1/c2
+                (no leak from db.abandoned_carts into db.shipments query path).
+                POST mark-sent with ttype=delivery_confirmation +
+                shipment_ids=["c1","c2"] returned updated=0, skipped=0
+                — confirms the shipments collection was queried, c1/c2 don't
+                exist there, and the abandoned_carts docs were NOT touched.
+
+            CLEANUP: db.abandoned_carts.deleteMany({user_id:owner_uid,
+            id:{$in:["c1","c2"]}}) → removed 2 docs. No test artifacts remain.
+
+            RESULT: 82/82 assertions passed. Phase F3.5 implementation is
+            fully working — abandoned_recovery template + 4-endpoint
+            data_source branching + dashboard counts integration are all
+            correct, and there is no regression on the 5 shipment-based
+            ttypes.
+
+agent_communication:
+    -agent: "testing"
+    -message: |
+        Phase F3.5 — Bulk Abandoned Cart Recovery messaging — 82/82
+        backend assertions PASS. All 8 review-request scenarios (A–H)
+        verified end-to-end against the preview backend with real Mongo
+        inserts/cleanup. Ready for main agent to summarize and finish.

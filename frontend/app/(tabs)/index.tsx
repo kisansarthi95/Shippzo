@@ -1822,6 +1822,7 @@ export default function Dashboard() {
                 { ttype: "delivery_confirmation", icon: "checkmark-circle-outline", label: "Delivery Check-in",   tone: "success" },
                 { ttype: "delivery_done",         icon: "happy-outline",           label: "Thank-You (Delivered)", tone: "success" },
                 { ttype: "feedback_request",      icon: "star-outline",            label: "Feedback / Review",   tone: "warning" },
+                { ttype: "abandoned_recovery",    icon: "cart-outline",            label: "Abandoned Cart Recovery", tone: "warning" },
               ] as const).map((b) => (
                 <ActionPill
                   key={b.ttype}
