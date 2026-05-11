@@ -636,7 +636,7 @@ const styles = StyleSheet.create({
   chipText:   { fontSize: 12, fontWeight: "700", color: "#374151" },
 
   filterRow: {
-    flexDirection: "row", flexWrap: "wrap", gap: 6, marginTop: 10,
+    flexDirection: "row", flexWrap: "wrap", gap: 8, overflow: "visible", marginTop: 10,
   },
   filterPill: {
     flexDirection: "row", alignItems: "center", gap: 5,

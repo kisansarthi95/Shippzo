@@ -1708,7 +1708,8 @@ const styles = StyleSheet.create({
   filterPill: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 6,
+    gap: 8,
+    overflow: "visible",
     paddingHorizontal: 12,
     paddingVertical: 8,
     borderWidth: 2,
