@@ -669,31 +669,34 @@ def suggest_mapping(
                 break
         if not matched:
             continue
-        # Suppress duplicate name suggestions: skip first/last name
-        # fragments only when a CLEAN customer_name source (full_name /
-        # name) was already suggested. If only fragments exist, keep
-        # both first AND last so build_pending_doc joins them.
+        # Phase F3.9 — STRICT DEDUPE for auto-suggest.
+        # The mapping screen was showing 3× "Customer Name" rows and
+        # 3× "Address" rows because we used to allow multiple "clean"
+        # sources for customer_name + ALL parts for address.
+        # New rule: per target field, ONLY THE FIRST auto-suggestion
+        # wins. User can manually map extras if they want join.
+        # Special-case: customer_name fragment-pair (first_name +
+        # last_name with no full_name in sight) — both kept so build
+        # path joins them.
         if matched == "customer_name":
             leaf = matched_via.rsplit(".", 1)[-1] if "." in matched_via else matched_via
             this_quality = _name_quality(leaf)
             prev_quality = suggested_quality.get(matched)
-            if prev_quality == "clean" and this_quality == "fragment":
-                continue
-            # Update tracking so a later "clean" source overrides
-            # earlier fragment quality.
-            if not prev_quality or this_quality == "clean":
-                suggested_quality[matched] = this_quality
-        elif matched == "address":
-            # Address is joined in build_pending_doc, so multiple
-            # cols (address1 + area + landmark) are intentionally
-            # allowed — no suppression.
-            suggested_quality[matched] = "clean"
+            if prev_quality:
+                # Allow fragments to add to a previous fragment so
+                # first_name + last_name both stay mapped → joined.
+                if prev_quality == "fragment" and this_quality == "fragment":
+                    pass
+                else:
+                    continue  # skip duplicate (clean+clean or clean+fragment)
+            suggested_quality[matched] = this_quality
+        elif matched in suggested_quality:
+            # Plain duplicate (address, phone, email, city, state,
+            # pincode, etc.) — keep only the first auto-suggestion.
+            # Power users can map extras manually for join behaviour
+            # (build_pending_doc still joins address parts).
+            continue
         else:
-            if matched in suggested_quality:
-                # Plain duplicate (e.g. two `phone` fields) — keep first.
-                # Last-wins in build_pending_doc means the second one
-                # would silently override; suppressing is safer.
-                continue
             suggested_quality[matched] = "clean"
         out[c] = matched
     return out
