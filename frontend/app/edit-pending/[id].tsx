@@ -293,21 +293,32 @@ export default function EditPendingScreen() {
               const order: any = (raw as any).order || raw;
 
               // Phase F3.7 fix — some carts deliver structured fields
-              // (e.g. Dukaan ships `order_status_url` as
-              // {id, url, status} not a plain string). Coerce safely so
+              // (e.g. Dukaan ships
+              //   order_status_url: {order_status_url: "https://..."}
+              // not a plain string). Recursive walker safely extracts
+              // a string from common URL-shaped keys so
               // <Text>{anything}</Text> never crashes React.
-              const _coerceStr = (v: any): string => {
+              const URL_KEYS = [
+                "url", "order_status_url", "checkout_url",
+                "payment_url", "recovery_url", "short_url",
+                "link", "href", "src", "value",
+              ];
+              const _coerceStr = (v: any, depth = 0): string => {
                 if (v === null || v === undefined) return "";
                 if (typeof v === "string") return v;
                 if (typeof v === "number" || typeof v === "boolean") return String(v);
-                if (typeof v === "object") {
-                  // Pick the first URL-shaped value out of the object.
-                  return String(
-                    v.url || v.link || v.value || v.href ||
-                    v.short_url || v.payment_url || "",
-                  );
+                if (typeof v === "object" && depth < 3) {
+                  for (const k of URL_KEYS) {
+                    const sub = (v as any)[k];
+                    if (typeof sub === "string" && sub) return sub;
+                    if (sub && typeof sub === "object") {
+                      const deeper = _coerceStr(sub, depth + 1);
+                      if (deeper) return deeper;
+                    }
+                  }
+                  return "";
                 }
-                return String(v);
+                return "";
               };
 
               const checkoutUrl: string =
