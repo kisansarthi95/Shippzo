@@ -17135,3 +17135,177 @@ agent_communication:
         Main agent: Please address the navigation/auth issue (Expo dev server
         restart or auth context fix) and request manual verification of the
         Orders tab Abandoned filter. The code is solid.
+
+
+  - task: "Phase F3.8.1: Webhook Mapping Auto-Suggest dedupe + empty state"
+    implemented: true
+    working: "NA"
+    file: "/app/backend/import_schema.py, /app/frontend/app/webhook-mapping.tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: |
+            Phase F3.8.1 fix applied (continuation from previous job).
+            
+            ROOT CAUSE 1: suggest_mapping() in import_schema.py was emitting
+            multiple suggestions per target field (e.g. mapping BOTH
+            order.shipping_address.address_1 AND address_2 AND line1 to
+            "address" → UI showed 3 rows pre-filled to Address). Same for
+            customer_name when both full_name and first_name existed.
+            
+            FIX (already in import_schema.py L676-700):
+            - New `suggested_quality` dict tracks per-target what's mapped.
+            - customer_name: "clean" sources (full_name, name) win over
+              "fragment" sources (first_name, last_name). Two fragments
+              both kept so build path joins them. Clean+fragment skips
+              the fragment. Clean+clean skips the second.
+            - All other targets (address, phone, email, city, state,
+              pincode, etc.): ONLY first auto-suggestion wins. User can
+              manually map extras for join behaviour.
+            
+            VERIFIED via local Python unit:
+              Test 1 (Dukaan dotted): address_1→address (address_2 skipped),
+                first_name+last_name→customer_name (both, fragment-fragment).
+              Test 2 (full_name + fragments): only full_name→customer_name.
+              Test 3 (bare fragments): first_name+last_name→customer_name.
+            
+            ROOT CAUSE 2: New webhooks have empty recent_samples → keys
+            list stays empty → UI shows generic empty box that didn't
+            tell the user how to activate AUTO badges.
+            
+            FIX (webhook-mapping.tsx empty state):
+            - Empty state now branches on recent_samples.length.
+            - If 0 samples: title "Waiting for first payload" + clear
+              instructions ("send real test order OR paste sample JSON").
+            - If samples exist but none loaded: original "Use last received
+              or paste" hint preserved.
+            - Added a primary CTA button "Paste sample JSON" directly in
+              the empty box so users see one obvious next step.
+            
+            FILES TOUCHED:
+            - /app/backend/import_schema.py (dedup logic, already in)
+            - /app/frontend/app/webhook-mapping.tsx (empty state CTA)
+            
+            BACKEND RESTART: yes (auto-reloaded via watchfiles).
+            
+            REQUEST: Re-test suggest_mapping endpoint via
+            POST /api/me/webhooks/{wh_id}/preview with various payloads:
+              a) Dukaan order.received (buyer + shipping_address)
+              b) Shopify order/create (customer + billing + shipping)
+              c) WooCommerce order.created (line_items)
+            Each response.suggested dict should have NO duplicate values
+            for "address", "customer_phone", "customer_email", "city",
+            "state", "pincode". customer_name may appear twice ONLY when
+            it's a first_name+last_name pair (no full_name in payload).
+
+metadata:
+  test_sequence: 7
+  run_ui: false
+
+test_plan:
+  current_focus:
+    - "Phase F3.8.1: Webhook Mapping Auto-Suggest dedupe + empty state"
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"
+
+
+---
+
+## Backend Test Run: Phase F3.8.1 — Webhook Mapping Auto-Suggest Deduplication (2026-05-11)
+
+backend:
+  - task: "Phase F3.8.1 — suggest_mapping() dedupe for webhook preview"
+    implemented: true
+    working: true
+    file: "/app/backend/import_schema.py, /app/backend/routers/webhooks_multi.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "testing"
+        -comment: |
+            All 3 mapping-dedup scenarios PASS via /app/backend_test.py against
+            https://logistics-hub-740.preview.emergentagent.com/api on the
+            POST /api/me/webhooks/{wh_id}/preview endpoint. A test webhook was
+            created (event_type=new_order — the contract's "order_created"
+            value is not in EVENT_KEYS, so I used the equivalent "new_order"
+            instead), exercised with three payloads, then deleted at the end.
+
+            (NOTE: review request listed event_type="order_created" but valid
+            EVENT_KEYS are: new_order, order_status_update, abandoned_order,
+            customer_created, customer_updated, custom. "new_order" is the
+            correct equivalent and the dedupe logic in suggest_mapping is
+            event-type-agnostic, so this substitution does not affect the
+            scenario assertions.)
+
+            Scenario 2 — Dukaan-style payload (order.uuid + order.buyer.{first_name,
+            last_name, phone, email} + order.shipping_address.{address_1, address_2,
+            city, state, pincode} + order.total_cost):
+              suggested target counts: {city:1, state:1, pincode:1, order_id:1,
+              customer_name:2, customer_phone:1, customer_email:1, address:1,
+              amount:1}
+              ✅ customer_name appears EXACTLY 2 times (first_name + last_name pair).
+              ✅ address appears EXACTLY 1 time (address_1 wins; address_2 is NOT
+                  mapped — confirmed only address_1 → address in the output).
+              ✅ All other targets appear exactly once.
+              ✅ No target appears > 2 times.
+
+            Scenario 3 — Shopify-style payload with full_name AND fragments
+            (customer.{full_name, first_name, last_name, phone, email} +
+            shipping_address.{address1, address2, line1, city, province, zip} +
+            total_price):
+              suggested target counts: {city:1, customer_name:1, customer_phone:1,
+              customer_email:1, address:1, state:1, pincode:1, amount:1}
+              ✅ customer_name appears EXACTLY 1 time (full_name wins as "clean";
+                  first_name/last_name fragments correctly skipped).
+              ✅ address appears EXACTLY 1 time (shipping_address.address1 wins;
+                  address2 and line1 not duplicated).
+              ✅ No target appears > 1 time. All other fields exactly once.
+
+            Scenario 4 — Bare leaf fragments only (first_name, last_name, phone,
+            email, address1, city, state, pincode):
+              suggested target counts: {city:1, state:1, pincode:1,
+              customer_name:2, customer_phone:1, customer_email:1, address:1}
+              ✅ customer_name appears EXACTLY 2 times (both fragments kept so the
+                  backend build path joins them).
+              ✅ address appears EXACTLY 1 time.
+              ✅ All other fields exactly once. No target appears > 2 times.
+
+            Cleanup — DELETE /api/me/webhooks/{wh_id} returned 200 ok=true;
+            verified the test webhook was removed.
+
+            The suggest_mapping() dedupe logic (lines 670-700 of
+            /app/backend/import_schema.py) is working exactly as specified:
+              - For customer_name: clean (full_name) beats fragment; two
+                fragments can coexist; clean+anything else is rejected.
+              - For all other targets (address, customer_phone, customer_email,
+                city, state, pincode, amount, order_id): first auto-suggestion
+                wins; subsequent duplicate sources for the same target are
+                silently dropped. No duplicate rows surface to the UI.
+
+agent_communication:
+    -agent: "testing"
+    -message: |
+        Phase F3.8.1 — Webhook Mapping Auto-Suggest Deduplication PASSED.
+        3/3 scenarios green via /app/backend_test.py. The fix in
+        suggest_mapping() (import_schema.py:670-700) successfully dedupes
+        target fields. customer_name correctly keeps either (a) a single
+        clean source like full_name, OR (b) two fragments first_name +
+        last_name for join semantics. All other targets (address, phone,
+        email, city, state, pincode, amount, order_id) get the first
+        source only — no duplicates leak. Address_2/line1/second-address
+        sources are correctly suppressed.
+
+        Side note: review request used event_type="order_created" which
+        isn't in the backend's EVENT_KEYS list. I substituted "new_order"
+        (the correct equivalent). The dedupe logic in suggest_mapping is
+        event-type-agnostic, so this doesn't affect the assertions —
+        main agent may want to either (a) align the review-request
+        naming with EVENT_KEYS or (b) add "order_created" as an alias.
+        This is informational only — not a bug.
+

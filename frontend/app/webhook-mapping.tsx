@@ -380,11 +380,39 @@ export default function WebhookMappingScreen() {
           {keys.length === 0 ? (
             <View style={styles.emptyBox}>
               <Text style={styles.emptyEmoji}>📡</Text>
-              <Text style={styles.emptyTitle}>No sample loaded yet</Text>
-              <Text style={styles.emptySub}>
-                Click "Use last received" if you've already pinged this
-                webhook, or paste a sample JSON to get started.
+              <Text style={styles.emptyTitle}>
+                {(webhook?.recent_samples?.length || 0) === 0
+                  ? "Waiting for first payload"
+                  : "No sample loaded yet"}
               </Text>
+              <Text style={styles.emptySub}>
+                {(webhook?.recent_samples?.length || 0) === 0 ? (
+                  <>
+                    This webhook hasn't received any payloads yet. To
+                    activate{" "}
+                    <Text style={{ fontWeight: "800", color: "#166534" }}>
+                      ✓ AUTO mapping
+                    </Text>
+                    , either:{"\n\n"}
+                    1. Send a real test order from your store, OR{"\n"}
+                    2. Tap "Paste sample JSON" below and paste any example
+                    order payload from your store's docs.
+                  </>
+                ) : (
+                  <>
+                    Tap "Use last received" to load the latest payload, or
+                    paste a sample JSON to get started.
+                  </>
+                )}
+              </Text>
+              <TouchableOpacity
+                style={styles.emptyCta}
+                onPress={() => { setPasteText(""); setPasteOpen(true); }}
+                activeOpacity={0.85}
+              >
+                <PhIcon name="edit" size={14} color="#fff" />
+                <Text style={styles.emptyCtaTxt}>Paste sample JSON</Text>
+              </TouchableOpacity>
             </View>
           ) : (
             keys.map((k) => {
@@ -680,6 +708,14 @@ const styles = StyleSheet.create({
   emptyEmoji: { fontSize: 36, marginBottom: 4 },
   emptyTitle: { fontSize: 15, fontWeight: "800", color: colors.text, marginBottom: 4 },
   emptySub:   { fontSize: 12, color: colors.textMuted, textAlign: "center", lineHeight: 18 },
+  emptyCta: {
+    marginTop: 14,
+    flexDirection: "row", alignItems: "center", gap: 6,
+    backgroundColor: colors.primary,
+    paddingHorizontal: 16, paddingVertical: 10,
+    borderRadius: 10,
+  },
+  emptyCtaTxt: { color: "#fff", fontWeight: "800", fontSize: 13 },
 
   row: {
     flexDirection: "row", alignItems: "center", gap: 10,
