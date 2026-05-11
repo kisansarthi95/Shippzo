@@ -291,30 +291,48 @@ export default function EditPendingScreen() {
               // Most carts wrap the actual order under .order; fall back
               // to top-level so older payload shapes still work.
               const order: any = (raw as any).order || raw;
+
+              // Phase F3.7 fix — some carts deliver structured fields
+              // (e.g. Dukaan ships `order_status_url` as
+              // {id, url, status} not a plain string). Coerce safely so
+              // <Text>{anything}</Text> never crashes React.
+              const _coerceStr = (v: any): string => {
+                if (v === null || v === undefined) return "";
+                if (typeof v === "string") return v;
+                if (typeof v === "number" || typeof v === "boolean") return String(v);
+                if (typeof v === "object") {
+                  // Pick the first URL-shaped value out of the object.
+                  return String(
+                    v.url || v.link || v.value || v.href ||
+                    v.short_url || v.payment_url || "",
+                  );
+                }
+                return String(v);
+              };
+
               const checkoutUrl: string =
-                order?.order_status_url ||
-                order?.checkout_url ||
-                order?.recovery_url ||
-                "";
+                _coerceStr(order?.order_status_url) ||
+                _coerceStr(order?.checkout_url) ||
+                _coerceStr(order?.recovery_url);
               const paymentUrl: string =
-                order?.payment_url ||
-                order?.gateway_url ||
-                "";
+                _coerceStr(order?.payment_url) ||
+                _coerceStr(order?.gateway_url);
               const gateway: string =
-                (typeof order?.gateway === "string" ? order.gateway : "") ||
-                order?.payment_gateway_names?.[0] ||
-                order?.financial_status ||
-                "";
+                _coerceStr(order?.gateway) ||
+                (Array.isArray(order?.payment_gateway_names)
+                  ? String(order.payment_gateway_names[0] || "")
+                  : "") ||
+                _coerceStr(order?.financial_status);
 
               // Flatten one level deep so we can list common fields
               // without dumping huge nested address trees.
               const summaryRows: { k: string; v: string }[] = [];
               const pushIf = (k: string, v: any) => {
                 if (v === null || v === undefined || v === "") return;
-                summaryRows.push({
-                  k,
-                  v: typeof v === "object" ? JSON.stringify(v) : String(v),
-                });
+                const s =
+                  typeof v === "object" ? JSON.stringify(v) : String(v);
+                if (!s) return;
+                summaryRows.push({ k, v: s });
               };
               pushIf("Order #",        order?.name || order?.order_number || order?.id);
               pushIf("Email",          order?.email || order?.contact_email);
