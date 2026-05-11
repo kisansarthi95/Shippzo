@@ -1089,6 +1089,14 @@ def init() -> None:
                     # owner didn't tag this webhook with a source app
                     # → status updates fall back to global match.
                     "source_app":   source_app,
+                    # Phase F3.7 — Admin Card. Keep the raw inbound
+                    # payload AS-IS so the order-edit screen can show
+                    # the operator the original webhook body (Dukaan
+                    # checkout_url, Shopify gateway, custom fields,
+                    # etc.). Capped at the trimmed-down `flat` view +
+                    # the original dict so big payloads don't bloat
+                    # pending_orders.
+                    "raw_payload":  raw if isinstance(raw, dict) else {},
                 },
             })
             doc["order_id"] = doc.get("order_id") or doc["master_order_id"]

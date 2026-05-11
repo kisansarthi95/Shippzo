@@ -2087,6 +2087,21 @@ export type PendingOrder = {
   warnings?: string[];
   created_at: string;
   processed_at?: string;
+  // Phase F3.7 — Admin Card panel needs the source/origin metadata
+  // (webhook name, source app, original external order id, raw
+  // payload) so the operator can inspect the inbound JSON straight
+  // from the order edit screen.
+  source_meta?: {
+    webhook_name?: string;
+    webhook_id?: string;
+    source_app?: string;
+    event_type?: string;
+    received_at?: string;
+    remote_keys?: string[];
+    raw_payload?: Record<string, any>;
+    [key: string]: any;
+  };
+  external_order_id?: string;
 };
 
 // Phase F2.3 (2026-05-09) — Sheet column-mapping fields aligned with

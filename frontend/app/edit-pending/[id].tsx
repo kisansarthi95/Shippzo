@@ -23,8 +23,8 @@
 import { Stack, useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
-  ActivityIndicator, Alert, BackHandler, KeyboardAvoidingView, Platform,
-  ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View,
+  ActivityIndicator, Alert, BackHandler, KeyboardAvoidingView, Linking,
+  Platform, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import PhIcon from "../../components/PhIcon";
@@ -270,6 +270,160 @@ export default function EditPendingScreen() {
               ))}
             </View>
           ))}
+
+          {/* Phase F3.7 — Admin Card (4th tab/section). Shown only
+              when the order arrived via webhook AND we stashed the
+              original payload (new ingests do). Surfaces:
+                • Checkout / Order-Status URL (Dukaan ships
+                  `order.order_status_url`; Shopify ships
+                  `order.order_status_url` too).
+                • Payment gateway / Payment link
+                  (Dukaan: `order.gateway` / `order.payment_url`;
+                   Shopify: `order.financial_status`).
+                • The full flattened payload (key:value list) so the
+                  operator can copy any extra field manually.
+              We keep this read-only — edits go in the form above. */}
+          {(original as any).source === "webhook" &&
+           original.source_meta?.raw_payload ? (
+            (() => {
+              const sm    = original.source_meta || {};
+              const raw   = sm.raw_payload || {};
+              // Most carts wrap the actual order under .order; fall back
+              // to top-level so older payload shapes still work.
+              const order: any = (raw as any).order || raw;
+              const checkoutUrl: string =
+                order?.order_status_url ||
+                order?.checkout_url ||
+                order?.recovery_url ||
+                "";
+              const paymentUrl: string =
+                order?.payment_url ||
+                order?.gateway_url ||
+                "";
+              const gateway: string =
+                (typeof order?.gateway === "string" ? order.gateway : "") ||
+                order?.payment_gateway_names?.[0] ||
+                order?.financial_status ||
+                "";
+
+              // Flatten one level deep so we can list common fields
+              // without dumping huge nested address trees.
+              const summaryRows: { k: string; v: string }[] = [];
+              const pushIf = (k: string, v: any) => {
+                if (v === null || v === undefined || v === "") return;
+                summaryRows.push({
+                  k,
+                  v: typeof v === "object" ? JSON.stringify(v) : String(v),
+                });
+              };
+              pushIf("Order #",        order?.name || order?.order_number || order?.id);
+              pushIf("Email",          order?.email || order?.contact_email);
+              pushIf("Phone",          order?.phone || order?.contact_phone);
+              pushIf("Total",          order?.total_price || order?.total);
+              pushIf("Subtotal",       order?.subtotal_price);
+              pushIf("Currency",       order?.currency);
+              pushIf("Financial Status", order?.financial_status);
+              pushIf("Fulfilment Status", order?.fulfillment_status);
+              pushIf("Created (source)", order?.created_at);
+
+              const openUrl = (url: string) => {
+                if (!url) return;
+                Linking.openURL(url).catch(() =>
+                  Alert.alert("Open link", "Couldn't open the link in a browser."),
+                );
+              };
+
+              return (
+                <View style={[styles.groupCard, styles.adminCard]}>
+                  <View style={styles.adminHeader}>
+                    <PhIcon name="shield-checkmark-outline" size={16} color="#9333EA" />
+                    <Text style={styles.adminTitle}>Admin Card</Text>
+                    {!!sm.source_app && (
+                      <View style={styles.adminSrcPill}>
+                        <Text style={styles.adminSrcPillTxt}>
+                          {sm.source_app.toUpperCase()}
+                        </Text>
+                      </View>
+                    )}
+                  </View>
+                  <Text style={styles.adminHint}>
+                    Original webhook payload from{" "}
+                    <Text style={{ fontWeight: "800" }}>
+                      {sm.webhook_name || "your webhook"}
+                    </Text>
+                    {sm.event_type ? ` · ${sm.event_type}` : ""}.
+                  </Text>
+
+                  {/* CTA buttons */}
+                  {!!checkoutUrl && (
+                    <TouchableOpacity
+                      testID="admin-card-checkout-link"
+                      style={styles.adminLinkBtn}
+                      onPress={() => openUrl(checkoutUrl)}
+                      activeOpacity={0.85}
+                    >
+                      <PhIcon name="open-outline" size={14} color="#fff" />
+                      <Text style={styles.adminLinkBtnTxt}>Open Checkout Link</Text>
+                    </TouchableOpacity>
+                  )}
+                  {!!paymentUrl && (
+                    <TouchableOpacity
+                      testID="admin-card-payment-link"
+                      style={[styles.adminLinkBtn, { backgroundColor: "#10B981" }]}
+                      onPress={() => openUrl(paymentUrl)}
+                      activeOpacity={0.85}
+                    >
+                      <PhIcon name="card-outline" size={14} color="#fff" />
+                      <Text style={styles.adminLinkBtnTxt}>Open Payment Link</Text>
+                    </TouchableOpacity>
+                  )}
+
+                  {/* Inline read-only field rows */}
+                  {!!gateway && (
+                    <View style={styles.adminKvRow}>
+                      <Text style={styles.adminKvKey}>Gateway</Text>
+                      <Text style={styles.adminKvVal} selectable>
+                        {gateway}
+                      </Text>
+                    </View>
+                  )}
+                  {!!checkoutUrl && (
+                    <View style={styles.adminKvRow}>
+                      <Text style={styles.adminKvKey}>Checkout URL</Text>
+                      <Text style={styles.adminKvVal} selectable numberOfLines={2}>
+                        {checkoutUrl}
+                      </Text>
+                    </View>
+                  )}
+                  {!!paymentUrl && (
+                    <View style={styles.adminKvRow}>
+                      <Text style={styles.adminKvKey}>Payment URL</Text>
+                      <Text style={styles.adminKvVal} selectable numberOfLines={2}>
+                        {paymentUrl}
+                      </Text>
+                    </View>
+                  )}
+                  {summaryRows.map((r) => (
+                    <View key={r.k} style={styles.adminKvRow}>
+                      <Text style={styles.adminKvKey}>{r.k}</Text>
+                      <Text style={styles.adminKvVal} selectable numberOfLines={2}>
+                        {r.v}
+                      </Text>
+                    </View>
+                  ))}
+
+                  {!!sm.external_order_id && (
+                    <View style={styles.adminKvRow}>
+                      <Text style={styles.adminKvKey}>Source Order ID</Text>
+                      <Text style={styles.adminKvVal} selectable>
+                        {sm.external_order_id}
+                      </Text>
+                    </View>
+                  )}
+                </View>
+              );
+            })()
+          ) : null}
         </ScrollView>
 
         {/* Save bar */}
@@ -346,4 +500,70 @@ const styles = StyleSheet.create({
     paddingVertical: 12, borderRadius: 10, backgroundColor: "#FF6B00",
   },
   saveBtnTxt: { color: "#FFFFFF", fontWeight: "700", fontSize: 14 },
+
+  // Phase F3.7 — Admin Card (4th section) styles.
+  adminCard: {
+    borderColor: "#E9D5FF",
+    backgroundColor: "#FAF5FF",
+  },
+  adminHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    marginBottom: 6,
+  },
+  adminTitle: {
+    fontSize: 12,
+    fontWeight: "900",
+    color: "#6B21A8",
+    textTransform: "uppercase",
+    letterSpacing: 0.5,
+  },
+  adminSrcPill: {
+    paddingHorizontal: 6, paddingVertical: 2,
+    borderRadius: 20,
+    flexShrink: 0,
+    backgroundColor: "#E0E7FF",
+  },
+  adminSrcPillTxt: {
+    fontSize: 9, fontWeight: "800", color: "#3730A3",
+  },
+  adminHint: {
+    fontSize: 11, color: "#7C3AED", marginBottom: 10, lineHeight: 16,
+  },
+  adminLinkBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    paddingVertical: 9,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    backgroundColor: "#3B82F6",
+    marginBottom: 8,
+  },
+  adminLinkBtnTxt: {
+    color: "#fff",
+    fontSize: 12.5,
+    fontWeight: "800",
+  },
+  adminKvRow: {
+    flexDirection: "row",
+    paddingVertical: 6,
+    borderTopWidth: 1,
+    borderTopColor: "#F3E8FF",
+    gap: 10,
+  },
+  adminKvKey: {
+    width: 110,
+    fontSize: 11,
+    fontWeight: "700",
+    color: "#7C3AED",
+  },
+  adminKvVal: {
+    flex: 1,
+    fontSize: 12,
+    color: "#0F172A",
+    lineHeight: 17,
+  },
 });
