@@ -9,11 +9,16 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { useFocusEffect, useRouter } from "expo-router";
 import { Api, SheetOrder, PendingOrder, Courier, AbandonedCart } from "../../lib/api";
 import { colors } from "../../lib/theme";
+import { useFeatureFlag } from "../../lib/feature_flags";
 
 type Filter = "pending" | "shipped" | "all";   // legacy — retained for type-import compat
 
 export default function OrdersFromSheet() {
   const router = useRouter();
+  // Phase F3.8 — gate the per-card Edit icon by plan. Admin toggles
+  // this in /admin/pricing → Plan Features. Hidden plans show only
+  // Delete (operator can still remove rows, just not mutate them).
+  const flagEditPending = useFeatureFlag("pending_orders_edit");
   const [loading, setLoading] = useState(true);
   const [orders, setOrders] = useState<SheetOrder[]>([]);
   const [connected, setConnected] = useState(false);
@@ -420,7 +425,7 @@ export default function OrdersFromSheet() {
           {/* Phase C — Edit + Delete sized identically (32×32 round
               icon buttons) so they read as a paired action group
               instead of a big edit button + tiny delete X. */}
-          {row.paste ? (
+          {row.paste && flagEditPending ? (
             <TouchableOpacity
               onPress={() => router.push(`/edit-pending/${row.paste!.id}` as any)}
               hitSlop={6}
