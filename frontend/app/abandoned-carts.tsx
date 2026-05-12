@@ -220,12 +220,14 @@ export default function AbandonedCartsScreen() {
             </View>
           ) : null}
 
-          {/* Filter tabs */}
+          {/* Filter tabs — Phase F3.9 Android-large-font fix:
+              generous marginBottom prevents the cards below from
+              clipping the chips at >=1.3x font scale. */}
           <ScrollView
             horizontal
             showsHorizontalScrollIndicator={false}
-            style={{ marginBottom: 12 }}
-            contentContainerStyle={{ gap: 8, paddingRight: 8 }}
+            style={{ marginBottom: 16 }}
+            contentContainerStyle={{ gap: 8, paddingRight: 8, paddingVertical: 4, alignItems: "center" }}
           >
             {tabs.map((t) => {
               const sel = filter === t.key;
@@ -437,7 +439,9 @@ const styles = StyleSheet.create({
   statLabel: { fontSize: 11, color: colors.textMuted, marginTop: 2 },
 
   filterChip: {
-    paddingHorizontal: 14, paddingVertical: 8,
+    paddingHorizontal: 14, paddingVertical: 10,
+    minHeight: 40,
+    justifyContent: "center",
     borderRadius: 20,
     flexShrink: 0,
     borderWidth: 1.5, borderColor: "#E5E7EB",
@@ -447,7 +451,11 @@ const styles = StyleSheet.create({
     borderColor: colors.primary,
     backgroundColor: "#FFF7ED",
   },
-  filterChipTxt: { fontSize: 12, fontWeight: "700", color: "#475569" },
+  filterChipTxt: {
+    fontSize: 12, fontWeight: "700", color: "#475569",
+    lineHeight: 18,
+    includeFontPadding: false,
+  },
   filterChipTxtSel: { color: colors.primary },
 
   search: {

@@ -618,17 +618,21 @@ export default function OrdersFromSheet() {
         />
       </View>
 
-      {/* Source filter chips — horizontal scroll, fixed height so the
-          ScrollView doesn't stretch the chips into tall capsules when
-          its parent flex container has spare vertical space. */}
+      {/* Source filter chips — horizontal scroll. Phase F3.9 fix:
+          removed `maxHeight: 52` because on Android with system font
+          set to "Largest" (>=1.3x scale) the chip text overflows past
+          52dp and gets clipped. Replaced with breathing-room
+          marginTop + bigger vertical paddingVertical so the chips
+          stay readable at any font scale. */}
       <ScrollView
         horizontal
         showsHorizontalScrollIndicator={false}
-        style={{ flexGrow: 0, maxHeight: 52 }}
+        style={{ flexGrow: 0, marginTop: 8 }}
         contentContainerStyle={{
           paddingHorizontal: 12,
-          paddingBottom: 8,
+          paddingVertical: 8,
           alignItems: "center",
+          gap: 8,
         }}
       >
         {([
@@ -805,14 +809,20 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16, paddingVertical: 12,
   },
   filterPill: {
-    paddingHorizontal: 14, paddingVertical: 8,
+    paddingHorizontal: 14, paddingVertical: 10,
+    minHeight: 40,
+    justifyContent: "center",
     borderWidth: 2, borderColor: "#E5E7EB",
     borderRadius: 20, backgroundColor: "#fff",
     flexShrink: 0,
     marginRight: 8,
   },
   filterPillActive: { backgroundColor: colors.secondary, borderColor: colors.secondary },
-  filterText: { fontWeight: "700", fontSize: 13, color: colors.text },
+  filterText: {
+    fontWeight: "700", fontSize: 13, color: colors.text,
+    lineHeight: 18,
+    includeFontPadding: false,
+  },
   warnBox: {
     flexDirection: "row", alignItems: "center", gap: 6,
     marginHorizontal: 16, marginTop: 8,

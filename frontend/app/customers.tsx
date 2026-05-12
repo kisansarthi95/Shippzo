@@ -119,12 +119,14 @@ export default function CustomersScreen() {
             </View>
           ) : null}
 
-          {/* Source filter chips */}
+          {/* Source filter chips — Phase F3.9 Android-large-font fix:
+              extra marginBottom + vertical padding so chips don't get
+              clipped at >=1.3x system font scale. */}
           <ScrollView
             horizontal
             showsHorizontalScrollIndicator={false}
-            style={{ marginBottom: 12 }}
-            contentContainerStyle={{ gap: 8, paddingRight: 8 }}
+            style={{ marginBottom: 16 }}
+            contentContainerStyle={{ gap: 8, paddingRight: 8, paddingVertical: 4, alignItems: "center" }}
           >
             {sources.map((s) => {
               const sel = sourceFilter === s.key;
@@ -268,13 +270,20 @@ const styles = StyleSheet.create({
   statLabel: { fontSize: 11, color: colors.textMuted, marginTop: 2 },
 
   filterChip: {
-    paddingHorizontal: 14, paddingVertical: 8,
+    paddingHorizontal: 14, paddingVertical: 10,
+    minHeight: 40,
+    justifyContent: "center",
+    flexShrink: 0,
     borderRadius: 999,
     borderWidth: 1.5, borderColor: "#E5E7EB",
     backgroundColor: "#fff",
   },
   filterChipSel: { borderColor: colors.primary, backgroundColor: "#FFF7ED" },
-  filterChipTxt: { fontSize: 12, fontWeight: "700", color: "#475569" },
+  filterChipTxt: {
+    fontSize: 12, fontWeight: "700", color: "#475569",
+    lineHeight: 18,
+    includeFontPadding: false,
+  },
   filterChipTxtSel: { color: colors.primary },
 
   search: {
