@@ -18063,3 +18063,85 @@ agent_communication:
         No regressions in shipment list / stats / pending filters.
         Ready for main agent to summarise + finish.
 
+
+
+  - task: "Phase 19a: Wide stage-flow buttons + colour-matched Next Stage"
+    implemented: true
+    working: "NA"
+    file: "/app/frontend/app/(tabs)/shipments.tsx"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: false
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: |
+            Phase-19a — Visual refinement of the Phase-19 stage flow.
+            
+            USER REQUEST: The two-button stage flow (Current Stage /
+            Next Stage) introduced in Phase-19 was placed at the top
+            of the shipment card next to the tracking ID, and the
+            Next-Stage button was hard-coded orange. Per the design
+            mock-up (image 2026-05-12) the user wants:
+              1. The stage row pinned to the BOTTOM of each card,
+                 below the existing action-icons row.
+              2. Two FULL-WIDTH equal pills (not compact chips) so
+                 operators get a wider tap target on a phone.
+              3. The Next-Stage button must INHERIT the colour palette
+                 of its TARGET stage — e.g. when advancing Ready to
+                 Ship → Shipped, the Next button uses the Shipped
+                 stage's lavender palette. Orange goes away.
+              4. Current-Stage chip keeps a chevron-down hint
+                 (manual picker affordance); Next-Stage shows
+                 chevron-right (advance hint).
+            
+            CHANGES (single file: shipments.tsx)
+            
+            1. NEW helper `lookupStatusMeta(status)` mirrors the
+               StatusChip lookup. Returns {value,label,bg,fg} from
+               STATUS_META (with alias resolution for legacy
+               "Dispatch" rows) so both buttons share the same
+               palette source. Falls back to the Pending cream
+               palette for unknown values.
+            
+            2. Card layout: REMOVED the inline 2-button group that
+               sat next to the tracking ID. The original single
+               StatusChip is restored to that position so the top
+               row reads "tracking-id ··· stage chip" again.
+            
+            3. NEW wide stage-flow row appended AFTER the existing
+               `<View style={styles.actions}>` block (so it's the
+               last child of the card body):
+                  [ CURRENT STAGE ▼ ]   [ NEXT STAGE ▶ ]
+               - Two equal-flex pills (flex:1 each, gap:10).
+               - Current pill: filled bg from STATUS_META + chevron
+                 down + label upper-cased.
+               - Next pill: tinted bg (~20% alpha of the target
+                 stage's fg colour over white) + thicker border in
+                 the target's fg + chevron forward.
+               - Hidden on terminal / side-branch stages: Feedback,
+                 Modified, Cancel, Cancel by buyer, Returned. An
+                 invisible spacer of the same width takes its place
+                 so list rows stay aligned.
+               - testIDs: `stage-current-{tracking}` /
+                 `stage-next-{tracking}` (the old
+                 `next-stage-{tracking}` testID is retired).
+            
+            4. NEW styles: `stageRow`, `stagePill`, `stagePillOutline`,
+               `stagePillTxt`. REMOVED legacy `nextStageBtn` /
+               `nextStageBtnTxt` (orange-outline) styles.
+            
+            Sample colour map (driven by STATUS_META, not hard-coded):
+              Pending       → cream (#F8ECC2 / #8B6B00)
+              Processing    → amber (#FEF3C7 / #92400E)
+              Ready to Ship → khaki (#F4E3CF / #8B5E34)
+              Shipped       → lavender (#EEE9FF / #6B5BFF)
+              Delivered     → green (from STATUS_META)
+              Feedback      → terminal (no next button)
+            
+            BACKEND: untouched — Phase-19's PUT + filter logic still
+            powers everything.
+            
+            Health: Metro re-bundled cleanly (4385 modules, HTTP 200).
+            Lint: no new errors.
+

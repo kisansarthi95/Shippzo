@@ -474,6 +474,36 @@ export default function Shipments() {
   };
   const nextStageOf = (status: string): string => NEXT_STAGE[status || ""] || "";
 
+  // Phase-19a — Resolve a stage label into its STATUS_META palette.
+  // Mirrors the StatusChip lookup so the new wide stage-flow buttons
+  // can pick up the same bg/fg per stage without hard-coding orange.
+  // Falls back to the "Pending" cream palette for unknown values so
+  // we never end up rendering a colourless ghost button.
+  const lookupStatusMeta = (
+    status: string,
+  ): { value: string; label: string; bg: string; fg: string } => {
+    const s = status || "";
+    for (const [, meta] of Object.entries(STATUS_META)) {
+      if (
+        meta.value === s ||
+        (meta.aliases && meta.aliases.includes(s))
+      ) {
+        return {
+          value: meta.value,
+          label: meta.label || meta.value,
+          bg: meta.bg,
+          fg: meta.fg,
+        };
+      }
+    }
+    return {
+      value: s || "Pending",
+      label: s || "Pending",
+      bg: "#F8ECC2",
+      fg: "#8B6B00",
+    };
+  };
+
   const [advancingId, setAdvancingId] = useState<string | null>(null);
   const advanceStage = async (ship: Shipment) => {
     const next = nextStageOf(ship.status || "");
@@ -1340,50 +1370,16 @@ export default function Shipments() {
                   )}
                   <Text style={styles.track}>{item.tracking_id}</Text>
                 </View>
-                {/* Phase-19 — Two-button stage flow.
-                    Left chip = current stage (tap → manual picker
-                    for correction). Right chip = next stage in the
-                    Pending→Processing→Ready to Ship→Shipped→Delivered
-                    →Feedback workflow (tap → instant advance, no
-                    popup). After Feedback / for side-branch stages
-                    (Modified / Cancel* / Returned) the right chip
-                    hides — the workflow has terminated. */}
-                {(() => {
-                  const next = nextStageOf(item.status || "");
-                  const isAdvancing = advancingId === item.id;
-                  return (
-                    <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-                      <StatusChip
-                        status={item.status}
-                        onPress={!selectMode ? () => openStatusPicker(item) : undefined}
-                      />
-                      {!selectMode && next ? (
-                        <TouchableOpacity
-                          testID={`next-stage-${item.tracking_id}`}
-                          onPress={(e: any) => { e?.stopPropagation?.(); advanceStage(item); }}
-                          disabled={isAdvancing}
-                          activeOpacity={0.85}
-                          style={[
-                            styles.nextStageBtn,
-                            isAdvancing && { opacity: 0.5 },
-                          ]}
-                          hitSlop={6}
-                        >
-                          {isAdvancing ? (
-                            <ActivityIndicator size="small" color="#FF6B00" />
-                          ) : (
-                            <>
-                              <Text style={styles.nextStageBtnTxt} numberOfLines={1}>
-                                {next.toUpperCase()}
-                              </Text>
-                              <PhIcon name="chevron-forward" size={14} color="#FF6B00" />
-                            </>
-                          )}
-                        </TouchableOpacity>
-                      ) : null}
-                    </View>
-                  );
-                })()}
+                {/* Phase-19a — Status chip restored to its original
+                    location next to the tracking ID. The TWO-button
+                    stage flow has been moved BELOW the actions row so
+                    operators get a wider tap area and the Next-Stage
+                    button can colour-match its target stage instead of
+                    always being orange. */}
+                <StatusChip
+                  status={item.status}
+                  onPress={!selectMode ? () => openStatusPicker(item) : undefined}
+                />
               </View>
               <Text style={styles.name}>{item.customer_name}</Text>
               {!!item.order_id && (
@@ -1472,6 +1468,97 @@ export default function Shipments() {
                 ) : null}
               </View>
             )}
+
+            {/* Phase-19a — Wide stage-flow row at the bottom of the
+                card (per design ref 2026-05-12). Two equal-width
+                pills:
+                  Left  = CURRENT stage  (filled with stage colour +
+                          chevron-down hint → tap opens manual picker)
+                  Right = NEXT stage     (tinted background of the
+                          target stage's colour + chevron-right → tap
+                          instantly advances; hidden on terminal /
+                          side-branch stages: Feedback / Modified /
+                          Cancel / Cancel by buyer / Returned).
+                The Next button no longer hard-codes orange — it
+                inherits the destination stage's STATUS_META colours
+                so each step keeps a consistent visual identity. */}
+            {!selectMode && (() => {
+              const next = nextStageOf(item.status || "");
+              const isAdvancing = advancingId === item.id;
+
+              const curMeta = lookupStatusMeta(item.status);
+              const nextMeta = next ? lookupStatusMeta(next) : null;
+
+              return (
+                <View style={styles.stageRow}>
+                  <TouchableOpacity
+                    testID={`stage-current-${item.tracking_id}`}
+                    onPress={() => openStatusPicker(item)}
+                    activeOpacity={0.85}
+                    style={[
+                      styles.stagePill,
+                      { backgroundColor: curMeta.bg, borderColor: curMeta.bg },
+                    ]}
+                  >
+                    <Text
+                      style={[styles.stagePillTxt, { color: curMeta.fg }]}
+                      numberOfLines={1}
+                    >
+                      {(curMeta.label || item.status || "Pending").toUpperCase()}
+                    </Text>
+                    <PhIcon
+                      name="chevron-down"
+                      size={14}
+                      color={curMeta.fg}
+                      style={{ marginLeft: 6 }}
+                    />
+                  </TouchableOpacity>
+                  {nextMeta ? (
+                    <TouchableOpacity
+                      testID={`stage-next-${item.tracking_id}`}
+                      onPress={() => advanceStage(item)}
+                      disabled={isAdvancing}
+                      activeOpacity={0.85}
+                      style={[
+                        styles.stagePill,
+                        styles.stagePillOutline,
+                        {
+                          backgroundColor: nextMeta.bg + "33", // ~20 % alpha tint
+                          borderColor: nextMeta.fg,
+                        },
+                        isAdvancing && { opacity: 0.5 },
+                      ]}
+                    >
+                      {isAdvancing ? (
+                        <ActivityIndicator size="small" color={nextMeta.fg} />
+                      ) : (
+                        <>
+                          <Text
+                            style={[styles.stagePillTxt, { color: nextMeta.fg }]}
+                            numberOfLines={1}
+                          >
+                            {(nextMeta.label || next).toUpperCase()}
+                          </Text>
+                          <PhIcon
+                            name="chevron-forward"
+                            size={14}
+                            color={nextMeta.fg}
+                            style={{ marginLeft: 6 }}
+                          />
+                        </>
+                      )}
+                    </TouchableOpacity>
+                  ) : (
+                    /* Workflow ended (Feedback / Modified / Cancel /
+                        Cancel by buyer / Returned). Render an empty
+                        spacer so the current-stage pill stays the
+                        same width as on advance-able rows — keeps
+                        the list visually tidy. */
+                    <View style={[styles.stagePill, { backgroundColor: "transparent", borderColor: "transparent" }]} />
+                  )}
+                </View>
+              );
+            })()}
           </View>
           );
         }}
@@ -1872,27 +1959,37 @@ const styles = StyleSheet.create({
     borderRadius: 4,
   },
   chipText: { fontSize: 10, fontWeight: "800", letterSpacing: 0.5 },
-  // Phase-19 — Compact "Next Stage" button rendered immediately to
-  // the right of the current-stage chip on every shipment card.
-  // Orange outline so it reads as the primary CTA without competing
-  // with the heavier filled current-stage chip.
-  nextStageBtn: {
+  // Phase-19a — Wide stage-flow row pinned to the bottom of every
+  // shipment card. Two equal-width pills, the left filled with the
+  // current stage's palette + a chevron-down hint, the right tinted
+  // with the NEXT stage's palette + a chevron-right. Replaces the
+  // earlier orange-outline `nextStageBtn` that was always orange
+  // regardless of where the workflow was heading.
+  stageRow: {
+    flexDirection: "row",
+    paddingHorizontal: 12,
+    paddingTop: 4,
+    paddingBottom: 12,
+    gap: 10,
+  },
+  stagePill: {
+    flex: 1,
     flexDirection: "row",
     alignItems: "center",
-    gap: 4,
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: 6,
+    justifyContent: "center",
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    borderRadius: 8,
     borderWidth: 1.5,
-    borderColor: "#FF6B00",
-    backgroundColor: "#FFF7F0",
-    minHeight: 26,
+    minHeight: 44,
   },
-  nextStageBtnTxt: {
-    fontSize: 10,
+  stagePillOutline: {
+    borderWidth: 1.5,
+  },
+  stagePillTxt: {
+    fontSize: 13,
     fontWeight: "800",
-    color: "#FF6B00",
-    letterSpacing: 0.3,
+    letterSpacing: 0.5,
   },
   statusSheetBackdrop: {
     flex: 1,
