@@ -891,137 +891,14 @@ export default function Shipments() {
         </ScrollView>
       </View>
 
-      {/* Phase-9/10: Contextual "Scan" action card. Visible only when
-          Pending or Ready-to-Ship tab is active (All also shows Pending
-          variant as a general shortcut). Colours flip based on mode:
-          Pending→Ready to Ship = cream + orange CTA, Ready to Ship→Shipped
-          = purple-tinted + purple CTA per spec. */}
-      {(status === "All" || status === "Pending" || status === "Ready to Ship") && (() => {
-        const isShipMode = status === "Ready to Ship";
-        return (
-          <TouchableOpacity
-            activeOpacity={0.85}
-            onPress={() =>
-              router.push(
-                isShipMode ? "/scanner-dispatch?mode=ship" : "/scanner-dispatch",
-              )
-            }
-            style={[
-              styles.scanCard,
-              isShipMode && {
-                backgroundColor: "#F4F1FF",
-                borderColor: "#DAD0FF",
-              },
-            ]}
-            testID={isShipMode ? "scan-to-shipped-card" : "scan-to-dispatch-card"}
-          >
-            <View
-              style={[
-                styles.scanCardIconBox,
-                isShipMode && {
-                  backgroundColor: "#EEE9FF",
-                  borderColor: "#DAD0FF",
-                },
-              ]}
-            >
-              <PhIcon
-                name="barcode-outline"
-                size={26}
-                color={isShipMode ? "#6B5BFF" : "#FF6B00"}
-              />
-            </View>
-            <View style={{ flex: 1, marginLeft: 12 }}>
-              <Text
-                style={[
-                  styles.scanCardTitle,
-                  isShipMode && { color: "#4B3FCF" },
-                ]}
-              >
-                {isShipMode ? "Scan to Shipped" : "Scan & Ready to Ship"}
-              </Text>
-              <Text
-                style={[
-                  styles.scanCardSub,
-                  isShipMode && { color: "#6B5BFF" },
-                ]}
-                numberOfLines={2}
-              >
-                {isShipMode
-                  ? "Scan ready-to-ship parcels and move to Shipped"
-                  : "Scan pending parcels and move to Ready to Ship"}
-              </Text>
-            </View>
-            <View
-              style={[
-                styles.scanCardBtn,
-                isShipMode && { backgroundColor: "#6B5BFF" },
-              ]}
-            >
-              <Text style={styles.scanCardBtnText}>Start Scanner</Text>
-            </View>
-          </TouchableOpacity>
-        );
-      })()}
-
-      {/* Phase-11: Need Delivery Confirmation card (Shipped → Delivered).
-          Always visible on All / Shipped / Ready-to-Ship tabs so the
-          workflow surface is discoverable even when zero parcels
-          are pending — empty-state message keeps the card present
-          but visually muted. Tap is disabled when count = 0. */}
-      {(status === "All" || status === "Shipped" || status === "Ready to Ship") && (
-        <TouchableOpacity
-          activeOpacity={needConfirmCount > 0 ? 0.85 : 1}
-          onPress={() => {
-            if (needConfirmCount > 0) {
-              router.push("/bulk-message/delivery_confirmation" as any);
-            }
-          }}
-          style={[
-            styles.confirmCard,
-            needConfirmCount === 0 && styles.confirmCardEmpty,
-          ]}
-          testID="need-delivery-confirm-card"
-        >
-          <View
-            style={[
-              styles.confirmCardIconBox,
-              needConfirmCount === 0 && styles.confirmCardIconBoxEmpty,
-            ]}
-          >
-            <PhIcon
-              name="chatbubble-ellipses"
-              size={24}
-              color={needConfirmCount === 0 ? "#9CA3AF" : "#B45309"}
-            />
-          </View>
-          <View style={{ flex: 1, marginLeft: 12 }}>
-            {needConfirmCount > 0 ? (
-              <>
-                <Text style={styles.confirmCardTitle}>
-                  Need Delivery Confirmation ({needConfirmCount})
-                </Text>
-                <Text style={styles.confirmCardSub} numberOfLines={2}>
-                  Shipped parcels need confirmation
-                </Text>
-              </>
-            ) : (
-              <>
-                <Text style={styles.confirmCardTitleEmpty}>
-                  Delivery Confirmation
-                </Text>
-                <Text style={styles.confirmCardSubEmpty} numberOfLines={2}>
-                  No shipments pending confirmation
-                </Text>
-              </>
-            )}
-          </View>
-          {needConfirmCount > 0 && (
-            <View style={styles.confirmCardArrow}>
-              <PhIcon name="chevron-forward" size={22} color="#B45309" />
-            </View>
-          )}
-        </TouchableOpacity>
-      )}
+      {/* Phase-9 / Phase-11 removed (2026-05-12):
+          Both the contextual "Scan & Ready to Ship" / "Scan to
+          Shipped" card AND the "Need Delivery Confirmation" card
+          have been moved out of the Shipments tab. The Home tab
+          now owns these workflows — its existing scanner-shortcut
+          rows were upgraded to match the visual interface that used
+          to live here. Keeping Shipments focused on the search /
+          filter / list-of-shipments job. */}
 
       {selectMode && (
         <View style={styles.bulkBar} testID="bulk-bar">

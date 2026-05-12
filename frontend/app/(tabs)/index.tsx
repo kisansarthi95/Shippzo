@@ -1695,12 +1695,13 @@ export default function Dashboard() {
                 tone="neutral"
                 chevron
               />
-              {/* Phase-12: Scanner shortcuts. Stacked vertically (full
-                  width pills) so the 4 post-print actions read as a
-                  single ordered list:  1) Scan & Ready, 2) Scan &
-                  Shipped, 3) Ready-to-Ship Confirmation, 4) Delivery
-                  Confirmation. Side-by-side layout proved confusing —
-                  operators kept missing #1 because #2 sat next to it. */}
+              {/* Phase-12 + 2026-05-12 visual refresh: Scanner shortcuts.
+                  Upgraded from slim pill rows to the same card-style
+                  interface that used to live in the Shipments tab
+                  (icon-box + title + subtitle + "Start Scanner" CTA).
+                  Two cards, stacked, in the same workflow order:
+                  1) Pending → Ready to Ship   (cream + orange CTA)
+                  2) Ready to Ship → Shipped   (lavender + purple CTA) */}
               <TouchableOpacity
                 testID="quick-scan-ready"
                 style={[styles.scanRow, styles.scanRowReady]}
@@ -1713,13 +1714,17 @@ export default function Dashboard() {
                 activeOpacity={0.85}
               >
                 <View style={styles.scanRowIcon}>
-                  <PhIcon name="barcode-outline" size={22} color="#8B5E34" />
+                  <PhIcon name="barcode-outline" size={26} color="#FF6B00" />
                 </View>
-                <View style={{ flex: 1 }}>
+                <View style={{ flex: 1, marginLeft: 12 }}>
                   <Text style={styles.scanRowTitle}>Scan & Ready to Ship</Text>
-                  <Text style={styles.scanRowSub}>Pending → Ready to Ship</Text>
+                  <Text style={styles.scanRowSub} numberOfLines={2}>
+                    Scan pending parcels and move to Ready to Ship
+                  </Text>
                 </View>
-                <PhIcon name="chevron-forward" size={20} color="#A87842" />
+                <View style={styles.scanRowCtaReady}>
+                  <Text style={styles.scanRowCtaText}>Start Scanner</Text>
+                </View>
               </TouchableOpacity>
               <TouchableOpacity
                 testID="quick-scan-shipped"
@@ -1732,18 +1737,23 @@ export default function Dashboard() {
                 }
                 activeOpacity={0.85}
               >
-                <View style={[styles.scanRowIcon, { backgroundColor: "#E0DAFF" }]}>
-                  <PhIcon name="rocket-outline" size={22} color="#4B3FCF" />
+                <View style={[styles.scanRowIcon, { backgroundColor: "#EEE9FF", borderColor: "#DAD0FF" }]}>
+                  <PhIcon name="barcode-outline" size={26} color="#6B5BFF" />
                 </View>
-                <View style={{ flex: 1 }}>
+                <View style={{ flex: 1, marginLeft: 12 }}>
                   <Text style={[styles.scanRowTitle, { color: "#4B3FCF" }]}>
                     Scan & Mark as Shipped
                   </Text>
-                  <Text style={[styles.scanRowSub, { color: "#6B5BFF" }]}>
-                    Ready to Ship → Shipped
+                  <Text
+                    style={[styles.scanRowSub, { color: "#6B5BFF" }]}
+                    numberOfLines={2}
+                  >
+                    Scan ready-to-ship parcels and move to Shipped
                   </Text>
                 </View>
-                <PhIcon name="chevron-forward" size={20} color="#6B5BFF" />
+                <View style={[styles.scanRowCtaReady, { backgroundColor: "#6B5BFF" }]}>
+                  <Text style={styles.scanRowCtaText}>Start Scanner</Text>
+                </View>
               </TouchableOpacity>
               {/* Phase G5 — Action Required widget. Self-hides when
                   no breaches OR admin has muted the banner channel. */}
@@ -2049,46 +2059,58 @@ function StatusChip({ status }: { status: string }) {
 
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: colors.background },
-  // ───── Phase-12: Scanner shortcut rows (full-width pills, stacked) ─────
-  // Side-by-side layout was confusing because operators kept missing
-  // step #1; vertical stack reads top→bottom in the same order the
-  // workflow actually runs (1: Scan & Ready, 2: Scan & Shipped, 3:
-  // Ready-to-Ship Confirm, 4: Delivery Confirm).
+  // ───── 2026-05-12 Scanner shortcut cards (Home) ─────
+  // Upgraded from slim pill rows to the prettier card layout that used
+  // to live in the Shipments tab: cream / lavender background, big
+  // 46×46 icon box, two-line title+sub, and a primary "Start Scanner"
+  // CTA button on the right. Two cards, stacked, in workflow order.
   scanRow: {
     flexDirection: "row",
     alignItems: "center",
-    paddingVertical: 14,
-    paddingHorizontal: 14,
+    paddingVertical: 12,
+    paddingHorizontal: 12,
     borderRadius: 14,
     borderWidth: 1,
-    marginBottom: 4,
-    gap: 12,
+    marginBottom: 10,
   },
-  // Box 1 — cream palette (matches "Ready to Ship" status colour).
+  // Card 1 — cream palette (Pending → Ready to Ship)
   scanRowReady: {
-    backgroundColor: "#FBF1E2",
+    backgroundColor: "#F4E3CF",
     borderColor: "#E6C9A8",
   },
-  // Box 2 — lavender palette (matches "Shipped" status colour).
+  // Card 2 — lavender palette (Ready to Ship → Shipped)
   scanRowShipped: {
-    backgroundColor: "#F0EBFF",
-    borderColor: "#C8BCFF",
+    backgroundColor: "#F4F1FF",
+    borderColor: "#DAD0FF",
   },
   scanRowIcon: {
-    width: 40, height: 40, borderRadius: 10,
-    backgroundColor: "#F4E3CF",
+    width: 46, height: 46, borderRadius: 12,
+    backgroundColor: "#FFF5EC",
+    borderWidth: 1, borderColor: "#FFD9B8",
     alignItems: "center", justifyContent: "center",
   },
   scanRowTitle: {
     fontSize: 15,
     fontWeight: "800",
-    color: "#8B5E34",
+    color: "#6B4220",
   },
   scanRowSub: {
-    fontSize: 11,
-    fontWeight: "600",
-    color: "#A87842",
     marginTop: 2,
+    fontSize: 12,
+    color: "#8B5E34",
+    lineHeight: 16,
+  },
+  scanRowCtaReady: {
+    backgroundColor: "#FF6B00",
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 10,
+    marginLeft: 10,
+  },
+  scanRowCtaText: {
+    color: "#FFFFFF",
+    fontWeight: "800",
+    fontSize: 13,
   },
   // (Legacy 2-up grid styles below kept for back-compat — superseded by scanRow.)
   scanGrid: {

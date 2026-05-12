@@ -17787,3 +17787,69 @@ agent_communication:
 
         No issues found. Ready for main agent to finish.
 
+
+
+  - task: "Phase 17: Consolidate scanner shortcuts onto Home tab"
+    implemented: true
+    working: "NA"
+    file: "/app/frontend/app/(tabs)/shipments.tsx, /app/frontend/app/(tabs)/index.tsx"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: false
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: |
+            Per user request — Shipments tab had two redundant cards
+            duplicating workflows that already live on the Home tab:
+              • "Scan & Ready to Ship" / "Scan to Shipped" (contextual)
+              • "Need Delivery Confirmation"
+            Both also existed on Home but in a SLIM pill style — the
+            user wants the prettier Shipments-style card to be the
+            sole interface, and only on Home (not duplicated).
+            
+            CHANGES:
+            1. /app/frontend/app/(tabs)/shipments.tsx
+               - REMOVED the "Scan & Ready to Ship" / "Scan to Shipped"
+                 TouchableOpacity block (the one that flipped colour
+                 based on `status === "Ready to Ship"`).
+               - REMOVED the "Need Delivery Confirmation" card.
+               - Left styles in place (scanCard*, confirmCard*) for now
+                 since they're tiny; can be GC'd in a future cleanup.
+               - Added a code comment explaining the move so future
+                 readers don't grep for the missing UI.
+            
+            2. /app/frontend/app/(tabs)/index.tsx
+               - The existing "quick-scan-ready" and "quick-scan-shipped"
+                 entries (Phase-12 slim pills) were UPGRADED — NOT
+                 replaced or duplicated — to the card layout that used
+                 to live in Shipments:
+                   * 46×46 icon-box (was 40×40)
+                   * Two-line title (15px / 800) + subtitle (12px / 16
+                     line-height)
+                   * Right-aligned primary "Start Scanner" CTA button
+                     (cream/orange for Ready to Ship, lavender/purple
+                     for Shipped)
+                 The chevron-forward arrows were dropped — the CTA
+                 button now carries the affordance.
+               - testIDs preserved (`quick-scan-ready`,
+                 `quick-scan-shipped`).
+               - Styles updated: scanRow, scanRowReady, scanRowShipped,
+                 scanRowIcon, scanRowTitle, scanRowSub (palettes
+                 deepened to match the source card). New styles
+                 `scanRowCtaReady` + `scanRowCtaText` for the CTA pill.
+               - "Need Delivery Confirmation" entry on Home was NOT
+                 touched — it already lives there as a workflow tile.
+            
+            Result: Shipments tab cleaner (search → filter → list
+            with no marketing cards above the list). Home tab keeps
+            the same TWO scanner entries the user already had, just
+            visually upgraded to match the Shipments card style.
+            
+            Metro bundle: 4339 modules compiled cleanly, HTTP 200.
+            No backend changes.
+            
+            Manual test on user's Android device recommended (web
+            preview shows the layout fine, but the user is going to
+            verify on real hardware).
+
