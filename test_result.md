@@ -17596,11 +17596,11 @@ agent_communication:
 
   - task: "Phase 16.1: Duplicate-save warning for Save Contact"
     implemented: true
-    working: "NA"
+    working: true
     file: "/app/backend/routers/custom_fields.py, /app/frontend/lib/api.ts, /app/frontend/app/(tabs)/shipments.tsx"
     stuck_count: 0
     priority: "high"
-    needs_retesting: true
+    needs_retesting: false
     status_history:
         -working: "NA"
         -agent: "main"
