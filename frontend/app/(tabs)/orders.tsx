@@ -126,9 +126,17 @@ export default function OrdersFromSheet() {
       ? `₹${Math.round(cart.cart_value).toLocaleString("en-IN")}`
       : "";
     const items = cart.items_summary ? `\n📦 ${cart.items_summary}` : "";
+    // Phase F3.9.4 — Include the storefront's recovery URL when the
+    // webhook ingest captured one (Dukaan/Shopify both send a
+    // `recovery_url` / `abandoned_checkout_url`). Without the link
+    // the customer can ack the message but has no way to actually
+    // resume their cart, which is what kills recovery conversion.
+    const recoveryLink = cart.recovery_url
+      ? `\n🔗 ઓર્ડર પૂરો કરો: ${cart.recovery_url}`
+      : "";
     const msg =
       `નમસ્તે ${name} 🙏\n\n` +
-      `તમે અમારા સ્ટોર પર ઓર્ડર છોડી દીધો છે${value ? ` (${value})` : ""}.${items}\n\n` +
+      `તમે અમારા સ્ટોર પર ઓર્ડર છોડી દીધો છે${value ? ` (${value})` : ""}.${items}${recoveryLink}\n\n` +
       `કૃપા કરી ઓર્ડર કન્ફર્મ કરવા આ મેસેજ માં Reply કરો અથવા call કરો. ` +
       `અમે તમારા ઓર્ડરની રાહ જોઈએ છીએ! 🛒`;
     const url = `https://wa.me/${waPhone}?text=${encodeURIComponent(msg)}`;
