@@ -17205,9 +17205,83 @@ metadata:
   test_sequence: 7
   run_ui: false
 
+  - task: "Phase F3.8.2: Abandoned-cart webhook honours user mapping + substring dedupe"
+    implemented: true
+    working: true
+    file: "/app/backend/routers/webhook.py, /app/backend/import_schema.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "main"
+        -comment: |
+            Phase F3.8.2 fix applied & verified end-to-end on production data.
+            
+            ROOT CAUSE: The abandoned_order branch of webhook ingest used
+            only _pick(flat, *_CANDIDATES) auto-detection and ignored the
+            user's 34-field mapping. As a result Dukaan abandoned events
+            with a proper mapping imported 0 rows.
+            
+            FIX in /app/backend/routers/webhook.py (abandoned_order branch):
+            1. Mapping-first ingest: when a mapping exists we now call
+               build_pending_doc_from_mapping(flat, mapping) BEFORE _pick.
+               Mapped values populate name/phone/email/amount/address/
+               city/state/pincode/cart_id/abandoned_at first; _pick fills
+               any gaps left over.
+            2. CANDIDATES tuples extended with order.* prefixed variants
+               so unmapped Dukaan installs auto-detect too. Affected
+               tuples: CART_ID, NAME, LASTNAME, PHONE, EMAIL, VALUE,
+               ABANDONED_AT, RECOVERY_URL, ITEMS, ADDRESS, CITY, STATE,
+               PIN — every one now has both the bare-leaf and order.*
+               variant.
+            3. Items_raw lookup now checks the FLATTENED dict first
+               (so order.line_items resolves) then falls back to top-level.
+            
+            FIX in /app/backend/import_schema.py
+            (build_pending_doc_from_mapping):
+            4. SUBSTRING-DEDUPE for customer_name and address. Real
+               Dukaan installs map 8 name columns + 12 address columns.
+               Old code just exact-string deduped, producing
+               "Nayankumar Bhut Nayankumar Nathabhai Bhut" and
+               triplicated addresses. New rule: sort sources by length
+               DESC, then skip any value already contained as a
+               substring of an already-kept value.
+            
+            VERIFICATION on user cb27b8d3-...
+            (webhook dbbc1919-...):
+            - Before: db.abandoned_carts.countDocuments({user_id})=0.
+            - Replayed all 4 recent_samples via POST
+              /api/webhook/orders/{secret} → 4× HTTP 200, imported=1 each.
+            - After: db.abandoned_carts.countDocuments({user_id})=3
+              (3 unique carts after upsert collapsing).
+            - All 3 rows clean:
+              * "Nayankumar Bhut" (no duplication), phone, email, ₹630.42
+              * "AJAY VASAVA",      phone, email, ₹269.32
+              * "Nayankumar Nathabhai Bhut", phone, email, ₹332.92
+            - Address single-instance, city=Bhavnagar/SURAT, state=Gujarat,
+              pincode correct.
+            - items_count + items_summary populated from order.line_items.
+            - source_meta.source_app="dukaan" preserved.
+            
+            REGRESSION: suggest_mapping() unit tests still pass —
+            Dukaan dotted-path payload: customer_name=2 (first+last),
+            address=1, all others=1. Substring dedupe in
+            build_pending_doc_from_mapping confirmed for
+            full+fragments AND fragments-only cases.
+            
+            FRONTEND: no changes required. /app/(tabs)/orders.tsx
+            already filters abandonedCarts and renders WhatsApp/Call/
+            Confirm buttons (Phase F3.3.1).
+            
+            BACKEND RESTART: auto-reloaded via watchfiles. lint passes.
+
+metadata:
+  test_sequence: 8
+  run_ui: false
+
 test_plan:
-  current_focus:
-    - "Phase F3.8.1: Webhook Mapping Auto-Suggest dedupe + empty state"
+  current_focus: []
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"

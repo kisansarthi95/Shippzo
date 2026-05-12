@@ -645,65 +645,147 @@ def init() -> None:
             now_iso = datetime.now(timezone.utc).isoformat()
 
             if event_type == "abandoned_order":
+                # Phase F3.8.2 — Each tuple is duplicated with an
+                # `order.` prefix so Dukaan-style payloads of the shape
+                # {"order": {"buyer": {...}, "shipping_address": {...}}}
+                # are auto-detected even when the user hasn't configured
+                # a mapping yet. (When a mapping IS configured the
+                # build_pending_doc_from_mapping call below takes priority
+                # — these candidates are the fallback path.)
                 CART_ID_CANDIDATES = (
                     "cart_id", "abandoned_checkout_id", "checkout_id",
                     "cart_token", "token", "id", "order_id",
+                    "uuid", "display_order_id", "display_id",
+                    "order.uuid", "order.id", "order.order_id",
+                    "order.cart_id", "order.checkout_id",
+                    "order.display_order_id", "order.display_id",
+                    "order.cart_token", "order.token",
                 )
                 NAME_CANDIDATES = (
                     "customer_name", "customer.name", "name",
                     "billing_name", "shipping_name",
                     "billing_address.name", "shipping_address.name",
                     "customer.first_name", "first_name",
+                    "full_name", "buyer.name", "buyer.first_name",
+                    "buyer.full_name",
+                    "order.customer_name", "order.customer.name",
+                    "order.name", "order.full_name",
+                    "order.buyer.name", "order.buyer.first_name",
+                    "order.buyer.full_name",
+                    "order.billing_address.name",
+                    "order.billing_address.full_name",
+                    "order.billing_address.first_name",
+                    "order.shipping_address.name",
+                    "order.shipping_address.full_name",
+                    "order.shipping_address.first_name",
                 )
                 LASTNAME_CANDIDATES = (
                     "customer.last_name", "last_name",
                     "billing_address.last_name", "shipping_address.last_name",
+                    "buyer.last_name",
+                    "order.customer.last_name", "order.last_name",
+                    "order.buyer.last_name",
+                    "order.billing_address.last_name",
+                    "order.shipping_address.last_name",
                 )
                 PHONE_CANDIDATES = (
                     "customer_phone", "customer.phone", "phone",
                     "mobile", "contact_phone", "billing_phone",
                     "shipping_phone", "billing_address.phone",
-                    "shipping_address.phone",
+                    "shipping_address.phone", "buyer.phone", "buyer_phone",
+                    "order.customer_phone", "order.customer.phone",
+                    "order.phone", "order.mobile",
+                    "order.contact_phone", "order.billing_phone",
+                    "order.shipping_phone",
+                    "order.buyer.phone", "order.buyer_phone",
+                    "order.billing_address.phone",
+                    "order.shipping_address.phone",
                 )
                 EMAIL_CANDIDATES = (
                     "customer_email", "customer.email", "email",
-                    "contact_email", "buyer_email",
+                    "contact_email", "buyer_email", "buyer.email",
+                    "order.customer_email", "order.customer.email",
+                    "order.email", "order.contact_email",
+                    "order.buyer_email", "order.buyer.email",
                 )
                 VALUE_CANDIDATES = (
                     "total_price", "subtotal_price", "total",
                     "cart_total", "total_amount", "value", "amount",
-                    "grand_total",
+                    "grand_total", "total_cost",
+                    "order.total_price", "order.subtotal_price",
+                    "order.total", "order.cart_total",
+                    "order.total_amount", "order.value", "order.amount",
+                    "order.grand_total", "order.total_cost",
                 )
                 ABANDONED_AT_CANDIDATES = (
                     "abandoned_at", "abandoned_checkout_at",
                     "updated_at", "created_at", "timestamp",
+                    "order.abandoned_at", "order.abandoned_checkout_at",
+                    "order.updated_at", "order.created_at",
+                    "order.timestamp",
                 )
                 RECOVERY_URL_CANDIDATES = (
                     "abandoned_checkout_url", "recovery_url",
                     "checkout_url", "abandoned_url", "url",
+                    "order_status_url", "payment_url",
+                    "order.abandoned_checkout_url", "order.recovery_url",
+                    "order.checkout_url", "order.abandoned_url",
+                    "order.url", "order.order_status_url",
+                    "order.payment_url",
                 )
                 ITEMS_CANDIDATES = (
                     "items", "line_items", "products", "cart_items",
-                    "skus",
+                    "skus", "order_items",
+                    "order.items", "order.line_items",
+                    "order.products", "order.cart_items",
+                    "order.skus", "order.order_items",
                 )
                 ADDRESS_CANDIDATES = (
                     "address", "shipping_address.address1",
-                    "billing_address.address1", "address_line1",
-                    "address1", "shipping_address",
+                    "shipping_address.address_1",
+                    "billing_address.address1",
+                    "billing_address.address_1",
+                    "address_line1", "address1", "address_1",
+                    "shipping_address", "buyer.address",
+                    "order.address",
+                    "order.shipping_address.address1",
+                    "order.shipping_address.address_1",
+                    "order.billing_address.address1",
+                    "order.billing_address.address_1",
+                    "order.address_line1", "order.address1",
+                    "order.address_1", "order.shipping_address",
+                    "order.buyer.address",
                 )
                 CITY_CANDIDATES = (
                     "city", "shipping_address.city",
                     "billing_address.city",
+                    "order.city",
+                    "order.shipping_address.city",
+                    "order.billing_address.city",
                 )
                 STATE_CANDIDATES = (
                     "state", "province", "shipping_address.province",
                     "billing_address.province",
                     "shipping_address.state",
+                    "billing_address.state",
+                    "order.state", "order.province",
+                    "order.shipping_address.province",
+                    "order.billing_address.province",
+                    "order.shipping_address.state",
+                    "order.billing_address.state",
                 )
                 PIN_CANDIDATES = (
                     "pincode", "postal_code", "zip",
                     "shipping_address.zip", "billing_address.zip",
                     "shipping_address.postal_code",
+                    "shipping_address.pincode",
+                    "billing_address.pincode",
+                    "order.pincode", "order.postal_code", "order.zip",
+                    "order.shipping_address.zip",
+                    "order.billing_address.zip",
+                    "order.shipping_address.postal_code",
+                    "order.shipping_address.pincode",
+                    "order.billing_address.pincode",
                 )
 
                 imported = 0
@@ -717,29 +799,79 @@ def init() -> None:
                         continue
                     flat = _flatten(raw)
 
-                    cart_id = _pick(flat, CART_ID_CANDIDATES)
-                    name    = _pick(flat, NAME_CANDIDATES)
-                    last    = _pick(flat, LASTNAME_CANDIDATES)
-                    if name and last and last.lower() not in name.lower():
-                        name = f"{name} {last}".strip()
-                    phone   = _pick(flat, PHONE_CANDIDATES)
-                    email   = _pick(flat, EMAIL_CANDIDATES)
-                    value_s = _pick(flat, VALUE_CANDIDATES)
-                    try:
-                        cart_value = float(str(value_s).replace(",", "")) if value_s else 0.0
-                    except Exception:
-                        cart_value = 0.0
-                    abandoned_at = normalise_timestamp(
-                        _pick(flat, ABANDONED_AT_CANDIDATES),
-                    ) or now_iso
+                    # Phase F3.8.2 — Mapping-first ingest.
+                    # If the user has configured a field mapping for
+                    # this webhook (typical for Dukaan/Shopify installs
+                    # with 30+ keys), apply build_pending_doc_from_mapping
+                    # FIRST and use its outputs as the primary source.
+                    # _pick(...) heuristics then fill in any gaps the
+                    # mapping didn't cover. This fixes the bug where
+                    # Dukaan abandoned events with a proper 34-field
+                    # mapping were importing 0 rows because the branch
+                    # only looked at auto-detect candidates.
+                    mapped: Dict[str, Any] = {}
+                    if mapping:
+                        try:
+                            mapped = build_pending_doc_from_mapping(flat, mapping)
+                        except Exception:
+                            mapped = {}
+
+                    def _from_mapping(key: str) -> str:
+                        v = mapped.get(key, "")
+                        if v in (None, ""):
+                            return ""
+                        return str(v).strip()
+
+                    # Mapping wins; _pick is the fallback.
+                    cart_id = _from_mapping("order_id") or _pick(flat, CART_ID_CANDIDATES)
+                    name    = _from_mapping("customer_name") or _pick(flat, NAME_CANDIDATES)
+                    if not _from_mapping("customer_name"):
+                        # Only do the first+last join when mapping didn't
+                        # already give us a clean joined name. (The
+                        # mapping path joins multi-source customer_name
+                        # itself — see build_pending_doc_from_mapping.)
+                        last = _pick(flat, LASTNAME_CANDIDATES)
+                        if name and last and last.lower() not in name.lower():
+                            name = f"{name} {last}".strip()
+                    phone   = _from_mapping("customer_phone") or _pick(flat, PHONE_CANDIDATES)
+                    email   = _from_mapping("customer_email") or _pick(flat, EMAIL_CANDIDATES)
+
+                    # Amount: prefer mapping's numeric coercion.
+                    cart_value = 0.0
+                    if mapped.get("amount") not in (None, "", 0.0, 0):
+                        try:
+                            cart_value = float(mapped.get("amount") or 0.0)
+                        except (TypeError, ValueError):
+                            cart_value = 0.0
+                    if not cart_value:
+                        value_s = _pick(flat, VALUE_CANDIDATES)
+                        try:
+                            cart_value = float(str(value_s).replace(",", "")) if value_s else 0.0
+                        except Exception:
+                            cart_value = 0.0
+
+                    abandoned_at_raw = (
+                        _from_mapping("created_at_override")
+                        or _pick(flat, ABANDONED_AT_CANDIDATES)
+                    )
+                    abandoned_at = normalise_timestamp(abandoned_at_raw) or now_iso
                     recovery_url = _pick(flat, RECOVERY_URL_CANDIDATES)
-                    address = _pick(flat, ADDRESS_CANDIDATES)
-                    city    = _pick(flat, CITY_CANDIDATES)
-                    state   = _pick(flat, STATE_CANDIDATES)
-                    pincode = _pick(flat, PIN_CANDIDATES)
+                    # address_line1 is the mapping target the schema joins
+                    # multi-column `address` mappings into.
+                    address = _from_mapping("address_line1") or _pick(flat, ADDRESS_CANDIDATES)
+                    city    = _from_mapping("city")     or _pick(flat, CITY_CANDIDATES)
+                    state   = _from_mapping("state")    or _pick(flat, STATE_CANDIDATES)
+                    pincode = _from_mapping("pincode")  or _pick(flat, PIN_CANDIDATES)
 
                     items_raw = None
+                    # Phase F3.8.2 — Check `flat` first so nested
+                    # paths like `order.line_items` resolve. Fall back
+                    # to top-level `raw` for legacy single-object
+                    # payloads.
                     for c in ITEMS_CANDIDATES:
+                        if c in flat and isinstance(flat[c], list):
+                            items_raw = flat[c]
+                            break
                         if c in raw and isinstance(raw[c], list):
                             items_raw = raw[c]
                             break

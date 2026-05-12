@@ -763,8 +763,26 @@ def build_pending_doc_from_mapping(
     # Apply mappings — last-mapped wins for non-address fields.
     for field, cols in field_to_cols.items():
         if field == "address":
-            parts = [str(row.get(c) or "").strip() for c in cols]
-            out["address_line1"] = " ".join(p for p in parts if p)
+            # Phase F3.8.2 — Substring dedupe for address join.
+            # Dukaan installs commonly map 12 address columns (billing
+            # + shipping + customer.default_address, each with address1
+            # / address2 / area / landmark). With a naive join we ended
+            # up with "Talaja Veer ... Talaja Veer ... Talaja Veer ..."
+            # triplicated. Same heuristic as customer_name: sort longest
+            # first, drop any value already contained as a substring.
+            raw_parts: List[str] = []
+            for c in cols:
+                v = str(row.get(c) or "").strip()
+                if v:
+                    raw_parts.append(v)
+            raw_parts.sort(key=lambda x: -len(x))
+            kept: List[str] = []
+            for v in raw_parts:
+                vl = v.lower()
+                if any(vl in p.lower() for p in kept):
+                    continue
+                kept.append(v)
+            out["address_line1"] = " ".join(kept)
             continue
         # Phase F3.4 — when the same payload offers multiple
         # customer_name sources (e.g. first_name + last_name),
@@ -773,14 +791,31 @@ def build_pending_doc_from_mapping(
         # de-dupe so a payload that has BOTH `full_name` and
         # `first_name`/`last_name` mapped to customer_name doesn't
         # render "First Last First Last".
+        #
+        # Phase F3.8.2 — Substring dedupe. Real-world Dukaan payloads
+        # map 6-8 name columns (first_name, last_name, full_name,
+        # name, customer.full_name, billing.full_name, shipping.name,
+        # etc.). With only exact-match dedupe we ended up emitting
+        # "Nayankumar Bhut Nayankumar Nathabhai Bhut Nayankumar
+        # Nathabhai Bhut". New rule: sort sources by length DESC, then
+        # skip any candidate that is already contained as a substring
+        # of an already-kept value. This collapses fragments into the
+        # canonical full_name when one exists, while still joining
+        # first+last when only fragments are mapped.
         if field == "customer_name" and len(cols) > 1:
-            seen: Set[str] = set()
-            parts: List[str] = []
+            raw_vals: List[str] = []
             for c in cols:
                 v = str(row.get(c) or "").strip()
-                if v and v.lower() not in seen:
-                    seen.add(v.lower())
-                    parts.append(v)
+                if v:
+                    raw_vals.append(v)
+            # Longest first so superset values keep their fragments out.
+            raw_vals.sort(key=lambda x: -len(x))
+            parts: List[str] = []
+            for v in raw_vals:
+                vl = v.lower()
+                if any(vl in p.lower() for p in parts):
+                    continue
+                parts.append(v)
             joined = " ".join(parts)
             if joined:
                 out[field] = normalise_value(field, joined)
