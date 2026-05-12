@@ -19,7 +19,8 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Path, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Path, Query
+from pydantic import BaseModel
 
 
 abandoned_carts_router = APIRouter(prefix="/api", tags=["abandoned-carts"])
@@ -141,13 +142,29 @@ def init() -> None:
             raise HTTPException(status_code=404, detail="Cart not found")
         return _serialise(c) | {"items_raw": c.get("items_raw") or []}
 
+    class _RecoverPayload(BaseModel):
+        # Phase F3.9.7 — Workflow selection. When the user picks
+        # "Create Shipment Directly" on the abandoned-cart card the
+        # frontend sends create_shipment=True so we ALSO return the
+        # full new pending_order document. The frontend then drops
+        # straight into its ship-flow modal without an extra refetch
+        # and without a race against the list refresh. Default False
+        # preserves the existing "Move to Pending" behaviour.
+        create_shipment: bool = False
+
     @abandoned_carts_router.post("/me/abandoned-carts/{cart_id}/recover")
     async def recover_abandoned_cart(
         cart_id: str = Path(...),
+        payload: _RecoverPayload = Body(default=_RecoverPayload()),
         current_user: Dict[str, Any] = Depends(_get_current_user),
     ):
         """Convert an abandoned cart into a pending_orders document so
-        the user can ship it from the existing Pending Orders inbox."""
+        the user can ship it from the existing Pending Orders inbox.
+
+        When `create_shipment=True` is sent in the body, we additionally
+        return the full pending_order doc so the client can launch its
+        ship-flow modal in the same tap, skipping the intermediate
+        Pending Orders inbox view."""
         uid = current_user["id"]
         c = await db.abandoned_carts.find_one(
             {"id": cart_id, "user_id": uid}, {"_id": 0},
@@ -155,10 +172,18 @@ def init() -> None:
         if not c:
             raise HTTPException(status_code=404, detail="Cart not found")
         if c.get("status") == "recovered" and c.get("pending_order_id"):
+            # Idempotent — already recovered. Re-fetch the matching
+            # pending row so the client can still open ship-flow if
+            # the user retries.
+            existing = await db.pending_orders.find_one(
+                {"id": c["pending_order_id"], "user_id": uid},
+                {"_id": 0},
+            )
             return {
                 "ok": True,
                 "already_recovered": True,
                 "pending_order_id": c["pending_order_id"],
+                "pending_order":    existing,
             }
 
         now = datetime.now(timezone.utc).isoformat()
@@ -207,14 +232,24 @@ def init() -> None:
             }},
         )
         _logger.info(
-            "abandoned cart recovered: user=%s cart=%s pending=%s",
-            uid, cart_id, pending_doc["id"],
+            "abandoned cart recovered: user=%s cart=%s pending=%s create_shipment=%s",
+            uid, cart_id, pending_doc["id"], payload.create_shipment,
         )
-        return {
+
+        # Phase F3.9.7 — Return the strip-clean pending_order doc
+        # whenever the caller asked us for it (create_shipment flow).
+        # We strip the Mongo internal _id which isn't there yet on
+        # the just-inserted dict but defend in case insert_one ever
+        # mutates the doc to attach it.
+        response: Dict[str, Any] = {
             "ok": True,
             "pending_order_id": pending_doc["id"],
             "master_order_id":  master_oid,
         }
+        if payload.create_shipment:
+            clean = {k: v for k, v in pending_doc.items() if k != "_id"}
+            response["pending_order"] = clean
+        return response
 
     @abandoned_carts_router.post("/me/abandoned-carts/{cart_id}/dismiss")
     async def dismiss_abandoned_cart(

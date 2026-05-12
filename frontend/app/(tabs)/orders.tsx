@@ -166,35 +166,55 @@ export default function OrdersFromSheet() {
   };
 
   const confirmAbandoned = (cart: AbandonedCart) => {
+    const subtitle = `${cart.customer_name || "Customer"} · ${
+      cart.cart_value
+        ? "₹" + Math.round(cart.cart_value).toLocaleString("en-IN")
+        : ""
+    }`;
+
+    // Phase F3.9.7 — Workflow selection. Two recovery paths share the
+    // same backend endpoint:
+    //   1. "Move to Pending"           → drops into Pending Orders
+    //      queue. User ships later. (Original behaviour.)
+    //   2. "Create Shipment Directly"  → recovers + immediately
+    //      opens the existing ship-flow modal so the user picks a
+    //      courier and converts to a real shipment in one tap.
+    const runRecover = async (createShipment: boolean) => {
+      setConfirmingCartId(cart.id);
+      try {
+        const r = await Api.recoverAbandonedCart(cart.id, {
+          create_shipment: createShipment,
+        });
+        await loadPasteOrders();
+        if (createShipment && r.pending_order) {
+          // Drop straight into ship flow on the freshly created
+          // pending row. The user picks courier + confirms inside
+          // the existing modal.
+          setShipModalOrder(r.pending_order);
+        } else {
+          setSourceFilter("all");
+          Alert.alert(
+            "Recovered ✓",
+            `Order ${r.master_order_id} moved to Pending Orders.`,
+          );
+        }
+      } catch (e: any) {
+        Alert.alert(
+          "Recovery failed",
+          e?.response?.data?.detail || e?.message || "Try again.",
+        );
+      } finally {
+        setConfirmingCartId(null);
+      }
+    };
+
     Alert.alert(
       "Confirm this order?",
-      `${cart.customer_name || "Customer"} · ${
-        cart.cart_value ? "₹" + Math.round(cart.cart_value).toLocaleString("en-IN") : ""
-      }\n\nThis moves the cart into your Pending Orders queue so you can ship it.`,
+      `${subtitle}\n\nWhere should this cart go next?`,
       [
         { text: "Cancel", style: "cancel" },
-        {
-          text: "Confirm",
-          onPress: async () => {
-            setConfirmingCartId(cart.id);
-            try {
-              const r = await Api.recoverAbandonedCart(cart.id);
-              await loadPasteOrders();
-              setSourceFilter("all");
-              Alert.alert(
-                "Confirmed ✓",
-                `Order ${r.master_order_id} created — open the All / File filter to ship it.`,
-              );
-            } catch (e: any) {
-              Alert.alert(
-                "Confirmation failed",
-                e?.response?.data?.detail || e?.message || "Try again.",
-              );
-            } finally {
-              setConfirmingCartId(null);
-            }
-          },
-        },
+        { text: "Move to Pending",          onPress: () => runRecover(false) },
+        { text: "Create Shipment Directly", onPress: () => runRecover(true)  },
       ],
     );
   };

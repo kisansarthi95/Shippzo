@@ -1,286 +1,262 @@
-#!/usr/bin/env python3
 """
-Phase-19 — Two-button stage flow + Modified flag backend tests.
-
-Scenarios:
- 1. Model fields surfaced (is_modified + modified_at on every shipment)
- 2. Pure status flip — NO tag set
- 3. Status + content edit — TAG SET
- 4. Status flip after tagged — TAG STAYS
- 5. Modified virtual filter (?status=Modified)
- 6. Other status filters unaffected
- 7. Reset for cleanliness (status flip after tagged still keeps tag)
- 8. Multi-tenant isolation
+Backend test — Phase F3.9.7 Abandoned-cart recover endpoint workflow flag.
+Tests POST /api/me/abandoned-carts/{cart_id}/recover with create_shipment param.
 """
 import os
-import re
 import sys
+import asyncio
 import json
 import uuid
+from datetime import datetime, timezone
+
 import requests
-from datetime import datetime
+from motor.motor_asyncio import AsyncIOMotorClient
 
-BACKEND = "https://logistics-hub-740.preview.emergentagent.com"
-API = f"{BACKEND}/api"
+BASE = "https://logistics-hub-740.preview.emergentagent.com/api"
+MONGO_URL = os.environ.get("MONGO_URL", "mongodb://localhost:27017")
+DB_NAME = os.environ.get("DB_NAME", "test_database")
 
-USER_A = {"email": "admin@test.com",  "password": "Admin@12345"}
-USER_B = {"email": "user2@test.com",  "password": "User@12345"}
-
-
-def login(creds):
-    r = requests.post(f"{API}/auth/login", json=creds, timeout=30)
-    r.raise_for_status()
-    body = r.json()
-    return body["token"], body.get("id")
+ADMIN_EMAIL = "admin@test.com"
+ADMIN_PASSWORD = "Admin@12345"
+USER2_EMAIL = "user2@test.com"
+USER2_PASSWORD = "User@12345"
 
 
-def auth_h(token):
-    return {"Authorization": f"Bearer {token}"}
+def login(email, password):
+    r = requests.post(
+        f"{BASE}/auth/login",
+        json={"email": email, "password": password},
+        timeout=30,
+    )
+    assert r.status_code == 200, f"Login failed: {r.status_code} {r.text}"
+    data = r.json()
+    return data["token"], data["id"]
 
 
-def pretty(obj, max_len=600):
-    s = json.dumps(obj, default=str)
-    return s if len(s) <= max_len else s[:max_len] + "…(truncated)"
+async def seed_abandoned_cart(user_id, external_cart_id, customer_name, customer_phone, cart_value):
+    client = AsyncIOMotorClient(MONGO_URL)
+    db = client[DB_NAME]
+    cart_id = str(uuid.uuid4())
+    now = datetime.now(timezone.utc).isoformat()
+    doc = {
+        "id": cart_id,
+        "user_id": user_id,
+        "external_cart_id": external_cart_id,
+        "customer_name": customer_name,
+        "customer_phone": customer_phone,
+        "customer_email": "",
+        "address": "123 Test Street",
+        "city": "Mumbai",
+        "state": "Maharashtra",
+        "pincode": "400001",
+        "cart_value": cart_value,
+        "items_summary": "Test Item x1",
+        "items_raw": [],
+        "abandoned_at": now,
+        "recovery_url": "",
+        "status": "abandoned",
+        "source_meta": {
+            "source_app": "manual",
+            "webhook_name": "Test F397",
+            "webhook_id": "",
+        },
+        "created_at": now,
+        "updated_at": now,
+    }
+    await db.abandoned_carts.insert_one(doc)
+    client.close()
+    return cart_id
 
 
-# ──────────────────────────────────────────────────────────────────
-# Scenario runners
-# ──────────────────────────────────────────────────────────────────
+async def get_cart_status(cart_id, user_id):
+    client = AsyncIOMotorClient(MONGO_URL)
+    db = client[DB_NAME]
+    c = await db.abandoned_carts.find_one({"id": cart_id, "user_id": user_id}, {"_id": 0})
+    client.close()
+    return c
 
 
-def main():
+async def cleanup():
+    client = AsyncIOMotorClient(MONGO_URL)
+    db = client[DB_NAME]
+    pend_a = await db.pending_orders.delete_many({"external_order_id": "TEST-CART-F397-A"})
+    pend_b = await db.pending_orders.delete_many({"external_order_id": "TEST-CART-F397-B"})
+    cart_res = await db.abandoned_carts.delete_many(
+        {"external_cart_id": {"$in": ["TEST-CART-F397-A", "TEST-CART-F397-B"]}}
+    )
+    client.close()
+    return {
+        "pending_deleted_A": pend_a.deleted_count,
+        "pending_deleted_B": pend_b.deleted_count,
+        "carts_deleted": cart_res.deleted_count,
+    }
+
+
+def run():
     results = []
 
-    def record(name, ok, details):
-        results.append({"name": name, "ok": ok, "details": details})
-        flag = "PASS" if ok else "FAIL"
-        print(f"\n[{flag}] {name}\n   {details}")
+    def record(name, ok, detail=""):
+        status = "PASS" if ok else "FAIL"
+        results.append((status, name, detail))
+        print(f"[{status}] {name}: {detail}")
 
-    # Login user A
+    asyncio.run(cleanup())
+
+    token_a, user_a_id = login(ADMIN_EMAIL, ADMIN_PASSWORD)
+    headers_a = {"Authorization": f"Bearer {token_a}"}
+    print(f"\nLogged in as admin: id={user_a_id}")
+
+    # Seed cart A
+    cart_a_id = asyncio.run(
+        seed_abandoned_cart(
+            user_a_id, "TEST-CART-F397-A", "Test Cart Owner A", "9876500001", 999.99,
+        )
+    )
+    print(f"Seeded cart A: {cart_a_id}")
+    record("Scenario 1 - Seed cart A", True, f"cart_id={cart_a_id}")
+
+    # Scenario 2 — create_shipment=false (empty body)
+    r2 = requests.post(
+        f"{BASE}/me/abandoned-carts/{cart_a_id}/recover",
+        json={}, headers=headers_a, timeout=30,
+    )
+    print(f"\nScenario 2 status: {r2.status_code}")
     try:
-        token_a, uid_a = login(USER_A)
-        print(f"User A logged in: id={uid_a}")
-    except Exception as e:
-        record("Login user A", False, f"login failed: {e}")
-        return finalize(results)
-
-    headers_a = auth_h(token_a)
-
-    # ── Scenario 1: model fields surfaced ──
-    try:
-        r = requests.get(f"{API}/shipments", headers=headers_a, timeout=30)
-        ok = r.status_code == 200
-        items = r.json() if ok else []
-        if not isinstance(items, list) or not items:
-            record("S1 Model fields surfaced", False,
-                   f"HTTP {r.status_code}, list empty or wrong type, sample={pretty(items)[:200]}")
-            return finalize(results)
-        # Every item must have is_modified (bool) + modified_at (str|null)
-        missing = []
-        for s in items[:50]:
-            if "is_modified" not in s or "modified_at" not in s:
-                missing.append(s.get("id"))
-            elif not isinstance(s["is_modified"], bool):
-                missing.append(s.get("id"))
-        if missing:
-            record("S1 Model fields surfaced", False,
-                   f"HTTP 200 but {len(missing)} items missing/wrong-type fields, sample_ids={missing[:5]}")
-            return finalize(results)
-        # Find a shipment we can experiment on — prefer one with is_modified=false
-        cand = next((s for s in items if s.get("is_modified") is False), items[0])
-        record("S1 Model fields surfaced", True,
-               f"HTTP 200 · {len(items)} shipments returned · all have is_modified+modified_at · "
-               f"chosen id={cand['id'][:8]}…  current is_modified={cand['is_modified']}, "
-               f"modified_at={cand.get('modified_at')}, status={cand.get('status')}")
-        target_id = cand["id"]
-        target_initial_status = cand.get("status")
-    except Exception as e:
-        record("S1 Model fields surfaced", False, f"exception: {e}")
-        return finalize(results)
-
-    # If chosen shipment is already modified, find a fresher candidate via create
-    chosen_was_modified = cand.get("is_modified") is True
-
-    # ── Scenario 2: pure status flip — NO tag ──
-    # We need a clean shipment with is_modified=false. If our target already
-    # has the flag, skip the negative check; if not, proceed.
-    if chosen_was_modified:
-        # find another untouched one
-        clean = next((s for s in items if s.get("is_modified") is False), None)
-        if clean is None:
-            record("S2 Pure status flip — NO tag", False,
-                   "Could not find any shipment with is_modified=false (entire workspace is already tagged)")
-        else:
-            target_id = clean["id"]
-            target_initial_status = clean.get("status")
-            chosen_was_modified = False
-
-    if not chosen_was_modified:
-        try:
-            r = requests.put(f"{API}/shipments/{target_id}",
-                             headers=headers_a,
-                             json={"status": "Processing"}, timeout=30)
-            put_ok = r.status_code == 200
-            put_body = r.json() if put_ok else r.text
-            # Verify via GET
-            g = requests.get(f"{API}/shipments/{target_id}", headers=headers_a, timeout=30)
-            gbody = g.json() if g.status_code == 200 else {}
-            still_unmod = (gbody.get("is_modified") is False and gbody.get("modified_at") in (None, ""))
-            ok = put_ok and still_unmod
-            record("S2 Pure status flip — NO tag", ok,
-                   f"PUT→{r.status_code} ({pretty(put_body)[:200]})  ·  GET→{g.status_code} "
-                   f"is_modified={gbody.get('is_modified')}, modified_at={gbody.get('modified_at')}, "
-                   f"status={gbody.get('status')}")
-        except Exception as e:
-            record("S2 Pure status flip — NO tag", False, f"exception: {e}")
+        b2 = r2.json()
+    except Exception:
+        b2 = {}
+    print(f"Scenario 2 body: {json.dumps(b2, indent=2)[:500]}")
+    s2_ok = True; s2_detail = []
+    if r2.status_code != 200:
+        s2_ok = False; s2_detail.append(f"HTTP {r2.status_code}")
     else:
-        record("S2 Pure status flip — NO tag", False,
-               "Skipped — couldn't locate untouched shipment; cannot verify clean→stays-clean")
+        if b2.get("ok") is not True: s2_ok = False; s2_detail.append("ok != true")
+        if not b2.get("pending_order_id"): s2_ok = False; s2_detail.append("missing pending_order_id")
+        if not b2.get("master_order_id"): s2_ok = False; s2_detail.append("missing master_order_id")
+        if "pending_order" in b2: s2_ok = False; s2_detail.append("pending_order key should be absent")
+        s2_detail.append(
+            f"HTTP=200, ok=true, pending_order_id={b2.get('pending_order_id')}, master_order_id={b2.get('master_order_id')}, pending_order absent={'pending_order' not in b2}"
+        )
+    record("Scenario 2 - Recover create_shipment=false", s2_ok, " | ".join(s2_detail))
+    s2_pending_id = b2.get("pending_order_id") if r2.status_code == 200 else None
 
-    # ── Scenario 3: status + content edit — TAG SET ──
+    # Scenario 3 — Idempotent re-recover with create_shipment=true
+    r3 = requests.post(
+        f"{BASE}/me/abandoned-carts/{cart_a_id}/recover",
+        json={"create_shipment": True}, headers=headers_a, timeout=30,
+    )
+    print(f"\nScenario 3 status: {r3.status_code}")
     try:
-        r = requests.put(f"{API}/shipments/{target_id}", headers=headers_a,
-                         json={"status": "Ready to Ship",
-                               "customer_name": "Phase19 Edit Test"},
-                         timeout=30)
-        put_ok = r.status_code == 200
-        put_body = r.json() if put_ok else r.text
-        g = requests.get(f"{API}/shipments/{target_id}", headers=headers_a, timeout=30)
-        gbody = g.json() if g.status_code == 200 else {}
-        is_mod = gbody.get("is_modified")
-        mod_at = gbody.get("modified_at")
-        status = gbody.get("status")
-        # Validate ISO timestamp
-        iso_ok = False
-        if isinstance(mod_at, str) and mod_at:
+        b3 = r3.json()
+    except Exception:
+        b3 = {}
+    print(f"Scenario 3 body: {json.dumps(b3, indent=2)[:800]}")
+    s3_ok = True; s3_detail = []
+    if r3.status_code != 200:
+        s3_ok = False; s3_detail.append(f"HTTP {r3.status_code}")
+    else:
+        if b3.get("already_recovered") is not True: s3_ok = False; s3_detail.append("already_recovered != true")
+        if b3.get("pending_order_id") != s2_pending_id:
+            s3_ok = False; s3_detail.append(f"pending_order_id mismatch: {b3.get('pending_order_id')} vs {s2_pending_id}")
+        po = b3.get("pending_order")
+        if not isinstance(po, dict):
+            s3_ok = False; s3_detail.append("pending_order not a dict")
+        else:
+            required = ["id", "customer_name", "customer_phone", "amount", "items", "source"]
+            miss = [k for k in required if k not in po]
+            if miss: s3_ok = False; s3_detail.append(f"missing keys: {miss}")
+            if po.get("source") != "abandoned_cart":
+                s3_ok = False; s3_detail.append(f"source != abandoned_cart (got {po.get('source')})")
+            if po.get("id") != s2_pending_id:
+                s3_ok = False; s3_detail.append("pending_order.id != original pending_order_id")
+        s3_detail.append(f"already_recovered=true, pending_order present={isinstance(po, dict)}")
+    record("Scenario 3 - Idempotent re-recover create_shipment=true", s3_ok, " | ".join(s3_detail))
+
+    # Scenario 4 — Fresh cart B + create_shipment=true
+    cart_b_id = asyncio.run(
+        seed_abandoned_cart(
+            user_a_id, "TEST-CART-F397-B", "Test Cart Owner B", "9876500002", 1499.50,
+        )
+    )
+    print(f"\nSeeded cart B: {cart_b_id}")
+    r4 = requests.post(
+        f"{BASE}/me/abandoned-carts/{cart_b_id}/recover",
+        json={"create_shipment": True}, headers=headers_a, timeout=30,
+    )
+    print(f"Scenario 4 status: {r4.status_code}")
+    try:
+        b4 = r4.json()
+    except Exception:
+        b4 = {}
+    print(f"Scenario 4 body: {json.dumps(b4, indent=2)[:800]}")
+    s4_ok = True; s4_detail = []
+    if r4.status_code != 200:
+        s4_ok = False; s4_detail.append(f"HTTP {r4.status_code}")
+    else:
+        if b4.get("ok") is not True: s4_ok = False; s4_detail.append("ok != true")
+        po = b4.get("pending_order")
+        if not isinstance(po, dict):
+            s4_ok = False; s4_detail.append("pending_order missing/not dict")
+        else:
+            required = ["id", "customer_name", "customer_phone", "amount", "items", "source"]
+            for k in required:
+                if k not in po:
+                    s4_ok = False; s4_detail.append(f"missing key: {k}")
+            if po.get("source") != "abandoned_cart":
+                s4_ok = False; s4_detail.append("source != abandoned_cart")
+            if not isinstance(po.get("amount"), (int, float)):
+                s4_ok = False; s4_detail.append(f"amount not numeric: {type(po.get('amount')).__name__}")
+            if po.get("id") == cart_b_id:
+                s4_ok = False; s4_detail.append("pending_order.id == cart_id (should be fresh uuid)")
             try:
-                datetime.fromisoformat(mod_at.replace("Z", "+00:00"))
-                iso_ok = True
+                uuid.UUID(str(po.get("id")))
             except Exception:
-                iso_ok = False
-        ok = put_ok and is_mod is True and iso_ok and status == "Ready to Ship"
-        record("S3 Status + content edit — TAG SET", ok,
-               f"PUT→{r.status_code} · GET status={status} is_modified={is_mod} modified_at={mod_at} "
-               f"customer_name={gbody.get('customer_name')!r} · iso_valid={iso_ok}")
-    except Exception as e:
-        record("S3 Status + content edit — TAG SET", False, f"exception: {e}")
+                s4_ok = False; s4_detail.append(f"pending_order.id not valid uuid: {po.get('id')}")
+        s4_detail.append(
+            f"pending_order.id={po.get('id') if isinstance(po, dict) else 'N/A'}, "
+            f"source={po.get('source') if isinstance(po, dict) else 'N/A'}, "
+            f"amount={po.get('amount') if isinstance(po, dict) else 'N/A'}"
+        )
+    record("Scenario 4 - Fresh recover create_shipment=true", s4_ok, " | ".join(s4_detail))
 
-    # ── Scenario 4: status flip after tagged — TAG STAYS ──
+    cart_b_after = asyncio.run(get_cart_status(cart_b_id, user_a_id))
+    if cart_b_after and cart_b_after.get("status") == "recovered":
+        record("Scenario 4b - Cart B status=='recovered' in DB", True,
+               f"status={cart_b_after.get('status')}, pending_order_id={cart_b_after.get('pending_order_id')}")
+    else:
+        record("Scenario 4b - Cart B status=='recovered' in DB", False,
+               f"status={cart_b_after.get('status') if cart_b_after else 'cart not found'}")
+
+    # Scenario 5 — multi-tenant isolation
     try:
-        r = requests.put(f"{API}/shipments/{target_id}", headers=headers_a,
-                         json={"status": "Shipped"}, timeout=30)
-        put_ok = r.status_code == 200
-        g = requests.get(f"{API}/shipments/{target_id}", headers=headers_a, timeout=30)
-        gbody = g.json() if g.status_code == 200 else {}
-        is_mod = gbody.get("is_modified")
-        status = gbody.get("status")
-        ok = put_ok and is_mod is True and status == "Shipped"
-        record("S4 Status flip after tagged — TAG STAYS", ok,
-               f"PUT→{r.status_code} · GET status={status} is_modified={is_mod}")
+        token_b, user_b_id = login(USER2_EMAIL, USER2_PASSWORD)
+        headers_b = {"Authorization": f"Bearer {token_b}"}
+        r5 = requests.post(
+            f"{BASE}/me/abandoned-carts/{cart_a_id}/recover",
+            json={"create_shipment": True}, headers=headers_b, timeout=30,
+        )
+        print(f"\nScenario 5 status: {r5.status_code}")
+        if r5.status_code == 404:
+            record("Scenario 5 - Multi-tenant isolation (404 expected)", True, "HTTP=404")
+        else:
+            record("Scenario 5 - Multi-tenant isolation (404 expected)", False,
+                   f"HTTP={r5.status_code}, body={r5.text[:200]}")
     except Exception as e:
-        record("S4 Status flip after tagged — TAG STAYS", False, f"exception: {e}")
+        record("Scenario 5 - Multi-tenant isolation", False, f"Error: {e}")
 
-    # ── Scenario 5: Modified virtual filter ──
-    try:
-        r = requests.get(f"{API}/shipments?status=Modified", headers=headers_a, timeout=30)
-        ok_http = r.status_code == 200
-        items = r.json() if ok_http else []
-        ids = [s["id"] for s in items if isinstance(s, dict)]
-        target_in_mod = target_id in ids
-        all_modified = ok_http and items and all(s.get("is_modified") is True for s in items)
+    cleanup_result = asyncio.run(cleanup())
+    record("Scenario 6 - Cleanup", True, str(cleanup_result))
 
-        # Also fetch ?status=Shipped — must include same id
-        r2 = requests.get(f"{API}/shipments?status=Shipped", headers=headers_a, timeout=30)
-        ok_http2 = r2.status_code == 200
-        items2 = r2.json() if ok_http2 else []
-        ids2 = [s["id"] for s in items2 if isinstance(s, dict)]
-        target_in_shipped = target_id in ids2
-        all_shipped = ok_http2 and all(s.get("status") == "Shipped" for s in items2)
-
-        ok = ok_http and target_in_mod and all_modified and ok_http2 and target_in_shipped and all_shipped
-        record("S5 Modified virtual filter", ok,
-               f"?status=Modified → HTTP {r.status_code}, count={len(items)}, target_present={target_in_mod}, "
-               f"all_is_modified=True={all_modified}  ·  "
-               f"?status=Shipped → HTTP {r2.status_code}, count={len(items2)}, target_present={target_in_shipped}, "
-               f"all_status=Shipped={all_shipped}")
-    except Exception as e:
-        record("S5 Modified virtual filter", False, f"exception: {e}")
-
-    # ── Scenario 6: other status filters unaffected ──
-    try:
-        r = requests.get(f"{API}/shipments?status=Pending", headers=headers_a, timeout=30)
-        items_p = r.json() if r.status_code == 200 else []
-        all_pending = r.status_code == 200 and all(s.get("status") == "Pending" for s in items_p)
-
-        r2 = requests.get(f"{API}/shipments", headers=headers_a, timeout=30)
-        items_all = r2.json() if r2.status_code == 200 else []
-
-        ok = all_pending and r2.status_code == 200 and len(items_all) >= len(items_p)
-        record("S6 Other status filters unaffected", ok,
-               f"?status=Pending → HTTP {r.status_code}, count={len(items_p)}, all_status=Pending={all_pending}  ·  "
-               f"GET /shipments (no status) → HTTP {r2.status_code}, count={len(items_all)}")
-    except Exception as e:
-        record("S6 Other status filters unaffected", False, f"exception: {e}")
-
-    # ── Scenario 7: reset for cleanliness ──
-    try:
-        r = requests.put(f"{API}/shipments/{target_id}", headers=headers_a,
-                         json={"status": "Pending"}, timeout=30)
-        put_ok = r.status_code == 200
-        g = requests.get(f"{API}/shipments/{target_id}", headers=headers_a, timeout=30)
-        gbody = g.json() if g.status_code == 200 else {}
-        is_mod = gbody.get("is_modified")
-        status = gbody.get("status")
-        ok = put_ok and is_mod is True and status == "Pending"
-        record("S7 Reset for cleanliness — tag stays sticky", ok,
-               f"PUT→{r.status_code} (status=Pending) · GET status={status} is_modified={is_mod} "
-               f"(must be True — sticky audit flag)")
-    except Exception as e:
-        record("S7 Reset for cleanliness — tag stays sticky", False, f"exception: {e}")
-
-    # ── Scenario 8: Multi-tenant isolation ──
-    try:
-        token_b, uid_b = login(USER_B)
-        headers_b = auth_h(token_b)
-
-        # User B's modified list MUST NOT contain target_id
-        r = requests.get(f"{API}/shipments?status=Modified", headers=headers_b, timeout=30)
-        ok_http = r.status_code == 200
-        items_b = r.json() if ok_http else []
-        ids_b = [s.get("id") for s in items_b if isinstance(s, dict)]
-        leakage = target_id in ids_b
-
-        # User B PUT on target_id → MUST NOT be 200
-        r2 = requests.put(f"{API}/shipments/{target_id}", headers=headers_b,
-                          json={"customer_name": "Cross-tenant Hack"}, timeout=30)
-        put_blocked = r2.status_code in (403, 404)
-
-        ok = ok_http and (not leakage) and put_blocked
-        record("S8 Multi-tenant isolation", ok,
-               f"User B id={uid_b}  ·  ?status=Modified → HTTP {r.status_code}, count={len(items_b)}, "
-               f"contains_A_target={leakage}  ·  cross-tenant PUT → HTTP {r2.status_code} "
-               f"(must be 403/404, got blocked={put_blocked})")
-    except requests.HTTPError as e:
-        record("S8 Multi-tenant isolation", False,
-               f"User B login failed: {e}. SKIP if user2 not provisioned.")
-    except Exception as e:
-        record("S8 Multi-tenant isolation", False, f"exception: {e}")
-
-    return finalize(results)
-
-
-def finalize(results):
-    print("\n" + "=" * 70)
-    print("PHASE-19 BACKEND TEST SUMMARY")
-    print("=" * 70)
-    passed = sum(1 for r in results if r["ok"])
-    failed = len(results) - passed
-    for r in results:
-        flag = "✅" if r["ok"] else "❌"
-        print(f"{flag} {r['name']}")
-    print(f"\nTOTAL: {passed}/{len(results)} passed, {failed} failed")
-    return 0 if failed == 0 else 1
+    print("\n" + "=" * 60)
+    print("SUMMARY")
+    print("=" * 60)
+    fails = [r for r in results if r[0] == "FAIL"]
+    for status, name, detail in results:
+        print(f"{status}  {name}")
+    print(f"\nTotal: {len(results)}, Passed: {len(results)-len(fails)}, Failed: {len(fails)}")
+    return len(fails) == 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    ok = run()
+    sys.exit(0 if ok else 1)

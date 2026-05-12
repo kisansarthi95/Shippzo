@@ -18270,3 +18270,111 @@ agent_communication:
         external_cart_id, abandoned_at, items_summary). No regressions
         on order webhook schema. Cleanup successful. Ready to ship.
 
+
+---
+
+## Backend Test Run: Phase F3.9.7 Abandoned-cart recover create_shipment flag (2026-05-12)
+
+backend:
+  - task: "Phase F3.9.7 — Abandoned-cart recover endpoint with create_shipment flag"
+    implemented: true
+    working: false
+    file: "/app/backend/routers/abandoned_carts.py"
+    stuck_count: 1
+    priority: "high"
+    needs_retesting: true
+    status_history:
+        -working: false
+        -agent: "testing"
+        -comment: |
+            CRITICAL BUG — All 4 functional scenarios FAIL with HTTP 500.
+            Backend test ran via /app/backend_test.py against
+            https://logistics-hub-740.preview.emergentagent.com/api with
+            admin@test.com / user2@test.com.
+
+            Results:
+              PASS  Scenario 1 - Seed cart A (direct mongo insert)
+              FAIL  Scenario 2 - Recover create_shipment=false  → HTTP 500
+              FAIL  Scenario 3 - Idempotent re-recover create_shipment=true → HTTP 500
+              FAIL  Scenario 4 - Fresh recover create_shipment=true → HTTP 500
+              FAIL  Scenario 4b - Cart B status=='recovered' in DB
+                                  (cart still status=abandoned because endpoint 500'd)
+              FAIL  Scenario 5 - Multi-tenant isolation → HTTP 500 (should be 404)
+              PASS  Scenario 6 - Cleanup
+
+            Root cause (from /var/log/supervisor/backend.err.log):
+              pydantic.errors.PydanticUserError:
+                `TypeAdapter[typing.Annotated[ForwardRef('_RecoverPayload'),
+                 Body(create_shipment=False)]]` is not fully defined; you
+                should define `_RecoverPayload` and all referenced types,
+                then call `.rebuild()` on the instance.
+
+            Diagnosis:
+              /app/backend/routers/abandoned_carts.py line 16 has
+              `from __future__ import annotations` (PEP-563 lazy
+              evaluation — all annotations become strings).
+              The `_RecoverPayload` class is defined INSIDE the `init()`
+              function (line 145, local scope) so FastAPI/Pydantic cannot
+              resolve the `ForwardRef('_RecoverPayload')` against the
+              module globals at request time. Result: every request to
+              POST /api/me/abandoned-carts/{cart_id}/recover crashes
+              during dependency resolution with a 500, before the
+              handler body ever runs.
+
+            The endpoint is completely broken — both the new
+            create_shipment=true workflow AND the prior default
+            create_shipment=false (omitted body) path fail. This is a
+            regression introduced by Phase F3.9.7.
+
+            Suggested fixes (pick one):
+              A) Move `class _RecoverPayload(BaseModel)` to module scope
+                 (above `def init()` — same level as `_serialise`). This
+                 is the cleanest fix and matches how Pydantic models are
+                 usually wired with FastAPI Body params.
+              B) Drop `from __future__ import annotations` at top of
+                 the file so the annotation is a live class reference,
+                 not a string. (Riskier — other route handlers in the
+                 file may rely on PEP-563.)
+              C) Change the handler signature to use a plain dict and
+                 parse it manually:
+                   payload: Dict[str, Any] = Body(default={})
+                   create_shipment = bool(payload.get("create_shipment"))
+                 — works but loses Pydantic validation.
+
+            Recommendation: Option A. Move _RecoverPayload outside init().
+
+            Test artefacts cleaned up (cleanup deleted 2 abandoned_carts
+            and 0 pending_orders since no pending was created). The two
+            seeded carts (TEST-CART-F397-A / TEST-CART-F397-B) ARE
+            cleaned. No residual test data.
+
+agent_communication:
+    -agent: "testing"
+    -message: |
+        Phase F3.9.7 verification — CRITICAL FAIL. The new
+        `_RecoverPayload` Pydantic model is defined inside the
+        `init()` function in /app/backend/routers/abandoned_carts.py.
+        Combined with the module's `from __future__ import annotations`
+        (PEP-563), FastAPI sees `ForwardRef('_RecoverPayload')` and
+        cannot resolve it from module globals, raising
+        PydanticUserError ("class not fully defined") for every request.
+
+        Result: POST /api/me/abandoned-carts/{cart_id}/recover returns
+        HTTP 500 on EVERY call — both `{}` body and
+        `{"create_shipment": true}` body. The entire endpoint is broken,
+        not just the new feature path.
+
+        Fix: move `class _RecoverPayload(BaseModel)` (currently line 145
+        inside init()) to module scope (above `def init()` near the
+        existing module-level `_serialise` helper). Re-run
+        /app/backend_test.py to verify.
+
+        Backend logs (most recent traceback in
+        /var/log/supervisor/backend.err.log) clearly show the exception
+        bubbling up from fastapi.dependencies.utils.request_body_to_args
+        when validating the Body param. No DB or auth issue — the
+        request never reaches the handler body.
+
+        DO NOT mark this as resolved until backend_test.py passes all
+        6 scenarios. The fix is one line of code movement.
+

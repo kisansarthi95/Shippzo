@@ -1977,10 +1977,20 @@ export const Api = {
     api
       .get<AbandonedCart & { items_raw?: any[] }>(`/me/abandoned-carts/${id}`)
       .then((r) => r.data),
-  recoverAbandonedCart: (id: string) =>
+  recoverAbandonedCart: (id: string, opts?: { create_shipment?: boolean }) =>
     api
-      .post<{ ok: boolean; pending_order_id: string; master_order_id: string }>(
+      .post<{
+        ok: boolean;
+        pending_order_id: string;
+        master_order_id: string;
+        // Phase F3.9.7 — present when caller passes create_shipment=true
+        // so the UI can drop straight into the ship-modal without
+        // racing a list refresh.
+        pending_order?: PendingOrder;
+        already_recovered?: boolean;
+      }>(
         `/me/abandoned-carts/${id}/recover`,
+        { create_shipment: !!opts?.create_shipment },
       )
       .then((r) => r.data),
   dismissAbandonedCart: (id: string) =>
