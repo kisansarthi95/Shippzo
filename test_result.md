@@ -17383,3 +17383,55 @@ agent_communication:
         naming with EVENT_KEYS or (b) add "order_created" as an alias.
         This is informational only — not a bug.
 
+
+
+  - task: "Phase F3.7.1: Admin Card raw_payload backfill + legacy hint"
+    implemented: true
+    working: true
+    file: "/app/backend/scripts/backfill_admin_card_payload.py, /app/frontend/app/edit-pending/[id].tsx"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "main"
+        -comment: |
+            One-time backfill + UI fallback shipped.
+            
+            BACKEND: /app/backend/scripts/backfill_admin_card_payload.py
+            - Iterates db.pending_orders.find({source:'webhook',
+              'source_meta.raw_payload' missing}).
+            - Groups by source_meta.webhook_id; looks up parent webhook
+              in user_webhooks; walks recent_samples (reverse so the
+              freshest matching payload wins).
+            - Matches by payload.order.uuid / payload.order.id /
+              payload.uuid / payload.id / order_number against the
+              pending order's external_order_id (case-insensitive).
+            - On match: sets source_meta.raw_payload to the sample
+              payload. Prints counts: backfilled / aged-out / no-webhook
+              / webhook-deleted / no-external-id.
+            
+            RAN ONCE on production:
+              Total candidates scanned : 7
+              ✅ Backfilled             : 0
+              📜 Aged out (ring buffer): 0
+              🚫 No source webhook_id  : 5  (legacy pre-Phase F3)
+              🚫 Parent webhook deleted: 2
+              🚫 No external_order_id  : 0
+            
+            None of the 7 legacy orders could be recovered because
+            their parent webhooks either no longer exist or the
+            orders pre-date webhook_id tracking. Future orders are
+            saved with raw_payload automatically.
+            
+            FRONTEND: /app/frontend/app/edit-pending/[id].tsx
+            - When source==='webhook' but source_meta.raw_payload is
+              missing, render grey hint card (testID
+              `admin-card-empty-hint`): "This order was imported
+              before payload storage was enabled. New webhook orders
+              will show full details here."
+            - Added adminEmptyHint / adminEmptyHintTxt styles.
+            
+            Metro bundle: 4473 modules clean, HTTP 200 on /
+            Backend lint: passes.
+

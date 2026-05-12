@@ -452,6 +452,20 @@ export default function EditPendingScreen() {
                 </View>
               );
             })()
+          ) : (original as any).source === "webhook" ? (
+            // Phase F3.7.1 — Legacy webhook order with no raw_payload
+            // captured. Shown for orders that were ingested before the
+            // payload-storage hook was added, or whose parent webhook
+            // has rotated out of the recent_samples ring buffer. We
+            // surface a calm explanatory hint instead of nothing so
+            // the user knows the Admin Card isn't broken.
+            <View style={styles.adminEmptyHint} testID="admin-card-empty-hint">
+              <Text style={styles.adminEmptyHintTxt}>
+                This order was imported before payload storage was
+                enabled. New webhook orders will show full details
+                here.
+              </Text>
+            </View>
           ) : null}
         </ScrollView>
 
@@ -594,5 +608,24 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: "#0F172A",
     lineHeight: 17,
+  },
+  // Phase F3.7.1 — Calm grey hint shown when a webhook order has no
+  // raw_payload (ingested before the payload-storage hook landed, or
+  // aged out of the recent_samples ring buffer).
+  adminEmptyHint: {
+    marginHorizontal: 16,
+    marginBottom: 14,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    borderRadius: 10,
+    backgroundColor: "#F1F5F9",
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+  },
+  adminEmptyHintTxt: {
+    fontSize: 12,
+    color: "#64748B",
+    lineHeight: 17,
+    textAlign: "center",
   },
 });
