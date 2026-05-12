@@ -212,6 +212,78 @@ def init() -> None:
             "skipped": skipped,
         }
 
+    # =================  Phase-16.1: Duplicate detection  ==============
+    # When the user taps "Save contact" on a shipment we keep a tiny
+    # bookkeeping record so the next tap on the SAME phone can warn
+    # "Already saved" and offer Save anyway / Cancel. The intent fired
+    # to the OS is one-way (we never learn whether the user actually
+    # pressed Save in the system Contacts app) so this is a best-effort
+    # de-duplication, not a guarantee.
+    #
+    # Storage: db.saved_contacts  (unique on user_id + phone_norm)
+    #   {user_id, phone_norm, phone, name, shipment_id, saved_at}
+
+    def _normalize_phone(raw: str) -> str:
+        """Strip everything except digits and keep the last 10 (Indian
+        mobiles). Falls back to all digits if shorter. Used as the
+        de-duplication key — '+91 98765-43210', '919876543210' and
+        '9876543210' all collapse to '9876543210'."""
+        digits = re.sub(r"\D", "", str(raw or ""))
+        if len(digits) >= 10:
+            return digits[-10:]
+        return digits
+
+    @custom_fields_router.get("/contacts/saved-check")
+    async def check_contact_saved(
+        phone: str,
+        current_user: Dict[str, Any] = Depends(_get_current_user),
+    ):
+        norm = _normalize_phone(phone)
+        if not norm:
+            return {"saved": False}
+        rec = await db.saved_contacts.find_one(
+            {"user_id": current_user["id"], "phone_norm": norm},
+            {"_id": 0, "user_id": 0},
+        )
+        if not rec:
+            return {"saved": False}
+        return {
+            "saved":       True,
+            "name":        rec.get("name") or "",
+            "phone":       rec.get("phone") or phone,
+            "saved_at":    rec.get("saved_at") or "",
+            "shipment_id": rec.get("shipment_id") or "",
+        }
+
+    class _MarkSavedRequest(BaseModel):
+        phone: str
+        name: Optional[str] = ""
+        shipment_id: Optional[str] = ""
+
+    @custom_fields_router.post("/contacts/mark-saved")
+    async def mark_contact_saved(
+        payload: _MarkSavedRequest,
+        current_user: Dict[str, Any] = Depends(_get_current_user),
+    ):
+        norm = _normalize_phone(payload.phone)
+        if not norm:
+            raise HTTPException(status_code=400, detail="phone required")
+        from datetime import datetime, timezone
+        now_iso = datetime.now(timezone.utc).isoformat()
+        await db.saved_contacts.update_one(
+            {"user_id": current_user["id"], "phone_norm": norm},
+            {"$set": {
+                "user_id":     current_user["id"],
+                "phone_norm":  norm,
+                "phone":       payload.phone,
+                "name":        payload.name or "",
+                "shipment_id": payload.shipment_id or "",
+                "saved_at":    now_iso,
+            }},
+            upsert=True,
+        )
+        return {"ok": True, "saved_at": now_iso}
+
     # =================  Per-user Custom Fields  ========================
 
     @custom_fields_router.get("/me/custom-fields")

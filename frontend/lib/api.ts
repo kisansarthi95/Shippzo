@@ -1645,6 +1645,28 @@ export const Api = {
       { shipment_ids, override_category },
     ).then((r) => r.data),
 
+  // Phase-16.1 — Duplicate save detection. checkContactSaved returns
+  // {saved:false} for first-time saves; otherwise also includes the
+  // previously-saved name + saved_at timestamp so the UI can show
+  // a friendly "Already saved" prompt with Cancel / Save anyway.
+  checkContactSaved: (phone: string) =>
+    api.get<{
+      saved: boolean;
+      name?: string;
+      phone?: string;
+      saved_at?: string;
+      shipment_id?: string;
+    }>("/contacts/saved-check", { params: { phone } }).then((r) => r.data),
+  markContactSaved: (args: {
+    phone: string;
+    name?: string;
+    shipment_id?: string;
+  }) =>
+    api.post<{ ok: boolean; saved_at: string }>(
+      "/contacts/mark-saved",
+      args,
+    ).then((r) => r.data),
+
   // Photo OCR — Gemini Vision. Uses an extended 90 s timeout because
   // vision calls + the address-recovery follow-up can take up to ~45 s
   // on a slow mobile connection. The default 25 s axios timeout would

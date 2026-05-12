@@ -546,6 +546,27 @@ export default function Shipments() {
       return;
     }
     try {
+      // Phase-16.1 — Duplicate detection. We keep a tiny bookkeeping
+      // record server-side every time the user fires the Save Contact
+      // intent. On subsequent taps for the same phone we surface an
+      // "Already saved" warning with Cancel / Save anyway so the user
+      // can avoid creating accidental duplicates in their phonebook.
+      // We don't block — Android's INSERT intent is fire-and-forget,
+      // so the user may have canceled it last time. Save anyway is
+      // always available.
+      let alreadySaved: {
+        saved_at?: string; name?: string;
+      } | null = null;
+      try {
+        const r = await Api.checkContactSaved(ship.customer_phone);
+        if (r?.saved) {
+          alreadySaved = { saved_at: r.saved_at, name: r.name };
+        }
+      } catch {
+        // If the check fails, fall through to the normal save flow
+        // rather than blocking the user.
+      }
+
       const cs = await Api.getContactSettings();
       const mustAskCategory =
         cs?.category?.manual_popup &&
@@ -564,21 +585,59 @@ export default function Shipments() {
           postal: built.postal,
           notes:  built.notes,
         });
+        // Best-effort — record that the intent was fired so the next
+        // tap can warn. We don't await failure here because the OS
+        // intent has already gone out.
+        Api.markContactSaved({
+          phone: built.phone,
+          name:  built.name,
+          shipment_id: ship.id,
+        }).catch(() => { /* ignore */ });
       };
 
-      if (mustAskCategory) {
-        const cats: string[] = cs.category.categories;
+      // Proceed straight to category picker (or auto-save) for fresh
+      // numbers, or pop the "already saved" warning first.
+      const proceedToCategoryFlow = () => {
+        if (mustAskCategory) {
+          const cats: string[] = cs.category.categories;
+          Alert.alert(
+            "Choose category",
+            `Pick a category for "${ship.customer_name || "this contact"}".`,
+            [
+              ...cats.map((c) => ({ text: c, onPress: () => doSave(c) })),
+              { text: "Cancel", style: "cancel" as const },
+            ],
+          );
+        } else {
+          doSave("");
+        }
+      };
+
+      if (alreadySaved) {
+        // Format the saved_at timestamp into a friendly "5 May 2026"
+        // style string. Fall back gracefully when the ISO is missing.
+        let when = "";
+        if (alreadySaved.saved_at) {
+          try {
+            when = new Date(alreadySaved.saved_at).toLocaleDateString(
+              undefined,
+              { day: "numeric", month: "short", year: "numeric" },
+            );
+          } catch { /* ignore */ }
+        }
+        const who = alreadySaved.name || ship.customer_name || "This contact";
         Alert.alert(
-          "Choose category",
-          `Pick a category for "${ship.customer_name || "this contact"}".`,
+          "Already saved",
+          `${who} (${ship.customer_phone}) was saved${when ? ` on ${when}` : ""}. Save again?`,
           [
-            ...cats.map((c) => ({ text: c, onPress: () => doSave(c) })),
             { text: "Cancel", style: "cancel" as const },
+            { text: "Save anyway", onPress: proceedToCategoryFlow },
           ],
         );
-      } else {
-        await doSave("");
+        return;
       }
+
+      proceedToCategoryFlow();
     } catch (e: any) {
       Alert.alert(
         "Save Contact failed",

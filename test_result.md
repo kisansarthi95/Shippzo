@@ -17592,3 +17592,198 @@ agent_communication:
         GET /api/me/feature-flags (not /api/me/plan-features). No code
         changes were made during testing.
 
+
+
+  - task: "Phase 16.1: Duplicate-save warning for Save Contact"
+    implemented: true
+    working: "NA"
+    file: "/app/backend/routers/custom_fields.py, /app/frontend/lib/api.ts, /app/frontend/app/(tabs)/shipments.tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: |
+            Phase 16.1 — Single Contact duplicate-save warning.
+            
+            USER REQUEST: When the operator taps "Save Contact" on a
+            shipment whose phone is already in the saved_contacts
+            bookkeeping table, surface an Alert "Already saved" with
+            standard buttons [Cancel] / [Save anyway]. The existing
+            category-picker popup behavior (asking for category when
+            `category.manual_popup` is on) is unchanged — only added
+            a duplicate-detection gate before it.
+            
+            BACKEND (/app/backend/routers/custom_fields.py):
+            - New collection `db.saved_contacts` keyed by
+              {user_id, phone_norm}. phone_norm = last 10 digits
+              (so "+91 98765-43210" / "919876543210" / "9876543210"
+              all collapse to the same key).
+            - NEW endpoint GET /api/contacts/saved-check?phone=…
+              returns {saved:false} OR
+              {saved:true, name, phone, saved_at, shipment_id}.
+            - NEW endpoint POST /api/contacts/mark-saved
+              with body {phone, name?, shipment_id?}. Upserts the
+              tracking record. saved_at = utcnow().
+            
+            FRONTEND (/app/frontend/lib/api.ts):
+            - Added Api.checkContactSaved(phone) and
+              Api.markContactSaved({phone, name, shipment_id}).
+            
+            FRONTEND (/app/frontend/app/(tabs)/shipments.tsx
+            handleSaveContact):
+            1. After the existing "no phone" guard, call
+               Api.checkContactSaved(phone). Failure falls through
+               silently to the normal save flow (never blocks).
+            2. If saved=true, Alert.alert("Already saved",
+               "<Name> (<phone>) was saved on <date>. Save again?",
+               [Cancel | Save anyway]).
+            3. Save anyway → proceeds to the existing category-picker
+               flow (auto-save when manual_popup is off, picker when
+               on — unchanged behavior).
+            4. After the OS INSERT intent fires, call
+               Api.markContactSaved (fire-and-forget) so the next
+               tap on the same phone shows the warning.
+            
+            Button labels use standard mobile conventions:
+              • "Cancel" (secondary / style=cancel)
+              • "Save anyway" (primary)
+            
+            Note: Android INSERT intent is one-way — we never learn
+            whether the user actually pressed Save in the system
+            Contacts app, so this is BEST-EFFORT de-duplication. The
+            user can always pick "Save anyway" to re-fire the intent.
+            
+            REQUEST: deep_testing_backend_v2 — verify both endpoints:
+              1. GET /api/contacts/saved-check?phone=9876543210
+                 (fresh) → {saved: false}.
+              2. POST /api/contacts/mark-saved
+                 body {phone:"+91 9876543210", name:"Test",
+                       shipment_id:"abc"}
+                 → {ok: true, saved_at: <iso>}.
+              3. GET /api/contacts/saved-check?phone=09876543210
+                 (different format, same number) → {saved: true,
+                 name: "Test", saved_at: <iso>}.
+              4. POST mark-saved again with the SAME phone but
+                 different name → upserts (no dupe row), saved_at
+                 updates.
+              5. POST mark-saved with phone="" → 400.
+              6. saved-check is per-user — user A's record must NOT
+                 leak to user B.
+              7. Lint passes; routes prefixed with /api.
+
+metadata:
+  test_sequence: 10
+  run_ui: false
+
+test_plan:
+  current_focus:
+    - "Phase 16.1: Duplicate-save warning for Save Contact"
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"
+
+
+---
+
+## Backend Test Run: Phase 16.1 — Save Contact duplicate-detection (2026-05-12)
+
+backend:
+  - task: "Phase 16.1: Save Contact duplicate-detection endpoints"
+    implemented: true
+    working: true
+    file: "/app/backend/routers/custom_fields.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "testing"
+        -comment: |
+            All 18 assertions PASSED via /app/backend_test.py against
+            https://logistics-hub-740.preview.emergentagent.com/api.
+            Tested both endpoints with two real tenants (admin@test.com
+            and user2@test.com).
+
+            S1 — Fresh phone → saved=false:
+              GET /api/contacts/saved-check?phone=9876543210
+              → HTTP 200  body={"saved": false}  ✅
+
+            S2 — mark + re-check:
+              POST /api/contacts/mark-saved
+              {"phone":"+91 9876543210","name":"Test Customer",
+               "shipment_id":"sh-test-1"}
+              → HTTP 200  {"ok":true,"saved_at":"2026-05-12T14:32:16.264943+00:00"}
+              ISO-8601 parsed successfully.
+              GET ?phone=9876543210 → HTTP 200
+              {"saved":true,"name":"Test Customer",
+               "phone":"+91 9876543210",
+               "saved_at":"2026-05-12T14:32:16.264943+00:00",
+               "shipment_id":"sh-test-1"}  ✅
+
+            S3 — Phone normalization (all 3 variants collapse to same key):
+              "09876543210"     (leading 0)    → saved=true ✅
+              "919876543210"    (country code) → saved=true ✅
+              "+91 9876-543210" (URL-encoded with hyphen/space)
+                                               → saved=true ✅
+
+            S4 — Upsert (no duplicate row):
+              POST {"phone":"9876543210","name":"Updated Name"} → 200 ✅
+              GET → name="Updated Name" ✅, saved_at advanced from
+                    14:32:16.264943 → 14:32:17.389992 ✅
+              Direct Mongo count_documents({user_id, phone_norm:'9876543210'})
+              for user A = 1 ✅
+
+            S5 — Validation:
+              POST {"phone":""}   → HTTP 400  {"detail":"phone required"} ✅
+              POST {"phone":"abc"} → HTTP 400 {"detail":"phone required"} ✅
+
+            S6 — Multi-tenant isolation (user B = user2@test.com):
+              S6a: User B GET ?phone=9876543210 → {"saved":false} ✅
+                   (user A had it but user B's lookup is scoped by user_id)
+              S6b: User B POST mark-saved {"phone":"9876543210",
+                   "name":"User B Customer"} → 200 ✅
+              S6c: User A's record still {"name":"Updated Name",
+                   "saved_at":"2026-05-12T14:32:17.389992+00:00"} —
+                   NOT impacted by User B's write ✅
+              S6d: User B's GET sees its own record
+                   {"name":"User B Customer","saved_at":"...18.196758..."} ✅
+
+            S7 — Cleanup: db.saved_contacts.delete_many(
+              {phone_norm:"9876543210"}) issued; both tenants' test rows
+              removed. No DB pollution remains.
+
+            Implementation notes confirmed via code review of
+            /app/backend/routers/custom_fields.py:
+              - _normalize_phone() strips non-digits then takes the last
+                10 chars (Indian mobile heuristic). Works for "abc" by
+                returning "" → 400.
+              - mark_contact_saved upserts on (user_id, phone_norm) with
+                {"$set":{...,"saved_at": now_iso}}.
+              - check_contact_saved scopes lookup by current_user["id"]
+                — multi-tenant safe.
+
+            All response shapes match the review contract exactly. No
+            mocked behaviour — real Mongo writes, real auth, real
+            normalization. Ready for production.
+
+agent_communication:
+    -agent: "testing"
+    -message: |
+        Phase 16.1 Save Contact duplicate-detection backend is GREEN.
+        18/18 assertions passed (run via /app/backend_test.py).
+
+        ✅ All 7 scenarios in the review request PASS:
+           S1 fresh → false, S2 mark+re-check, S3 normalization (3
+           variants), S4 upsert (single row + name updated +
+           saved_at advanced), S5 validation (400 for empty/non-digit),
+           S6 multi-tenant isolation (admin & user2 fully isolated),
+           S7 cleanup (Mongo rows deleted).
+
+        Multi-tenant test ran with BOTH users from test_credentials.md
+        (admin@test.com + user2@test.com). User-id scoping verified —
+        User B cannot see User A's saved phone and vice-versa.
+
+        No issues found. Ready for main agent to finish.
+

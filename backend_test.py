@@ -1,293 +1,249 @@
 """
-Phase F3.9.2 — Plan-gated Pending Order Edit + Delete
+Phase 16.1 — Save Contact duplicate-detection endpoints tests.
 
-Backend tests:
-  1. Feature registry contains both pending_orders_edit and pending_orders_delete
-     under category 'Customer Intelligence' with the correct labels.
-  2. User-facing /me/feature-flags includes both flags for user2 (silver plan).
-  3. Happy path: PUT and DELETE pending order succeeds.
-  4. Negative path: with flags removed, PUT and DELETE return 403 with the
-     exact detail strings, then flags are restored.
-  5. Sanity: GET /api/orders/pending stays 200 regardless of flags.
+Targets:
+  GET  /api/contacts/saved-check?phone=<raw>
+  POST /api/contacts/mark-saved
 """
 import os
 import sys
-import copy
 import requests
+from datetime import datetime
+from pymongo import MongoClient
 
-BASE = (
-    os.environ.get("BACKEND_URL")
-    or "https://logistics-hub-740.preview.emergentagent.com"
-).rstrip("/")
-API = f"{BASE}/api"
+BASE = "https://logistics-hub-740.preview.emergentagent.com/api"
 
-ADMIN_EMAIL = "admin@test.com"
-ADMIN_PASS = "Admin@12345"
-USER_EMAIL = "user2@test.com"
-USER_PASS = "User@12345"
+USER_A = {"email": "admin@test.com", "password": "Admin@12345"}
+USER_B = {"email": "user2@test.com", "password": "User@12345"}
 
-PASS, FAIL = [], []
+TEST_PHONE_NORM = "9876543210"
 
-
-def _record(ok, msg):
-    (PASS if ok else FAIL).append(msg)
-    print(("PASS" if ok else "FAIL") + ":", msg)
+results = []
+fails = []
 
 
-def login(email, password):
-    r = requests.post(
-        f"{API}/auth/login",
-        json={"email": email, "password": password},
-        timeout=20,
-    )
-    r.raise_for_status()
-    body = r.json()
-    return body["token"], body
+def record(name, ok, detail=""):
+    results.append((name, ok, detail))
+    status = "PASS" if ok else "FAIL"
+    print(f"[{status}] {name}: {detail}")
+    if not ok:
+        fails.append((name, detail))
 
 
-def h(tok):
-    return {"Authorization": f"Bearer {tok}", "Content-Type": "application/json"}
-
-
-# ─── SETUP ──────────────────────────────────────────────────────────
-print("==> Logging in")
-admin_tok, admin_me = login(ADMIN_EMAIL, ADMIN_PASS)
-user_tok, user_me = login(USER_EMAIL, USER_PASS)
-print(
-    f"admin: id={admin_me['id']} is_admin={admin_me['is_admin']} plan={admin_me['plan']}"
-)
-print(
-    f"user2: id={user_me['id']} is_admin={user_me['is_admin']} plan={user_me['plan']}"
-)
-
-
-# ─── SCENARIO 1 — Registry presence ──────────────────────────────────
-print("\n==> Scenario 1: Registry presence")
-r = requests.get(f"{API}/admin/plan-features", headers=h(admin_tok), timeout=20)
-_record(r.status_code == 200, f"admin/plan-features HTTP {r.status_code}")
-data = r.json() if r.status_code == 200 else {}
-registry = (data.get("registry") or {})
-features = registry.get("features") or []
-by_key = {f["key"]: f for f in features}
-
-edit_row = by_key.get("pending_orders_edit")
-del_row = by_key.get("pending_orders_delete")
-
-_record(edit_row is not None, "registry contains key 'pending_orders_edit'")
-_record(del_row is not None, "registry contains key 'pending_orders_delete'")
-if edit_row:
-    _record(
-        edit_row.get("category") == "Customer Intelligence",
-        f"pending_orders_edit category = 'Customer Intelligence' (got {edit_row.get('category')!r})",
-    )
-    _record(
-        edit_row.get("label") == "Edit pending order before saving",
-        f"pending_orders_edit label correct (got {edit_row.get('label')!r})",
-    )
-if del_row:
-    _record(
-        del_row.get("category") == "Customer Intelligence",
-        f"pending_orders_delete category = 'Customer Intelligence' (got {del_row.get('category')!r})",
-    )
-    _record(
-        del_row.get("label") == "Delete pending order",
-        f"pending_orders_delete label correct (got {del_row.get('label')!r})",
-    )
-
-# Verify plan_features assignment for silver/gold/free_trial
-plans = data.get("plans") or {}
-for tier in ("free_trial", "silver", "gold", "platinum"):
-    keys = set(plans.get(tier, []))
-    _record(
-        "pending_orders_edit" in keys,
-        f"plans.{tier} contains 'pending_orders_edit'",
-    )
-    _record(
-        "pending_orders_delete" in keys,
-        f"plans.{tier} contains 'pending_orders_delete'",
-    )
-
-# User-facing endpoint
-r = requests.get(f"{API}/me/feature-flags", headers=h(user_tok), timeout=20)
-_record(r.status_code == 200, f"me/feature-flags HTTP {r.status_code}")
-flags = set((r.json() or {}).get("features", []))
-_record(
-    "pending_orders_edit" in flags,
-    "user2 effective features contains 'pending_orders_edit' (plan=silver)",
-)
-_record(
-    "pending_orders_delete" in flags,
-    "user2 effective features contains 'pending_orders_delete'",
-)
-
-
-# ─── helper — create a pending order via smart-paste ────────────────
-def create_pending_order(tok, name_seed="Aarav Mehta"):
-    text = (
-        f"CUSTOMER_NAME: {name_seed}\n"
-        "PHONE: 9812345678\n"
-        "ADDRESS_1: 23 Shanti Niwas\n"
-        "ADDRESS_2: Near Bus Stand\n"
-        "CITY: Surat\n"
-        "STATE: Gujarat\n"
-        "PINCODE: 395003\n"
-        "AMOUNT: 850\n"
-        "PAYMENT: COD\n"
-        "ITEMS: 1 silk dupatta\n"
-        "WEIGHT: 350\n"
-    )
-    r = requests.post(
-        f"{API}/smart-paste",
-        headers=h(tok),
-        json={"text": text, "skip_llm": True},
-        timeout=30,
-    )
+def login(creds):
+    r = requests.post(f"{BASE}/auth/login", json=creds, timeout=30)
     if r.status_code != 200:
-        print("smart-paste body:", r.status_code, r.text[:300])
-    r.raise_for_status()
-    return r.json()
+        print(f"!! Login failed for {creds['email']}: {r.status_code} {r.text}")
+        return None
+    return r.json()["token"]
 
 
-# ─── SCENARIO 2 — Happy path ────────────────────────────────────────
-print("\n==> Scenario 2: Happy path with flags ON")
-po = create_pending_order(user_tok, "Aarav Mehta")
-po_id = po.get("id")
-_record(bool(po_id), f"created pending order id={po_id} master_order_id={po.get('master_order_id')}")
+def auth_headers(tok):
+    return {"Authorization": f"Bearer {tok}"}
 
-r = requests.put(
-    f"{API}/orders/pending/{po_id}",
-    headers=h(user_tok),
-    json={"customer_name": "TEST EDIT 200"},
-    timeout=20,
-)
-_record(r.status_code == 200, f"PUT pending HTTP {r.status_code} (body: {r.text[:160]})")
-if r.status_code == 200:
-    _record(
-        r.json().get("customer_name") == "TEST EDIT 200",
-        f"PUT response.customer_name == 'TEST EDIT 200' (got {r.json().get('customer_name')!r})",
+
+def parse_iso(s):
+    try:
+        s2 = s.replace("Z", "+00:00") if s.endswith("Z") else s
+        datetime.fromisoformat(s2)
+        return True
+    except Exception:
+        return False
+
+
+def cleanup_mongo():
+    try:
+        mongo_url = os.environ.get("MONGO_URL", "mongodb://localhost:27017")
+        db_name = os.environ.get("DB_NAME", "test_database")
+        c = MongoClient(mongo_url)
+        c[db_name].saved_contacts.delete_many({"phone_norm": TEST_PHONE_NORM})
+        c.close()
+        return True
+    except Exception as e:
+        print(f"Cleanup error: {e}")
+        return False
+
+
+def count_rows(user_id):
+    mongo_url = os.environ.get("MONGO_URL", "mongodb://localhost:27017")
+    db_name = os.environ.get("DB_NAME", "test_database")
+    c = MongoClient(mongo_url)
+    n = c[db_name].saved_contacts.count_documents(
+        {"user_id": user_id, "phone_norm": TEST_PHONE_NORM}
     )
+    c.close()
+    return n
 
-r = requests.delete(f"{API}/orders/pending/{po_id}", headers=h(user_tok), timeout=20)
-_record(r.status_code == 200, f"DELETE pending HTTP {r.status_code} (body: {r.text[:160]})")
-if r.status_code == 200:
-    _record(
-        bool(r.json().get("ok")),
-        f"DELETE response.ok == true (got {r.json().get('ok')!r})",
+
+def main():
+    print(f"BASE = {BASE}")
+    cleanup_mongo()
+
+    tokA = login(USER_A)
+    if not tokA:
+        record("login user A", False, "could not authenticate admin@test.com")
+        return
+    record("login user A", True, "ok")
+
+    me_a = requests.get(f"{BASE}/auth/me", headers=auth_headers(tokA), timeout=30).json()
+    user_a_id = me_a["id"]
+
+    tokB = login(USER_B)
+    have_b = bool(tokB)
+    user_b_id = None
+    if have_b:
+        record("login user B", True, "ok")
+        me_b = requests.get(f"{BASE}/auth/me", headers=auth_headers(tokB), timeout=30).json()
+        user_b_id = me_b["id"]
+    else:
+        record("login user B", False, "user2 unavailable — multi-tenant test will be skipped")
+
+    # ----------- Scenario 1: Fresh phone returns saved=false -----------
+    r = requests.get(
+        f"{BASE}/contacts/saved-check",
+        params={"phone": "9876543210"},
+        headers=auth_headers(tokA), timeout=30,
     )
+    body = r.json() if r.headers.get("content-type", "").startswith("application/json") else r.text
+    ok = r.status_code == 200 and isinstance(body, dict) and body.get("saved") is False
+    record("S1: fresh phone -> saved=false", ok, f"HTTP={r.status_code} body={body}")
 
-
-# ─── SCENARIO 3 — Negative path: flip flags OFF on silver via admin ──
-print("\n==> Scenario 3: Negative path (flags OFF)")
-
-plans_snapshot = copy.deepcopy(plans)
-silver_full = set(plans.get("silver", []))
-
-silver_no_edit = sorted(silver_full - {"pending_orders_edit"})
-new_plans = copy.deepcopy(plans)
-new_plans["silver"] = silver_no_edit
-
-r = requests.put(
-    f"{API}/admin/plan-features",
-    headers=h(admin_tok),
-    json={"plans": new_plans},
-    timeout=20,
-)
-_record(r.status_code == 200, f"admin PUT plans (no edit) HTTP {r.status_code}")
-saved = (r.json() or {}).get("plans", {}).get("silver", [])
-_record(
-    "pending_orders_edit" not in set(saved),
-    "after admin PUT, silver no longer has 'pending_orders_edit'",
-)
-
-po2 = create_pending_order(user_tok, "Negative Edit Test")
-po2_id = po2["id"]
-
-r = requests.put(
-    f"{API}/orders/pending/{po2_id}",
-    headers=h(user_tok),
-    json={"customer_name": "SHOULD NOT WORK"},
-    timeout=20,
-)
-_record(
-    r.status_code == 403,
-    f"PUT with flag OFF returns 403 (got {r.status_code}, body={r.text[:200]})",
-)
-if r.status_code == 403:
-    detail = (r.json() or {}).get("detail")
-    expected = "Your plan doesn't include editing pending orders."
-    _record(
-        detail == expected,
-        f"403 detail matches expected (got {detail!r})",
+    # ----------- Scenario 2: mark-saved + re-check -----------
+    payload = {
+        "phone": "+91 9876543210",
+        "name": "Test Customer",
+        "shipment_id": "sh-test-1",
+    }
+    r = requests.post(f"{BASE}/contacts/mark-saved", json=payload,
+                      headers=auth_headers(tokA), timeout=30)
+    body = r.json() if r.ok else r.text
+    saved_at_initial = body.get("saved_at") if isinstance(body, dict) else ""
+    ok = (
+        r.status_code == 200
+        and isinstance(body, dict)
+        and body.get("ok") is True
+        and parse_iso(saved_at_initial)
     )
+    record("S2a: mark-saved 200 + ok=true + ISO saved_at", ok,
+           f"HTTP={r.status_code} body={body}")
 
-silver_no_both = sorted(set(silver_no_edit) - {"pending_orders_delete"})
-new_plans["silver"] = silver_no_both
-r = requests.put(
-    f"{API}/admin/plan-features",
-    headers=h(admin_tok),
-    json={"plans": new_plans},
-    timeout=20,
-)
-_record(r.status_code == 200, f"admin PUT plans (no edit, no delete) HTTP {r.status_code}")
-saved = (r.json() or {}).get("plans", {}).get("silver", [])
-_record(
-    "pending_orders_delete" not in set(saved),
-    "after admin PUT, silver no longer has 'pending_orders_delete'",
-)
-
-r = requests.delete(
-    f"{API}/orders/pending/{po2_id}", headers=h(user_tok), timeout=20
-)
-_record(
-    r.status_code == 403,
-    f"DELETE with flag OFF returns 403 (got {r.status_code}, body={r.text[:200]})",
-)
-if r.status_code == 403:
-    detail = (r.json() or {}).get("detail")
-    expected_del = "Your plan doesn't include deleting pending orders."
-    _record(
-        detail == expected_del,
-        f"403 detail matches expected (got {detail!r})",
+    r = requests.get(f"{BASE}/contacts/saved-check",
+                     params={"phone": "9876543210"},
+                     headers=auth_headers(tokA), timeout=30)
+    body = r.json() if r.ok else r.text
+    ok = (
+        r.status_code == 200
+        and isinstance(body, dict)
+        and body.get("saved") is True
+        and body.get("name") == "Test Customer"
+        and body.get("saved_at") == saved_at_initial
+        and body.get("shipment_id") == "sh-test-1"
     )
+    record("S2b: saved-check matches inserted record", ok,
+           f"HTTP={r.status_code} body={body}")
+
+    # ----------- Scenario 3: phone normalization variants -----------
+    variants = [
+        ("09876543210",     "leading 0"),
+        ("919876543210",    "country code 91"),
+        ("+91 9876-543210", "URL-encoded +91 9876-543210"),
+    ]
+    for raw, label in variants:
+        r = requests.get(
+            f"{BASE}/contacts/saved-check",
+            params={"phone": raw},
+            headers=auth_headers(tokA), timeout=30,
+        )
+        body = r.json() if r.ok else r.text
+        ok = (r.status_code == 200 and isinstance(body, dict)
+              and body.get("saved") is True)
+        record(f"S3: normalize ({label}) -> saved=true", ok,
+               f"raw={raw!r} HTTP={r.status_code} body={body}")
+
+    # ----------- Scenario 4: Upsert (no duplicate row) -----------
+    # tiny sleep so ISO timestamp advances measurably
+    import time
+    time.sleep(0.01)
+    r = requests.post(f"{BASE}/contacts/mark-saved",
+                      json={"phone": "9876543210", "name": "Updated Name"},
+                      headers=auth_headers(tokA), timeout=30)
+    body = r.json() if r.ok else r.text
+    new_saved_at = body.get("saved_at") if isinstance(body, dict) else ""
+    ok = r.status_code == 200 and isinstance(body, dict) and body.get("ok") is True
+    record("S4a: second mark-saved 200 ok", ok, f"HTTP={r.status_code} body={body}")
+
+    r = requests.get(f"{BASE}/contacts/saved-check",
+                     params={"phone": "9876543210"},
+                     headers=auth_headers(tokA), timeout=30)
+    body = r.json() if r.ok else r.text
+    ok_name = isinstance(body, dict) and body.get("name") == "Updated Name"
+    ok_advanced = (isinstance(body, dict) and body.get("saved_at") and
+                   body.get("saved_at") > saved_at_initial)
+    record("S4b: name now 'Updated Name' + saved_at advanced",
+           ok_name and ok_advanced,
+           f"body={body} prev_saved_at={saved_at_initial} new={new_saved_at}")
+
+    n = count_rows(user_a_id)
+    record("S4c: exactly ONE row in db.saved_contacts for user A", n == 1, f"count={n}")
+
+    # ----------- Scenario 5: Validation -----------
+    r = requests.post(f"{BASE}/contacts/mark-saved", json={"phone": ""},
+                      headers=auth_headers(tokA), timeout=30)
+    record("S5a: empty phone -> 400", r.status_code == 400,
+           f"HTTP={r.status_code} body={r.text}")
+
+    r = requests.post(f"{BASE}/contacts/mark-saved", json={"phone": "abc"},
+                      headers=auth_headers(tokA), timeout=30)
+    record("S5b: 'abc' (no digits) -> 400", r.status_code == 400,
+           f"HTTP={r.status_code} body={r.text}")
+
+    # ----------- Scenario 6: Multi-tenant isolation -----------
+    if have_b:
+        r = requests.get(f"{BASE}/contacts/saved-check",
+                         params={"phone": "9876543210"},
+                         headers=auth_headers(tokB), timeout=30)
+        body = r.json() if r.ok else r.text
+        ok = (r.status_code == 200 and isinstance(body, dict)
+              and body.get("saved") is False)
+        record("S6a: User B saved-check for User A's phone -> saved=false",
+               ok, f"HTTP={r.status_code} body={body}")
+
+        r = requests.post(f"{BASE}/contacts/mark-saved",
+                          json={"phone": "9876543210", "name": "User B Customer"},
+                          headers=auth_headers(tokB), timeout=30)
+        ok = r.status_code == 200
+        record("S6b: User B mark-saved 200", ok,
+               f"HTTP={r.status_code} body={r.text}")
+
+        r = requests.get(f"{BASE}/contacts/saved-check",
+                         params={"phone": "9876543210"},
+                         headers=auth_headers(tokA), timeout=30)
+        body = r.json() if r.ok else r.text
+        ok = (isinstance(body, dict) and body.get("name") == "Updated Name")
+        record("S6c: User A's record unchanged after User B write",
+               ok, f"User A body={body}")
+
+        r = requests.get(f"{BASE}/contacts/saved-check",
+                         params={"phone": "9876543210"},
+                         headers=auth_headers(tokB), timeout=30)
+        body = r.json() if r.ok else r.text
+        ok = (isinstance(body, dict) and body.get("saved") is True
+              and body.get("name") == "User B Customer")
+        record("S6d: User B sees its own record", ok, f"body={body}")
+    else:
+        record("S6: multi-tenant", True, "SKIPPED — only one user available")
+
+    # ----------- Scenario 7: Cleanup -----------
+    cleaned = cleanup_mongo()
+    record("S7: cleanup db.saved_contacts", cleaned, "delete_many issued")
+
+    print("\n=========================")
+    print(f"Total: {len(results)}  Failed: {len(fails)}")
+    for name, detail in fails:
+        print(f"  FAIL: {name} :: {detail}")
+    print("=========================")
+    sys.exit(0 if not fails else 1)
 
 
-# ─── SCENARIO 4 — Sanity: GET /api/orders/pending still 200 ─────────
-print("\n==> Scenario 4: Sanity — GET pending list is not gated")
-r = requests.get(f"{API}/orders/pending", headers=h(user_tok), timeout=20)
-_record(r.status_code == 200, f"GET orders/pending HTTP {r.status_code}")
-_record(
-    isinstance(r.json(), list),
-    "GET orders/pending returns a list (read access not gated)",
-)
-
-
-# ─── RESTORE flags ──────────────────────────────────────────────────
-print("\n==> Restoring plan_features to original")
-r = requests.put(
-    f"{API}/admin/plan-features",
-    headers=h(admin_tok),
-    json={"plans": plans_snapshot},
-    timeout=20,
-)
-_record(r.status_code == 200, f"restore plan_features HTTP {r.status_code}")
-restored = (r.json() or {}).get("plans", {}).get("silver", [])
-_record(
-    {"pending_orders_edit", "pending_orders_delete"}.issubset(set(restored)),
-    "after restore, silver has both pending_orders_edit + pending_orders_delete",
-)
-
-# Best-effort cleanup of the leftover pending order created in negative path
-r = requests.delete(f"{API}/orders/pending/{po2_id}", headers=h(user_tok), timeout=20)
-print(f"cleanup DELETE po2 -> {r.status_code} {r.text[:100]}")
-
-
-# ─── SUMMARY ────────────────────────────────────────────────────────
-print("\n========= SUMMARY =========")
-print(f"PASS: {len(PASS)}    FAIL: {len(FAIL)}")
-if FAIL:
-    print("\nFailures:")
-    for f in FAIL:
-        print(" -", f)
-    sys.exit(1)
-print("All assertions passed.")
-sys.exit(0)
+if __name__ == "__main__":
+    main()
