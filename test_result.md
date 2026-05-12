@@ -18278,12 +18278,69 @@ agent_communication:
 backend:
   - task: "Phase F3.9.7 — Abandoned-cart recover endpoint with create_shipment flag"
     implemented: true
-    working: false
+    working: true
     file: "/app/backend/routers/abandoned_carts.py"
-    stuck_count: 1
+    stuck_count: 0
     priority: "high"
-    needs_retesting: true
+    needs_retesting: false
     status_history:
+        -working: true
+        -agent: "testing"
+        -comment: |
+            RETEST 2026-05-12 (post-fix) — ALL 25 ASSERTIONS PASS via
+            /app/backend_test_f397.py against
+            https://logistics-hub-740.preview.emergentagent.com/api.
+            The fix (moving _RecoverPayload to module scope, above init())
+            resolved the PEP-563 ForwardRef issue. Detailed results:
+
+              PASS  Pre-check: bare /recover no-auth → HTTP 401 (was 500)
+              PASS  Login admin@test.com / user2@test.com
+              PASS  Create temporary abandoned_order webhook
+              PASS  SCENARIO 1 — Seed cart via webhook ingest
+                    (ext_id=TEST-CART-F397-S1-7246c3) → HTTP 200, cart
+                    visible in /api/me/abandoned-carts list.
+              PASS  SCENARIO 2 — POST /recover with body {} → HTTP 200.
+                    Body = {"ok": true,
+                            "pending_order_id": "3f7b376c-…-880b",
+                            "master_order_id": "26051302457"}.
+                    Response correctly OMITS the "pending_order" key
+                    when create_shipment is false.
+              PASS  SCENARIO 3 — Idempotent re-recover with
+                    {"create_shipment": true} → HTTP 200. Body keys =
+                    ["ok", "already_recovered", "pending_order_id",
+                    "pending_order"]. already_recovered=true,
+                    pending_order is a full 21-key dict with source==
+                    "abandoned_cart" and id matching scenario-2's
+                    pending_order_id (handler re-fetches from
+                    db.pending_orders on the idempotent path).
+              PASS  SCENARIO 4 — Fresh cart + POST /recover with
+                    {"create_shipment": true} → HTTP 200. Body keys =
+                    ["ok", "pending_order_id", "master_order_id",
+                    "pending_order"]. pending_order is the freshly-
+                    inserted document (source=abandoned_cart). already_
+                    recovered is NOT true (None). DB verification:
+                    GET /me/abandoned-carts/{cid2} returns status=
+                    "recovered" and pending_order_id matches po.id.
+              PASS  SCENARIO 5 — Multi-tenant isolation. user2@test.com
+                    attempting POST /recover and GET on admin's cart
+                    both return HTTP 404 (not 500, not 403, not data
+                    leak). user2 GET on admin's pending order ID
+                    returns HTTP 404.
+              PASS  SCENARIO 6 — Cleanup: 5 artifacts deleted
+                    (2 pending_orders, 2 abandoned_carts, 1 webhook).
+                    No residual TEST-CART-F397-* rows.
+
+            Verified response shapes match the contract in the review
+            request exactly. The `pending_order` returned on the
+            idempotent path is the existing doc (re-fetched), while on
+            the fresh path it is the just-inserted doc — both have
+            source="abandoned_cart" and a server-allocated
+            master_order_id. The /api/me/abandoned-carts/{id} GET after
+            recovery confirms cart.status flipped to "recovered" and
+            cart.pending_order_id matches the new pending row.
+
+            Backend logs show no exceptions on any /recover call during
+            the run. The fix is complete and stable.
         -working: false
         -agent: "testing"
         -comment: |

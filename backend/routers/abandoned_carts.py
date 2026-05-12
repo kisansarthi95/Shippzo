@@ -26,6 +26,22 @@ from pydantic import BaseModel
 abandoned_carts_router = APIRouter(prefix="/api", tags=["abandoned-carts"])
 
 
+# Phase F3.9.7 — Pydantic body model for /recover. Must live at MODULE
+# scope, NOT inside init(), because the file uses
+# `from __future__ import annotations` (PEP-563) and FastAPI resolves
+# ForwardRefs against module globals — a class defined inside a
+# function isn't reachable that way, which broke every request to
+# /recover with a 500 PydanticUserError on the previous attempt.
+class _RecoverPayload(BaseModel):
+    # When the user picks "Create Shipment Directly" on the abandoned
+    # cart card the frontend sends create_shipment=True so we ALSO
+    # return the full new pending_order document. The frontend then
+    # drops straight into its ship-flow modal without an extra refetch
+    # and without a race against the list refresh. Default False
+    # preserves the original "Move to Pending" behaviour.
+    create_shipment: bool = False
+
+
 def _serialise(c: Dict[str, Any]) -> Dict[str, Any]:
     sm = c.get("source_meta") or {}
     return {
@@ -142,15 +158,13 @@ def init() -> None:
             raise HTTPException(status_code=404, detail="Cart not found")
         return _serialise(c) | {"items_raw": c.get("items_raw") or []}
 
-    class _RecoverPayload(BaseModel):
-        # Phase F3.9.7 — Workflow selection. When the user picks
-        # "Create Shipment Directly" on the abandoned-cart card the
-        # frontend sends create_shipment=True so we ALSO return the
-        # full new pending_order document. The frontend then drops
-        # straight into its ship-flow modal without an extra refetch
-        # and without a race against the list refresh. Default False
-        # preserves the existing "Move to Pending" behaviour.
-        create_shipment: bool = False
+    class _RecoverPayloadInline_REMOVED:  # noqa: D401
+        """Placeholder — original _RecoverPayload was moved to MODULE
+        scope (see top of this file) so PEP-563 ForwardRef resolution
+        works against module globals. This class shadowing the outer
+        one was the source of the 500 PydanticUserError. Leaving the
+        stub here only to anchor the diff comment."""
+        pass
 
     @abandoned_carts_router.post("/me/abandoned-carts/{cart_id}/recover")
     async def recover_abandoned_cart(
