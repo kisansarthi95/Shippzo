@@ -481,23 +481,27 @@ export default function OrdersFromSheet() {
         });
       }
     }
-    // Google Sheet — pending-only (drop already_shipped per user req).
+    // Google Sheet — Phase F3.9.11. Two visual states now:
+    //   • Pending  (already_shipped=false) — original card, counts in
+    //     All, ship action available.
+    //   • REUSED   (already_shipped=true)  — soft-grey badge so the
+    //     operator can SEE that this customer has already shipped
+    //     once, with a "Reuse" CTA that opens the ship modal for a
+    //     fresh shipment to the same address. Does NOT count in All.
     if (sourceFilter === "all" || sourceFilter === "sheet") {
       const q = search.trim().toLowerCase();
       for (const o of orders) {
-        if (o.already_shipped) continue;
         if (q) {
           const hay = `${o.order_id} ${o.customer_name} ${o.phone} ${o.city}`.toLowerCase();
           if (!hay.includes(q)) continue;
         }
+        const reused = !!o.already_shipped;
         out.push({
           key: `sheet|${o.row_index}|${o.row_key || ""}`,
           source: "sheet",
-          badgeLabel: "📊 SHEET",
-          badgeBg: "#DBEAFE",
-          badgeFg: "#1D4ED8",
-          // Sheets API returns no real timestamp — approximate with
-          // negative row_index so newer (higher) rows still bubble up.
+          badgeLabel: reused ? "🔄 REUSED" : "📊 SHEET",
+          badgeBg:    reused ? "#E5E7EB" : "#DBEAFE",
+          badgeFg:    reused ? "#475569" : "#1D4ED8",
           sortTime: typeof o.row_index === "number" ? o.row_index : 0,
           customer_name: o.customer_name,
           customer_phone: o.phone,
@@ -507,9 +511,14 @@ export default function OrdersFromSheet() {
           items: o.item,
           amount: Number(o.amount || 0),
           payment_mode: "",
-          extra: `Row ${o.row_index}${o.order_id ? ` · #${o.order_id}` : ""}`,
+          extra: reused
+            ? `🔁 Already shipped${o.order_id ? ` · #${o.order_id}` : ""}`
+            : `Row ${o.row_index}${o.order_id ? ` · #${o.order_id}` : ""}`,
           sheet: o,
-        });
+          // Hint to the renderer/ship-action that this row should
+          // open the ship modal as a NEW shipment (Reuse semantics).
+          reused,
+        } as any);
       }
     }
 
@@ -653,6 +662,10 @@ export default function OrdersFromSheet() {
             row.source === "file"    && { backgroundColor: "#10B981" },
             row.source === "sheet"   && { backgroundColor: "#1D4ED8" },
             row.source === "webhook" && { backgroundColor: "#C2410C" },
+            // Phase F3.9.11 — Reuse CTA for already-shipped sheet rows.
+            // Soft-grey background so it doesn't compete with the
+            // bright Ship buttons on fresh pending rows.
+            (row as any).reused && { backgroundColor: "#64748B" },
           ]}
           onPress={() => {
             if (row.sheet) shipNow(row.sheet);
@@ -660,8 +673,13 @@ export default function OrdersFromSheet() {
           }}
           testID={`ship-${row.key}`}
         >
-          <PhIcon name="rocket-outline" size={14} color="#fff" />
-          <Text style={styles.shipBtnText}>Ship this order</Text>
+          <PhIcon
+            name={(row as any).reused ? "refresh-outline" : "rocket-outline"}
+            size={14} color="#fff"
+          />
+          <Text style={styles.shipBtnText}>
+            {(row as any).reused ? "Reuse" : "Ship this order"}
+          </Text>
         </TouchableOpacity>
       )}
     </View>
@@ -770,6 +788,12 @@ export default function OrdersFromSheet() {
         }}
       >
         {([
+          // Phase F3.9.11 — All count now excludes the new REUSED
+          // sheet rows (already_shipped=true). Previously these were
+          // skipped entirely; now they're shown with a soft-grey
+          // REUSED badge + "Reuse" CTA, but they should NOT inflate
+          // the global pending count. Same filter as the per-source
+          // "Sheet" chip below.
           { k: "all",     label: `All (${pasteOrders.length + fileOrders.length + webhookOrders.length + orders.filter(o => !o.already_shipped).length})` },
           { k: "paste",   label: `✨ Smart Paste${pasteOrders.length ? ` (${pasteOrders.length})` : ""}` },
           { k: "file",    label: `📄 File${fileOrders.length ? ` (${fileOrders.length})` : ""}` },

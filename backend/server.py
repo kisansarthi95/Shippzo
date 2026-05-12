@@ -1864,15 +1864,43 @@ async def sheets_orders(
             return ""
         return row.get(col, "")
 
-    # Find shipments that were imported from this sheet to mark them
-    imported_keys = set()
+    # Find shipments that were originally imported from this sheet
+    # OR were created from any other source (paste / file / webhook /
+    # smart-paste) and later auto-appended to the master sheet by the
+    # ship pipeline. Either way we need to mark the matching sheet row
+    # as already_shipped so it doesn't double-count in the All filter.
+    #
+    # Phase F3.9.11 — Expanded match keys. Previously we only matched
+    # via `sheet_row_key`, which is set only when a shipment was
+    # ORIGINALLY imported from a user sheet. Newly-appended sheet rows
+    # for paste/file/webhook-shipped orders had no matching
+    # sheet_row_key on any shipment, so they showed up as a fresh
+    # "ghost" entry and inflated the All count by +1 after every
+    # ship action. We now also match by tracking_id and
+    # master_order_id which DO exist on every shipment.
+    imported_keys: set = set()
+    tracking_ids:  set = set()
+    master_ids:    set = set()
+    order_ids:     set = set()
     existing = await db.shipments.find(
-        {"user_id": current_user["id"], "sheet_row_key": {"$ne": ""}},
-        {"_id": 0, "sheet_row_key": 1},
-    ).to_list(5000)
+        {"user_id": current_user["id"]},
+        {
+            "_id": 0,
+            "sheet_row_key":  1,
+            "tracking_id":    1,
+            "master_order_id": 1,
+            "order_id":       1,
+        },
+    ).to_list(20000)
     for e in existing:
         if e.get("sheet_row_key"):
             imported_keys.add(e["sheet_row_key"])
+        if e.get("tracking_id"):
+            tracking_ids.add(str(e["tracking_id"]).strip())
+        if e.get("master_order_id"):
+            master_ids.add(str(e["master_order_id"]).strip())
+        if e.get("order_id"):
+            order_ids.add(str(e["order_id"]).strip())
 
     def mapped(row: Dict[str, str], key: str) -> str:
         # Backwards-compat shim — keeps the inner loop unchanged but
@@ -1882,6 +1910,21 @@ async def sheets_orders(
     orders = []
     for idx, row in enumerate(data["rows"]):
         row_key = _row_key(row, mapping, idx)
+        # Phase F3.9.11 — Multi-key dedupe. We now flag a sheet row as
+        # already_shipped when ANY of its identifiers match an
+        # existing shipment, not just the original sheet_row_key.
+        # Without this, a paste/webhook order that gets shipped and
+        # then auto-backed-up to the master sheet shows up as a fresh
+        # "ghost" row in the All filter on the very next refresh.
+        sheet_tracking = (mapped(row, "tracking_id") or "").strip()
+        sheet_master   = (mapped(row, "master_order_id") or "").strip()
+        sheet_order_id = (mapped(row, "order_id") or "").strip()
+        is_shipped = (
+            row_key in imported_keys
+            or (sheet_tracking and sheet_tracking in tracking_ids)
+            or (sheet_master   and sheet_master   in master_ids)
+            or (sheet_order_id and sheet_order_id in order_ids)
+        )
         orders.append({
             "row_key": row_key,
             "row_index": idx + 2,  # spreadsheet row (1-indexed + header)
@@ -1910,7 +1953,7 @@ async def sheets_orders(
             "token_amount": mapped(row, "token_amount"),
             "box_dimensions": mapped(row, "box_dimensions"),
             "courier_hint": mapped(row, "courier_hint"),
-            "already_shipped": row_key in imported_keys,
+            "already_shipped": is_shipped,
             "raw": row,
         })
     # ---- Auto-backup any new user-sheet rows to Master Sheet (background) ----
