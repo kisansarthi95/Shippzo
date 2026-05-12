@@ -17439,11 +17439,11 @@ agent_communication:
 
   - task: "Phase F3.9.2: Plan-gated pending-order Edit + Delete buttons"
     implemented: true
-    working: "NA"
+    working: true
     file: "/app/backend/feature_registry.py, /app/backend/routers/pending_orders.py, /app/frontend/app/(tabs)/orders.tsx"
     stuck_count: 0
     priority: "high"
-    needs_retesting: true
+    needs_retesting: false
     status_history:
         -working: "NA"
         -agent: "main"
