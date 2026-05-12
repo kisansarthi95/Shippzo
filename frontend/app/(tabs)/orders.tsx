@@ -125,7 +125,27 @@ export default function OrdersFromSheet() {
     const value = cart.cart_value
       ? `₹${Math.round(cart.cart_value).toLocaleString("en-IN")}`
       : "";
-    const items = cart.items_summary ? `\n📦 ${cart.items_summary}` : "";
+    // Phase F3.9.6 — Pretty-print line items as bulleted lines.
+    // `items_summary` is a comma-joined string like
+    //   "Premium Triphala Powder 100gm x2, Notebook x1"
+    // — fine for compact card display but cramped inside a WhatsApp
+    // message. Split it back out and render each entry on its own
+    // line with a 📦 bullet so the customer can see exactly what
+    // they're being asked to come back for. Falls back gracefully
+    // to the single-line format when the cart has only one item
+    // (no separator to split on) or no items at all.
+    let items = "";
+    if (cart.items_summary) {
+      const parts = cart.items_summary
+        .split(/\s*[,;]\s*|\s*\n\s*/)        // ", " | "; " | newline
+        .map((s) => s.trim())
+        .filter(Boolean);
+      if (parts.length > 1) {
+        items = "\n\n📦 ઓર્ડર:\n" + parts.map((p) => `• ${p}`).join("\n");
+      } else if (parts.length === 1) {
+        items = `\n📦 ${parts[0]}`;
+      }
+    }
     // Phase F3.9.4 — Include the storefront's recovery URL when the
     // webhook ingest captured one (Dukaan/Shopify both send a
     // `recovery_url` / `abandoned_checkout_url`). Without the link
