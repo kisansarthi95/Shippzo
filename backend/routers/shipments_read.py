@@ -81,11 +81,20 @@ def init() -> None:
         # another's data.
         q: dict = {"user_id": current_user["id"]}
         if status:
-            aliases = STATUS_ALIASES_FOR_FILTER.get(status)
-            if aliases:
-                q["status"] = {"$in": aliases}
+            # Phase-19 — "Modified" is a virtual filter: it shows every
+            # shipment that's been edited via the pencil/edit form,
+            # regardless of which actual workflow status (Pending /
+            # Processing / Ready to Ship / etc.) the order currently
+            # sits in. update_shipment() sets is_modified=true the
+            # first time non-status fields are touched.
+            if status == "Modified":
+                q["is_modified"] = True
             else:
-                q["status"] = status
+                aliases = STATUS_ALIASES_FOR_FILTER.get(status)
+                if aliases:
+                    q["status"] = {"$in": aliases}
+                else:
+                    q["status"] = status
         if courier_id:
             q["courier_id"] = courier_id
         if search:

@@ -17853,3 +17853,213 @@ agent_communication:
             preview shows the layout fine, but the user is going to
             verify on real hardware).
 
+
+
+  - task: "Phase 19: Two-button stage flow + Modified flag + read-only Details page"
+    implemented: true
+    working: "NA"
+    file: "/app/backend/server.py, /app/backend/routers/shipments_write.py, /app/backend/routers/shipments_read.py, /app/frontend/app/(tabs)/shipments.tsx, /app/frontend/app/shipment-details/[id].tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: |
+            Phase-19 — Shipment card stage flow + Modified tag.
+            
+            BACKEND
+            -------
+            1. Shipment model (server.py)
+               - Added `is_modified: bool = False` and
+                 `modified_at: Optional[str] = None`.
+            
+            2. routers/shipments_write.py — update_shipment
+               - When the PUT payload contains ANY non-status field
+                 (anything outside {status, delivered_at, cod_amount}),
+                 the doc is auto-tagged with is_modified=True and
+                 modified_at=utcnow_iso(). Pure status flips coming
+                 from the new Next-Stage button do NOT mark the
+                 shipment as modified.
+            
+            3. routers/shipments_read.py — list_shipments
+               - status=="Modified" now becomes a VIRTUAL filter:
+                 `{user_id, is_modified: True}` (no stage match) so
+                 the Modified tab surfaces edited orders across every
+                 actual workflow stage, just as the user specified.
+            
+            FRONTEND
+            --------
+            4. (tabs)/shipments.tsx — Card stage flow
+               - NEW const NEXT_STAGE mapping:
+                 Pending→Processing, Processing→Ready to Ship,
+                 Ready to Ship→Shipped, Shipped→Delivered,
+                 Delivered→Feedback. Terminal/side-branch stages
+                 (Feedback / Modified / Cancel / Cancel by buyer /
+                 Returned) have NO next mapping → no Next button.
+               - NEW `advanceStage(ship)` calls
+                 Api.updateShipment(id, {status: next}). Single tap,
+                 no confirmation, instant. Network errors fall back
+                 to SyncQueue.enqueueShipmentStatus.
+               - Card layout updated: the right side of the header
+                 row now renders TWO compact pills in a single
+                 row — [Current Stage] [Next Stage >]. Tapping
+                 Current opens the existing 9-status manual picker
+                 (for corrections). Tapping Next instantly advances.
+               - ALL existing bottom action icons (WhatsApp / Edit /
+                 Copy / Print / Save Contact / Delete / etc.) are
+                 preserved untouched.
+               - Card tap target changed from `/label/{id}` to the
+                 new `/shipment-details/{id}` view-only route.
+               - NEW styles `nextStageBtn` + `nextStageBtnTxt`
+                 (orange outline + chevron + ALL-CAPS label).
+            
+            5. NEW route /app/shipment-details/[id].tsx
+               - Read-only details page reached by tapping a card.
+               - Sections: Identifiers, Customer (tap-to-call),
+                 Address, Shipment, Timeline, Notes,
+                 Status Details (feedback/return/cancel),
+                 Custom Fields.
+               - Renders MODIFIED chip beside the status chip when
+                 is_modified is true.
+               - Top-right CTA "Print Preview" → routes to
+                 `/label/{id}` so users can still hop to the
+                 existing print flow.
+               - NO inline edit affordances — pencil/edit lives only
+                 on the shipment card.
+            
+            Metro bundle: 4484 modules clean, HTTP 200. Backend lint
+            passes. Backend hot-reloaded twice.
+            
+            REQUEST: deep_testing_backend_v2 — verify:
+              1. GET /api/shipments — shipments returned include
+                 is_modified + modified_at fields (default false/null).
+              2. PUT /api/shipments/{id} body {"status":"Processing"}
+                 → is_modified MUST stay false (status-only flip).
+              3. PUT /api/shipments/{id} body {"customer_name":"X"}
+                 → is_modified becomes true, modified_at populated.
+              4. PUT /api/shipments/{id} body {"status":"Delivered",
+                 "customer_name":"X"} → is_modified becomes true
+                 (any non-status field triggers the tag).
+              5. GET /api/shipments?status=Modified → returns ONLY
+                 shipments where is_modified=true, regardless of
+                 their actual workflow status.
+              6. GET /api/shipments?status=Processing still works as
+                 before (returns by stage).
+              7. Multi-tenant: User A modifying a shipment does NOT
+                 mark User B's shipments as is_modified.
+              8. RESET the test shipment after — set
+                 `db.shipments.update_one({...}, {$set:
+                 {is_modified:false, modified_at:null}})`.
+
+metadata:
+  test_sequence: 11
+  run_ui: false
+
+test_plan:
+  current_focus:
+    - "Phase 19: Two-button stage flow + Modified flag + read-only Details page"
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"
+
+
+---
+
+## Backend Test Run: Phase-19 Two-button stage flow + Modified flag (2026-05-12)
+
+backend:
+  - task: "Phase-19: Shipment is_modified/modified_at audit tag + Modified virtual filter"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py, /app/backend/routers/shipments_write.py, /app/backend/routers/shipments_read.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "testing"
+        -comment: |
+            ALL 8/8 PHASE-19 SCENARIOS PASS via /app/backend_test.py against
+            https://logistics-hub-740.preview.emergentagent.com/api.
+
+            Credentials used:
+              - User A: admin@test.com / Admin@12345 (id=cb27b8d3-…)
+              - User B: user2@test.com  / User@12345  (id=006b7d5d-…)
+
+            ✅ S1 Model fields surfaced — GET /api/shipments → 200, 64 items
+               returned for user A, EVERY item carries is_modified (bool) and
+               modified_at (string|null). Picked id=46d5331d-…
+               (status=Shipped, is_modified=False, modified_at=None).
+
+            ✅ S2 Pure status flip — NO tag — PUT /api/shipments/{id}
+               body={"status":"Processing"} → 200. Subsequent GET returned
+               is_modified=False, modified_at=None, status=Processing.
+               Confirms `_auto_derived = {status, delivered_at, cod_amount}`
+               filter in routers/shipments_write.py correctly excludes pure
+               status flips from auto-tagging.
+
+            ✅ S3 Status + content edit — TAG SET — PUT body=
+               {"status":"Ready to Ship","customer_name":"Phase19 Edit Test"}
+               → 200. Subsequent GET returned status="Ready to Ship",
+               is_modified=True, modified_at="2026-05-12T16:53:52.787698+00:00"
+               (valid ISO-8601 with timezone), customer_name="Phase19 Edit Test".
+
+            ✅ S4 Status flip after tagged — TAG STAYS — PUT body=
+               {"status":"Shipped"} → 200. GET: status=Shipped,
+               is_modified=True. Confirms the auto-tag is not cleared by
+               subsequent pure status flips.
+
+            ✅ S5 Modified virtual filter —
+               GET /api/shipments?status=Modified → 200, count=1, target
+               shipment present, every item is_modified=True.
+               GET /api/shipments?status=Shipped → 200, count=11, target
+               shipment ALSO present (so the order surfaces in BOTH the
+               Modified virtual bucket AND its actual workflow stage).
+               Confirms the `if status == "Modified": q["is_modified"] = True`
+               branch in routers/shipments_read.py works without forcing a
+               canonical status match.
+
+            ✅ S6 Other status filters unaffected —
+               GET /api/shipments?status=Pending → 200, count=43, every
+               row's status=="Pending" (is_modified may be True/False — OK).
+               GET /api/shipments (no status) → 200, count=64. Regular
+               status filtering is untouched.
+
+            ✅ S7 Reset for cleanliness — tag stays sticky — PUT body=
+               {"status":"Pending"} → 200. GET: status=Pending,
+               is_modified=True. Confirms `is_modified` is a permanent
+               audit flag and is NOT cleared by reset operations. Matches
+               the design: it's a sticky tag, not a transient state.
+
+            ✅ S8 Multi-tenant isolation — User B logged in successfully.
+               GET /api/shipments?status=Modified (as User B) → 200, count=0,
+               User A's modified shipment NOT present in User B's response.
+               PUT /api/shipments/{user_A_id} (as User B) → HTTP 404 (correctly
+               blocked; matches `_user_q` pattern used in update_shipment
+               where both `id` and `user_id` must match). No cross-tenant
+               leakage and no cross-tenant writes.
+
+            Sticky behaviour and 2-button stage flow contract verified:
+              • Status-only flips never set the tag.
+              • Any content edit sets it once with a valid ISO timestamp.
+              • Subsequent status flips never clear it.
+              • Multi-tenant query scoping holds for both reads and writes.
+
+agent_communication:
+    -agent: "testing"
+    -message: |
+        Phase-19 backend contract is FULLY GREEN — 8/8 scenarios pass on
+        the public preview URL. Both routers (shipments_read.py + 
+        shipments_write.py) implement the spec exactly:
+          - is_modified/modified_at surface on every GET item.
+          - Auto-tag triggers on any non-{status,delivered_at,cod_amount}
+            field in the PUT payload (sets defaults via setdefault so
+            an explicit `is_modified` in the body isn't overwritten).
+          - Pure status flips do NOT trigger the tag (S2 + S4 confirm).
+          - ?status=Modified is a virtual filter that ignores the
+            shipment's actual workflow stage.
+          - Multi-tenant isolation intact (404 on cross-tenant PUT).
+        No regressions in shipment list / stats / pending filters.
+        Ready for main agent to summarise + finish.
+

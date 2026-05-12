@@ -1,0 +1,354 @@
+/**
+ * /app/shipment-details/[id].tsx — Phase-19
+ *
+ * Read-only shipment details page. Tap any shipment card in the
+ * Shipments tab to navigate here. Displays every captured field
+ * (tracking, addresses, payment, items, timestamps, status history)
+ * in a compact mobile-friendly layout. No edit affordances live on
+ * this screen — corrections still happen via the pencil icon on
+ * the shipment card.
+ *
+ * The single CTA at the top opens the existing Print Preview flow
+ * (`/label/[id]`) so operators can hop straight from "review" to
+ * "print" without losing context.
+ */
+import React, { useEffect, useState } from "react";
+import {
+  View, Text, ScrollView, StyleSheet, TouchableOpacity,
+  ActivityIndicator, Alert, Linking,
+} from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
+import { useLocalSearchParams, useRouter } from "expo-router";
+import PhIcon from "../../components/PhIcon";
+import { Api, type Shipment } from "../../lib/api";
+import { colors } from "../../lib/theme";
+
+const fmtDate = (iso?: string | null) => {
+  if (!iso) return "—";
+  try {
+    return new Date(iso).toLocaleString(undefined, {
+      day: "numeric", month: "short", year: "numeric",
+      hour: "2-digit", minute: "2-digit",
+    });
+  } catch { return iso; }
+};
+
+const fmtMoney = (n?: number | null) =>
+  n == null ? "—" : `₹${Number(n).toLocaleString("en-IN", { maximumFractionDigits: 2 })}`;
+
+function Row({ label, value, mono = false }: { label: string; value?: string | number | null; mono?: boolean }) {
+  const v = value === 0 || value === "0" ? "0" : (value || "");
+  return (
+    <View style={styles.kvRow}>
+      <Text style={styles.kvKey}>{label}</Text>
+      <Text style={[styles.kvVal, mono && styles.mono]} selectable numberOfLines={3}>
+        {v || "—"}
+      </Text>
+    </View>
+  );
+}
+
+function Section({ title, icon, children }: { title: string; icon: string; children: any }) {
+  return (
+    <View style={styles.section}>
+      <View style={styles.sectionHeader}>
+        <PhIcon name={icon as any} size={16} color={colors.primary} />
+        <Text style={styles.sectionTitle}>{title}</Text>
+      </View>
+      <View style={styles.sectionBody}>{children}</View>
+    </View>
+  );
+}
+
+export default function ShipmentDetailsScreen() {
+  const { id } = useLocalSearchParams<{ id: string }>();
+  const router  = useRouter();
+  const [ship, setShip] = useState<Shipment | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const s = await Api.getShipment(String(id));
+        if (alive) setShip(s);
+      } catch (e: any) {
+        Alert.alert("Couldn't load shipment", e?.message || "Try again.");
+      } finally {
+        if (alive) setLoading(false);
+      }
+    })();
+    return () => { alive = false; };
+  }, [id]);
+
+  if (loading) {
+    return (
+      <SafeAreaView style={styles.safe} edges={["top"]}>
+        <View style={styles.center}>
+          <ActivityIndicator size="large" color={colors.primary} />
+        </View>
+      </SafeAreaView>
+    );
+  }
+  if (!ship) {
+    return (
+      <SafeAreaView style={styles.safe} edges={["top"]}>
+        <View style={styles.center}>
+          <Text style={styles.empty}>Shipment not found.</Text>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
+  const fullAddress = [
+    ship.address_line1, ship.address_line2,
+    ship.city, ship.state, ship.pincode,
+  ].filter(Boolean).join(", ");
+  const itemsTxt = (ship.items || []).join(", ")
+    || (ship as any).item_description || "—";
+
+  return (
+    <SafeAreaView style={styles.safe} edges={["top"]}>
+      {/* Header bar */}
+      <View style={styles.header}>
+        <TouchableOpacity onPress={() => router.back()} hitSlop={8} testID="back-btn">
+          <PhIcon name="arrow-back" size={24} color={colors.text} />
+        </TouchableOpacity>
+        <View style={{ flex: 1, marginLeft: 8 }}>
+          <Text style={styles.headerTitle} numberOfLines={1}>
+            Shipment Details
+          </Text>
+          <Text style={styles.headerSub} numberOfLines={1}>
+            {ship.tracking_id}
+          </Text>
+        </View>
+        <TouchableOpacity
+          testID="print-preview-btn"
+          style={styles.printBtn}
+          onPress={() => router.push(`/label/${ship.id}` as any)}
+          activeOpacity={0.85}
+        >
+          <PhIcon name="print-outline" size={16} color="#fff" />
+          <Text style={styles.printBtnTxt}>Print Preview</Text>
+        </TouchableOpacity>
+      </View>
+
+      <ScrollView contentContainerStyle={{ padding: 12, paddingBottom: 40 }}>
+        {/* Status chip */}
+        <View style={styles.statusRow}>
+          <View style={styles.statusChip}>
+            <Text style={styles.statusChipTxt}>{(ship.status || "—").toUpperCase()}</Text>
+          </View>
+          {(ship as any).is_modified ? (
+            <View style={[styles.statusChip, { backgroundColor: "#FEF3C7", borderColor: "#FCD34D" }]}>
+              <Text style={[styles.statusChipTxt, { color: "#92400E" }]}>MODIFIED</Text>
+            </View>
+          ) : null}
+        </View>
+
+        {/* IDs */}
+        <Section title="Identifiers" icon="barcode-outline">
+          <Row label="Tracking Number" value={ship.tracking_id} mono />
+          <Row label="Shipment ID"     value={ship.id} mono />
+          <Row label="Master Order ID" value={ship.master_order_id} mono />
+          <Row label="Order ID"        value={ship.order_id} mono />
+        </Section>
+
+        {/* Customer */}
+        <Section title="Customer" icon="person-outline">
+          <Row label="Name"           value={ship.customer_name} />
+          <TouchableOpacity
+            activeOpacity={0.7}
+            onPress={() => ship.customer_phone && Linking.openURL(`tel:${ship.customer_phone}`)}
+          >
+            <Row label="Mobile Number" value={ship.customer_phone} mono />
+          </TouchableOpacity>
+          {!!ship.customer_alt_phone && (
+            <Row label="Alt. Phone"    value={ship.customer_alt_phone} mono />
+          )}
+          {!!ship.customer_email && (
+            <Row label="Email"         value={ship.customer_email} />
+          )}
+          {!!ship.customer_gstin && (
+            <Row label="GSTIN"         value={ship.customer_gstin} mono />
+          )}
+        </Section>
+
+        {/* Address */}
+        <Section title="Address" icon="location-outline">
+          <Row label="Full Address"  value={fullAddress} />
+          <Row label="City"          value={ship.city} />
+          <Row label="State"         value={ship.state} />
+          <Row label="Pincode"       value={ship.pincode} mono />
+          {!!(ship as any).taluka && (
+            <Row label="Taluka"      value={(ship as any).taluka} />
+          )}
+          {!!(ship as any).district && (
+            <Row label="District"    value={(ship as any).district} />
+          )}
+        </Section>
+
+        {/* Shipment */}
+        <Section title="Shipment" icon="cube-outline">
+          <Row label="Courier"          value={ship.courier_name} />
+          <Row label="Payment Mode"     value={ship.payment_mode} />
+          {ship.payment_mode === "COD" ? (
+            <Row label="COD Amount"     value={fmtMoney(ship.cod_amount || ship.amount)} />
+          ) : (
+            <Row label="Amount"         value={fmtMoney(ship.amount)} />
+          )}
+          {!!ship.token_amount && (
+            <Row label="Token / Advance" value={fmtMoney(ship.token_amount)} />
+          )}
+          <Row label="Items"            value={itemsTxt} />
+          {!!ship.weight && (
+            <Row label="Weight"         value={ship.weight} />
+          )}
+          {!!ship.box_dimensions && (
+            <Row label="Box Dimensions" value={ship.box_dimensions} />
+          )}
+          {!!ship.variant_name && (
+            <Row label="Package Variant" value={ship.variant_name} />
+          )}
+          {!!ship.category && (
+            <Row label="Category"       value={ship.category} />
+          )}
+        </Section>
+
+        {/* Timestamps */}
+        <Section title="Timeline" icon="time-outline">
+          <Row label="Order Date / Time" value={fmtDate(ship.created_at)} />
+          {!!(ship as any).processing_started_at && (
+            <Row label="Processing Started" value={fmtDate((ship as any).processing_started_at)} />
+          )}
+          {!!(ship as any).dispatched_at && (
+            <Row label="Ready to Ship at"   value={fmtDate((ship as any).dispatched_at)} />
+          )}
+          {!!(ship as any).shipped_at && (
+            <Row label="Shipped at"         value={fmtDate((ship as any).shipped_at)} />
+          )}
+          {!!ship.delivered_at && (
+            <Row label="Delivered at"       value={fmtDate(ship.delivered_at)} />
+          )}
+          {!!(ship as any).modified_at && (
+            <Row label="Last Modified at"   value={fmtDate((ship as any).modified_at)} />
+          )}
+        </Section>
+
+        {/* Notes */}
+        {(!!ship.shipment_notes || !!(ship as any).admin_notes) && (
+          <Section title="Notes" icon="document-text-outline">
+            {!!ship.shipment_notes && (
+              <Row label="Shipment Notes" value={ship.shipment_notes} />
+            )}
+            {!!(ship as any).admin_notes && (
+              <Row label="Admin Notes"    value={(ship as any).admin_notes} />
+            )}
+          </Section>
+        )}
+
+        {/* Confirmation / Feedback / Return — if any */}
+        {((ship as any).confirmation_status ||
+          (ship as any).feedback ||
+          (ship as any).return_status ||
+          (ship as any).cancel_reason) && (
+          <Section title="Status Details" icon="chatbubble-ellipses-outline">
+            {!!(ship as any).confirmation_status && (
+              <Row label="Delivery Confirmation" value={(ship as any).confirmation_status} />
+            )}
+            {!!(ship as any).last_confirmation_reply && (
+              <Row label="Customer Reply" value={(ship as any).last_confirmation_reply} />
+            )}
+            {!!(ship as any).feedback && (
+              <Row label="Feedback"       value={(ship as any).feedback} />
+            )}
+            {!!(ship as any).return_status && (
+              <Row label="Return Status"  value={(ship as any).return_status} />
+            )}
+            {!!(ship as any).cancel_reason && (
+              <Row label="Cancel Reason"  value={(ship as any).cancel_reason} />
+            )}
+          </Section>
+        )}
+
+        {/* Custom values — any per-shipment custom field captures */}
+        {ship.custom_values && Object.keys(ship.custom_values).length > 0 && (
+          <Section title="Custom Fields" icon="layers-outline">
+            {Object.entries(ship.custom_values).map(([k, v]) => (
+              <Row key={k} label={k} value={String(v ?? "")} />
+            ))}
+          </Section>
+        )}
+      </ScrollView>
+    </SafeAreaView>
+  );
+}
+
+const styles = StyleSheet.create({
+  safe: { flex: 1, backgroundColor: colors.background },
+  center: { flex: 1, alignItems: "center", justifyContent: "center", padding: 24 },
+  empty: { color: colors.textMuted, fontSize: 14 },
+
+  header: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: "#E5E7EB",
+    backgroundColor: "#fff",
+  },
+  headerTitle: { fontSize: 16, fontWeight: "800", color: colors.text },
+  headerSub:   { fontSize: 11, color: colors.textMuted, marginTop: 1, fontWeight: "600" },
+
+  printBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    backgroundColor: colors.primary,
+    paddingHorizontal: 12, paddingVertical: 8,
+    borderRadius: 8,
+  },
+  printBtnTxt: { color: "#fff", fontWeight: "800", fontSize: 12 },
+
+  statusRow: { flexDirection: "row", gap: 8, marginBottom: 12 },
+  statusChip: {
+    paddingHorizontal: 10, paddingVertical: 5,
+    borderRadius: 6, borderWidth: 1,
+    backgroundColor: "#EEE9FF", borderColor: "#DAD0FF",
+  },
+  statusChipTxt: { fontSize: 11, fontWeight: "800", letterSpacing: 0.5, color: "#4B3FCF" },
+
+  section: {
+    backgroundColor: "#fff",
+    borderRadius: 12,
+    borderWidth: 1, borderColor: "#E5E7EB",
+    marginBottom: 12,
+    overflow: "hidden",
+  },
+  sectionHeader: {
+    flexDirection: "row", alignItems: "center", gap: 6,
+    paddingHorizontal: 14, paddingVertical: 10,
+    backgroundColor: "#F9FAFB",
+    borderBottomWidth: 1, borderBottomColor: "#E5E7EB",
+  },
+  sectionTitle: { fontSize: 13, fontWeight: "800", color: colors.text, letterSpacing: 0.3 },
+  sectionBody: { paddingHorizontal: 14, paddingVertical: 6 },
+
+  kvRow: {
+    flexDirection: "row",
+    paddingVertical: 8,
+    borderBottomWidth: 1, borderBottomColor: "#F1F5F9",
+    gap: 12,
+  },
+  kvKey: {
+    fontSize: 12, color: colors.textMuted,
+    fontWeight: "600", width: 130,
+  },
+  kvVal: {
+    flex: 1,
+    fontSize: 13, color: colors.text,
+    fontWeight: "600",
+  },
+  mono: { fontFamily: "monospace", letterSpacing: 0.3 },
+});

@@ -1141,6 +1141,13 @@ class Shipment(BaseModel):
     # rows that came in via manual Add-Shipment.
     imported_status: str = ""
     imported_at: str = ""
+    # Phase-19 — "Modified" tag. Flipped to True the first time an admin
+    # edits a shipment via the pencil/edit form (PUT /shipments/{id}
+    # with any non-status field). The shipment STAYS in its current
+    # status; the Modified filter in the Shipments tab queries this
+    # boolean so edited orders surface there alongside their main stage.
+    is_modified: bool = False
+    modified_at: Optional[str] = None
 
 
 class ShipmentCreate(BaseModel):

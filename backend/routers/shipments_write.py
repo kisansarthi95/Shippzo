@@ -295,6 +295,17 @@ def init() -> None:
         if not update:
             raise HTTPException(status_code=400, detail="No fields to update")
 
+        # Phase-19 — Auto-tag as "Modified" when the admin edits any
+        # user-facing detail (everything that's NOT the status itself
+        # or its auto-derived siblings). Pure status flips coming from
+        # the new Next-Stage button on the Shipments card should NOT
+        # flag the order as modified — that would defeat the filter.
+        _auto_derived = {"status", "delivered_at", "cod_amount"}
+        _content_keys = [k for k in update.keys() if k not in _auto_derived]
+        if _content_keys:
+            update.setdefault("is_modified", True)
+            update.setdefault("modified_at", utcnow_iso())
+
         # Two-Way Status Sync: detect status transitions BEFORE mutation
         # so we can write the new value to the Master Sheet row if linked.
         new_status = update.get("status")

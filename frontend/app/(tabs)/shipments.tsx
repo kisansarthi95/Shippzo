@@ -457,6 +457,51 @@ export default function Shipments() {
     }
   };
 
+  // Phase-19 — Linear stage workflow. Tap the Next-Stage button on a
+  // shipment card to advance one step instantly (no popup, no dropdown).
+  // After Feedback the flow ends — no Next button shown for terminal
+  // and side-branch stages (Modified / Cancel / Cancel by buyer /
+  // Returned). For correction the Current-Stage button still opens
+  // the manual picker via openStatusPicker.
+  const NEXT_STAGE: Record<string, string> = {
+    "Pending":       "Processing",
+    "Processing":    "Ready to Ship",
+    "Ready to Ship": "Shipped",
+    "Dispatch":      "Shipped",          // legacy alias for Ready to Ship
+    "Dispatched":    "Shipped",
+    "Shipped":       "Delivered",
+    "Delivered":     "Feedback",
+  };
+  const nextStageOf = (status: string): string => NEXT_STAGE[status || ""] || "";
+
+  const [advancingId, setAdvancingId] = useState<string | null>(null);
+  const advanceStage = async (ship: Shipment) => {
+    const next = nextStageOf(ship.status || "");
+    if (!next) return;
+    setAdvancingId(ship.id);
+    try {
+      try {
+        await Api.updateShipment(ship.id, { status: next });
+      } catch (e: any) {
+        if (isNetworkErrish(e)) {
+          await SyncQueue.enqueueShipmentStatus(
+            ship.id, next, ship.tracking_id,
+          );
+        } else {
+          throw e;
+        }
+      }
+      await load();
+    } catch (e: any) {
+      Alert.alert(
+        "Couldn't advance stage",
+        e?.response?.data?.detail || e?.message || "Try again.",
+      );
+    } finally {
+      setAdvancingId(null);
+    }
+  };
+
   // Live count per status filter — powers badge numbers on each tab.
   // Uses the already-loaded `items` so badges never lag the list.
   const statusCounts = useMemo(() => {
@@ -1277,7 +1322,7 @@ export default function Shipments() {
               style={{ flex: 1 }}
               onPress={() => {
                 if (selectMode) toggleSelect(item.id);
-                else router.push(`/label/${item.id}`);
+                else router.push(`/shipment-details/${item.id}` as any);
               }}
               onLongPress={() => {
                 setSelectMode(true);
@@ -1295,10 +1340,50 @@ export default function Shipments() {
                   )}
                   <Text style={styles.track}>{item.tracking_id}</Text>
                 </View>
-                <StatusChip
-                  status={item.status}
-                  onPress={!selectMode ? () => openStatusPicker(item) : undefined}
-                />
+                {/* Phase-19 — Two-button stage flow.
+                    Left chip = current stage (tap → manual picker
+                    for correction). Right chip = next stage in the
+                    Pending→Processing→Ready to Ship→Shipped→Delivered
+                    →Feedback workflow (tap → instant advance, no
+                    popup). After Feedback / for side-branch stages
+                    (Modified / Cancel* / Returned) the right chip
+                    hides — the workflow has terminated. */}
+                {(() => {
+                  const next = nextStageOf(item.status || "");
+                  const isAdvancing = advancingId === item.id;
+                  return (
+                    <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+                      <StatusChip
+                        status={item.status}
+                        onPress={!selectMode ? () => openStatusPicker(item) : undefined}
+                      />
+                      {!selectMode && next ? (
+                        <TouchableOpacity
+                          testID={`next-stage-${item.tracking_id}`}
+                          onPress={(e: any) => { e?.stopPropagation?.(); advanceStage(item); }}
+                          disabled={isAdvancing}
+                          activeOpacity={0.85}
+                          style={[
+                            styles.nextStageBtn,
+                            isAdvancing && { opacity: 0.5 },
+                          ]}
+                          hitSlop={6}
+                        >
+                          {isAdvancing ? (
+                            <ActivityIndicator size="small" color="#FF6B00" />
+                          ) : (
+                            <>
+                              <Text style={styles.nextStageBtnTxt} numberOfLines={1}>
+                                {next.toUpperCase()}
+                              </Text>
+                              <PhIcon name="chevron-forward" size={14} color="#FF6B00" />
+                            </>
+                          )}
+                        </TouchableOpacity>
+                      ) : null}
+                    </View>
+                  );
+                })()}
               </View>
               <Text style={styles.name}>{item.customer_name}</Text>
               {!!item.order_id && (
@@ -1787,7 +1872,28 @@ const styles = StyleSheet.create({
     borderRadius: 4,
   },
   chipText: { fontSize: 10, fontWeight: "800", letterSpacing: 0.5 },
-  /* -------- Status picker bottom sheet -------- */
+  // Phase-19 — Compact "Next Stage" button rendered immediately to
+  // the right of the current-stage chip on every shipment card.
+  // Orange outline so it reads as the primary CTA without competing
+  // with the heavier filled current-stage chip.
+  nextStageBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 6,
+    borderWidth: 1.5,
+    borderColor: "#FF6B00",
+    backgroundColor: "#FFF7F0",
+    minHeight: 26,
+  },
+  nextStageBtnTxt: {
+    fontSize: 10,
+    fontWeight: "800",
+    color: "#FF6B00",
+    letterSpacing: 0.3,
+  },
   statusSheetBackdrop: {
     flex: 1,
     backgroundColor: "rgba(0,0,0,0.45)",
