@@ -41,6 +41,15 @@ export default function OrdersFromSheet() {
   const [fileOrders, setFileOrders] = useState<PendingOrder[]>([]);
   // Phase F2.5 — Webhook ingest pending queue (Dukaan/Shopify/etc.)
   const [webhookOrders, setWebhookOrders] = useState<PendingOrder[]>([]);
+  // Phase F3.9.3 (bug fix) — Recovered abandoned carts. When a user
+  // taps "Confirm" on an abandoned cart it gets promoted into the
+  // pending_orders collection with source="abandoned_cart". The old
+  // loadPasteOrders() only fetched paste/file/webhook sources, so
+  // these orders silently DISAPPEARED from the UI even though they
+  // existed in the DB. We now load them as a 4th call and surface
+  // them in `unifiedRows` under the same `webhook` filter (and under
+  // "all") so the recovered-cart provenance stays visible.
+  const [abandonedRecoveredOrders, setAbandonedRecoveredOrders] = useState<PendingOrder[]>([]);
   // Phase F2.5 — friendly webhook label (e.g. "Shopify"). Falls back
   // to "WEBHOOK" pill when the user hasn't named theirs yet.
   const [webhookName, setWebhookName]   = useState<string>("");
@@ -62,10 +71,17 @@ export default function OrdersFromSheet() {
 
   const loadPasteOrders = useCallback(async () => {
     try {
-      const [pos, fos, wos, cs, wcfg, ac] = await Promise.all([
-        Api.listPendingOrders({ source: "paste",   status: "pending" }),
-        Api.listPendingOrders({ source: "file",    status: "pending" }),
-        Api.listPendingOrders({ source: "webhook", status: "pending" }),
+      const [pos, fos, wos, aros, cs, wcfg, ac] = await Promise.all([
+        Api.listPendingOrders({ source: "paste",          status: "pending" }),
+        Api.listPendingOrders({ source: "file",           status: "pending" }),
+        Api.listPendingOrders({ source: "webhook",        status: "pending" }),
+        // Phase F3.9.3 — Recovered abandoned carts surface here.
+        // When the user taps "Confirm" on an abandoned cart card it
+        // gets promoted into pending_orders with source="abandoned_cart".
+        // Without this 4th call those rows existed in the DB but never
+        // rendered on the Orders tab — the "orders disappearing" bug.
+        Api.listPendingOrders({ source: "abandoned_cart", status: "pending" })
+          .catch(() => [] as PendingOrder[]),
         Api.listCouriers(),
         // Webhook name lookup is best-effort — a brand-new account
         // won't have one yet, in which case we fall back to "WEBHOOK".
@@ -78,6 +94,7 @@ export default function OrdersFromSheet() {
       setPasteOrders(pos);
       setFileOrders(fos);
       setWebhookOrders(wos);
+      setAbandonedRecoveredOrders(aros as PendingOrder[]);
       setCouriers(cs);
       setWebhookName((wcfg as any)?.name || "");
       setAbandonedCarts((ac as any)?.carts || []);
@@ -347,6 +364,39 @@ export default function OrdersFromSheet() {
           extra: meta.webhook_name
             ? `from ${meta.webhook_name}`
             : (wname !== "WEBHOOK" ? `from ${wname}` : undefined),
+          paste: po,
+        });
+      }
+    }
+    // Phase F3.9.3 — Recovered abandoned carts. These are pending
+    // orders with source="abandoned_cart" — the result of the user
+    // tapping "Confirm" on an abandoned-cart card. They share the
+    // same shipping action as paste/file/webhook rows (since they
+    // live in pending_orders) but carry a distinct soft-pink badge
+    // so the provenance ("this came from a recovery") stays visible
+    // in the unified list. Surfaced under "all" AND under the
+    // "abandoned" filter chip so the abandoned tab shows BOTH the
+    // raw active carts (top of list) and the orders the user has
+    // already confirmed (with the recovery badge).
+    if (sourceFilter === "all" || sourceFilter === "abandoned") {
+      for (const po of abandonedRecoveredOrders) {
+        const meta: any = (po as any).source_meta || {};
+        out.push({
+          key: `abandoned-recovered|${po.id}`,
+          source: "webhook",   // shares the webhook shipping action
+          badgeLabel: "🛒 RECOVERED",
+          badgeBg: "#FCE7F3",
+          badgeFg: "#9D174D",
+          sortTime: tsOf(meta.recovered_at) || tsOf(po.created_at),
+          customer_name: po.customer_name,
+          customer_phone: po.customer_phone,
+          city: po.city,
+          state: po.state,
+          pincode: po.pincode,
+          items: po.items,
+          amount: Number(po.amount || 0),
+          payment_mode: po.payment_mode,
+          extra: "recovered from cart",
           paste: po,
         });
       }

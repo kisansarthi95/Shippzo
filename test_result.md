@@ -18145,3 +18145,69 @@ agent_communication:
             Health: Metro re-bundled cleanly (4385 modules, HTTP 200).
             Lint: no new errors.
 
+
+
+  - task: "Phase F3.9.3: Fix recovered abandoned-cart orders disappearing"
+    implemented: true
+    working: true
+    file: "/app/frontend/app/(tabs)/orders.tsx"
+    stuck_count: 0
+    priority: "critical"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "main"
+        -comment: |
+            Phase F3.9.3 — Critical bug fix.
+            
+            ROOT CAUSE: When a user tapped "Confirm" on an abandoned
+            cart card it got promoted into the `pending_orders`
+            collection with source="abandoned_cart". But the Orders
+            tab's `loadPasteOrders()` only fetched three sources
+            (paste / file / webhook). Those promoted rows existed in
+            the DB but never rendered anywhere — they silently
+            disappeared from the UI.
+            
+            FIX (frontend-only, no backend touch):
+            
+            1. NEW state `abandonedRecoveredOrders` of type
+               `PendingOrder[]` next to the existing source buckets.
+            
+            2. NEW 4th call in the `Promise.all` of loadPasteOrders():
+                 Api.listPendingOrders({
+                   source: "abandoned_cart", status: "pending",
+                 })
+               Wrapped in `.catch(() => [])` so a 4xx never breaks
+               the other 3 loads.
+            
+            3. NEW block in the `unifiedRows` builder right after
+               the webhook block:
+                 - testID basis: `abandoned-recovered|{id}`
+                 - badge: soft-pink "🛒 RECOVERED" (#FCE7F3/#9D174D)
+                   so users can SEE the provenance, NOT just see
+                   them mixed in as "WEBHOOK".
+                 - source: "webhook" so the existing webhook ship
+                   action flow handles them seamlessly.
+                 - extra line: "recovered from cart".
+                 - Visible under sourceFilter "all" AND under
+                   sourceFilter "abandoned" (so the Abandoned tab
+                   shows BOTH the raw active carts at the top AND
+                   the orders the user has already confirmed below).
+            
+            ALTERNATIVE REJECTED: We chose the frontend fix rather
+            than the simpler backend rename (source="webhook") so
+            we keep the recovery provenance — operators can see
+            which orders came from the abandoned-cart recovery flow.
+            
+            Bundle: 4385 modules clean, HTTP 200.
+            No backend changes, no API contract changes, no DB
+            migration.
+            
+            VERIFY:
+            - Open Orders tab → "All" chip → cards with the soft
+              pink "🛒 RECOVERED" badge should appear among the
+              other source-tagged cards.
+            - Tap the "Abandoned" chip → see raw carts on top and
+              recovered cards below (the orange "Recover" prompt
+              now opens both lists at once).
+
