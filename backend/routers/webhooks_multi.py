@@ -64,6 +64,7 @@ from pydantic import BaseModel, Field
 
 from import_schema import (
     SCHEMA_FIELDS,
+    ABANDONED_CART_SCHEMA_FIELDS,
     build_pending_doc_from_mapping,
     suggest_mapping,
     validate_mapping_field,
@@ -303,8 +304,19 @@ def init() -> None:
         out["recent_samples"] = (doc.get("recent_samples") or [])[-10:]
         # Bonus — schema fields + per-user custom fields for the
         # mapping editor that's part of this screen.
+        # Phase F3.9.5 — Abandoned-cart webhooks need a different
+        # target schema. Order webhooks see the full order schema
+        # (customer + address + payment + items + status…); abandoned
+        # webhooks see a tighter list focused on cart-recovery
+        # fields (recovery_url, cart_value, external_cart_id,
+        # abandoned_at, items_summary) on top of the basic customer
+        # / address columns. The mapping screen renders whatever we
+        # return here so this single switch drives both UIs.
         custom_fields = await _list_user_custom_fields(current_user["id"])
-        out["schema_fields"] = SCHEMA_FIELDS
+        if (doc.get("event_type") or "") == "abandoned_order":
+            out["schema_fields"] = ABANDONED_CART_SCHEMA_FIELDS
+        else:
+            out["schema_fields"] = SCHEMA_FIELDS
         out["custom_fields"] = [
             {"id": cf.get("id"), "label": cf.get("name") or cf.get("label") or ""}
             for cf in custom_fields

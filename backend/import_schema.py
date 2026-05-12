@@ -60,6 +60,44 @@ SCHEMA_FIELDS: List[str] = [
     "created_at_override",
 ]
 
+# Phase F3.9.5 — Schema for abandoned-cart webhooks.
+# When the user creates a webhook with event_type="abandoned_order"
+# the mapping screen should surface the abandoned-cart specific fields
+# (recovery URL, cart value, external id, abandoned-at timestamp, items
+# summary) on top of the regular customer/address columns. Reuses the
+# customer/address/contact rows from SCHEMA_FIELDS so the mapping UI
+# still asks for name/phone/email/etc., but adds the five cart-only
+# targets that drive the abandoned-cart card.
+ABANDONED_CART_SCHEMA_FIELDS: List[str] = [
+    # Identity (same as orders — cart still has a buyer)
+    "customer_name",
+    "customer_phone",
+    "customer_alt_phone",
+    "customer_email",
+    # Delivery hints (when the storefront captures them mid-checkout)
+    "address",
+    "city",
+    "state",
+    "pincode",
+    # ───── Abandoned-cart-only targets ─────
+    # Storefront URL that resumes the cart for the customer. Mapping
+    # this unlocks the 🔗 link inside the WhatsApp recovery message.
+    "recovery_url",
+    # Money owed at abandonment. Drives the ₹value chip on the cart
+    # card and the recovery_value analytics roll-up.
+    "cart_value",
+    # External cart / checkout id from the storefront. Used as the
+    # idempotency key so re-pushes upsert the same row instead of
+    # piling up duplicates.
+    "external_cart_id",
+    # When the customer last touched the cart. Drives the "5 hours
+    # ago" relative time on the card and the auto-archive sweeper.
+    "abandoned_at",
+    # Pre-flattened list of line items (e.g. "Pen x2, Notebook x1").
+    # If the user doesn't map this we fall back to the items array.
+    "items_summary",
+]
+
 NUMERIC_FIELDS: Set[str] = {
     "amount", "token_amount",
     "box_length", "box_width", "box_height",

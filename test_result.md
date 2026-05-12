@@ -18211,3 +18211,62 @@ agent_communication:
               recovered cards below (the orange "Recover" prompt
               now opens both lists at once).
 
+
+---
+
+## Backend Test Run: Phase F3.9.5 — Abandoned-cart schema in webhook mapping (2026-05-12)
+
+backend:
+  - task: "Phase F3.9.5 — GET /api/me/webhooks/{id} returns event-type-specific schema_fields"
+    implemented: true
+    working: true
+    file: "/app/backend/routers/webhooks_multi.py, /app/backend/import_schema.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "testing"
+        -comment: |
+            ALL 47 ASSERTIONS PASS — verified via /app/backend_test_f395.py
+            against https://logistics-hub-740.preview.emergentagent.com/api.
+
+            Scenario 1 (Order webhook → ORDER schema): created webhook with
+            event_type="new_order". GET /api/me/webhooks/{id} returned 24
+            schema_fields including all 8 required order fields
+            (customer_name, customer_phone, amount, payment_mode, items,
+            pincode, status, created_at_override) and NONE of the 5 cart-
+            only fields (recovery_url, cart_value, external_cart_id,
+            abandoned_at, items_summary). Confirms the existing
+            SCHEMA_FIELDS list is returned untouched for order webhooks
+            (no regression).
+
+            Scenario 2 (Abandoned webhook → ABANDONED schema): created
+            webhook with event_type="abandoned_order". GET returned exactly
+            13 schema_fields matching ABANDONED_CART_SCHEMA_FIELDS:
+              ['customer_name', 'customer_phone', 'customer_alt_phone',
+               'customer_email', 'address', 'city', 'state', 'pincode',
+               'recovery_url', 'cart_value', 'external_cart_id',
+               'abandoned_at', 'items_summary']
+            All 5 new cart-only fields present. All 7 basic customer/
+            address fields present. All 8 order-only forbidden fields
+            (amount, payment_mode, items, weight, box_dimensions, status,
+            created_at_override, courier_hint) correctly ABSENT. The
+            event-type switch at routers/webhooks_multi.py:316-319 is
+            wired correctly.
+
+            Scenario 3 (Cleanup): DELETE /api/me/webhooks/{id} returned
+            200 + {"ok": true, "deleted": <id>} for both test webhooks.
+            No residual test data left in the user_webhooks collection.
+
+agent_communication:
+    -agent: "testing"
+    -message: |
+        Phase F3.9.5 verification PASS — backend changes correctly switch
+        the schema_fields response based on event_type. Order webhooks
+        continue to return the full 24-item SCHEMA_FIELDS; abandoned
+        webhooks return the 13-item ABANDONED_CART_SCHEMA_FIELDS with
+        all 5 new cart-recovery targets (recovery_url, cart_value,
+        external_cart_id, abandoned_at, items_summary). No regressions
+        on order webhook schema. Cleanup successful. Ready to ship.
+
