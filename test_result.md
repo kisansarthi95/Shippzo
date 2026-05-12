@@ -18620,3 +18620,109 @@ agent_communication:
 
         No critical bugs found. Backend ready. Cleanup complete (no
         test artefacts left in mongo).
+
+
+  - task: "Phases F3.9.8 / F3.9.9 / F3.9.10 — Short links + auto-recover + upstream order_id"
+    implemented: true
+    working: true
+    file: "/app/backend/routers/short_links.py, /app/backend/routers/webhook.py, /app/backend/server.py, /app/frontend/lib/api.ts, /app/frontend/app/(tabs)/orders.tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "main"
+        -comment: |
+            3 abandoned-cart recovery features shipped together.
+            
+            F3.9.8 — Short-link service
+            ----------------------------
+            NEW router /app/backend/routers/short_links.py with three
+            endpoints (mounted in server.py):
+              POST /api/short-links            (auth)   create
+              GET  /api/s/{code}               (PUBLIC) 302 redirect
+              GET  /api/short-links/{code}     (auth)   inspect
+            
+            • `db.short_links` collection: {code, user_id, target_url,
+              cart_id, hits, last_clicked_at, created_at}.
+            • Idempotent on (user_id, target_url) so repeat sends
+              return the same code.
+            • Base62 6-char code (~56B namespace, 5x retry on clash).
+            • `short_url` field is composed from request.base_url so
+              the host adapts to preview vs production.
+            • Auth-exempt path `/api/s/` added to
+              `_AUTH_EXEMPT_PREFIXES` in server.py so customers can
+              hit the redirect without any token.
+            • When the link is bound to a cart, the public GET also
+              stamps `abandoned_carts.{cart_id}.link_clicked_at` —
+              the cross-verifier reads this as a confidence signal.
+            
+            FRONTEND:
+            • Api.shortenUrl(target_url, cart_id?) in lib/api.ts.
+            • orders.tsx whatsappAbandoned() now AWAITS Api.shortenUrl
+              before composing the WhatsApp message. Falls back to
+              the raw URL on failure — never blocks the send.
+            
+            F3.9.9 — Auto cross-verify recovered carts
+            -------------------------------------------
+            NEW helper `_auto_recover_abandoned_cart()` in webhook.py.
+            Called from the new_order ingest right after
+            `pending_orders.insert_one(doc)`:
+            
+            PRIMARY MATCH — by cart id. Collect candidate ids from
+            the FLATTENED payload at any of:
+              order.uuid, order.cart_token, order.checkout_token,
+              cart_token, checkout_token, uuid, checkout_id, cart_id,
+              order.id, order.order_id
+              + pending_doc.external_order_id
+            Look up an abandoned cart with status="abandoned" whose
+            `external_cart_id` is in the candidate set.
+            
+            FALLBACK MATCH — phone + amount + 24-h window. When the
+            primary fails, normalise phone to last 10 digits, look
+            up a cart with same `customer_phone_norm` (and a regex
+            fallback for legacy carts without the norm field),
+            `cart_value` within ±5 % of pending.amount, and
+            `abandoned_at` within the last 24 h.
+            
+            On match, the cart is flipped to:
+              status="recovered_auto",
+              recovered_at=now,
+              recovered_pending_order_id=pending.id,
+              recovered_external_order_id=pending.external_order_id
+            
+            All scoped to the same user_id so no cross-tenant
+            collisions. Failures are caught + logged, never break
+            the ingest.
+            
+            F3.9.10 — Preserve upstream order_id
+            ------------------------------------
+            Backend already did `doc.order_id = doc.get("order_id")
+            or doc["master_order_id"]` (webhook.py ~L1335) — upstream
+            value wins, our generated master id is the fallback.
+            Verified in tests: pending.order_id = "RECOVER-TEST-A"
+            while pending.master_order_id = "26051302460".
+            
+            FRONTEND surfacing:
+            • orders.tsx unifiedRows builder for webhook rows now
+              displays `· #ORD-1234` on the extra line when the
+              upstream id differs from the master id. Operators can
+              match Shippzo rows against their storefront dashboard
+              at a glance.
+            
+            BACKEND TESTING — 30/30 PASS ✅:
+              Group A (Short links): 14/14
+              Group B (Auto-recover): 9/9
+              Group C (Order ID preservation): 5/5
+            Cleanup: all test rows removed at end of run.
+            
+            OPERATIONAL NOTE (from test agent):
+            The auto-recover sweep only fires when the new_order
+            webhook ingest actually inserts a pending_orders row.
+            If the webhook has empty mapping the ingest short-
+            circuits with imported=0 and the friendly "no mapping
+            configured yet" — and auto-recover doesn't run. This
+            is expected (no order to match against). Operators
+            should map their order webhook first; the abandoned-
+            cart mapping (F3.9.5) is independent.
+
