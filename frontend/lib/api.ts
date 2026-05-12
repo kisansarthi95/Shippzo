@@ -1977,8 +1977,7 @@ export const Api = {
     api
       .get<AbandonedCart & { items_raw?: any[] }>(`/me/abandoned-carts/${id}`)
       .then((r) => r.data),
-  recoverAbandonedCart: (id: string, opts?: { create_shipment?: boolean }) =>
-    api
+  recoverAbandonedCart: (id: string, opts?: { create_shipment?: boolean }) =>    api
       .post<{
         ok: boolean;
         pending_order_id: string;
@@ -1991,6 +1990,19 @@ export const Api = {
       }>(
         `/me/abandoned-carts/${id}/recover`,
         { create_shipment: !!opts?.create_shipment },
+      )
+      .then((r) => r.data),
+  // ─── Phase F3.9.8 — Short-link service ─────────────────────────
+  // Compacts long platform recovery URLs into a tidy /api/s/<code>
+  // alias. Used by the WhatsApp recovery message composer so the
+  // customer message looks intentional instead of dumping a 100-char
+  // raw URL. Idempotent — calling twice for the same target_url
+  // returns the same short code.
+  shortenUrl: (target_url: string, cart_id?: string) =>
+    api
+      .post<{ code: string; short_url: string; target_url: string }>(
+        "/short-links",
+        { target_url, cart_id: cart_id || null },
       )
       .then((r) => r.data),
   dismissAbandonedCart: (id: string) =>

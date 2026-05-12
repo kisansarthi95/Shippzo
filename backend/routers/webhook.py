@@ -144,6 +144,107 @@ def init() -> None:
         )
         return [doc async for doc in cur]
 
+    # Phase F3.9.9 — Auto-recover sweep helper. Module-private. Called
+    # from the new_order ingest after we insert each pending_doc.
+    # See call site for the full rationale; in short: when the
+    # incoming order matches a still-abandoned cart for the same user
+    # we flip the cart to `status=recovered_auto` so it vanishes from
+    # the Abandoned filter without the operator having to lift a
+    # finger.
+    async def _auto_recover_abandoned_cart(
+        db,
+        user_id: str,
+        flat: Dict[str, Any],
+        raw: Dict[str, Any],
+        pending_doc: Dict[str, Any],
+    ) -> None:
+        # ── 1. Collect candidate cart-side identifiers ────────────
+        # Anything the storefront might use as the bridge between
+        # the abandoned-cart event and the eventually-completed order.
+        cart_id_candidates: set = set()
+        for k in (
+            "order.uuid", "order.cart_token", "order.checkout_token",
+            "cart_token", "checkout_token", "uuid", "checkout_id",
+            "cart_id", "order.id", "order.order_id",
+        ):
+            v = flat.get(k)
+            if isinstance(v, (str, int)) and str(v).strip():
+                cart_id_candidates.add(str(v).strip())
+        ext_oid = (pending_doc.get("external_order_id") or "").strip()
+        if ext_oid:
+            cart_id_candidates.add(ext_oid)
+
+        # ── 2. PRIMARY match — by cart id ─────────────────────────
+        cart = None
+        if cart_id_candidates:
+            cart = await db.abandoned_carts.find_one(
+                {
+                    "user_id": user_id,
+                    "status":  "abandoned",
+                    "external_cart_id": {"$in": list(cart_id_candidates)},
+                },
+                {"_id": 0},
+            )
+
+        # ── 3. FALLBACK match — phone + amount + 24-hour window ──
+        if cart is None:
+            from datetime import datetime, timezone, timedelta
+            phone_raw = pending_doc.get("customer_phone") or ""
+            phone_norm = "".join(ch for ch in phone_raw if ch.isdigit())[-10:]
+            amount = float(pending_doc.get("amount") or 0.0)
+            if phone_norm and amount > 0:
+                window_start = (
+                    datetime.now(timezone.utc) - timedelta(hours=24)
+                ).isoformat()
+                lo, hi = amount * 0.95, amount * 1.05
+                cart = await db.abandoned_carts.find_one(
+                    {
+                        "user_id": user_id,
+                        "status":  "abandoned",
+                        "customer_phone_norm": phone_norm,
+                        "cart_value": {"$gte": lo, "$lte": hi},
+                        "abandoned_at": {"$gte": window_start},
+                    },
+                    {"_id": 0},
+                )
+                # Some carts store customer_phone WITHOUT a `_norm`
+                # column. Retry on a regex over the raw column as a
+                # last resort so legacy carts also get recovered.
+                if cart is None:
+                    cart = await db.abandoned_carts.find_one(
+                        {
+                            "user_id": user_id,
+                            "status":  "abandoned",
+                            "customer_phone": {
+                                "$regex": phone_norm + "$",
+                            },
+                            "cart_value": {"$gte": lo, "$lte": hi},
+                            "abandoned_at": {"$gte": window_start},
+                        },
+                        {"_id": 0},
+                    )
+
+        if cart is None:
+            return    # No matching abandoned cart — nothing to do.
+
+        # ── 4. Stamp the cart as auto-recovered ──────────────────
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc).isoformat()
+        await db.abandoned_carts.update_one(
+            {"id": cart["id"], "user_id": user_id},
+            {"$set": {
+                "status":                  "recovered_auto",
+                "recovered_at":            now,
+                "recovered_pending_order_id": pending_doc.get("id") or "",
+                "recovered_external_order_id": ext_oid,
+                "updated_at":              now,
+            }},
+        )
+        logging.getLogger("routers.webhook").info(
+            "auto-recover: user=%s cart=%s → pending=%s ext_oid=%s",
+            user_id, cart.get("id"), pending_doc.get("id"), ext_oid,
+        )
+
     # ════════════════════════════════════════════════════════════════
     # 1. Authenticated config (owner only)
     # ════════════════════════════════════════════════════════════════
@@ -1234,6 +1335,32 @@ def init() -> None:
             doc["order_id"] = doc.get("order_id") or doc["master_order_id"]
             await db.pending_orders.insert_one(doc)
             imported += 1
+
+            # Phase F3.9.9 — Auto cross-verify abandoned carts.
+            # When this new_order matches a still-abandoned cart for
+            # the same user, flip the cart to "recovered_auto" so it
+            # disappears from the Abandoned filter the moment the
+            # customer's order arrives. Match strategy:
+            #   PRIMARY  cart.external_cart_id ∈ {doc.external_order_id,
+            #                                     raw.order.cart_token,
+            #                                     raw.cart_token,
+            #                                     raw.checkout_token}
+            #   FALLBACK same normalised phone + cart_value within
+            #            ±5 % + cart.abandoned_at within last 24 hours.
+            # Both checks are scoped to the SAME user so cross-tenant
+            # collisions are impossible.
+            try:
+                await _auto_recover_abandoned_cart(
+                    db=db,
+                    user_id=user_id,
+                    flat=flat,
+                    raw=raw,
+                    pending_doc=doc,
+                )
+            except Exception as _ar_exc:  # noqa: BLE001
+                logging.getLogger("routers.webhook").warning(
+                    "auto-recover sweep failed: %s", _ar_exc,
+                )
 
         # Phase F3 — bump per-webhook imported counter (v2 only).
         if wh_id and imported:

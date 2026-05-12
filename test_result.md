@@ -18435,3 +18435,188 @@ agent_communication:
         DO NOT mark this as resolved until backend_test.py passes all
         6 scenarios. The fix is one line of code movement.
 
+
+
+---
+
+## Backend Test Run: F3.9.8 / F3.9.9 / F3.9.10 — Short links + Auto-recover carts + Upstream order_id (2026-05-12)
+
+backend:
+  - task: "F3.9.8 Short-link service (POST /api/short-links, GET /api/s/{code}, GET /api/short-links/{code})"
+    implemented: true
+    working: true
+    file: "/app/backend/routers/short_links.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "testing"
+        -comment: |
+            All 14 Group-A assertions passed via /app/backend_test.py against
+            https://logistics-hub-740.preview.emergentagent.com/api.
+            Verified:
+            1. POST /api/short-links without auth → 401 (auth enforced).
+            2. GET /api/s/zzzzzz without auth on non-existent code → 404
+               (route is auth-exempt, not 401). Backend logs confirm 404.
+            3. POST /api/short-links (auth) with target_url
+               "https://example.com/very/long/path?with=lots&of=query"
+               returned 200 with:
+                 - code "fkxJax" (6 chars, base62)
+                 - short_url "http://…/api/s/fkxJax" (host derived
+                   from request.base_url; prefix /api/s/ verified)
+                 - target_url echoed back exactly.
+            4. Idempotency: second POST with the same target_url returned
+               200 with the SAME code "fkxJax". No new doc created in
+               db.short_links — verified via the user_id+target_url
+               find_one path inside the handler.
+            5. GET /api/s/fkxJax (unauth, follow_redirects=False) → 302
+               with Location header set to the exact target_url. After
+               redirect db.short_links.find_one({code}).hits == 1 and
+               last_clicked_at was set to an ISO timestamp.
+            6. GET /api/short-links/fkxJax (auth) → 200 with the full
+               doc (code, user_id, target_url, cart_id, hits,
+               last_clicked_at, created_at).
+            7. Validation: POST with target_url="ftp://invalid" → 400.
+               POST with target_url="" → 400.
+            No regression on auth behaviour: token requirement is still
+            enforced on POST and on /short-links/{code}; only the public
+            GET /api/s/{code} bypass is auth-exempt as designed.
+
+  - task: "F3.9.9 Auto cross-verify recovered carts (_auto_recover_abandoned_cart helper)"
+    implemented: true
+    working: true
+    file: "/app/backend/routers/webhook.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "testing"
+        -comment: |
+            Both PRIMARY and FALLBACK match paths verified end-to-end.
+
+            PRIMARY PATH (Group B steps 7-11):
+            1. Seeded db.abandoned_carts row id=cart-test-f398-1 with
+               external_cart_id="RECOVER-TEST-A", customer_phone
+               "9876500099" (norm "9876500099"), cart_value 500.0,
+               status="abandoned".
+            2. Created webhook "AR Test WH P" with event_type="new_order"
+               and applied a mapping JSON
+               (order.uuid → order_id, order.buyer.first_name →
+               customer_name, order.buyer.phone → customer_phone,
+               order.shipping_address.{address_1,city,state,pincode}
+               → address/city/state/pincode, order.total_cost → amount).
+               NOTE: a mapping is REQUIRED — without one the webhook
+               ingest returns the friendly "Connection OK — no mapping
+               configured yet" short-circuit and never inserts a
+               pending_orders row, so no auto-recover can run.
+            3. POST /api/webhook/orders/{secret} with
+               {"order":{"uuid":"RECOVER-TEST-A","buyer":{"first_name":
+               "AR","last_name":"Test","phone":"9876500099"},
+               "shipping_address":{…},"total_cost":500.0}} → 200 with
+               imported=1.
+            4. Post-ingest db.abandoned_carts.find_one({id:cart-test-f398-1})
+               had:
+                 status                       = "recovered_auto"
+                 recovered_at                 = ISO timestamp (set)
+                 recovered_pending_order_id   = pending uuid (populated)
+                 recovered_external_order_id  = "RECOVER-TEST-A"
+            5. db.pending_orders for the same user has the new doc with
+               external_order_id = "RECOVER-TEST-A".
+
+            FALLBACK PATH (Group B step 12):
+            1. Seeded cart-test-f398-2 with external_cart_id="UNRELATED"
+               (deliberately different from the order's uuid), phone
+               "9876500088" (norm), cart_value 1000.0, abandoned_at=now.
+            2. POST same secret with payload whose order.uuid is
+               "ORD-DIFF-B" (≠ "UNRELATED" → primary fails), but the
+               buyer phone is "9876500088" and total_cost 1000.0 →
+               within ±5 % of 1000.0 and within the 24-h window.
+            3. After ingest, cart-test-f398-2 was flipped to
+               status="recovered_auto" with recovered_at set —
+               confirming the phone-norm + amount-range + 24-h window
+               fallback path works.
+
+            Both branches scoped to user_id — cross-tenant collisions
+            impossible by design. Helper runs inside try/except and
+            does NOT block ingest on failure (no regression risk).
+
+  - task: "F3.9.10 Upstream order_id preservation in pending_orders.order_id"
+    implemented: true
+    working: true
+    file: "/app/backend/routers/webhook.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "testing"
+        -comment: |
+            Verified at /app/backend/routers/webhook.py line 1335:
+              doc["order_id"] = doc.get("order_id") or doc["master_order_id"]
+
+            Inspected the pending_orders row inserted by Group B step 9
+            (order.uuid = "RECOVER-TEST-A"):
+              external_order_id  = "RECOVER-TEST-A"
+              order_id           = "RECOVER-TEST-A"   ← upstream id kept
+              master_order_id    = "26051302460"      ← separate internal id
+
+            order_id == external_order_id (and ≠ master_order_id),
+            confirming the fall-through preserves the Dukaan/Shopify
+            upstream id rather than overwriting it with the internal
+            generated SHIP-style master id.
+
+            Group B fallback row also preserves the upstream value:
+              external_order_id = "ORD-DIFF-B", order_id = "ORD-DIFF-B".
+
+            Cleanup: all 2 abandoned_carts (cart-test-f398-1/2), both
+            ingested pending_orders (external_order_id in
+            ["RECOVER-TEST-A","ORD-DIFF-B"]), the 1 created webhook
+            (name "AR Test WH P"), and the 1 short link ("fkxJax")
+            were deleted at the end of the test run.
+
+metadata:
+  created_by: "testing"
+  version: "1.0"
+  test_sequence: 1
+  run_ui: false
+
+test_plan:
+  current_focus: []
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"
+
+agent_communication:
+    -agent: "testing"
+    -message: |
+        Phases F3.9.8 + F3.9.9 + F3.9.10 backend test run — 30/30 PASS.
+
+        Group A (Short links) 14/14: auth gates, idempotency, 302 redirect
+        with hits++ + last_clicked_at, inspect endpoint, ftp:// + empty
+        validation. All checks green.
+
+        Group B (Auto-recover) 9/9: PRIMARY match via external_cart_id ∈
+        flattened keys (order.uuid) flipped cart-test-f398-1 to
+        recovered_auto. FALLBACK match via phone_norm + cart_value ±5 %
+        + 24-h window flipped cart-test-f398-2 to recovered_auto.
+        Helper is best-effort (try/except in caller); no ingest
+        regression risk.
+
+        Group C (Upstream order_id) 5/5: pending_orders.order_id ==
+        upstream order.uuid ("RECOVER-TEST-A" / "ORD-DIFF-B"), distinct
+        from master_order_id (internal "26051302460").
+
+        IMPORTANT NOTE for main agent: the new_order ingest path
+        short-circuits with imported=0 + a friendly "no mapping
+        configured yet" message when the webhook has an empty mapping.
+        For the auto-recover helper to fire the webhook MUST have a
+        mapping that produces customer_phone + order_id + amount.
+        This isn't a bug in the new feature — it's the pre-existing
+        Phase F3 behaviour — but worth documenting in the user-facing
+        onboarding so customers don't wonder why their first test
+        ping didn't auto-recover anything.
+
+        No critical bugs found. Backend ready. Cleanup complete (no
+        test artefacts left in mongo).

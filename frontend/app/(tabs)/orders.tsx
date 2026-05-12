@@ -111,7 +111,7 @@ export default function OrdersFromSheet() {
     Linking.openURL(`tel:${cleaned}`);
   };
 
-  const whatsappAbandoned = (cart: AbandonedCart) => {
+  const whatsappAbandoned = async (cart: AbandonedCart) => {
     const cleaned = (cart.customer_phone || "").replace(/[^+\d]/g, "");
     if (!cleaned) {
       Alert.alert("No phone", "This cart has no customer phone number.");
@@ -146,14 +146,28 @@ export default function OrdersFromSheet() {
         items = `\n📦 ${parts[0]}`;
       }
     }
-    // Phase F3.9.4 — Include the storefront's recovery URL when the
-    // webhook ingest captured one (Dukaan/Shopify both send a
-    // `recovery_url` / `abandoned_checkout_url`). Without the link
-    // the customer can ack the message but has no way to actually
-    // resume their cart, which is what kills recovery conversion.
-    const recoveryLink = cart.recovery_url
-      ? `\n🔗 ઓર્ડર પૂરો કરો: ${cart.recovery_url}`
-      : "";
+    // Phase F3.9.8 — Short-link service. Raw recovery URLs from
+    // Dukaan/Shopify are 80-100+ characters which makes the WhatsApp
+    // message look spammy and gets it auto-filtered by some
+    // carriers. We compress to a tidy `<host>/api/s/<6-char>` alias
+    // via the backend short-link service. The link binds to this
+    // cart so when the customer clicks it we can stamp
+    // `link_clicked_at` and (in Phase F3.9.9) auto-mark the cart
+    // recovered when the matching order webhook arrives.
+    //
+    // Failure to shorten is non-fatal — fall back to the raw URL
+    // so the user can still send the message.
+    let recoveryLink = "";
+    if (cart.recovery_url) {
+      let urlToShare = cart.recovery_url;
+      try {
+        const s = await Api.shortenUrl(cart.recovery_url, cart.id);
+        if (s?.short_url) urlToShare = s.short_url;
+      } catch {
+        /* keep raw URL */
+      }
+      recoveryLink = `\n🔗 ઓર્ડર પૂરો કરો: ${urlToShare}`;
+    }
     const msg =
       `નમસ્તે ${name} 🙏\n\n` +
       `તમે અમારા સ્ટોર પર ઓર્ડર છોડી દીધો છે${value ? ` (${value})` : ""}.${items}${recoveryLink}\n\n` +
@@ -394,6 +408,23 @@ export default function OrdersFromSheet() {
       const wname = (webhookName || "WEBHOOK").toUpperCase().slice(0, 16);
       for (const po of webhookOrders) {
         const meta: any = (po as any).source_meta || {};
+        // Phase F3.9.10 — Display the upstream platform's order id
+        // (Dukaan #ORD-1234, Shopify #1001, etc.) when the payload
+        // carried one, falling back to our master_order_id otherwise.
+        // The backend already preserves the upstream id at ingest
+        // (webhook.py line ~1335: `doc.order_id ||= master_order_id`)
+        // — we just surface it on the card so operators can match
+        // the Shippzo row against their storefront dashboard at a
+        // glance instead of guessing from amount + phone.
+        const upstreamId =
+          (po as any).external_order_id ||
+          (po.order_id && po.order_id !== (po as any).master_order_id
+            ? po.order_id
+            : "");
+        const idChip = upstreamId ? ` · #${upstreamId}` : "";
+        const fromTxt = meta.webhook_name
+          ? `from ${meta.webhook_name}`
+          : (wname !== "WEBHOOK" ? `from ${wname}` : "");
         out.push({
           key: `webhook|${po.id}`,
           source: "webhook",
@@ -409,6 +440,7 @@ export default function OrdersFromSheet() {
           items: po.items,
           amount: Number(po.amount || 0),
           payment_mode: po.payment_mode,
+          extra: fromTxt + idChip,
           extra: meta.webhook_name
             ? `from ${meta.webhook_name}`
             : (wname !== "WEBHOOK" ? `from ${wname}` : undefined),

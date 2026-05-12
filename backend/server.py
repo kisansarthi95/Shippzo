@@ -5457,6 +5457,23 @@ except Exception as _ac_exc:
         f"Failed to mount abandoned_carts router: {_ac_exc}",
     )
 
+# Phase F3.9.8 — Short-link service for WhatsApp recovery messages.
+# Compacts the long platform recovery_url into a tidy /api/s/<code>
+# alias and surfaces click-tracking via db.short_links + a
+# `link_clicked_at` stamp on the linked abandoned_cart.
+try:
+    from routers.short_links import (
+        short_links_router as _short_links_router,
+        init as _init_short_links_router,
+    )
+    _init_short_links_router()
+    app.include_router(_short_links_router)
+except Exception as _sl_exc:
+    import logging as _lg
+    _lg.getLogger("server.bootstrap").exception(
+        f"Failed to mount short_links router: {_sl_exc}",
+    )
+
 # Phase F3.3 — Customers (populated by customer_created/updated webhooks).
 try:
     from routers.customers import (
@@ -5491,6 +5508,11 @@ _AUTH_EXEMPT_PREFIXES = (
     "/api/legal/",
     "/api/team/login",
     "/api/webhook/orders/",
+    # Phase F3.9.8 — Short-link follow URLs are customer-facing. The
+    # short code itself IS the auth — anyone with the link can hit
+    # the redirect, by design. POST /api/short-links (creation) is
+    # NOT exempt because it stays under the bearer token requirement.
+    "/api/s/",
 )
 # Phase 2.5 — Excel report endpoints accept ?token= query param instead
 # of header (browser cannot attach Authorization to <a href> downloads).
