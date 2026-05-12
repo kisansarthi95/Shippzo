@@ -18,7 +18,11 @@ export default function OrdersFromSheet() {
   // Phase F3.8 — gate the per-card Edit icon by plan. Admin toggles
   // this in /admin/pricing → Plan Features. Hidden plans show only
   // Delete (operator can still remove rows, just not mutate them).
-  const flagEditPending = useFeatureFlag("pending_orders_edit");
+  const flagEditPending   = useFeatureFlag("pending_orders_edit");
+  // Phase F3.9.2 — same pattern for the Delete icon. When off, the
+  // trash button disappears from every paste/file/webhook row so
+  // operators on the limited plan can't remove pending orders.
+  const flagDeletePending = useFeatureFlag("pending_orders_delete");
   const [loading, setLoading] = useState(true);
   const [orders, setOrders] = useState<SheetOrder[]>([]);
   const [connected, setConnected] = useState(false);
@@ -435,7 +439,7 @@ export default function OrdersFromSheet() {
               <PhIcon name="create-outline" size={16} color="#3B82F6" />
             </TouchableOpacity>
           ) : null}
-          {row.paste ? (
+          {row.paste && flagDeletePending ? (
             <TouchableOpacity
               onPress={() => deletePasteOrder(row.paste!)}
               hitSlop={6}

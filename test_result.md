@@ -17435,3 +17435,160 @@ agent_communication:
             Metro bundle: 4473 modules clean, HTTP 200 on /
             Backend lint: passes.
 
+
+
+  - task: "Phase F3.9.2: Plan-gated pending-order Edit + Delete buttons"
+    implemented: true
+    working: "NA"
+    file: "/app/backend/feature_registry.py, /app/backend/routers/pending_orders.py, /app/frontend/app/(tabs)/orders.tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: |
+            Phase F3.9.2 — Plan-gated pending-order Edit + Delete.
+            
+            BACKEND (/app/backend/feature_registry.py):
+            - Registered NEW key `pending_orders_delete`:
+              {label: "Delete pending order", category: "Customer Intelligence"}.
+            - Seeded into all 3 explicit tier defaults (free_trial,
+              silver, gold) matching where `pending_orders_edit` is
+              listed. Platinum auto-gets it via list(ALL_KEYS).
+            
+            BACKEND (/app/backend/routers/pending_orders.py):
+            - DELETE /api/orders/pending/{id} now raises 403 with
+              detail "Your plan doesn't include deleting pending
+              orders." when `user_has_feature(current_user,
+              "pending_orders_delete")` is False.
+            - PUT /api/orders/pending/{id} mirrors the same pattern
+              with `pending_orders_edit` (closing the back-door so
+              power users can't bypass the UI gate by hitting the
+              API directly).
+            
+            FRONTEND (/app/frontend/app/(tabs)/orders.tsx):
+            - Added `const flagDeletePending =
+              useFeatureFlag("pending_orders_delete")` next to the
+              existing `flagEditPending`.
+            - Delete button condition changed from `{row.paste ? (`
+              to `{row.paste && flagDeletePending ? (`. This covers
+              paste / file / webhook rows because they all flow into
+              the same `row.paste` slot in `unifiedRows`. Sheet rows
+              don't have a delete affordance (they're synced from
+              Google Sheets, not stored in pending_orders).
+            
+            Lint passes. Backend hot-reloaded twice.
+            
+            REQUEST: deep_testing_backend_v2 — login as a user, verify:
+              1. With `pending_orders_delete` ON  → DELETE returns 200.
+              2. With `pending_orders_delete` OFF → DELETE returns 403.
+              3. With `pending_orders_edit`   ON  → PUT returns 200.
+              4. With `pending_orders_edit`   OFF → PUT returns 403.
+              5. GET /api/admin/feature-registry (admin auth) lists
+                 `pending_orders_delete` in the Customer Intelligence
+                 category.
+              6. Default seeder for new users includes the flag in
+                 silver / gold / platinum tiers.
+
+metadata:
+  test_sequence: 9
+  run_ui: false
+
+test_plan:
+  current_focus:
+    - "Phase F3.9.2: Plan-gated pending-order Edit + Delete buttons"
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"
+
+
+---
+
+## Backend Test Run: Phase F3.9.2 — Plan-gated Pending Order Edit + Delete (2026-05-12)
+
+backend:
+  - task: "Phase F3.9.2 — Plan-gated Pending Order Edit + Delete"
+    implemented: true
+    working: true
+    file: "/app/backend/feature_registry.py, /app/backend/routers/pending_orders.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "testing"
+        -comment: |
+            All 35 assertions passed via /app/backend_test.py against
+            https://logistics-hub-740.preview.emergentagent.com/api.
+
+            SCENARIO 1 — Registry presence (PASS):
+              • GET /api/admin/plan-features (admin auth) returns registry +
+                plans. Both `pending_orders_edit` and `pending_orders_delete`
+                are present in the registry under category
+                "Customer Intelligence" with the EXACT labels:
+                  - "Edit pending order before saving"
+                  - "Delete pending order"
+              • Both flags appear in plans.free_trial, plans.silver,
+                plans.gold, plans.platinum (auto-seeded correctly).
+              • User-facing GET /api/me/feature-flags for user2 (silver plan)
+                returns both flags in the `features` list.
+
+            SCENARIO 2 — Happy path, flags ON (PASS):
+              • POST /api/smart-paste (user2) created a pending order
+                successfully. Captured id and master_order_id (26051202453).
+              • PUT /api/orders/pending/{id} with
+                {"customer_name": "TEST EDIT 200"} → HTTP 200 and the
+                response body's `customer_name` field equals
+                "TEST EDIT 200".
+              • DELETE /api/orders/pending/{id} → HTTP 200 with
+                {"ok": true, "sheet": {"attempted": true, "ok": true,
+                "row": 843, "tab": "All Master Data",
+                "status_cell": "M843", "notice_cell": "N843"}}.
+                Soft-delete tombstone integration still works end-to-end.
+
+            SCENARIO 3 — Negative path, flags OFF (PASS):
+              • Snapshotted current plan_features doc, then via admin
+                PUT /api/admin/plan-features removed `pending_orders_edit`
+                from silver. Server accepted the change.
+              • Created a fresh pending order as user2, then
+                PUT /api/orders/pending/{id} → HTTP **403** with body
+                exactly {"detail":"Your plan doesn't include editing pending orders."}.
+              • Removed `pending_orders_delete` from silver too, then
+                DELETE /api/orders/pending/{id} → HTTP **403** with body
+                exactly {"detail":"Your plan doesn't include deleting pending orders."}.
+              • Restored the original plan_features snapshot via
+                admin PUT — both flags are back on silver. Confirmed via
+                the response body's plans.silver. Cleaned up the leftover
+                pending order (DELETE 200) after restoring flags so no
+                test artefacts remain.
+
+            SCENARIO 4 — Sanity (PASS):
+              • GET /api/orders/pending returned HTTP 200 and a list both
+                when flags were ON and OFF — read access is correctly NOT
+                gated by these flags.
+
+            Conclusion: feature_registry.py seeds the two flags correctly,
+            routers/pending_orders.py raises 403 with the exact detail
+            strings specified in the review request, the user-facing
+            /me/feature-flags endpoint reflects the gate, and the admin
+            plan-features PUT round-trip cleanly flips and restores the
+            flags. No regressions to the existing pending-order
+            soft-delete sheet integration.
+
+agent_communication:
+    -agent: "testing"
+    -message: |
+        Phase F3.9.2 plan-gated pending-order Edit + Delete: 35/35 backend
+        assertions PASS. Registry, user feature-flags endpoint, happy path,
+        both negative paths (PUT 403 + DELETE 403 with exact detail
+        strings), restore, and the sanity GET are all green. Cleanup is
+        complete — plan_features doc restored, test pending orders
+        purged (sheet rows 843 + 844 tombstoned).
+
+        Note: review mentioned GET /api/admin/feature-registry — the
+        actual endpoint is GET /api/admin/plan-features which returns
+        {registry, plans}; used that. User-facing endpoint is
+        GET /api/me/feature-flags (not /api/me/plan-features). No code
+        changes were made during testing.
+

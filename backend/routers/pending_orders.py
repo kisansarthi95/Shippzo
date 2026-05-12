@@ -91,6 +91,14 @@ def init() -> None:
         payload: Dict[str, Any],
         current_user: Dict[str, Any] = Depends(_get_current_user),
     ):
+        # Phase F3.9.2 — Plan-gated: front-end already hides the Edit
+        # icon when the flag is off, but power users / API consumers
+        # could still hit this endpoint directly. 403 keeps them out.
+        if not await user_has_feature(current_user, "pending_orders_edit"):
+            raise HTTPException(
+                status_code=403,
+                detail="Your plan doesn't include editing pending orders.",
+            )
         # Allow partial field updates (user edits before shipping).
         # Whitelist against PendingOrder fields so the client can't
         # tamper with id/created_at/source.
@@ -121,6 +129,14 @@ def init() -> None:
         """Soft-delete pending (Smart-Paste) orders: tombstone the
         Master Sheet row if linked, then remove the local record. Sheet
         failures are logged but do not block local deletion."""
+        # Phase F3.9.2 — Plan-gated. Without the feature flag the API
+        # responds 403 so the UI gate can't be bypassed by a direct
+        # API call. Same pattern as update_pending_order above.
+        if not await user_has_feature(current_user, "pending_orders_delete"):
+            raise HTTPException(
+                status_code=403,
+                detail="Your plan doesn't include deleting pending orders.",
+            )
         doc = await db.pending_orders.find_one(
             {"id": order_id, "user_id": current_user["id"]}, {"_id": 0},
         )
