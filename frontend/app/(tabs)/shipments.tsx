@@ -1370,16 +1370,25 @@ export default function Shipments() {
                   )}
                   <Text style={styles.track}>{item.tracking_id}</Text>
                 </View>
-                {/* Phase-19a — Status chip restored to its original
-                    location next to the tracking ID. The TWO-button
-                    stage flow has been moved BELOW the actions row so
-                    operators get a wider tap area and the Next-Stage
-                    button can colour-match its target stage instead of
-                    always being orange. */}
-                <StatusChip
-                  status={item.status}
-                  onPress={!selectMode ? () => openStatusPicker(item) : undefined}
-                />
+                {/* Phase-20 — Replaced the top-right StatusChip with a
+                    direct "Print Now" CTA. The current stage is already
+                    surfaced (and tappable) via the wide stage-flow row
+                    at the bottom of every card, so the chip up here was
+                    redundant. Putting Print Now in this slot makes the
+                    most-used action one-tap accessible without hunting
+                    through the actions row. */}
+                {flagPrint && !selectMode ? (
+                  <TouchableOpacity
+                    onPress={() => router.push(`/label/${item.id}`)}
+                    activeOpacity={0.7}
+                    style={styles.printNowBtn}
+                    testID={`print-now-${item.tracking_id}`}
+                    hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+                  >
+                    <PhIcon name="print" size={14} color="#fff" />
+                    <Text style={styles.printNowTxt}>Print Now</Text>
+                  </TouchableOpacity>
+                ) : null}
               </View>
               <Text style={styles.name}>{item.customer_name}</Text>
               {!!item.order_id && (
@@ -1443,13 +1452,10 @@ export default function Shipments() {
                     testID={`edit-${item.tracking_id}`}
                   />
                 ) : null}
-                {flagPrint ? (
-                  <ActionBtn
-                    icon="print-outline" color={colors.text}
-                    onPress={() => router.push(`/label/${item.id}`)}
-                    testID={`print-${item.tracking_id}`}
-                  />
-                ) : null}
+                {/* Phase-20 — Bottom printer ActionBtn removed. The
+                    Print action is now surfaced in the top-right of
+                    the card via the "Print Now" CTA so it's more
+                    discoverable and one-tap accessible. */}
                 {/* Phase-16: Save Contact — opens the native contact
                     INSERT intent with the shipment's info pre-filled.
                     Always visible (no plan gate) because it's a
@@ -1959,7 +1965,27 @@ const styles = StyleSheet.create({
     borderRadius: 4,
   },
   chipText: { fontSize: 10, fontWeight: "800", letterSpacing: 0.5 },
-  // Phase-19a — Wide stage-flow row pinned to the bottom of every
+  // Phase-20 — "Print Now" CTA pinned to the top-right corner of every
+  // shipment card. Replaces the redundant status chip in that slot
+  // since the current stage is already shown (and tappable) in the
+  // wide stage-flow row at the bottom of the card. Surfacing Print
+  // here makes it one-tap accessible without hunting through the
+  // action-icons row underneath.
+  printNowBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 6,
+    backgroundColor: colors.primary,
+  },
+  printNowTxt: {
+    color: "#fff",
+    fontSize: 11,
+    fontWeight: "800",
+    letterSpacing: 0.3,
+  },
   // shipment card. Two equal-width pills, the left filled with the
   // current stage's palette + a chevron-down hint, the right tinted
   // with the NEXT stage's palette + a chevron-right. Replaces the
