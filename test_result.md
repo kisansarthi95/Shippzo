@@ -18841,12 +18841,49 @@ backend:
 
   - task: "Repeat-customer detection (detect_repeat_customer + smart-paste flag)"
     implemented: true
-    working: false
+    working: true
     file: "/app/backend/server.py"
-    stuck_count: 1
+    stuck_count: 0
     priority: "high"
-    needs_retesting: true
+    needs_retesting: false
     status_history:
+        -working: true
+        -agent: "testing"
+        -comment: |
+            ✅ RE-TEST AFTER FIX (2026-05-13) — detect_repeat_customer
+            now works correctly. Verified end-to-end against
+            https://logistics-hub-740.preview.emergentagent.com/api
+            via /app/backend_test_phase21_repeat.py — 12/12 assertions
+            pass.
+
+            FIX VERIFIED (server.py line ~4030):
+              {"user_id": user_id,
+               "$or": [{"customer_phone": rx}, {"phone": rx}]}
+
+            TEST FLOW:
+              1. Login admin@test.com → 200.
+              2. POST /api/shipments {customer_phone:"9999000222",
+                 tracking_id, courier_id, …} → 200, shipment created
+                 (id=1a6bfd6b-…, tracking=TEST1778648104).
+              3. POST /api/smart-paste with text containing bare phone
+                 "9999000222" → 200, returned PendingOrder has
+                 `customer_phone="9999000222"` AND
+                 `is_repeat_customer=True` ✅
+              4. POST /api/smart-paste with normalised "+91 99990 00222"
+                 (spaces + country code) → 200, parsed customer_phone
+                 normalised to "9999000222", `is_repeat_customer=True` ✅
+                 — _norm_phone last-10-digit anchoring + $regex suffix
+                 match work together correctly.
+              5. POST /api/smart-paste with fresh phone "7777666555"
+                 (no prior shipment) → 200,
+                 `is_repeat_customer=False` ✅ — no false positives.
+              6. Cleanup: 3 pending orders + 1 shipment deleted via
+                 DELETE endpoints, each returned 200.
+
+            Phase-21 REPEAT badge will now light up correctly for
+            any returning customer. No regressions on the previously
+            green Phase-21 endpoints (mark-viewed, pending-count,
+            feature flags) — not re-tested per request.
         -working: false
         -agent: "testing"
         -comment: |
@@ -18972,11 +19009,29 @@ metadata:
   run_ui: false
 
 test_plan:
-  current_focus:
-    - "Repeat-customer detection (detect_repeat_customer + smart-paste flag)"
+  current_focus: []
   stuck_tasks: []
   test_all: false
   test_priority: "stuck_first"
+
+agent_communication:
+    -agent: "testing"
+    -message: |
+        Phase-21 RE-TEST after fix — detect_repeat_customer is now
+        WORKING. 12/12 assertions pass via
+        /app/backend_test_phase21_repeat.py against
+        https://logistics-hub-740.preview.emergentagent.com/api.
+
+        ✅ Bare phone "9999000222" → is_repeat_customer=True
+        ✅ Normalised "+91 99990 00222" → is_repeat_customer=True
+        ✅ Fresh phone "7777666555" → is_repeat_customer=False
+        ✅ Cleanup: 3 pending orders + 1 shipment deleted (200 each).
+
+        Fix verified: server.py now uses
+        `{"$or": [{"customer_phone": rx}, {"phone": rx}]}` — both
+        schema variants supported. No regressions, other Phase-21
+        endpoints (mark-viewed, pending-count, feature flags) not
+        re-tested per request (already green at 55/55).
 
 agent_communication:
     -agent: "testing"

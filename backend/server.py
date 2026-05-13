@@ -4021,9 +4021,13 @@ async def detect_repeat_customer(user_id: str, phone: str) -> bool:
     try:
         # Use a regex anchored at the END of the phone field so any
         # stored format (with/without +91, spaces, dashes) still hits.
+        # Phase-21 fix — Shipment docs store the customer phone under
+        # `customer_phone`; the legacy field name `phone` is unused.
+        # Use an `$or` to be defensive against either naming so the
+        # detector keeps working even if the schema is migrated later.
         rx = {"$regex": f"{norm}$"}
         doc = await db.shipments.find_one(
-            {"user_id": user_id, "phone": rx},
+            {"user_id": user_id, "$or": [{"customer_phone": rx}, {"phone": rx}]},
             {"_id": 1},
         )
         return doc is not None
