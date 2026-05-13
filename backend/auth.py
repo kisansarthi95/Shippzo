@@ -369,6 +369,12 @@ async def seed_demo_shipments(db, user_id: str, courier_id: str) -> int:
 async def seed_default_courier(db, user_id: str) -> str:
     """Each new user gets one starter courier ("Demo Courier", prefix DEMO)
     so the demo rows and their first real shipment have something to link to.
+
+    Phase-21 — Tagged with `is_demo: True` so the Settings → Clear Demo
+    Data action can sweep it away alongside the 15 demo shipments. If
+    the user has already linked any non-demo shipment to this courier
+    by the time they tap Clear, the backend keeps the courier so their
+    real rows don't lose their carrier reference (handled in /demo/clear).
     """
     cid = str(uuid.uuid4())
     await db.couriers.insert_one({
@@ -378,6 +384,7 @@ async def seed_default_courier(db, user_id: str) -> str:
         "digits": 5,
         "next_seq": 1,
         "user_id": user_id,
+        "is_demo": True,
         "created_at": utcnow_iso(),
     })
     return cid

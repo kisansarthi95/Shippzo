@@ -805,12 +805,79 @@ async def auth_google_session(payload: GoogleSessionRequest):
 
 @api_router.post("/demo/clear")
 async def clear_demo_data(current_user: Dict[str, Any] = Depends(get_current_user)):
-    """Removes every row still flagged `is_demo: True` for this user.
-    Non-demo (real) shipments are never touched, so running this after
-    a user has added real orders is safe. Demo rows have no Sheet row,
-    so no tombstone write is needed."""
-    res = await db.shipments.delete_many({"user_id": current_user["id"], "is_demo": True})
-    return {"ok": True, "deleted": res.deleted_count}
+    """One-tap "Clear Demo Data" sweep — Phase-21 refresh.
+
+    Originally only deleted is_demo shipments, which left the seeded
+    "Demo Courier" + any leftover demo pending-orders behind, making
+    operators think the action didn't work. Now we sweep ALL three
+    surfaces in a single shot:
+
+      1. shipments      where is_demo=True
+      2. pending_orders where is_demo=True (or has DEMO master_order_id)
+      3. couriers       where is_demo=True — but only when NO real
+                        shipments still reference that courier, so the
+                        user's first real order doesn't suddenly lose
+                        its carrier link.
+
+    Returns a per-collection breakdown so the UI can show a clear
+    summary like "Removed 15 shipments + 1 courier".
+    """
+    uid = current_user["id"]
+
+    # 1) Shipments — straightforward delete.
+    sh_res = await db.shipments.delete_many({"user_id": uid, "is_demo": True})
+
+    # 2) Pending orders — delete both explicitly-flagged demo rows AND
+    # legacy seeds with DEMO-ORD-xxxx order ids. Both filters are OR'd
+    # so we never miss a demo row whose flag was lost during a migration.
+    po_res = await db.pending_orders.delete_many({
+        "user_id": uid,
+        "$or": [
+            {"is_demo": True},
+            {"order_id": {"$regex": "^DEMO-ORD-"}},
+            {"master_order_id": {"$regex": "^DEMO"}},
+        ],
+    })
+
+    # 3) Couriers — only delete the demo courier if no real shipment
+    # still references it. Otherwise the user's existing real orders
+    # would render with a blank carrier. We check both `courier_id`
+    # (modern) and `courier_name` (legacy) on shipments.
+    demo_couriers = await db.couriers.find(
+        {"user_id": uid, "is_demo": True}, {"_id": 0, "id": 1, "name": 1},
+    ).to_list(length=50)
+    couriers_deleted = 0
+    for c in demo_couriers:
+        cid = c.get("id")
+        cname = c.get("name") or ""
+        in_use = await db.shipments.find_one(
+            {
+                "user_id": uid,
+                "is_demo": {"$ne": True},
+                "$or": [{"courier_id": cid}, {"courier_name": cname}],
+            },
+            {"_id": 1},
+        )
+        if in_use:
+            # Real shipment still using this courier → keep the row
+            # but strip the is_demo flag so it stops being targeted
+            # by future Clear Demo sweeps.
+            await db.couriers.update_one(
+                {"user_id": uid, "id": cid},
+                {"$unset": {"is_demo": ""}},
+            )
+            continue
+        r = await db.couriers.delete_one({"user_id": uid, "id": cid})
+        couriers_deleted += int(r.deleted_count or 0)
+
+    total = int(sh_res.deleted_count) + int(po_res.deleted_count) + couriers_deleted
+    return {
+        "ok":               True,
+        "deleted":          total,   # legacy field (= grand total)
+        "shipments":        int(sh_res.deleted_count),
+        "pending_orders":   int(po_res.deleted_count),
+        "couriers":         couriers_deleted,
+    }
 
 
 # --------------------------------------------------------------------

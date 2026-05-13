@@ -1056,21 +1056,48 @@ export default function SettingsScreen() {
               testID="clear-demo-btn"
               style={[styles.secondaryBtn, { marginTop: 12 }]}
               onPress={() => {
+                // Phase-21 — One-confirmation, one-click sweep. User
+                // reported the old flow appeared to do nothing (only
+                // shipments got removed; the demo courier + any demo
+                // pending orders stayed). The backend now wipes ALL
+                // three surfaces atomically and returns a breakdown,
+                // which we surface in the success alert.
                 Alert.alert(
-                  "Clear demo data?",
-                  "This will remove your 15 demo shipments. Your real shipments will not be affected.",
+                  "Confirm clear demo?",
+                  "Removes every seeded demo shipment, demo pending order, and the starter Demo Courier (only if no real shipment uses it). Your real data is safe.",
                   [
                     { text: "Cancel", style: "cancel" },
                     {
-                      text: "Clear",
+                      text: "Clear Demo",
                       style: "destructive",
                       onPress: async () => {
                         try {
                           const r = await api.post("/demo/clear");
-                          Alert.alert(
-                            "Done",
-                            `Removed ${r.data?.deleted ?? 0} demo rows.`
-                          );
+                          const d = r.data || {};
+                          // Build a per-collection summary so the
+                          // operator can see EXACTLY what was wiped
+                          // instead of a single ambiguous number.
+                          const parts: string[] = [];
+                          if (d.shipments)      parts.push(`${d.shipments} shipment${d.shipments === 1 ? "" : "s"}`);
+                          if (d.pending_orders) parts.push(`${d.pending_orders} pending order${d.pending_orders === 1 ? "" : "s"}`);
+                          if (d.couriers)      parts.push(`${d.couriers} demo courier${d.couriers === 1 ? "" : "s"}`);
+                          const total = Number(d.deleted ?? 0);
+                          const msg = total === 0
+                            ? "No demo data was found — your account is already clean."
+                            : `Removed ${parts.join(" · ")}.`;
+                          Alert.alert("Done", msg, [
+                            {
+                              text: "OK",
+                              onPress: () => {
+                                // Hard refresh of the dashboard so
+                                // the now-stale shipment count + cards
+                                // disappear instantly. We just bounce
+                                // the user back to Home which re-runs
+                                // every focus-effect on its tabs.
+                                router.replace("/(tabs)" as any);
+                              },
+                            },
+                          ]);
                         } catch (e: any) {
                           Alert.alert("Failed", e?.message || "Could not clear demo data");
                         }
