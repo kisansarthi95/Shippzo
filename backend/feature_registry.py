@@ -186,6 +186,11 @@ FEATURE_REGISTRY: Dict[str, Dict[str, str]] = {
     "pending_orders_source_badges": {"label": "Coloured source badges (PASTE / FILE / SHEET / WEBHOOK)", "category": "Customer Intelligence"},
     "pending_orders_edit":          {"label": "Edit pending order before saving",                       "category": "Customer Intelligence"},
     "pending_orders_delete":        {"label": "Delete pending order",                                   "category": "Customer Intelligence"},
+    # NEW (Phase-21) — NEW + REPEAT visual markers on every pending
+    # order card. Plan-gated so the basic tier can be kept minimal.
+    "pending_orders_new_marker":    {"label": "NEW badge on unviewed pending orders",                   "category": "Customer Intelligence"},
+    "pending_orders_repeat_marker": {"label": "REPEAT badge on returning-customer pending orders",      "category": "Customer Intelligence"},
+    "new_order_sound":              {"label": "Happy chime on new order arrival",                       "category": "Customer Intelligence"},
     # NEW (2026-05-09 — Phase G3) — Save customer to phone contacts.
     "contact_save_to_phone":     {"label": "Save customer to phone contacts",                          "category": "Customer Intelligence"},
 
@@ -299,6 +304,11 @@ DEFAULT_PLAN_FEATURES: Dict[str, List[str]] = {
         "pending_orders_source_badges",
         "pending_orders_edit",
         "pending_orders_delete",
+        # NEW (Phase-21) — Free tier gets visual markers + new-order
+        # chime by default; admin can untick per plan if desired.
+        "pending_orders_new_marker",
+        "pending_orders_repeat_marker",
+        "new_order_sound",
         # NEW (Phase G3) — Coupon redemption is open to all so we can run
         # promo campaigns without flipping plans.
         "coupons_apply",
@@ -335,6 +345,9 @@ DEFAULT_PLAN_FEATURES: Dict[str, List[str]] = {
         "pending_orders_source_badges",
         "pending_orders_edit",
         "pending_orders_delete",
+        "pending_orders_new_marker",     # NEW (Phase-21)
+        "pending_orders_repeat_marker",  # NEW (Phase-21)
+        "new_order_sound",               # NEW (Phase-21)
         "coupons_apply",
         "credit_packages_buy",
         # NEW (Phase G3) — Reports: basic Partner Comparison for Silver+.
@@ -384,6 +397,9 @@ DEFAULT_PLAN_FEATURES: Dict[str, List[str]] = {
         "pending_orders_source_badges",
         "pending_orders_edit",
         "pending_orders_delete",
+        "pending_orders_new_marker",     # NEW (Phase-21)
+        "pending_orders_repeat_marker",  # NEW (Phase-21)
+        "new_order_sound",               # NEW (Phase-21)
         "coupons_apply",
         "credit_packages_buy",
         # NEW (Phase G3) — Reports: most types unlock at Gold.

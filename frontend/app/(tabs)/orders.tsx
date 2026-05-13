@@ -23,6 +23,11 @@ export default function OrdersFromSheet() {
   // trash button disappears from every paste/file/webhook row so
   // operators on the limited plan can't remove pending orders.
   const flagDeletePending = useFeatureFlag("pending_orders_delete");
+  // Phase-21 — NEW (unviewed) + REPEAT (returning-customer) markers
+  // on every pending-order card. Both default-ON for free trial, but
+  // admin can untick per plan. UI silently hides the badges when off.
+  const flagNewMarker     = useFeatureFlag("pending_orders_new_marker");
+  const flagRepeatMarker  = useFeatureFlag("pending_orders_repeat_marker");
   const [loading, setLoading] = useState(true);
   const [orders, setOrders] = useState<SheetOrder[]>([]);
   const [connected, setConnected] = useState(false);
@@ -65,9 +70,12 @@ export default function OrdersFromSheet() {
   // from every channel mixed together; the others narrow to one
   // channel. Cards are sorted newest-first regardless of filter.
   // Phase F3.3 — `abandoned` is its own filter (separate collection).
+  // Phase-21 — `new` is the DEFAULT filter and excludes REUSED
+  // (already-shipped) sheet rows. Matches the count on the Home tab's
+  // "Pending Orders" pill.
   const [sourceFilter, setSourceFilter] = useState<
-    "all" | "paste" | "file" | "sheet" | "webhook" | "abandoned"
-  >("all");
+    "new" | "all" | "paste" | "file" | "sheet" | "webhook" | "abandoned"
+  >("new");
 
   const loadPasteOrders = useCallback(async () => {
     try {
@@ -350,6 +358,16 @@ export default function OrdersFromSheet() {
     paste?: PendingOrder;      // present for paste/file/webhook
     sheet?: SheetOrder;        // present for sheet
     abandoned?: AbandonedCart; // present for abandoned carts (Phase F3.3)
+    // Phase-21 — visual marker hints. `isNew` paints the green ✨ NEW
+    // badge until the operator taps the card (server-tracked via
+    // `viewed`). `isRepeat` paints the soft-grey REPEAT badge when
+    // this customer has been shipped before. Both are independent so
+    // a single card can wear BOTH badges (new order from a returning
+    // customer). `reused` (legacy field) remains for sheet rows that
+    // are already shipped — those use the "Reuse" CTA.
+    isNew?: boolean;
+    isRepeat?: boolean;
+    reused?: boolean;
   };
 
   const unifiedRows: UnifiedRow[] = (() => {
@@ -358,7 +376,7 @@ export default function OrdersFromSheet() {
       iso ? Date.parse(iso) || 0 : 0;
 
     // Smart Paste
-    if (sourceFilter === "all" || sourceFilter === "paste") {
+    if (sourceFilter === "all" || sourceFilter === "new" || sourceFilter === "paste") {
       for (const po of pasteOrders) {
         out.push({
           key: `paste|${po.id}`,
@@ -376,11 +394,13 @@ export default function OrdersFromSheet() {
           amount: Number(po.amount || 0),
           payment_mode: po.payment_mode,
           paste: po,
+          isNew:    !(po as any).viewed,
+          isRepeat: !!(po as any).is_repeat_customer,
         });
       }
     }
     // File Imports
-    if (sourceFilter === "all" || sourceFilter === "file") {
+    if (sourceFilter === "all" || sourceFilter === "new" || sourceFilter === "file") {
       for (const po of fileOrders) {
         const meta: any = (po as any).source_meta || {};
         out.push({
@@ -400,11 +420,13 @@ export default function OrdersFromSheet() {
           payment_mode: po.payment_mode,
           extra: meta.filename ? `from ${meta.filename}` : undefined,
           paste: po,
+          isNew:    !(po as any).viewed,
+          isRepeat: !!(po as any).is_repeat_customer,
         });
       }
     }
     // Webhook (Dukaan / Shopify / …) — name-tagged badge.
-    if (sourceFilter === "all" || sourceFilter === "webhook") {
+    if (sourceFilter === "all" || sourceFilter === "new" || sourceFilter === "webhook") {
       const wname = (webhookName || "WEBHOOK").toUpperCase().slice(0, 16);
       for (const po of webhookOrders) {
         const meta: any = (po as any).source_meta || {};
@@ -440,11 +462,12 @@ export default function OrdersFromSheet() {
           items: po.items,
           amount: Number(po.amount || 0),
           payment_mode: po.payment_mode,
-          extra: fromTxt + idChip,
           extra: meta.webhook_name
-            ? `from ${meta.webhook_name}`
-            : (wname !== "WEBHOOK" ? `from ${wname}` : undefined),
+            ? `from ${meta.webhook_name}${idChip}`
+            : (wname !== "WEBHOOK" ? `from ${wname}${idChip}` : (idChip ? idChip.replace(" · ", "") : undefined)),
           paste: po,
+          isNew:    !(po as any).viewed,
+          isRepeat: !!(po as any).is_repeat_customer,
         });
       }
     }
@@ -458,7 +481,7 @@ export default function OrdersFromSheet() {
     // "abandoned" filter chip so the abandoned tab shows BOTH the
     // raw active carts (top of list) and the orders the user has
     // already confirmed (with the recovery badge).
-    if (sourceFilter === "all" || sourceFilter === "abandoned") {
+    if (sourceFilter === "all" || sourceFilter === "new" || sourceFilter === "abandoned") {
       for (const po of abandonedRecoveredOrders) {
         const meta: any = (po as any).source_meta || {};
         out.push({
@@ -478,6 +501,8 @@ export default function OrdersFromSheet() {
           payment_mode: po.payment_mode,
           extra: "recovered from cart",
           paste: po,
+          isNew:    !(po as any).viewed,
+          isRepeat: !!(po as any).is_repeat_customer,
         });
       }
     }
@@ -488,7 +513,10 @@ export default function OrdersFromSheet() {
     //     operator can SEE that this customer has already shipped
     //     once, with a "Reuse" CTA that opens the ship modal for a
     //     fresh shipment to the same address. Does NOT count in All.
-    if (sourceFilter === "all" || sourceFilter === "sheet") {
+    // Phase-21 — `new` filter is the same as "sheet" but EXPLICITLY
+    // hides every already_shipped (REUSED) row so the operator only
+    // sees first-time customers there. Matches the Home pill count.
+    if (sourceFilter === "all" || sourceFilter === "new" || sourceFilter === "sheet") {
       const q = search.trim().toLowerCase();
       for (const o of orders) {
         if (q) {
@@ -496,10 +524,12 @@ export default function OrdersFromSheet() {
           if (!hay.includes(q)) continue;
         }
         const reused = !!o.already_shipped;
+        // Phase-21 — Skip REUSED rows entirely in the "new" filter.
+        if (sourceFilter === "new" && reused) continue;
         out.push({
           key: `sheet|${o.row_index}|${o.row_key || ""}`,
           source: "sheet",
-          badgeLabel: reused ? "🔄 REUSED" : "📊 SHEET",
+          badgeLabel: reused ? "🔄 REPEAT" : "📊 SHEET",
           badgeBg:    reused ? "#E5E7EB" : "#DBEAFE",
           badgeFg:    reused ? "#475569" : "#1D4ED8",
           sortTime: typeof o.row_index === "number" ? o.row_index : 0,
@@ -518,7 +548,8 @@ export default function OrdersFromSheet() {
           // Hint to the renderer/ship-action that this row should
           // open the ship modal as a NEW shipment (Reuse semantics).
           reused,
-        } as any);
+          isRepeat: reused,
+        });
       }
     }
 
@@ -559,10 +590,31 @@ export default function OrdersFromSheet() {
   const renderUnifiedRow = (row: UnifiedRow) => (
     <View key={row.key} style={styles.unifiedCard} testID={`unified-${row.key}`}>
       <View style={styles.unifiedHeader}>
-        <View style={[styles.unifiedBadge, { backgroundColor: row.badgeBg }]}>
-          <Text style={[styles.unifiedBadgeTxt, { color: row.badgeFg }]}>
-            {row.badgeLabel}
-          </Text>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 6, flexShrink: 1 }}>
+          <View style={[styles.unifiedBadge, { backgroundColor: row.badgeBg }]}>
+            <Text style={[styles.unifiedBadgeTxt, { color: row.badgeFg }]}>
+              {row.badgeLabel}
+            </Text>
+          </View>
+          {/* Phase-21 — NEW pill: shows on every unviewed pending
+              card. Clears the moment the operator taps the card body
+              (markViewed) — both locally and server-side. Plan-gated
+              via `pending_orders_new_marker`. Skipped for sheet REUSED
+              rows since they already wear the REPEAT badge.  */}
+          {flagNewMarker && row.isNew && !row.reused ? (
+            <View style={[styles.unifiedBadge, styles.newPill]}>
+              <Text style={styles.newPillTxt}>✨ NEW</Text>
+            </View>
+          ) : null}
+          {/* Phase-21 — REPEAT pill: shows when the customer (by
+              phone) has been shipped at least once before. Stays
+              even after viewing — operator should always know this
+              is a returning customer.  */}
+          {flagRepeatMarker && row.isRepeat && !row.reused ? (
+            <View style={[styles.unifiedBadge, styles.repeatPill]}>
+              <Text style={styles.repeatPillTxt}>🔁 REPEAT</Text>
+            </View>
+          ) : null}
         </View>
         <View style={{ flexDirection: "row", gap: 6, alignItems: "center" }}>
           {/* Phase C — Edit + Delete sized identically (32×32 round
@@ -570,7 +622,10 @@ export default function OrdersFromSheet() {
               instead of a big edit button + tiny delete X. */}
           {row.paste && flagEditPending ? (
             <TouchableOpacity
-              onPress={() => router.push(`/edit-pending/${row.paste!.id}` as any)}
+              onPress={() => {
+                markViewed(row);
+                router.push(`/edit-pending/${row.paste!.id}` as any);
+              }}
               hitSlop={6}
               style={styles.cardActionBtn}
               testID={`edit-${row.key}`}
@@ -590,7 +645,19 @@ export default function OrdersFromSheet() {
           ) : null}
         </View>
       </View>
-      <Text style={styles.unifiedName} numberOfLines={1}>
+      {/* Phase-21 — Tap the body of the card to "open" the order.
+          For pending_orders rows this clears the NEW badge by calling
+          mark-viewed (optimistic + server-sync). For sheet rows it's
+          a no-op visually but keeps the touch target consistent. */}
+      <TouchableOpacity
+        activeOpacity={0.85}
+        onPress={() => {
+          markViewed(row);
+          if (row.paste) {
+            router.push(`/edit-pending/${row.paste.id}` as any);
+          }
+        }}
+      ><Text style={styles.unifiedName} numberOfLines={1}>
         {row.customer_name || "(no name)"}
       </Text>
       <Text style={styles.unifiedMeta} numberOfLines={1}>
@@ -611,6 +678,7 @@ export default function OrdersFromSheet() {
       {!!row.extra && (
         <Text style={styles.unifiedExtra} numberOfLines={1}>{row.extra}</Text>
       )}
+      </TouchableOpacity>
       {row.source === "abandoned" && row.abandoned ? (
         // Phase F3.3 — Abandoned cart actions: Call + WhatsApp +
         // Confirm. The Ship button is intentionally hidden because
@@ -685,11 +753,6 @@ export default function OrdersFromSheet() {
     </View>
   );
 
-  // Phase B — `visible` and `pendingCount` are derived inline now
-  // via the unified `unifiedRows` builder above; the legacy filter
-  // ("pending"/"shipped"/"all") was retired in favour of source-based
-  // chips. Search is applied during the unified-rows assembly.
-
   const shipNow = (o: SheetOrder) => {
     // Navigate to Add with prefilled fields via URL params (stringified).
     // Include the full `raw` row so Add can auto-fill any per-shipment
@@ -713,6 +776,29 @@ export default function OrdersFromSheet() {
       },
     });
   };
+
+  // Phase-21 — Mark a pending-order card as viewed when the operator
+  // taps it. Optimistically updates the in-memory list (NEW badge
+  // disappears instantly) and fires the API call in the background.
+  // No-op for sheet rows (they aren't in pending_orders) — the local
+  // optimistic update is enough.
+  const markViewed = useCallback((row: UnifiedRow) => {
+    const po = row.paste;
+    if (!po) return; // sheet/abandoned rows don't have a pending_orders id
+    if ((po as any).viewed) return; // already viewed → nothing to do
+
+    // Optimistic flip → re-render with the NEW badge gone.
+    const flip = (lst: PendingOrder[]) =>
+      lst.map((x) => (x.id === po.id ? ({ ...x, viewed: true } as any) : x));
+    if (po.source === "paste")           setPasteOrders(flip);
+    else if (po.source === "file")       setFileOrders(flip);
+    else if (po.source === "webhook")    setWebhookOrders(flip);
+    else                                 setAbandonedRecoveredOrders(flip);
+
+    // Best-effort server sync; swallow errors so a flaky network
+    // doesn't bring back the badge.
+    Api.markPendingOrderViewed(po.id).catch(() => {});
+  }, []);
 
   return (
     <SafeAreaView style={styles.safe} edges={["top"]}>
@@ -788,6 +874,21 @@ export default function OrdersFromSheet() {
         }}
       >
         {([
+          // Phase-21 — "New Orders" filter. Excludes REUSED (sheet-side
+          // already-shipped) rows so the operator only sees orders
+          // that have never been fulfilled. This count matches the
+          // Home tab's "Pending Orders" pill. Default-selected when
+          // the screen first opens.
+          {
+            k: "new",
+            label: `New Orders (${
+              pasteOrders.length +
+              fileOrders.length +
+              webhookOrders.length +
+              abandonedRecoveredOrders.length +
+              orders.filter(o => !o.already_shipped).length
+            })`,
+          },
           // Phase F3.9.11 — All count now excludes the new REUSED
           // sheet rows (already_shipped=true). Previously these were
           // skipped entirely; now they're shown with a soft-grey
@@ -1053,6 +1154,28 @@ const styles = StyleSheet.create({
   },
   unifiedBadgeTxt: {
     fontSize: 10, fontWeight: "900", letterSpacing: 0.5,
+  },
+  // Phase-21 — Visual markers on pending-order cards.
+  //   newPill    → green ✨ NEW pill shown until the operator taps
+  //                the card body (server-tracked via `viewed`).
+  //   repeatPill → soft-slate 🔁 REPEAT pill shown when the customer's
+  //                phone matches an earlier shipment of the same user.
+  // Both can stack on the same card (new order from returning cust).
+  newPill: {
+    backgroundColor: "#DCFCE7",
+    borderWidth: 1,
+    borderColor: "#86EFAC",
+  },
+  newPillTxt: {
+    fontSize: 10, fontWeight: "900", letterSpacing: 0.5, color: "#15803D",
+  },
+  repeatPill: {
+    backgroundColor: "#E2E8F0",
+    borderWidth: 1,
+    borderColor: "#CBD5E1",
+  },
+  repeatPillTxt: {
+    fontSize: 10, fontWeight: "900", letterSpacing: 0.5, color: "#475569",
   },
   unifiedName: { marginTop: 8, fontSize: 16, fontWeight: "800", color: colors.text },
   unifiedMeta: { marginTop: 2, fontSize: 12, color: colors.textMuted },

@@ -1333,6 +1333,17 @@ def init() -> None:
                 },
             })
             doc["order_id"] = doc.get("order_id") or doc["master_order_id"]
+            # Phase-21 — Tag REPEAT customer at webhook ingest. Indexed
+            # phone lookup on shipments; falls back to False on any
+            # exception so a marker check NEVER blocks ingestion.
+            try:
+                from server import detect_repeat_customer
+                doc["is_repeat_customer"] = await detect_repeat_customer(
+                    user_id, doc.get("customer_phone") or "",
+                )
+            except Exception:
+                doc["is_repeat_customer"] = False
+            doc["viewed"] = False
             await db.pending_orders.insert_one(doc)
             imported += 1
 

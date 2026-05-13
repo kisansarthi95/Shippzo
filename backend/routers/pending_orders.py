@@ -189,8 +189,16 @@ def init() -> None:
         is set by `/sheets/orders` and read cheaply from the settings
         doc here — never hits gspread directly (respect quota).
 
+        Phase-21 — The badge now mirrors the "New Orders" filter on
+        the Orders tab:  excludes Reused / already-shipped sheet rows
+        so the home count never silently inflates when a previously
+        shipped customer comes back via webhook or stays cached on
+        the sheet. `new_count` is a new field that the UI can also
+        read directly; legacy clients keep using `count`.
+
         Response shape (backward-compatible):
           - `count`             — TOTAL (smart_paste + sheet) → UI badge
+          - `new_count`         — same as `count` (kept explicit)
           - `smart_paste_count` — breakdown (ages of `pending_orders`)
           - `sheet_count`       — breakdown (cached user-sheet unshipped)
         """
@@ -214,6 +222,39 @@ def init() -> None:
         total = sp_n + sheet_n
         return {
             "count": total,
+            "new_count": total,
             "smart_paste_count": sp_n,
             "sheet_count": sheet_n,
         }
+
+    # =================  Phase-21: mark-viewed (NEW badge clearer)  ====
+
+    @pending_orders_router.post("/orders/pending/{order_id}/mark-viewed")
+    async def mark_pending_order_viewed(
+        order_id: str,
+        current_user: Dict[str, Any] = Depends(_get_current_user),
+    ):
+        """Flip the `viewed` flag on a pending order to True.
+
+        Called by the Orders tab the FIRST time an operator taps a
+        pending-order card. The UI uses this flag to render the green
+        ✨ NEW badge → once viewed, the badge goes away on every
+        device. Server-side state so the marker syncs across phones.
+
+        Idempotent: returns ok even when the order is already viewed.
+        Returns 404 only if the order doesn't belong to this user (or
+        doesn't exist). Sheet-source rows aren't in pending_orders so
+        this endpoint silently returns ok with viewed=False (frontend
+        handles their viewed-state via the abandoned/sheet fallback).
+        """
+        res = await db.pending_orders.update_one(
+            {"id": order_id, "user_id": current_user["id"]},
+            {"$set": {"viewed": True}},
+        )
+        if res.matched_count == 0:
+            # Soft-404: order may be a sheet row (which isn't in the
+            # pending_orders collection) — frontend stores viewed
+            # locally for those. Still return ok=True so the client
+            # treats the badge clear as successful.
+            return {"ok": True, "viewed": False, "matched": False}
+        return {"ok": True, "viewed": True, "matched": True}

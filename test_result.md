@@ -18726,3 +18726,291 @@ agent_communication:
             should map their order webhook first; the abandoned-
             cart mapping (F3.9.5) is independent.
 
+
+agent_communication:
+    -agent: "main"
+    -message: |
+        Phase-21 implementation complete. Three new features pushed:
+
+        1) NEW + REPEAT visual markers on pending-order cards
+           - PendingOrder model: added `viewed: bool = False` and
+             `is_repeat_customer: bool = False`.
+           - Ingest paths (smart-paste, file-import, webhook) now call
+             `detect_repeat_customer(user_id, phone)` and stamp the
+             flag at insert time. Uses a regex-anchored phone match
+             against shipments.phone (last-10-digits normalised); safe
+             try/except so a failed lookup never blocks ingest.
+           - NEW endpoint: `POST /api/orders/pending/{id}/mark-viewed`
+             flips viewed=True. Idempotent; soft-404 for sheet rows
+             (returns matched=False so the client treats them as
+             local-only badge clearing).
+
+        2) Default Orders tab → "New Orders" filter
+           - Frontend sourceFilter default changed from "all" → "new".
+           - "new" excludes sheet rows where already_shipped=true (the
+             REUSED rows that get the soft-grey badge + Reuse CTA).
+           - New filter chip is FIRST in the row so it's the visible
+             default; "All" stays second and unchanged (still includes
+             REUSED rows for full visibility).
+           - Card tap → optimistically flips viewed=true locally +
+             POSTs mark-viewed in the background.
+
+        3) New-Order notifications (NewOrderAlertProvider)
+           - New file: /app/frontend/lib/new_order_alert.tsx
+           - Polls /api/orders/pending-count every 30 s while a user
+             is logged in. On positive delta vs the previous poll:
+               • Shows a slide-down banner at the top of the app with
+                 "🎉 N new orders!" + "Tap to open Orders" CTA. Auto
+                 dismisses after 5 s; tapping pushes to /(tabs)/orders.
+               • Triggers expo-haptics Success burst (happy bump).
+               • Schedules a local expo-notifications push with
+                 sound: "default" so the OS plays its standard chime
+                 even when the app is foregrounded (handler registers
+                 shouldShowAlert + shouldPlaySound = true).
+           - Provider mounted in (tabs)/_layout.tsx so it runs across
+             every authenticated tab.
+
+        Plan-feature flags added to feature_registry.py + seeded into
+        every plan tier (free_trial / silver / gold; platinum gets all
+        via ALL_KEYS):
+          • pending_orders_new_marker
+          • pending_orders_repeat_marker
+          • new_order_sound
+
+        Backend reload OK after every edit. Need backend testing for:
+          • detect_repeat_customer correctness (phone normalisation)
+          • POST /orders/pending/{id}/mark-viewed (auth + idempotency)
+          • PendingOrder schema backwards-compat (legacy rows without
+            viewed / is_repeat_customer still validate + serialise)
+          • /api/orders/pending response now includes the new fields
+        No frontend testing requested by user yet.
+
+
+
+
+## Backend Test Run: Phase-21 — Pending Orders NEW/REPEAT + mark-viewed (2026-05-13)
+
+backend:
+  - task: "PendingOrder backward compatibility (viewed / is_repeat_customer fields)"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py, /app/backend/routers/pending_orders.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "testing"
+        -comment: |
+            Verified via /app/backend_test.py against
+            https://logistics-hub-740.preview.emergentagent.com/api.
+            GET /api/orders/pending → 200 with 37 rows across sources
+            {paste, abandoned_cart, webhook}. EVERY row has `viewed:
+            bool` AND `is_repeat_customer: bool` as required — Pydantic
+            defaults are kicking in correctly for legacy DB rows that
+            were inserted before Phase-21 introduced these fields.
+            No 500s, no schema validation failures.
+
+  - task: "POST /api/orders/pending/{id}/mark-viewed (NEW endpoint)"
+    implemented: true
+    working: true
+    file: "/app/backend/routers/pending_orders.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "testing"
+        -comment: |
+            All 7 sub-assertions pass:
+              T1. Created a pending via POST /api/smart-paste (canonical
+                  block) — returned 200 + viewed=False initially.
+              T2. POST /api/orders/pending/{id}/mark-viewed →
+                  {"ok": true, "viewed": true, "matched": true}.
+              T3. GET /api/orders/pending/{id} → viewed=true persisted.
+              T4. Idempotent: second mark-viewed call → still ok=true,
+                  matched=true.
+              T5. Invalid UUID (random 00000000-0000-0000-0000-…) →
+                  HTTP 200 with {"ok":true, "viewed":false,
+                  "matched":false} — soft-404 contract honoured (NOT
+                  HTTP 404).
+              T6. No-auth call → HTTP 401 as expected.
+            Endpoint is correctly scoped by user_id (matched_count
+            check) and the soft-404 path lets sheet-source rows hit
+            the same client code without surprising them with 404s.
+
+  - task: "Repeat-customer detection (detect_repeat_customer + smart-paste flag)"
+    implemented: true
+    working: false
+    file: "/app/backend/server.py"
+    stuck_count: 1
+    priority: "high"
+    needs_retesting: true
+    status_history:
+        -working: false
+        -agent: "testing"
+        -comment: |
+            ❌ CRITICAL BUG — detect_repeat_customer never returns True.
+
+            REPRODUCER (verified end-to-end):
+              1. POST /api/shipments with customer_phone="9893504490"
+                 → 200 OK, shipment persisted.
+              2. POST /api/smart-paste with a canonical block whose
+                 PHONE line is "9893504490" → 200 OK, fields parsed
+                 correctly (parsed customer_phone="9893504490"),
+                 BUT response.is_repeat_customer == False (expected
+                 True).
+              3. Same with "+91 98935 04490" (phone-normalisation
+                 variant) → also False.
+
+            ROOT CAUSE — wrong field name in the lookup query.
+
+              /app/backend/server.py line 4024-4027:
+                  rx = {"$regex": f"{norm}$"}
+                  doc = await db.shipments.find_one(
+                      {"user_id": user_id, "phone": rx},
+                                            ^^^^^^^^
+                      {"_id": 1},
+                  )
+
+              The Shipment model (server.py line 1064-1075) stores
+              the field as **`customer_phone`**, NOT `phone`. Direct
+              Mongo verification:
+                 db.shipments.count_documents({"phone": {"$exists": True}})         → 0
+                 db.shipments.count_documents({"customer_phone": {"$exists": True}}) → 432
+
+              All shipment docs (from /api/shipments, abandoned-cart
+              recover, smart-paste->ship, file-import) use the
+              `customer_phone` key. The query in detect_repeat_customer
+              looks at a non-existent key, so the predicate is always
+              False. The function silently swallows nothing — there
+              was simply never a match.
+
+            IMPACT — Phase-21 REPEAT badge will never light up. Every
+            ingestion path (smart-paste, file-import, webhook) calls
+            detect_repeat_customer() to stamp is_repeat_customer at
+            insert time; that stamp is therefore stuck at False for
+            every customer, even regulars. The UI marker code is
+            wired up correctly — the data is just always wrong.
+
+            SUGGESTED FIX (one-line):
+              {"user_id": user_id, "customer_phone": rx}
+            …or harden it further with $or to also match a legacy
+            "phone" field if any exists:
+              {"user_id": user_id,
+               "$or": [{"customer_phone": rx}, {"phone": rx}]}
+
+            Phone normalisation logic (_norm_phone) itself is fine —
+            tests confirm "9893504490" and "+91 98935 04490" both
+            normalise to the same last-10 digits.
+
+            CLEANUP — all 4 pending orders + 1 shipment created by
+            this test were deleted at end of run (DELETE returned 200
+            for each).
+
+  - task: "/api/orders/pending-count new_count field"
+    implemented: true
+    working: true
+    file: "/app/backend/routers/pending_orders.py"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "testing"
+        -comment: |
+            Endpoint returns the expected 4-key shape:
+              {"count": 767, "new_count": 767,
+               "smart_paste_count": 41, "sheet_count": 726}
+            All assertions pass:
+              • count == new_count (mirror, kept for legacy clients)
+              • count == smart_paste_count + sheet_count
+              • All 4 keys present
+            Both `count` and the new `new_count` field reflect the
+            "New Orders" filter semantics described in the code comment
+            — they are computed from the same sources so any future
+            change has to update both fields together (currently
+            trivially equal).
+
+  - task: "Phase-21 feature flags + registry (pending_orders_new_marker, pending_orders_repeat_marker, new_order_sound)"
+    implemented: true
+    working: true
+    file: "/app/backend/feature_registry.py, /app/backend/routers/feature_flags.py"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "testing"
+        -comment: |
+            GET /api/me/feature-flags
+              • admin (auto-allowed all): contains all 3 keys ✅
+              • user2 (silver plan): contains all 3 keys ✅
+            GET /api/me/feature-registry
+              • registry.features list includes pending_orders_new_marker,
+                pending_orders_repeat_marker, new_order_sound — each
+                with category="Customer Intelligence". ✅
+              • registry.categories order list contains
+                "Customer Intelligence". ✅
+            GET /api/admin/plan-features (admin only)
+              • Same 3 keys present in registry.features payload. ✅
+
+            NOTE on endpoint naming — the review request asks for
+            GET /api/admin/feature-registry but the actually-shipped
+            endpoints are:
+              • GET /api/me/feature-registry   (any auth user)
+              • GET /api/admin/plan-features    (admin — embeds same
+                                                  registry payload)
+            Both work and both include the 3 new keys. Not flagged as
+            a bug — main agent's frontend already consumes
+            /me/feature-registry per the existing screens.
+
+metadata:
+  created_by: "main_agent"
+  version: "1.0"
+  test_sequence: 0
+  run_ui: false
+
+test_plan:
+  current_focus:
+    - "Repeat-customer detection (detect_repeat_customer + smart-paste flag)"
+  stuck_tasks: []
+  test_all: false
+  test_priority: "stuck_first"
+
+agent_communication:
+    -agent: "testing"
+    -message: |
+        Phase-21 backend testing complete — 55/57 assertions pass.
+
+        ✅ PASSING
+          • PendingOrder backward compat (viewed / is_repeat_customer
+            present on every row across paste/webhook/abandoned_cart).
+          • POST /api/orders/pending/{id}/mark-viewed: all 7 review-
+            requested cases pass — happy path, idempotent, soft-404 on
+            invalid UUID, 401 on no-auth.
+          • GET /api/orders/pending-count: returns count + new_count +
+            smart_paste_count + sheet_count, count == new_count holds.
+          • Feature flags: all 3 keys (pending_orders_new_marker,
+            pending_orders_repeat_marker, new_order_sound) appear in
+            /me/feature-flags for admin AND silver users, and in the
+            /me/feature-registry + /admin/plan-features registry
+            payloads under category="Customer Intelligence".
+
+        ❌ FAILING — detect_repeat_customer is broken (1 root cause,
+          2 failed assertions).
+          • /app/backend/server.py line ~4026 queries
+            `shipments.phone` but every Shipment doc stores the field
+            as `customer_phone`. Direct DB count: 0 shipments have
+            `phone`, 432 have `customer_phone`. Result:
+            is_repeat_customer ALWAYS False, even when the same phone
+            has prior shipments (verified by creating shipment first
+            then smart-pasting same phone).
+          • FIX: change the find_one filter to use `customer_phone`
+            (or $or both for safety). Phone normalisation logic
+            (_norm_phone) is correct — confirmed by the parsed
+            customer_phone showing "9893504490" for both raw and
+            "+91 98935 04490" formats.
+
+        CLEANUP — all test artefacts removed (4 pending orders +
+        1 shipment) via DELETE endpoints, each returned 200.

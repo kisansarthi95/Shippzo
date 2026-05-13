@@ -2561,6 +2561,17 @@ class PendingOrder(BaseModel):
     imported_status: str = ""
     imported_at:     str = ""
 
+    # Phase-21 — "NEW" badge + Repeat-customer marker on pending cards.
+    # `viewed` flips to True the moment the operator taps the card in
+    # the Orders tab (POST /orders/pending/{id}/mark-viewed). Until
+    # then, the UI paints a NEW badge so freshly-ingested orders are
+    # impossible to miss. `is_repeat_customer` is set at ingest time
+    # when the customer's phone matches an existing shipment for the
+    # same user → UI paints a REPEAT badge alongside (or instead of)
+    # NEW. Both default to False so legacy rows stay valid.
+    viewed: bool = False
+    is_repeat_customer: bool = False
+
 
 class SmartPasteRequest(BaseModel):
     text: str
@@ -3543,6 +3554,15 @@ async def smart_paste_create(
         **{k: v for k, v in fields.items() if k in PendingOrder.model_fields
            and k not in ("sheet_row_num", "custom_values")},
     )
+    # Phase-21 — Tag the row as a REPEAT customer if this phone has
+    # already been shipped at least once by the same user. Cheap
+    # indexed query; never raises.
+    try:
+        po.is_repeat_customer = await detect_repeat_customer(
+            current_user["id"], po.customer_phone,
+        )
+    except Exception:
+        po.is_repeat_customer = False
     # Stash sheet-write metadata on the model's raw_text for debugging if needed
     doc = po.model_dump()
     doc["_sheet_meta"] = sheet_meta
@@ -3969,6 +3989,46 @@ async def user_has_feature(user: dict, feature_key: str) -> bool:
     plans = await _get_plan_features_doc()
     enabled = set(plans.get(plan, []) or [])
     return feature_key in enabled
+
+
+# Phase-21 — Repeat-customer detector for pending-order ingestion.
+# Called by smart-paste / file-import / webhook ingestion right before
+# inserting a new pending_orders row. Returns True when this customer
+# (by normalised phone) has previously been shipped at least once for
+# the same user. Used by the UI to paint a REPEAT badge on the card.
+#
+# Cheap by design: indexed query on shipments.{user_id, phone_norm}
+# with a 1-doc projection + limit. Falls back to False on ANY error so
+# ingestion never breaks because of a marker lookup.
+def _norm_phone(raw: str) -> str:
+    """Strip non-digits, return the last 10 digits (Indian mobiles)."""
+    if not raw:
+        return ""
+    digits = "".join(ch for ch in str(raw) if ch.isdigit())
+    return digits[-10:] if len(digits) >= 10 else digits
+
+
+async def detect_repeat_customer(user_id: str, phone: str) -> bool:
+    """Return True if `phone` matches an earlier shipment of `user_id`.
+
+    Matches against `shipments.phone` after digit-normalisation (last
+    10 digits), so '+91 90999 00008' matches '9099900008'. Safe to
+    call from any ingestion path; never raises.
+    """
+    norm = _norm_phone(phone)
+    if not norm or len(norm) < 6:
+        return False
+    try:
+        # Use a regex anchored at the END of the phone field so any
+        # stored format (with/without +91, spaces, dashes) still hits.
+        rx = {"$regex": f"{norm}$"}
+        doc = await db.shipments.find_one(
+            {"user_id": user_id, "phone": rx},
+            {"_id": 1},
+        )
+        return doc is not None
+    except Exception:
+        return False
 
 
 async def _get_plan_features_doc() -> Dict[str, List[str]]:

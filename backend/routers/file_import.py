@@ -427,6 +427,17 @@ def init() -> None:
                 if not doc["customer_name"] and not doc["customer_phone"]:
                     skipped += 1
                     continue
+                # Phase-21 — Repeat-customer detection. Per-row indexed
+                # query is acceptable here (file imports are interactive
+                # uploads, not bulk webhook fan-outs).
+                try:
+                    from server import detect_repeat_customer
+                    doc["is_repeat_customer"] = await detect_repeat_customer(
+                        current_user["id"], doc.get("customer_phone") or "",
+                    )
+                except Exception:
+                    doc["is_repeat_customer"] = False
+                doc["viewed"] = False
                 batch.append(doc)
                 imported += 1
             except Exception as e:

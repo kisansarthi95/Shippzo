@@ -1725,7 +1725,16 @@ export const Api = {
   shipPendingOrder: (id: string, courier_id: string, overrides?: any) =>
     api.post<Shipment>(`/orders/pending/${id}/ship`, { courier_id, overrides }).then((r) => r.data),
   pendingOrdersCount: () =>
-    api.get<{ count: number }>("/orders/pending-count").then((r) => r.data),
+    api.get<{ count: number; new_count?: number; smart_paste_count?: number; sheet_count?: number }>(
+      "/orders/pending-count",
+    ).then((r) => r.data),
+  // Phase-21 — Flip the `viewed` flag server-side so the green ✨ NEW
+  // badge clears on every device the next time the Orders tab loads.
+  // Fire-and-forget on the client — UI optimistically updates first.
+  markPendingOrderViewed: (id: string) =>
+    api.post<{ ok: boolean; viewed: boolean; matched: boolean }>(
+      `/orders/pending/${id}/mark-viewed`,
+    ).then((r) => r.data),
 
   // ─────── Phase F1 — CSV / XLSX bulk import ───────
   /** Parse an uploaded CSV/XLSX without writing to DB. Returns columns,
@@ -2146,6 +2155,12 @@ export type PendingOrder = {
     [key: string]: any;
   };
   external_order_id?: string;
+  // Phase-21 — NEW + REPEAT visual markers. `viewed` flips true the
+  // moment an operator taps the pending-order card; `is_repeat_customer`
+  // is set at ingest time when the customer's phone matches an
+  // existing shipment. Both optional for legacy rows.
+  viewed?: boolean;
+  is_repeat_customer?: boolean;
 };
 
 // Phase F2.3 (2026-05-09) — Sheet column-mapping fields aligned with
