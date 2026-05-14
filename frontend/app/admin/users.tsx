@@ -575,7 +575,7 @@ const styles = StyleSheet.create({
     backgroundColor: "#fff", borderRadius: 10, borderWidth: 1, borderColor: "#E5E7EB",
   },
   searchInp: { flex: 1, fontSize: 14, color: "#0F172A", padding: 0, margin: 0 },
-  chipsRow: { marginTop: 10, marginBottom: 4, maxHeight: 40 },
+  chipsRow: { marginTop: 10, marginBottom: 4, flexGrow: 0 },
   chip: {
     paddingHorizontal: 14, paddingVertical: 8, borderRadius: 20,
     flexShrink: 0,
