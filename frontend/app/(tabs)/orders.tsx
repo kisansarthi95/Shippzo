@@ -477,11 +477,11 @@ export default function OrdersFromSheet() {
     // same shipping action as paste/file/webhook rows (since they
     // live in pending_orders) but carry a distinct soft-pink badge
     // so the provenance ("this came from a recovery") stays visible
-    // in the unified list. Surfaced under "all" AND under the
-    // "abandoned" filter chip so the abandoned tab shows BOTH the
-    // raw active carts (top of list) and the orders the user has
-    // already confirmed (with the recovery badge).
-    if (sourceFilter === "all" || sourceFilter === "new" || sourceFilter === "abandoned") {
+    // in the unified list. Phase-21 — Surfaced under "all" AND "new"
+    // ONLY. The Abandoned tab is reserved for STILL-ABANDONED carts
+    // (un-recovered), so once a cart has been recovered it leaves
+    // that view and only shows up under the unified buckets.
+    if (sourceFilter === "all" || sourceFilter === "new") {
       for (const po of abandonedRecoveredOrders) {
         const meta: any = (po as any).source_meta || {};
         out.push({
