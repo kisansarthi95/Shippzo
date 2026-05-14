@@ -889,16 +889,14 @@ export default function OrdersFromSheet() {
               orders.filter(o => !o.already_shipped).length
             })`,
           },
-          // Phase F3.9.11 — All count now excludes the new REUSED
-          // sheet rows (already_shipped=true). Previously these were
-          // skipped entirely; now they're shown with a soft-grey
-          // REUSED badge + "Reuse" CTA, but they should NOT inflate
-          // the global pending count. Same filter as the per-source
-          // "Sheet" chip below.
-          // Phase-21 — Also include abandoned-recovered pending orders
-          // so the All count matches what's actually visible in the
-          // list (and stays consistent with the New Orders count).
-          { k: "all",     label: `All (${pasteOrders.length + fileOrders.length + webhookOrders.length + abandonedRecoveredOrders.length + orders.filter(o => !o.already_shipped).length})` },
+          // Phase F3.9.11 — Sheet rows show with a soft-grey REUSED
+          // badge + "Reuse" CTA when already_shipped=true.
+          // Phase-21 — All Orders now counts EVERY order (including
+          // REUSED sheet rows) so the operator sees the true total of
+          // what's visible on the screen; New Orders narrows down to
+          // unshipped only. Includes abandoned-recovered pending
+          // orders as well to stay consistent with the New filter.
+          { k: "all",     label: `All (${pasteOrders.length + fileOrders.length + webhookOrders.length + abandonedRecoveredOrders.length + orders.length})` },
           { k: "paste",   label: `✨ Smart Paste${pasteOrders.length ? ` (${pasteOrders.length})` : ""}` },
           { k: "file",    label: `📄 File${fileOrders.length ? ` (${fileOrders.length})` : ""}` },
           { k: "sheet",   label: `📊 Sheet${connected ? ` (${orders.filter(o => !o.already_shipped).length})` : ""}` },
