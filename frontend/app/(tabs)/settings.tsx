@@ -211,7 +211,7 @@ export default function SettingsScreen() {
   const SECTION_SUBTITLES: Record<Section, string> = {
     "": "",
     account: "Profile, plan, and sign-out",
-    business: "Brand, sender, Smart Paste AI, Google Sheet",
+    business: "Brand, sender, Google Sheet",
     couriers: "Manage courier partners",
     billing: "Plan, wallet, and AI processing rates",
     whatsapp: "Customer message templates and ETA",
@@ -229,7 +229,7 @@ export default function SettingsScreen() {
     color: string;
   }> = [
     { key: "account",       icon: "person-circle-outline", title: "My Account",      sub: "Profile · Plan · Sign out",          color: "#7C3AED" },
-    { key: "business",      icon: "business-outline",      title: "Business",        sub: "Brand · Sender · Smart Paste · Sheet", color: "#0EA5E9" },
+    { key: "business",      icon: "business-outline",      title: "Business",        sub: "Brand · Sender · Sheet",             color: "#0EA5E9" },
     { key: "couriers",      icon: "rocket-outline",        title: "Couriers",        sub: "Manage courier partners",            color: "#10B981" },
     { key: "billing",       icon: "wallet-outline",        title: "Plan & Billing",  sub: "Plan · Wallet · AI rates",           color: "#DC2626" },
     { key: "whatsapp",      icon: "logo-whatsapp",         title: "WhatsApp",        sub: "Templates & ETA",                    color: "#22C55E" },
@@ -643,7 +643,7 @@ export default function SettingsScreen() {
         order_id_auto_generate: orderIdAutoGen,
         order_id_autofill_in_new_shipment: orderIdAutofillNew,
       });
-      Alert.alert("Saved", "Smart Paste AI settings updated.");
+      Alert.alert("Saved", "Business settings updated.");
     } catch (e: any) {
       Alert.alert("Save failed", e?.response?.data?.detail || e?.message || "Please try again");
     } finally {
