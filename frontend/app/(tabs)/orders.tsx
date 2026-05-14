@@ -488,12 +488,12 @@ export default function OrdersFromSheet() {
         // cart was recovered from) on the badge so the operator can
         // tell "this came from Shopify" vs "this came from Dukaan"
         // at a glance. Priority: source_app → webhook_name → generic
-        // "Recovered" fallback. `source_app` is the lowercased
-        // canonical key (used for status sync); `webhook_name` is the
-        // friendly display name the owner set on the webhook config.
+        // "Recovered" fallback. Normalised to Title Case (first letter
+        // upper, rest lower) so SHOPIFY / shopify / Shopify all
+        // render identically as "Shopify".
         const srcRaw = String(meta.source_app || meta.webhook_name || "").trim();
         const srcLabel = srcRaw
-          ? srcRaw.charAt(0).toUpperCase() + srcRaw.slice(1)
+          ? srcRaw.charAt(0).toUpperCase() + srcRaw.slice(1).toLowerCase()
           : "Recovered";
         out.push({
           key: `abandoned-recovered|${po.id}`,
