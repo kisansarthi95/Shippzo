@@ -1440,6 +1440,26 @@ export default function Shipments() {
                     testID={`whatsapp-${item.tracking_id}`}
                   />
                 ) : null}
+                {/* Phase-21 — Direct dial button. Always visible (no
+                    plan gate) — calling the customer is a zero-cost
+                    universal action. Tap opens the native dialer
+                    with the shipment's phone pre-filled. Phone is
+                    sanitised to digits-only (with optional leading +)
+                    before passing to tel: so spaces/dashes from
+                    pasted numbers don't break the intent on iOS. */}
+                {item.customer_phone ? (
+                  <ActionBtn
+                    icon="call" color="#0EA5E9"
+                    onPress={() => {
+                      const cleaned = String(item.customer_phone || "")
+                        .replace(/[^+\d]/g, "");
+                      if (cleaned) {
+                        Linking.openURL(`tel:${cleaned}`).catch(() => {});
+                      }
+                    }}
+                    testID={`call-${item.tracking_id}`}
+                  />
+                ) : null}
                 {flagEdit ? (
                   <ActionBtn
                     icon="create-outline" color="#2563EB"

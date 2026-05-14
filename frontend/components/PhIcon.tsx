@@ -185,6 +185,14 @@ const ICON_MAP: Record<string, React.ComponentType<any>> = {
   "checkbox":              Ph.CheckSquare,           // ticked checkbox
   "checkmark-done-circle": Ph.SealCheck,             // success badge
   happy:                   Ph.Smiley,                // emoji-style mood
+
+  // Phase-21 — Shipments card "Call" action button.
+  // Both keys point at the same SVG so callers can use either
+  // Ionicons spelling ("call" / "phone") interchangeably.
+  call:                    Ph.Phone,
+  "call-outline":          Ph.Phone,
+  phone:                   Ph.Phone,
+  "phone-outline":         Ph.Phone,
 };
 
 // Aliases for less obvious mappings — the kebab-case key is the
