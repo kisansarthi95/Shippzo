@@ -1134,31 +1134,25 @@ export default function SettingsScreen() {
           </>)}
 
           {section === "business" && (<>
-          {/* Phase-4b+ Smart Paste AI */}
+          {/* Phase-4b+ Smart Paste AI — Phase-21 cleanup:
+              • Section heading removed (was "Smart Paste AI").
+              • Purple badge re-labelled "Smart Fill" (operator-facing
+                copy; "AI powered" leaked the implementation detail).
+              • The "Enable AI parser" toggle + regex-fallback subtitle
+                were removed — the parser is always ON for users who
+                have the feature flag; admins manage availability via
+                Plan Features. The Auto-Generate Order ID toggle
+                below stays exactly as it was. */}
           {flagSmartPasteAi ? (
-          <Section title="Smart Paste AI" icon="sparkles-outline">
+          <Section title="" icon="sparkles-outline">
             <View style={styles.spaiIntro}>
               <View style={styles.spaiBadge}>
                 <PhIcon name="sparkles" size={11} color="#fff" />
-                <Text style={styles.spaiBadgeTxt}>AI powered</Text>
+                <Text style={styles.spaiBadgeTxt}>Smart Fill</Text>
               </View>
               <Text style={styles.spaiHint}>
                 Paste customer's WhatsApp message here — the form will auto-fill. You can keep your own custom instructions for your business.
               </Text>
-            </View>
-
-            <View style={styles.toggleRow}>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.toggleLbl}>Enable AI parser</Text>
-                <Text style={styles.toggleSub}>
-                  If OFF, regex fallback is used (free, no credits).
-                </Text>
-              </View>
-              <Switch
-                testID="spai-enabled-toggle"
-                value={spaiEnabled}
-                onValueChange={setSpaiEnabled}
-              />
             </View>
 
             {/* Auto-generate Order ID toggle — user-facing copy intentionally
@@ -3319,10 +3313,18 @@ function Section({
 }: { title: string; icon: string; children: React.ReactNode }) {
   return (
     <View style={styles.section}>
-      <View style={{ flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 10 }}>
-        <PhIcon name={icon} size={16} color={colors.primary} />
-        <Text style={styles.sectionTitle}>{title}</Text>
-      </View>
+      {/* Phase-21 — When `title` is empty, skip the entire header row
+          (icon + label) so callers can render a "headless" section
+          without leaving an orphan icon next to a blank Text. Used
+          by the Smart Fill block in business-settings where the
+          heading was removed but the surrounding card styling
+          (background, padding, etc.) is still wanted. */}
+      {title ? (
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 10 }}>
+          <PhIcon name={icon} size={16} color={colors.primary} />
+          <Text style={styles.sectionTitle}>{title}</Text>
+        </View>
+      ) : null}
       {children}
     </View>
   );
