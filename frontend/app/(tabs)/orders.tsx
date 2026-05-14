@@ -895,7 +895,10 @@ export default function OrdersFromSheet() {
           // REUSED badge + "Reuse" CTA, but they should NOT inflate
           // the global pending count. Same filter as the per-source
           // "Sheet" chip below.
-          { k: "all",     label: `All (${pasteOrders.length + fileOrders.length + webhookOrders.length + orders.filter(o => !o.already_shipped).length})` },
+          // Phase-21 — Also include abandoned-recovered pending orders
+          // so the All count matches what's actually visible in the
+          // list (and stays consistent with the New Orders count).
+          { k: "all",     label: `All (${pasteOrders.length + fileOrders.length + webhookOrders.length + abandonedRecoveredOrders.length + orders.filter(o => !o.already_shipped).length})` },
           { k: "paste",   label: `✨ Smart Paste${pasteOrders.length ? ` (${pasteOrders.length})` : ""}` },
           { k: "file",    label: `📄 File${fileOrders.length ? ` (${fileOrders.length})` : ""}` },
           { k: "sheet",   label: `📊 Sheet${connected ? ` (${orders.filter(o => !o.already_shipped).length})` : ""}` },
