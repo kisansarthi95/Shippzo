@@ -1387,14 +1387,34 @@ def init() -> None:
                     # recovery worker.
                     imported += 1
                     try:
+                        # Phase-21 fix — kwargs align with the canonical
+                        # post-insert call below (flat/raw/pending_doc).
+                        # The prior new_order_doc/raw_payload names were
+                        # leftovers from an earlier helper signature and
+                        # silently no-op'd the auto-recover path on
+                        # replay because the helper raised TypeError
+                        # → swallowed by the bare except.
                         await _auto_recover_abandoned_cart(
                             db=db,
                             user_id=user_id,
-                            new_order_doc=doc,
-                            raw_payload=raw if isinstance(raw, dict) else {},
+                            flat=flat,
+                            raw=raw,
+                            pending_doc=doc,
                         )
                     except Exception:
-                        pass
+                        # Phase-21 — Log instead of silently ignoring.
+                        # Auto-recover is best-effort; any failure here
+                        # must NEVER block the webhook 200 ACK, but it
+                        # also must not stay invisible — without the
+                        # log we couldn't tell that the cart-recovery
+                        # path was broken (which is exactly how the
+                        # earlier kwargs typo went undetected).
+                        _logger.exception(
+                            "auto_recover_abandoned_cart failed on replay "
+                            "(user_id=%s, external_order_id=%s)",
+                            user_id,
+                            (doc.get("external_order_id") or ""),
+                        )
                     continue
 
             try:
