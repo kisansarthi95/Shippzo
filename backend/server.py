@@ -5746,6 +5746,93 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+# Phase-21 — Webhook-replay deduplication.
+async def _ensure_pending_orders_dedup_index() -> None:
+    """One-time cleanup + unique compound index for webhook replays.
+
+    The index enforces uniqueness on
+        (user_id, external_order_id, source_meta.source_app)
+    at the database level so even a race between two concurrent webhook
+    workers can NEVER produce duplicate pending-order rows. We use a
+    PARTIAL filter so rows without an external_order_id (paste, file
+    import, smart-paste rows that never carried one) are exempt.
+
+    Steps:
+      1. Aggregate pending_orders grouped by the dedup key. For any
+         group with count > 1, keep the OLDEST doc (smallest created_at)
+         and delete the rest. This is a one-shot heal: if the
+         application has been live with the bug, there can be 2-3
+         duplicates per replayed order.
+      2. Create the partial-unique compound index. Idempotent — if the
+         index already exists with the same spec, MongoDB no-ops.
+    Both steps are wrapped in their own try/except so an aggregation
+    failure on a giant collection never blocks server startup.
+    """
+    coll = db.pending_orders
+    # ---- Step 1: cleanup pre-existing duplicates --------------------
+    try:
+        pipeline = [
+            {"$match": {
+                "external_order_id": {"$nin": [None, ""]},
+            }},
+            {"$group": {
+                "_id": {
+                    "user_id":           "$user_id",
+                    "external_order_id": "$external_order_id",
+                    "source_app":        "$source_meta.source_app",
+                },
+                "ids":      {"$push": {"_id": "$_id", "created_at": "$created_at"}},
+                "count":    {"$sum": 1},
+            }},
+            {"$match": {"count": {"$gt": 1}}},
+        ]
+        removed = 0
+        async for grp in coll.aggregate(pipeline, allowDiskUse=True):
+            entries = grp.get("ids") or []
+            # Keep the oldest (smallest created_at) — drop the rest.
+            entries.sort(key=lambda e: e.get("created_at") or "")
+            to_drop = [e["_id"] for e in entries[1:]]
+            if to_drop:
+                res = await coll.delete_many({"_id": {"$in": to_drop}})
+                removed += int(res.deleted_count or 0)
+        if removed:
+            logger.info(
+                "pending_orders dedup cleanup: removed %d duplicate row(s)",
+                removed,
+            )
+    except Exception:
+        logger.exception("pending_orders duplicate cleanup failed (non-fatal)")
+
+    # ---- Step 2: create the unique compound index -------------------
+    try:
+        await coll.create_index(
+            [
+                ("user_id", 1),
+                ("external_order_id", 1),
+                ("source_meta.source_app", 1),
+            ],
+            name="uniq_user_externalOrder_sourceApp",
+            unique=True,
+            partialFilterExpression={
+                # Only enforce uniqueness for rows that actually carry
+                # an external_order_id. Paste/file/smart-paste rows
+                # often have empty external_order_id and would
+                # otherwise collide with each other.
+                "external_order_id": {"$exists": True, "$gt": ""},
+            },
+        )
+    except Exception:
+        # Possible reasons:
+        #   • Index already exists with a different spec (collation,
+        #     name) — re-create after dropping is risky in prod, so
+        #     we log and continue. The application-level pre-check
+        #     still guards against replays.
+        logger.exception(
+            "pending_orders unique index creation skipped (non-fatal)",
+        )
+
+
+
 @app.on_event("startup")
 async def on_startup():
     await seed_defaults()
@@ -5757,6 +5844,16 @@ async def on_startup():
             logger.info(f"Backfilled display_id for {filled} legacy user(s).")
     except Exception:
         logger.exception("display_id backfill failed (non-fatal)")
+    # Phase-21 — Webhook deduplication. Ensure the unique compound index
+    # exists on pending_orders so concurrent replays of the same
+    # storefront order can NEVER produce duplicate rows, even if the
+    # application-level pre-check loses a race. Includes a one-time
+    # sweep to remove any legacy duplicates that snuck in before the
+    # index existed (otherwise the index creation itself would fail).
+    try:
+        await _ensure_pending_orders_dedup_index()
+    except Exception:
+        logger.exception("pending_orders dedup index setup failed (non-fatal)")
     # Kick off the deferred Master Sheet backup retry worker. It loops
     # every 60s, draining up to 5 shipments per cycle whose
     # `master_backup_status == "pending"`. Quota errors keep them

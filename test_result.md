@@ -19211,3 +19211,143 @@ agent_communication:
         Mongo deletes, and is_demo backfill all happen against the live
         database. Endpoint ready for production. Main agent can summarise
         and finish.
+
+---
+
+## Backend Test Run: Phase-21 Webhook Dedup (2026-05-14)
+
+backend:
+  - task: "Phase-21 Webhook deduplication (app pre-check + DB unique index)"
+    implemented: true
+    working: true
+    file: "/app/backend/routers/webhook.py, /app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "testing"
+        -comment: |
+            21/21 assertions passed via /app/backend_test_dedup.py against
+            https://logistics-hub-740.preview.emergentagent.com/api.
+
+            Setup:
+            - Logged in as admin@test.com (id=cb27b8d3-…)
+            - Resolved /me/webhook-config → secret resolves to v2
+              user_webhooks doc id=f53f5273-… (legacy fallback also wired).
+            - PUT /me/webhooks/{id} with mapping
+              {name→customer_name, phone→customer_phone, city→city,
+               state→state, pincode→pincode, amount→amount,
+               order_id→order_id} and source_app="shopify".
+
+            (Note: A prior attempt with multiple keys mapping to the same
+            schema field — e.g. both `order_id` and `id` → `order_id` —
+            caused the build_pending_doc_from_mapping last-wins rule to
+            overwrite the valid `order_id` value with the empty `id`,
+            zeroing out external_order_id. Test mapping uses one source
+            per schema field to avoid that footgun. The dedup feature
+            itself is fine — it's an unrelated mapping caveat.)
+
+            Verified end-to-end:
+
+            1. FIRST ingest of {order_id:"DUPTEST-…-001"} →
+               POST returns 200 {ok:true, imported:1, skipped:0,
+               event_type:"new_order"}. Mongo confirms exactly one
+               pending_orders row with external_order_id="DUPTEST-…-001",
+               source_meta.source_app="shopify", status="pending".
+
+            2. REPLAY of identical payload → 200
+               {ok:true, imported:1, skipped:0}. Application-level
+               pre-check (db.pending_orders.find_one on
+               user_id+external_order_id+source_app) hit, so the row was
+               NOT re-inserted. Total webhook-pending count stayed
+               constant (12 → 12). imported:1 is honest because the
+               replay path increments imported even when no new row is
+               created, matching the "idempotent ACK" contract.
+
+            3. DIFFERENT order_id (DUPTEST-…-002) → 200
+               imported:1, new row created. Total count went 12 → 13
+               (delta = exactly 1). Confirms dedup is keyed on
+               external_order_id, not on full payload.
+
+            4. EMPTY external_order_id → exempt from dedup. Two POSTs
+               with no `order_id` key created TWO separate rows
+               (count 13 → 15). Both rows have external_order_id=""
+               which is excluded by the partial-filter expression on
+               the unique index, so they are allowed to coexist.
+
+            5. UNIQUE COMPOUND INDEX verified directly against Mongo
+               (db.pending_orders.index_information):
+                 - name: uniq_user_externalOrder_sourceApp
+                 - unique: True
+                 - key: [(user_id,1), (external_order_id,1),
+                         (source_meta.source_app,1)]
+                 - partialFilterExpression:
+                     {external_order_id: {$exists: True, $gt: ""}}
+               Matches the spec in server._ensure_pending_orders_dedup_index.
+
+            6. DUPLICATE-KEY RACE PROTECTION: direct Mongo insert of a
+               second doc with the SAME
+               (user_id, external_order_id="DUPTEST-…-001",
+                source_meta.source_app="shopify") triple raised
+               pymongo.errors.DuplicateKeyError as expected:
+                 "E11000 duplicate key error collection:
+                  test_database.pending_orders index:
+                  uniq_user_externalOrder_sourceApp dup key …"
+               Webhook handler's try/except DuplicateKeyError branch
+               (routers/webhook.py:1402-1408) would catch this and bump
+               imported, preserving idempotency under concurrent replay.
+
+            7. Startup cleanup that removes pre-existing duplicates
+               (server.py:_ensure_pending_orders_dedup_index → step 1)
+               was already executed; current pending_orders aggregation
+               on (user_id, external_order_id, source_meta.source_app)
+               where external_order_id is non-empty returns ZERO groups
+               with count > 1 (verified during the test session).
+
+            Cleanup: All 4 pending_orders rows created during the test
+            (1 × DUPTEST-A, 1 × DUPTEST-B, 2 × empty-OID) were deleted
+            via DELETE /api/orders/pending/{id} — each returned 200
+            with {ok:true, sheet:{attempted:…}}. Five orphan rows from
+            an earlier mapping-bug iteration were also purged directly
+            from Mongo. Database is clean.
+
+            No regressions detected on webhook-config GET/PUT/rotate
+            or /orders/pending listing.
+
+agent_communication:
+    -agent: "testing"
+    -message: |
+        Phase-21 Webhook Deduplication fully verified.
+
+        ALL 21 / 21 assertions passed in /app/backend_test_dedup.py.
+
+        Behaviours confirmed:
+          ✅ First ingest stores one pending_orders row.
+          ✅ Replay returns ok:true imported:1 but creates NO new row
+             (application-level pre-check catches the duplicate).
+          ✅ Different external_order_id creates a fresh row.
+          ✅ Empty external_order_id is exempt from dedup (two empty-OID
+             posts produce two distinct rows — partial filter works).
+          ✅ Unique compound index
+             uniq_user_externalOrder_sourceApp exists with exactly the
+             spec described in server._ensure_pending_orders_dedup_index.
+          ✅ Direct duplicate INSERT against the index raises
+             DuplicateKeyError — DB safety net is real, not just a
+             code path. webhook router's try/except DuplicateKeyError
+             handler will swallow this in production replays.
+          ✅ Startup cleanup left zero duplicate (user_id,
+             external_order_id, source_meta.source_app) groups.
+
+        Note (NOT a dedup bug — observed during test setup): the
+        mapping helper build_pending_doc_from_mapping uses last-wins
+        for non-address/non-customer_name schema fields. Mapping both
+        "order_id" → "order_id" AND "id" → "order_id" with a payload
+        that has order_id but no id results in external_order_id="" —
+        the absent `id` overwrites the present `order_id`. This is
+        independent of the dedup feature. Recommend a follow-up to
+        skip empty values in last-wins so multi-source mappings are
+        robust, but it's not blocking this story.
+
+        Phase-21 is production-ready. Main agent can summarise and finish.
+

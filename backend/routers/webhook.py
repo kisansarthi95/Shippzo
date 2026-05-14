@@ -41,6 +41,7 @@ from typing import Any, Dict, List
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Path, Request
 from pydantic import BaseModel
+from pymongo.errors import DuplicateKeyError
 
 from import_schema import (
     SCHEMA_FIELDS,
@@ -1344,7 +1345,67 @@ def init() -> None:
             except Exception:
                 doc["is_repeat_customer"] = False
             doc["viewed"] = False
-            await db.pending_orders.insert_one(doc)
+
+            # Phase-21 — Webhook deduplication. Some storefronts re-fire
+            # the same order/created event multiple times (retries on
+            # slow ACKs, replays after settlement, manual re-trigger
+            # from the merchant dashboard, …). Without a guard, every
+            # replay creates a fresh pending_orders row → the Orders
+            # tab shows the same customer 2-3 times.
+            #
+            # Strategy:
+            #   1. Application-level pre-check: look up an existing row
+            #      with the SAME (user_id, external_order_id, source_app).
+            #      If found, skip the insert and just bump a debug log.
+            #   2. Database-level safety net: a unique compound index on
+            #      (user_id, external_order_id, source_meta.source_app)
+            #      is created at server start (see server.py:_indexes_ready).
+            #      DuplicateKeyError from a race condition is swallowed
+            #      identically to the pre-check hit so the webhook still
+            #      ACKs 200 (replays must remain idempotent).
+            #
+            # The dedup key intentionally INCLUDES source_app: the same
+            # external_order_id from Shopify and from Dukaan are two
+            # genuinely different orders, so source_strict matching keeps
+            # the operator's pending list lossless.
+            ext_oid = (doc.get("external_order_id") or "").strip()
+            src_app = ((doc.get("source_meta") or {}).get("source_app") or "").strip()
+            if ext_oid:
+                existing = await db.pending_orders.find_one(
+                    {
+                        "user_id":           user_id,
+                        "external_order_id": ext_oid,
+                        "source_meta.source_app": src_app,
+                    },
+                    {"_id": 1, "id": 1},
+                )
+                if existing:
+                    # Idempotent replay — count it as imported so the
+                    # response totals stay honest, but DO NOT create a
+                    # duplicate row. Cross-verify abandoned carts in
+                    # case the FIRST insert raced ahead of the cart
+                    # recovery worker.
+                    imported += 1
+                    try:
+                        await _auto_recover_abandoned_cart(
+                            db=db,
+                            user_id=user_id,
+                            new_order_doc=doc,
+                            raw_payload=raw if isinstance(raw, dict) else {},
+                        )
+                    except Exception:
+                        pass
+                    continue
+
+            try:
+                await db.pending_orders.insert_one(doc)
+            except DuplicateKeyError:
+                # Race: another concurrent worker inserted the same
+                # (user_id, external_order_id, source_app) tuple
+                # between our pre-check and our insert. Treat it as
+                # the same idempotent replay path — log and move on.
+                imported += 1
+                continue
             imported += 1
 
             # Phase F3.9.9 — Auto cross-verify abandoned carts.
