@@ -243,5 +243,95 @@ function AuthGate({ children }: { children: React.ReactNode }) {
       </View>
     );
   }
-  return <>{children}</>;
+  return (
+    <>
+      <NotificationDeepLinker />
+      {children}
+    </>
+  );
+}
+
+/**
+ * Phase-21 — Deep-link handler for new-order notifications.
+ *
+ * When the operator taps a system notification (lock-screen banner,
+ * pull-down shade, …), expo-notifications fires a response with the
+ * full payload we attached via `data: { type: "new_order", screen:
+ * "orders" }` in lib/new_order_alert.tsx. This listener reads that
+ * payload and routes the user straight to the Orders tab so they
+ * land on the new arrivals instead of wherever the app was last
+ * paused.
+ *
+ * Also handles the "cold start" case — if the app was fully closed
+ * and got launched by a notification tap, getLastNotificationResponseAsync()
+ * surfaces it once on mount so the deep-link still works.
+ *
+ * Mounted inside AuthGate AFTER the auth/loading gate clears so the
+ * push doesn't fight with the welcome / OAuth redirect logic.
+ */
+function NotificationDeepLinker() {
+  const router = useRouter();
+
+  useEffect(() => {
+    let sub: any = null;
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const Notifications = await import("expo-notifications");
+
+        // Handle the cold-start case once.
+        try {
+          const last = await Notifications.getLastNotificationResponseAsync();
+          if (!cancelled && last) {
+            handleResponse(last);
+          }
+        } catch {
+          /* not all platforms support cold-start lookup */
+        }
+
+        // Live listener — fires every time the operator taps a notif
+        // while the app is running (background or foreground).
+        sub = Notifications.addNotificationResponseReceivedListener(
+          (response) => {
+            handleResponse(response);
+          },
+        );
+      } catch {
+        /* expo-notifications not available on this platform — no-op */
+      }
+    })();
+
+    function handleResponse(response: any) {
+      try {
+        const data =
+          response?.notification?.request?.content?.data || {};
+        if (data?.type === "new_order" || data?.screen === "orders") {
+          // Defer one tick so the route stack is mounted before we
+          // push, avoiding "navigate before mounted" warnings on the
+          // cold-start path.
+          setTimeout(() => {
+            try {
+              router.push("/(tabs)/orders" as any);
+            } catch {
+              /* router not ready yet — ignore */
+            }
+          }, 0);
+        }
+      } catch {
+        /* swallow — deep-linking is best-effort */
+      }
+    }
+
+    return () => {
+      cancelled = true;
+      try {
+        sub?.remove?.();
+      } catch {
+        /* ignore */
+      }
+    };
+  }, [router]);
+
+  return null;
 }

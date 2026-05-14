@@ -68,6 +68,11 @@ async function fireLocalNewOrderNotification(delta: number) {
             ? "1 fresh order just arrived. Let's ship it!"
             : `${delta} fresh orders just arrived.`,
         sound: "default",
+        // Phase-21 — Deep-link payload. Read by the root layout's
+        // addNotificationResponseReceivedListener so a tap from the
+        // mobile lock-screen / banner takes the operator straight to
+        // the Orders tab where the new arrivals are visible.
+        data: { type: "new_order", screen: "orders" },
       },
       trigger: null, // immediate
     });
