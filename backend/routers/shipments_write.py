@@ -562,7 +562,28 @@ def init() -> None:
             ),
             "weight":             _get("weight"),
             "payment_mode":       _get("payment_mode", "COD"),
-            "order_id":           _get("order_id_hint"),
+            # Phase-21 — Order-ID priority chain on shipments:
+            #   1. PendingOrder.order_id (already resolved at ingest:
+            #      upstream order_id if the source sent one, else our
+            #      master_order_id when auto-gen is ON, else the user's
+            #      manual entry).
+            #   2. order_id_hint (regex-parsed legacy hint — only set
+            #      when the pasted text contained an explicit "Order
+            #      #..." line; kept for backwards-compat with rows that
+            #      were ingested BEFORE the resolved order_id was wired
+            #      onto smart-paste).
+            #   3. master_order_id — final safety net so the Shipment
+            #      NEVER ships with a blank Order ID. The user
+            #      previously reported missing order_ids on shipments
+            #      coming from webhooks / files that had no upstream
+            #      id; the master id is the right thing to surface
+            #      since it's what we already wrote to the Master Sheet
+            #      and what the Order-ID counter assigned to this row.
+            "order_id":           (
+                _get("order_id")
+                or _get("order_id_hint")
+                or _get("master_order_id")
+            ),
             "master_order_id":    str(order.get("master_order_id") or ""),
             "notes":              _get("notes"),
             "status":             _ship_status,

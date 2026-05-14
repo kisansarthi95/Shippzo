@@ -256,6 +256,113 @@ agent_communication:
 #====================================================================================================
 # Testing Data - Main Agent and testing sub agent both should log testing data below this section
 #====================================================================================================
+## Backend Test Run: Phase-21 Order-ID Priority Chain on ship_pending_order (2026-05-14)
+
+backend:
+  - task: "Phase-21 order_id priority chain on POST /api/orders/pending/{id}/ship"
+    implemented: true
+    working: true
+    file: "/app/backend/routers/shipments_write.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "testing"
+        -comment: |
+            27/27 assertions PASSED via /app/backend_test.py against
+            https://logistics-hub-740.preview.emergentagent.com/api.
+
+            Verified fix at /app/backend/routers/shipments_write.py:582-586
+            where the resulting Shipment.order_id is now resolved as:
+              _get("order_id") or _get("order_id_hint") or _get("master_order_id")
+
+            All 5 cases from the review request passed:
+
+            TEST A — Webhook with upstream order_id mapped:
+              • POST /api/webhook/orders/{secret} with body
+                {"order_id":"UPSTREAM-XYZ-XXXXXX", name, phone, address,
+                 city, state, pincode, amount} and mapping
+                {"order_id":"order_id", "name":"customer_name", ...}
+              • PendingOrder.order_id == 'UPSTREAM-XYZ-...' (upstream preserved)
+              • PendingOrder.master_order_id == '26051402500' (auto-allocated, distinct)
+              • After ship: Shipment.order_id == 'UPSTREAM-XYZ-...'
+                (NOT empty, NOT master_order_id). PASS.
+
+            TEST B — Webhook WITHOUT upstream order_id:
+              • POST /api/webhook/orders/{secret} with body lacking order_id
+                {name,phone,city,state,pincode,amount}.
+              • PendingOrder.master_order_id == '26051402501' (allocated, 11 digits)
+              • PendingOrder.order_id == '26051402501' (ingest auto-fallback
+                via /app/backend/routers/webhook.py:1336
+                doc["order_id"] = doc.get("order_id") or doc["master_order_id"]).
+              • After ship: Shipment.order_id == '26051402501' (master fallback,
+                NOT blank). PASS.
+
+            TEST C — Smart-paste with explicit "Order ID: ABC-001":
+              • POST /api/smart-paste with text including "Order ID: ABC-001"
+                (parser pre-normalises "Order ID" → "ORDER_ID" at server.py:2714).
+              • PendingOrder.order_id == 'ABC-001' (parsed via order_id_hint).
+              • PendingOrder.master_order_id == '26051402502' (allocated, distinct).
+              • After ship: Shipment.order_id == 'ABC-001'. PASS.
+
+            TEST D — Smart-paste WITHOUT order_id in text:
+              • POST /api/smart-paste with body lacking any "Order ID:" line.
+              • PendingOrder.order_id == PendingOrder.master_order_id
+                ('26051402503', auto-fallback in smart_paste_create at server.py:3475-3477).
+              • After ship: Shipment.order_id == master_order_id (NOT blank). PASS.
+
+            TEST E — File import (CSV) with order_id column populated:
+              • POST /api/orders/import/commit (multipart) with CSV
+                "customer_name,phone,pincode,city,state,item,amount,order_id"
+                and one row carrying order_id="FILE-ORD-XXXXXX". Mapping
+                supplied as JSON form-field.
+              • PendingOrder.order_id == 'FILE-ORD-...' (preserved via
+                file_import.py:425 doc["order_id"] = doc.get("order_id")
+                or doc["master_order_id"]).
+              • After ship: Shipment.order_id == 'FILE-ORD-...'. PASS.
+
+            EVIDENCE the fix is the cause:
+              • In Test B (no upstream id), the resolved order_id at
+                ingest is the master_order_id; ship now correctly carries
+                that value forward instead of the previous behaviour
+                that would have shipped a blank order_id (because
+                order_id_hint was empty).
+              • In Test A & E (upstream id present), ship preserves the
+                upstream value — previous code that set
+                Shipment.order_id = order_id_hint would have shipped a
+                blank or wrong value.
+              • In all cases, Shipment.order_id is non-empty — the
+                third tier of the chain (master_order_id) acts as the
+                guaranteed safety net.
+
+            CLEANUP: Test created 5 shipments and 0 dangling pending
+            orders. All 5 shipments soft-deleted via DELETE
+            /api/shipments/{id} (returned 200). No test artefacts
+            remain. Webhook mapping was set (preserved across the run);
+            it points "order_id"→"order_id" + standard customer fields
+            — safe for production use.
+
+            Pre-reqs verified: order_id_auto_generate=true (PUT
+            /api/settings), reused existing courier (Nandan Courier
+            f48dc9c4-19cb-4014-a05b-1f3de3002796).
+
+agent_communication:
+    -agent: "testing"
+    -message: |
+        Phase-21 order_id priority chain fix on POST /api/orders/pending/
+        {id}/ship — VERIFIED. 27/27 assertions passed across all 5 review
+        scenarios (webhook with id, webhook without id, smart-paste with
+        "Order ID:" line, smart-paste without id, CSV file-import with
+        order_id column). Shipment.order_id correctly takes
+        PendingOrder.order_id first, then order_id_hint, then
+        master_order_id — never blank. Tests run live against the
+        preview backend; created shipments cleaned up. Main agent can
+        finalise this feature.
+
+---
+
+
 ## Iteration: Phase-C Filtered Master → User Sheet Sync (2026-04-29)
 
 ### Backend (`/app/backend/sheet_writer.py`)

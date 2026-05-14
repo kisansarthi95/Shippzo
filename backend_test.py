@@ -1,314 +1,497 @@
-"""Backend test for POST /api/demo/clear endpoint — Phase-21 sweep upgrade.
+"""Backend test — Phase-21 order_id priority chain fix on ship_pending_order.
 
-Covers the review request:
-  1. Fresh user signup auto-seeds 15 demo shipments + 1 Demo Courier (is_demo:True).
-  2. GET /api/shipments and /api/couriers reflect the demo state before clear.
-  3. POST /api/demo/clear returns per-collection breakdown + idempotency.
-  4. After clear: shipments empty, Demo Courier deleted.
-  5. Idempotent re-clear returns all zeros.
-  6. Smart "in-use" check: real shipment using Demo Courier preserves the
-     courier (couriers=0 deleted) and unsets the is_demo flag.
+Tests POST /api/orders/pending/{order_id}/ship to verify the Shipment's
+`order_id` is set per the new priority:
+  1. PendingOrder.order_id (upstream-or-master fallback set at ingest)
+  2. order_id_hint (regex paste hint)
+  3. master_order_id (final fallback so order_id is NEVER blank)
+
+Test cases:
+  A. Webhook ingest with upstream order_id mapped → preserved on Shipment.
+  B. Webhook ingest WITHOUT order_id mapping → falls back to master_order_id.
+  C. Smart Paste with explicit "Order #ABC-001" in text → preserved.
+  D. Smart Paste WITHOUT order_id in text → master_order_id fallback.
+  E. File import with order_id column populated → preserved.
 """
+import io
 import os
 import sys
 import time
 import uuid
+import json
 import requests
 
-# ---------------------------------------------------------------------
-# Resolve BASE_URL from frontend/.env (EXPO_PUBLIC_BACKEND_URL) — strict
-# rule: never hardcode, never use localhost.
-# ---------------------------------------------------------------------
+
 def _resolve_base_url() -> str:
     env_path = "/app/frontend/.env"
     if os.path.exists(env_path):
         with open(env_path, "r", encoding="utf-8") as fh:
             for line in fh:
                 line = line.strip()
-                if not line or line.startswith("#"):
-                    continue
-                if "=" not in line:
+                if not line or line.startswith("#") or "=" not in line:
                     continue
                 k, _, v = line.partition("=")
                 if k.strip() in ("EXPO_PUBLIC_BACKEND_URL", "REACT_APP_BACKEND_URL"):
                     return v.strip().strip('"').strip("'").rstrip("/")
-    raise RuntimeError("EXPO_PUBLIC_BACKEND_URL not found in /app/frontend/.env")
+    raise RuntimeError("EXPO_PUBLIC_BACKEND_URL not in /app/frontend/.env")
 
 
 BASE_URL = _resolve_base_url() + "/api"
 print(f"[setup] BASE_URL = {BASE_URL}")
 
 
-# ---------------------------------------------------------------------
-# Assertion bookkeeping
-# ---------------------------------------------------------------------
 PASS = 0
 FAIL = 0
-FAILURES = []
+FAILURES: list = []
 
 
 def check(cond: bool, label: str, detail: str = "") -> None:
     global PASS, FAIL
     if cond:
         PASS += 1
-        print(f"  ✅ {label}")
+        print(f"  PASS {label}")
     else:
         FAIL += 1
-        FAILURES.append(f"{label} :: {detail}")
-        print(f"  ❌ {label} :: {detail}")
+        FAILURES.append(label + (f"  -- {detail}" if detail else ""))
+        print(f"  FAIL {label}" + (f"  -- {detail}" if detail else ""))
 
 
-# ---------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------
-def make_email(tag: str) -> str:
-    return f"democlear_test_phase21_{tag}_{uuid.uuid4().hex[:6]}@test.com"
+def login(email: str, pwd: str) -> str:
+    r = requests.post(
+        f"{BASE_URL}/auth/login",
+        json={"email": email, "password": pwd},
+        timeout=30,
+    )
+    r.raise_for_status()
+    return r.json()["token"]
 
 
-def signup_user(tag: str) -> dict:
-    email = make_email(tag)
+TOKEN = login("admin@test.com", "Admin@12345")
+H = {"Authorization": f"Bearer {TOKEN}"}
+print("[setup] Logged in as admin@test.com")
+
+
+created_pending_ids: set = set()
+created_shipment_ids: set = set()
+created_courier_id: str = ""
+
+
+def cleanup():
+    print("\n[cleanup]")
+    for pid in list(created_pending_ids):
+        try:
+            r = requests.delete(
+                f"{BASE_URL}/orders/pending/{pid}", headers=H, timeout=20,
+            )
+            print(f"  DELETE /orders/pending/{pid} -> {r.status_code}")
+        except Exception as e:
+            print(f"  DELETE pending {pid} failed: {e}")
+    for sid in list(created_shipment_ids):
+        try:
+            r = requests.delete(
+                f"{BASE_URL}/shipments/{sid}", headers=H, timeout=30,
+            )
+            print(f"  DELETE /shipments/{sid} -> {r.status_code}")
+        except Exception as e:
+            print(f"  DELETE shipment {sid} failed: {e}")
+    if created_courier_id:
+        try:
+            r = requests.delete(
+                f"{BASE_URL}/couriers/{created_courier_id}", headers=H, timeout=20,
+            )
+            print(f"  DELETE /couriers/{created_courier_id} -> {r.status_code}")
+        except Exception as e:
+            print(f"  DELETE courier failed: {e}")
+
+
+# ----- Ensure auto-generate is ON -----------------------------------------
+print("\n[pre-req] Ensure order_id_auto_generate is ON in /settings")
+r = requests.put(
+    f"{BASE_URL}/settings",
+    headers=H,
+    json={"order_id_auto_generate": True},
+    timeout=30,
+)
+print(f"  PUT /settings -> {r.status_code}")
+
+# ----- Ensure courier exists ----------------------------------------------
+print("\n[pre-req] Ensure a courier exists for shipping tests")
+r = requests.get(f"{BASE_URL}/couriers", headers=H, timeout=20)
+r.raise_for_status()
+couriers = r.json()
+COURIER_ID = ""
+if couriers:
+    real = [c for c in couriers if not c.get("is_demo")]
+    COURIER_ID = (real[0] if real else couriers[0])["id"]
+    print(f"  Reusing courier id={COURIER_ID}")
+else:
     payload = {
-        "email": email,
-        "password": "Test@1234",
-        "name": f"Demo Clear Tester {tag}",
-        "shop_name": f"Demo Shop {tag}",
-        "phone": "9876543210",
-        "primary_business_category": "fashion_apparel",
+        "name": f"Test Courier {uuid.uuid4().hex[:6]}",
+        "series_prefix": "TC",
+        "next_number": 1,
+        "number_padding": 4,
+        "tracking_url_template": "https://example.com/track/{tracking}",
     }
-    r = requests.post(f"{BASE_URL}/auth/signup", json=payload, timeout=60)
-    assert r.status_code == 200, f"signup failed {r.status_code}: {r.text[:300]}"
-    body = r.json()
-    return {"email": email, "token": body["token"], "uid": body.get("id")}
+    r = requests.post(f"{BASE_URL}/couriers", headers=H, json=payload, timeout=20)
+    r.raise_for_status()
+    COURIER_ID = r.json()["id"]
+    created_courier_id = COURIER_ID
+    print(f"  Created courier id={COURIER_ID}")
 
 
-def auth_headers(token: str) -> dict:
-    return {"Authorization": f"Bearer {token}"}
+def ensure_webhook_with_order_id_mapping() -> str:
+    r = requests.get(f"{BASE_URL}/me/webhook-config", headers=H, timeout=20)
+    r.raise_for_status()
+    cfg = r.json()
+    secret = cfg.get("secret") or ""
+    if not secret:
+        r2 = requests.post(
+            f"{BASE_URL}/me/webhook-config/rotate",
+            headers=H, json={"name": "Test Webhook"}, timeout=20,
+        )
+        r2.raise_for_status()
+        secret = r2.json()["secret"]
+        print(f"  Rotated to create webhook secret={secret[:8]}...")
 
-
-def get_shipments(token: str) -> list:
-    r = requests.get(f"{BASE_URL}/shipments", headers=auth_headers(token), timeout=30)
-    assert r.status_code == 200, f"GET /shipments failed {r.status_code}: {r.text[:300]}"
-    return r.json()
-
-
-def get_couriers(token: str) -> list:
-    r = requests.get(f"{BASE_URL}/couriers", headers=auth_headers(token), timeout=30)
-    assert r.status_code == 200, f"GET /couriers failed {r.status_code}: {r.text[:300]}"
-    return r.json()
-
-
-def post_demo_clear(token: str) -> dict:
-    r = requests.post(f"{BASE_URL}/demo/clear", headers=auth_headers(token), timeout=60)
-    assert r.status_code == 200, f"POST /demo/clear failed {r.status_code}: {r.text[:300]}"
-    return r.json()
-
-
-# ---------------------------------------------------------------------
-# SCENARIO 1 — Happy path: clear demo data on a fresh user
-# ---------------------------------------------------------------------
-def scenario_1_happy_path():
-    print("\n=== SCENARIO 1: Happy path — fresh user → clear ===")
-    user = signup_user("happy")
-    token = user["token"]
-    print(f"[setup] signed up {user['email']}")
-
-    # Tiny pause: seeding 15 shipments is async-free in this codebase but
-    # mongo writes still need a beat to settle.
-    time.sleep(0.5)
-
-    # 2) Before clear
-    ships = get_shipments(token)
-    demo_ships = [s for s in ships if s.get("is_demo")]
-    check(len(ships) == 15, "before clear: 15 shipments returned", f"got {len(ships)}")
-    check(len(demo_ships) == 15, "before clear: all 15 are is_demo=True",
-          f"got {len(demo_ships)}")
-
-    couriers = get_couriers(token)
-    demo_couriers = [c for c in couriers if c.get("name") == "Demo Courier"]
-    check(len(demo_couriers) == 1, "before clear: Demo Courier present",
-          f"couriers={[c.get('name') for c in couriers]}")
-    if demo_couriers:
-        check(bool(demo_couriers[0].get("is_demo")) is True,
-              "before clear: Demo Courier has is_demo=True",
-              f"is_demo={demo_couriers[0].get('is_demo')!r}")
-
-    # 3) POST /demo/clear
-    body = post_demo_clear(token)
-    print(f"[clear] response = {body}")
-    check(body.get("ok") is True, "clear response: ok=true",
-          f"ok={body.get('ok')!r}")
-    check(body.get("shipments") == 15, "clear response: shipments=15",
-          f"got {body.get('shipments')}")
-    check(body.get("pending_orders") == 0, "clear response: pending_orders=0",
-          f"got {body.get('pending_orders')}")
-    check(body.get("couriers") == 1, "clear response: couriers=1",
-          f"got {body.get('couriers')}")
-    expected_total = (body.get("shipments", 0) + body.get("pending_orders", 0)
-                      + body.get("couriers", 0))
-    check(body.get("deleted") == expected_total,
-          "clear response: deleted == sum",
-          f"deleted={body.get('deleted')} sum={expected_total}")
-    check(body.get("deleted") == 16, "clear response: total deleted=16",
-          f"got {body.get('deleted')}")
-
-    # 4) After clear
-    ships_after = get_shipments(token)
-    check(len(ships_after) == 0, "after clear: shipments empty",
-          f"got {len(ships_after)}")
-    couriers_after = get_couriers(token)
-    names_after = [c.get("name") for c in couriers_after]
-    check("Demo Courier" not in names_after,
-          "after clear: Demo Courier absent",
-          f"couriers={names_after}")
-
-    # 5) Idempotency
-    body2 = post_demo_clear(token)
-    print(f"[clear-again] response = {body2}")
-    check(body2.get("ok") is True, "idempotent clear: ok=true",
-          f"ok={body2.get('ok')!r}")
-    check(body2.get("shipments") == 0, "idempotent clear: shipments=0",
-          f"got {body2.get('shipments')}")
-    check(body2.get("pending_orders") == 0, "idempotent clear: pending_orders=0",
-          f"got {body2.get('pending_orders')}")
-    check(body2.get("couriers") == 0, "idempotent clear: couriers=0",
-          f"got {body2.get('couriers')}")
-    check(body2.get("deleted") == 0, "idempotent clear: deleted=0",
-          f"got {body2.get('deleted')}")
-
-
-# ---------------------------------------------------------------------
-# SCENARIO 2 — In-use check: real shipment pins the Demo Courier
-# ---------------------------------------------------------------------
-def scenario_2_in_use_preserves_courier():
-    print("\n=== SCENARIO 2: In-use Demo Courier must be preserved ===")
-    user = signup_user("inuse")
-    token = user["token"]
-    print(f"[setup] signed up {user['email']}")
-    time.sleep(0.5)
-
-    # Find the seeded Demo Courier id
-    couriers = get_couriers(token)
-    demo_courier = next((c for c in couriers if c.get("name") == "Demo Courier"), None)
-    check(demo_courier is not None, "scenario-2 prep: Demo Courier exists",
-          f"couriers={[c.get('name') for c in couriers]}")
-    if not demo_courier:
-        return
-    courier_id = demo_courier["id"]
-    check(bool(demo_courier.get("is_demo")) is True,
-          "scenario-2 prep: Demo Courier flagged is_demo=True",
-          f"is_demo={demo_courier.get('is_demo')!r}")
-
-    # Create a REAL shipment using the Demo Courier
-    real_payload = {
-        "tracking_id": f"REAL{uuid.uuid4().hex[:6].upper()}",
-        "courier_id": courier_id,
-        "courier_name": "Demo Courier",
-        "customer_name": "Priya Sharma",
-        "customer_phone": "9123456789",
-        "address_line1": "12 Marine Drive",
-        "city": "Mumbai",
-        "state": "Maharashtra",
-        "pincode": "400020",
-        "payment_mode": "Prepaid",
-        "amount": 1499.0,
-        "weight": "0.5",
-        "items": ["Silk Saree"],
+    mapping = {
+        "order_id":     "order_id",
+        "name":         "customer_name",
+        "phone":        "customer_phone",
+        "address":      "address",
+        "city":         "city",
+        "state":        "state",
+        "pincode":      "pincode",
+        "amount":       "amount",
     }
-    r = requests.post(f"{BASE_URL}/shipments", json=real_payload,
-                      headers=auth_headers(token), timeout=60)
-    check(r.status_code == 200,
-          "scenario-2: POST /shipments (real) returned 200",
-          f"status={r.status_code} body={r.text[:300]}")
+    r3 = requests.put(
+        f"{BASE_URL}/me/webhook-config",
+        headers=H, json={"mapping": mapping}, timeout=20,
+    )
+    r3.raise_for_status()
+    return secret
+
+
+WH_SECRET = ensure_webhook_with_order_id_mapping()
+print(f"\n[setup] Webhook secret prepared ({WH_SECRET[:8]}...)")
+
+
+def find_pending_by_phone(phone: str) -> dict | None:
+    r = requests.get(f"{BASE_URL}/orders/pending", headers=H, timeout=30)
+    r.raise_for_status()
+    for o in r.json():
+        if (o.get("customer_phone") or "").strip().endswith(phone[-10:]):
+            return o
+    return None
+
+
+def ship(pending_id: str) -> dict:
+    r = requests.post(
+        f"{BASE_URL}/orders/pending/{pending_id}/ship",
+        headers=H, json={"courier_id": COURIER_ID}, timeout=30,
+    )
     if r.status_code != 200:
-        return
-    real_ship = r.json()
-    check(bool(real_ship.get("is_demo")) is False or real_ship.get("is_demo") is None,
-          "scenario-2: real shipment is NOT flagged is_demo",
-          f"is_demo={real_ship.get('is_demo')!r}")
-    check(real_ship.get("courier_id") == courier_id,
-          "scenario-2: real shipment linked to Demo Courier id",
-          f"got {real_ship.get('courier_id')}")
-
-    # Sanity — total shipments should now be 16 (15 demo + 1 real)
-    ships_pre_clear = get_shipments(token)
-    demo_count_pre = sum(1 for s in ships_pre_clear if s.get("is_demo"))
-    real_count_pre = len(ships_pre_clear) - demo_count_pre
-    check(demo_count_pre == 15,
-          "scenario-2: 15 demo shipments before clear",
-          f"got {demo_count_pre}")
-    check(real_count_pre == 1,
-          "scenario-2: 1 real shipment before clear",
-          f"got {real_count_pre}")
-
-    # POST /demo/clear — courier must be preserved
-    body = post_demo_clear(token)
-    print(f"[clear-inuse] response = {body}")
-    check(body.get("ok") is True,
-          "scenario-2 clear: ok=true",
-          f"ok={body.get('ok')!r}")
-    check(body.get("shipments") == 15,
-          "scenario-2 clear: shipments=15 (only demo deleted)",
-          f"got {body.get('shipments')}")
-    check(body.get("pending_orders") == 0,
-          "scenario-2 clear: pending_orders=0",
-          f"got {body.get('pending_orders')}")
-    check(body.get("couriers") == 0,
-          "scenario-2 clear: couriers=0 (Demo Courier preserved due to in-use)",
-          f"got {body.get('couriers')}")
-    check(body.get("deleted") == 15,
-          "scenario-2 clear: total deleted=15",
-          f"got {body.get('deleted')}")
-
-    # Verify after — real shipment survives, Demo Courier still present
-    ships_after = get_shipments(token)
-    check(len(ships_after) == 1,
-          "scenario-2 after clear: 1 real shipment remains",
-          f"got {len(ships_after)} : {[s.get('tracking_id') for s in ships_after]}")
-    if ships_after:
-        check(ships_after[0].get("tracking_id") == real_payload["tracking_id"],
-              "scenario-2 after clear: surviving shipment is the real one",
-              f"got tracking_id={ships_after[0].get('tracking_id')}")
-
-    couriers_after = get_couriers(token)
-    demo_after = next((c for c in couriers_after if c.get("name") == "Demo Courier"), None)
-    check(demo_after is not None,
-          "scenario-2 after clear: Demo Courier still present",
-          f"couriers={[c.get('name') for c in couriers_after]}")
-    if demo_after:
-        # is_demo flag must be unset (so future clears won't target it)
-        check(not demo_after.get("is_demo"),
-              "scenario-2 after clear: is_demo flag UNSET on preserved courier",
-              f"is_demo={demo_after.get('is_demo')!r}")
-
-    # Second clear — should be a no-op (no demo data left, courier untagged)
-    body2 = post_demo_clear(token)
-    print(f"[clear-inuse-again] response = {body2}")
-    check(body2.get("ok") is True and body2.get("deleted") == 0
-          and body2.get("couriers") == 0 and body2.get("shipments") == 0,
-          "scenario-2 idempotent: second clear returns all zeros",
-          f"body={body2}")
+        raise RuntimeError(f"ship failed {r.status_code} {r.text[:200]}")
+    return r.json()
 
 
-# ---------------------------------------------------------------------
-# Run
-# ---------------------------------------------------------------------
-if __name__ == "__main__":
+# ===== TEST A — Webhook with upstream order_id ===========================
+print("\n" + "=" * 72)
+print("TEST A: Webhook ingest with upstream order_id")
+print("=" * 72)
+phone_a = "9112000111"
+upstream_a = f"UPSTREAM-XYZ-{uuid.uuid4().hex[:6].upper()}"
+payload_a = {
+    "order_id": upstream_a,
+    "name":     "Rohit Sharma",
+    "phone":    phone_a,
+    "address":  "1, MG Road",
+    "city":     "Ahmedabad",
+    "state":    "Gujarat",
+    "pincode":  "380015",
+    "amount":   799,
+}
+r = requests.post(
+    f"{BASE_URL}/webhook/orders/{WH_SECRET}", json=payload_a, timeout=30,
+)
+print(f"  POST webhook -> {r.status_code} {r.text[:160]}")
+check(r.status_code == 200, "Test A: webhook accepts payload")
+body = r.json()
+check(body.get("imported") == 1, "Test A: imported=1", f"got {body}")
+
+time.sleep(0.5)
+po_a = find_pending_by_phone(phone_a)
+check(po_a is not None, "Test A: pending order created and discoverable")
+if po_a:
+    created_pending_ids.add(po_a["id"])
+    print(f"  pending.order_id          = {po_a.get('order_id')!r}")
+    print(f"  pending.master_order_id   = {po_a.get('master_order_id')!r}")
+    print(f"  pending.external_order_id = {po_a.get('external_order_id')!r}")
+    check(
+        po_a.get("order_id") == upstream_a,
+        "Test A: PendingOrder.order_id preserves upstream value",
+        f"expected {upstream_a!r}, got {po_a.get('order_id')!r}",
+    )
     try:
-        scenario_1_happy_path()
-        scenario_2_in_use_preserves_courier()
-    except Exception as exc:
-        print(f"\n[fatal] Test suite aborted: {exc}")
-        import traceback
-        traceback.print_exc()
-        FAIL += 1
-        FAILURES.append(f"FATAL: {exc}")
+        ship_a = ship(po_a["id"])
+        created_shipment_ids.add(ship_a["id"])
+        created_pending_ids.discard(po_a["id"])
+        print(f"  ship.order_id        = {ship_a.get('order_id')!r}")
+        print(f"  ship.master_order_id = {ship_a.get('master_order_id')!r}")
+        check(
+            ship_a.get("order_id") == upstream_a,
+            "Test A: Shipment.order_id == upstream order_id",
+            f"expected {upstream_a!r}, got {ship_a.get('order_id')!r}",
+        )
+        check(
+            ship_a.get("order_id") != ship_a.get("master_order_id"),
+            "Test A: Shipment.order_id is NOT the master_order_id",
+        )
+    except Exception as e:
+        check(False, "Test A: ship POST 200", str(e))
 
-    print("\n========================================")
-    print(f"PASSED: {PASS}")
-    print(f"FAILED: {FAIL}")
-    if FAILURES:
-        print("\nFailures:")
-        for f in FAILURES:
-            print(f"  - {f}")
-    print("========================================")
-    sys.exit(0 if FAIL == 0 else 1)
+
+# ===== TEST B — Webhook without order_id ================================
+print("\n" + "=" * 72)
+print("TEST B: Webhook ingest WITHOUT order_id -> master_order_id fallback")
+print("=" * 72)
+phone_b = "9111000333"
+payload_b = {
+    "name":    "Test User B",
+    "phone":   phone_b,
+    "address": "55 Some Street",
+    "city":    "X",
+    "state":   "Y",
+    "pincode": "380015",
+    "amount":  499,
+}
+r = requests.post(
+    f"{BASE_URL}/webhook/orders/{WH_SECRET}", json=payload_b, timeout=30,
+)
+print(f"  POST webhook -> {r.status_code} {r.text[:160]}")
+check(r.status_code == 200, "Test B: webhook accepts payload")
+check(r.json().get("imported") == 1, "Test B: imported=1")
+
+time.sleep(0.5)
+po_b = find_pending_by_phone(phone_b)
+check(po_b is not None, "Test B: pending order created and discoverable")
+if po_b:
+    created_pending_ids.add(po_b["id"])
+    moid_b = po_b.get("master_order_id") or ""
+    oid_b  = po_b.get("order_id") or ""
+    print(f"  pending.master_order_id = {moid_b!r}")
+    print(f"  pending.order_id        = {oid_b!r}")
+    check(
+        bool(moid_b) and moid_b.isdigit() and len(moid_b) >= 8,
+        "Test B: PendingOrder.master_order_id is allocated (YYMMDD+seq)",
+        f"got {moid_b!r}",
+    )
+    check(
+        oid_b == moid_b,
+        "Test B: PendingOrder.order_id == master_order_id (ingest fallback)",
+        f"order_id={oid_b!r} master={moid_b!r}",
+    )
+    try:
+        ship_b = ship(po_b["id"])
+        created_shipment_ids.add(ship_b["id"])
+        created_pending_ids.discard(po_b["id"])
+        print(f"  ship.order_id        = {ship_b.get('order_id')!r}")
+        print(f"  ship.master_order_id = {ship_b.get('master_order_id')!r}")
+        check(
+            ship_b.get("order_id") == moid_b,
+            "Test B: Shipment.order_id == master_order_id",
+            f"expected {moid_b!r}, got {ship_b.get('order_id')!r}",
+        )
+        check(
+            bool(ship_b.get("order_id")),
+            "Test B: Shipment.order_id is NOT empty",
+        )
+    except Exception as e:
+        check(False, "Test B: ship POST 200", str(e))
+
+
+# ===== TEST C — Smart-paste with explicit Order ID =====================
+print("\n" + "=" * 72)
+print("TEST C: Smart-paste with explicit Order #ABC-001 -> preserved")
+print("=" * 72)
+phone_c = "9999000444"
+# Use canonical "Order ID:" form (parser pre-normalises space → underscore).
+text_c = (
+    "Order ID: ABC-001\n"
+    "NAME: Riya Singh\n"
+    f"PHONE: {phone_c}\n"
+    "ADDRESS: 22 Park Lane\n"
+    "CITY: Ahmedabad\n"
+    "STATE: Gujarat\n"
+    "PINCODE: 380015\n"
+    "AMOUNT: 599\n"
+    "PAYMENT: COD\n"
+    "ITEMS: T-Shirt\n"
+)
+r = requests.post(
+    f"{BASE_URL}/smart-paste", headers=H,
+    json={"text": text_c, "skip_llm": True}, timeout=60,
+)
+print(f"  POST /smart-paste -> {r.status_code} {r.text[:240]}")
+check(r.status_code == 200, "Test C: smart-paste 200", r.text[:200])
+if r.status_code == 200:
+    po_c = r.json()
+    created_pending_ids.add(po_c["id"])
+    oid_c = po_c.get("order_id") or ""
+    moid_c = po_c.get("master_order_id") or ""
+    print(f"  pending.order_id        = {oid_c!r}")
+    print(f"  pending.master_order_id = {moid_c!r}")
+    check(
+        oid_c == "ABC-001",
+        "Test C: PendingOrder.order_id == 'ABC-001' (parsed)",
+        f"got {oid_c!r}",
+    )
+    check(
+        bool(moid_c) and moid_c != oid_c,
+        "Test C: master_order_id allocated and distinct from order_id",
+        f"master={moid_c!r}",
+    )
+    try:
+        ship_c = ship(po_c["id"])
+        created_shipment_ids.add(ship_c["id"])
+        created_pending_ids.discard(po_c["id"])
+        print(f"  ship.order_id        = {ship_c.get('order_id')!r}")
+        print(f"  ship.master_order_id = {ship_c.get('master_order_id')!r}")
+        check(
+            ship_c.get("order_id") == "ABC-001",
+            "Test C: Shipment.order_id == 'ABC-001'",
+            f"got {ship_c.get('order_id')!r}",
+        )
+    except Exception as e:
+        check(False, "Test C: ship POST 200", str(e))
+
+
+# ===== TEST D — Smart-paste without order_id ===========================
+print("\n" + "=" * 72)
+print("TEST D: Smart-paste WITHOUT order_id -> master fallback")
+print("=" * 72)
+phone_d = "9999000555"
+text_d = (
+    "NAME: Riya Patel\n"
+    f"PHONE: {phone_d}\n"
+    "ADDRESS: 33 Lake View\n"
+    "CITY: Ahmedabad\n"
+    "STATE: Gujarat\n"
+    "PINCODE: 380015\n"
+    "AMOUNT: 599\n"
+    "PAYMENT: COD\n"
+    "ITEMS: T-Shirt\n"
+)
+r = requests.post(
+    f"{BASE_URL}/smart-paste", headers=H,
+    json={"text": text_d, "skip_llm": True}, timeout=60,
+)
+print(f"  POST /smart-paste -> {r.status_code} {r.text[:240]}")
+check(r.status_code == 200, "Test D: smart-paste 200", r.text[:200])
+if r.status_code == 200:
+    po_d = r.json()
+    created_pending_ids.add(po_d["id"])
+    oid_d  = po_d.get("order_id") or ""
+    moid_d = po_d.get("master_order_id") or ""
+    print(f"  pending.order_id        = {oid_d!r}")
+    print(f"  pending.master_order_id = {moid_d!r}")
+    check(bool(moid_d), "Test D: master_order_id allocated", f"got {moid_d!r}")
+    check(
+        oid_d == moid_d,
+        "Test D: PendingOrder.order_id == master_order_id (auto fallback)",
+        f"order_id={oid_d!r} master={moid_d!r}",
+    )
+    try:
+        ship_d = ship(po_d["id"])
+        created_shipment_ids.add(ship_d["id"])
+        created_pending_ids.discard(po_d["id"])
+        print(f"  ship.order_id        = {ship_d.get('order_id')!r}")
+        print(f"  ship.master_order_id = {ship_d.get('master_order_id')!r}")
+        check(
+            ship_d.get("order_id") == moid_d,
+            "Test D: Shipment.order_id == master_order_id",
+            f"expected {moid_d!r}, got {ship_d.get('order_id')!r}",
+        )
+        check(
+            bool(ship_d.get("order_id")),
+            "Test D: Shipment.order_id is NOT empty",
+        )
+    except Exception as e:
+        check(False, "Test D: ship POST 200", str(e))
+
+
+# ===== TEST E — File import with order_id column ========================
+print("\n" + "=" * 72)
+print("TEST E: File import CSV with order_id -> preserved")
+print("=" * 72)
+file_oid = f"FILE-ORD-{uuid.uuid4().hex[:6].upper()}"
+phone_e = "9999000666"
+csv_text = (
+    "customer_name,phone,pincode,city,state,item,amount,order_id\n"
+    f"Test User E,{phone_e},380015,Ahmedabad,Gujarat,Item E,499,{file_oid}\n"
+)
+mapping_e = {
+    "customer_name": "customer_name",
+    "phone":         "customer_phone",
+    "pincode":       "pincode",
+    "city":          "city",
+    "state":         "state",
+    "item":          "items",
+    "amount":        "amount",
+    "order_id":      "order_id",
+}
+files = {
+    "file": ("orders.csv", io.BytesIO(csv_text.encode("utf-8")), "text/csv"),
+}
+data = {
+    "mapping": json.dumps(mapping_e),
+    "save_default": "false",
+}
+r = requests.post(
+    f"{BASE_URL}/orders/import/commit",
+    headers=H, files=files, data=data, timeout=60,
+)
+print(f"  POST /orders/import/commit -> {r.status_code} {r.text[:240]}")
+check(r.status_code == 200, "Test E: file-import 200", r.text[:200])
+if r.status_code == 200:
+    res = r.json()
+    check(res.get("imported") == 1, "Test E: imported=1", f"got {res}")
+    time.sleep(0.5)
+    po_e = find_pending_by_phone(phone_e)
+    check(po_e is not None, "Test E: pending order created and discoverable")
+    if po_e:
+        created_pending_ids.add(po_e["id"])
+        oid_e  = po_e.get("order_id") or ""
+        moid_e = po_e.get("master_order_id") or ""
+        print(f"  pending.order_id        = {oid_e!r}")
+        print(f"  pending.master_order_id = {moid_e!r}")
+        check(
+            oid_e == file_oid,
+            "Test E: PendingOrder.order_id preserves file value",
+            f"expected {file_oid!r}, got {oid_e!r}",
+        )
+        try:
+            ship_e = ship(po_e["id"])
+            created_shipment_ids.add(ship_e["id"])
+            created_pending_ids.discard(po_e["id"])
+            print(f"  ship.order_id        = {ship_e.get('order_id')!r}")
+            print(f"  ship.master_order_id = {ship_e.get('master_order_id')!r}")
+            check(
+                ship_e.get("order_id") == file_oid,
+                "Test E: Shipment.order_id == file order_id",
+                f"expected {file_oid!r}, got {ship_e.get('order_id')!r}",
+            )
+        except Exception as e:
+            check(False, "Test E: ship POST 200", str(e))
+
+
+cleanup()
+
+print("\n" + "=" * 72)
+print(f"RESULT: PASS={PASS}  FAIL={FAIL}")
+print("=" * 72)
+if FAIL:
+    print("\nFailures:")
+    for f in FAILURES:
+        print(f"  - {f}")
+    sys.exit(1)
+sys.exit(0)
