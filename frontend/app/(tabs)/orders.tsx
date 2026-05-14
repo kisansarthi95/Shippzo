@@ -484,10 +484,21 @@ export default function OrdersFromSheet() {
     if (sourceFilter === "all" || sourceFilter === "new") {
       for (const po of abandonedRecoveredOrders) {
         const meta: any = (po as any).source_meta || {};
+        // Phase-21 — Show the ORIGINAL source (the storefront the
+        // cart was recovered from) on the badge so the operator can
+        // tell "this came from Shopify" vs "this came from Dukaan"
+        // at a glance. Priority: source_app → webhook_name → generic
+        // "Recovered" fallback. `source_app` is the lowercased
+        // canonical key (used for status sync); `webhook_name` is the
+        // friendly display name the owner set on the webhook config.
+        const srcRaw = String(meta.source_app || meta.webhook_name || "").trim();
+        const srcLabel = srcRaw
+          ? srcRaw.charAt(0).toUpperCase() + srcRaw.slice(1)
+          : "Recovered";
         out.push({
           key: `abandoned-recovered|${po.id}`,
           source: "webhook",   // shares the webhook shipping action
-          badgeLabel: "🛒 RECOVERED",
+          badgeLabel: `🛒 ${srcLabel}`,
           badgeBg: "#FCE7F3",
           badgeFg: "#9D174D",
           sortTime: tsOf(meta.recovered_at) || tsOf(po.created_at),
