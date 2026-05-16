@@ -119,6 +119,45 @@ export default function RootLayout() {
                   name="admin/credit-packages"
                   options={{ headerShown: false }}
                 />
+                {/* ── Support Center route stack ──
+                 *  Each nested screen is declared so it joins the root
+                 *  Stack with its own header + back button — this makes
+                 *  pressing back navigate screen-by-screen (e.g. ticket
+                 *  detail → my-tickets → support-center hub → settings)
+                 *  instead of exiting all the way back to the tabs.
+                 */}
+                <Stack.Screen
+                  name="support-center"
+                  options={{ headerShown: true, title: "Support Center", headerShadowVisible: false, headerBackTitle: "Back" }}
+                />
+                <Stack.Screen
+                  name="support-center/my-tickets"
+                  options={{ headerShown: true, title: "My Requests", headerShadowVisible: false, headerBackTitle: "Back" }}
+                />
+                <Stack.Screen
+                  name="support-center/create"
+                  options={{ headerShown: true, title: "Contact Support", headerShadowVisible: false, headerBackTitle: "Back" }}
+                />
+                <Stack.Screen
+                  name="support-center/create/[cat]"
+                  options={{ headerShown: true, title: "Create Request", headerShadowVisible: false, headerBackTitle: "Back" }}
+                />
+                <Stack.Screen
+                  name="support-center/ticket/[id]"
+                  options={{ headerShown: true, title: "Request", headerShadowVisible: false, headerBackTitle: "Back" }}
+                />
+                <Stack.Screen
+                  name="support-center/tutorials"
+                  options={{ headerShown: true, title: "Video Tutorials", headerShadowVisible: false, headerBackTitle: "Back" }}
+                />
+                <Stack.Screen
+                  name="support-center/tutorials/[id]"
+                  options={{ headerShown: true, title: "Tutorial", headerShadowVisible: false, headerBackTitle: "Back" }}
+                />
+                <Stack.Screen
+                  name="support-center/tutorials/admin/add"
+                  options={{ headerShown: true, title: "Add Tutorial", headerShadowVisible: false, headerBackTitle: "Back" }}
+                />
               </Stack>
             </AuthGate>
           </SafeAreaProvider>
