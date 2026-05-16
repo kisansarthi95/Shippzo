@@ -3149,18 +3149,19 @@ export default function SettingsScreen() {
           </Section>
 
           <Section title="Help & Support" icon="help-buoy-outline">
+            {/* Phase-21 — Replaced the mailto-only "Contact Support"
+                row with a richer Support Center that opens a
+                dedicated screen (video tutorials, FAQs, create/track
+                support requests, popular articles, etc.). Email
+                fallback still available from inside that screen. */}
             <TouchableOpacity
-              testID="about-contact-support"
+              testID="about-support-center"
               style={styles.aboutLinkRow}
-              onPress={() =>
-                Linking.openURL(
-                  `mailto:${SUPPORT_EMAIL}?subject=${encodeURIComponent(APP_NAME + " support")}`,
-                )
-              }
+              onPress={() => router.push("/support-center" as any)}
             >
-              <PhIcon name="mail-outline" size={18} color={colors.primary} />
-              <Text style={styles.aboutLinkText}>Contact Support</Text>
-              <PhIcon name="open-outline" size={16} color="#94A3B8" />
+              <PhIcon name="headset" size={18} color={colors.primary} />
+              <Text style={styles.aboutLinkText}>Support Center</Text>
+              <PhIcon name="chevron-forward" size={16} color="#94A3B8" />
             </TouchableOpacity>
             <TouchableOpacity
               testID="about-whats-new"

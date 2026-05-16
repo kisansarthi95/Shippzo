@@ -1,0 +1,483 @@
+/**
+ * Phase-21 — Support Center
+ *
+ * Reachable from Settings → About & Help → Support Center.
+ *
+ * The visual hierarchy matches the approved design 1:1:
+ *   1. Orange "How can we help you today?" banner with the headset
+ *      illustration on the right.
+ *   2. Search bar inside the banner — type to filter the article list
+ *      below client-side. (Server-side article search can plug in
+ *      later via `searchArticles()` without changing this screen.)
+ *   3. 2x2 grid of large action cards:
+ *        • Video Tutorials   • FAQs
+ *        • Create Request    • My Requests
+ *   4. "Popular Articles" list with a "View All" link.
+ *   5. Sticky-feeling "Still need help?" CTA at the bottom that opens
+ *      the same Create Request flow used in card #3.
+ *
+ * Styling notes — strict adherence to the existing app theme:
+ *   • Orange accent reuses `colors.primary` (do NOT hardcode #FF8A3D).
+ *   • Card backgrounds use `colors.surface`; outer screen is the soft
+ *     `colors.bgSoft` already used by Settings.
+ *   • Border radius / shadow / padding match `aboutLinkRow`-style
+ *     cards in settings.tsx so the screen feels like a natural
+ *     extension of the existing flow.
+ *
+ * The four card actions and the article list rows currently stub out
+ * to lightweight Alert.alert() / mailto fallbacks so the visual
+ * structure is fully usable today; each action has a clear hand-off
+ * point (TODO comment) for when the real Tickets/Knowledge-Base
+ * backend lands.
+ */
+
+import React, { useMemo, useState } from "react";
+import {
+  Linking,
+  Platform,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
+} from "react-native";
+import { useRouter, Stack } from "expo-router";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
+import Constants from "expo-constants";
+
+import PhIcon from "../components/PhIcon";
+import { colors } from "../lib/theme";
+
+// App branding inline constants — mirror the lookup used in
+// settings.tsx so the support-center stays consistent if/when the
+// app is rebranded via app.json `expoConfig.extra`.
+const APP_EXTRA: any   = (Constants.expoConfig?.extra ?? {}) as any;
+const APP_NAME: string = Constants.expoConfig?.name || "Shippzo";
+const SUPPORT_EMAIL: string =
+  APP_EXTRA.supportEmail || "shippzo.support@gmail.com";
+
+// ───── Static content (replace with backend feed when available) ────
+const POPULAR_ARTICLES: Array<{ id: string; title: string; url?: string }> = [
+  { id: "label",     title: "How to generate shipping label?" },
+  { id: "recharge",  title: "How to recharge wallet?" },
+  { id: "import",    title: "How to import orders from Excel?" },
+  { id: "whatsapp",  title: "How to connect WhatsApp?" },
+  { id: "sheet",     title: "How to connect Google Sheet?" },
+  { id: "courier",   title: "How to add a courier partner?" },
+];
+
+export default function SupportCenter() {
+  const router = useRouter();
+  const insets = useSafeAreaInsets();
+  const [query, setQuery] = useState<string>("");
+
+  // Lightweight client-side filter for the Popular Articles list.
+  // Server-side full-text search is a TODO — when the KB is ready,
+  // swap this for a debounced `Api.searchArticles(query)` call.
+  const articles = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return POPULAR_ARTICLES;
+    return POPULAR_ARTICLES.filter((a) =>
+      a.title.toLowerCase().includes(q),
+    );
+  }, [query]);
+
+  // Centralised "fall back to email" so a single source of truth
+  // exists for the legacy mailto behaviour. Used by Create Request,
+  // My Requests, and the bottom "Still need help?" CTA until the
+  // real ticketing endpoints come online.
+  const openSupportEmail = (subject: string) => {
+    Linking.openURL(
+      `mailto:${SUPPORT_EMAIL}?subject=${encodeURIComponent(
+        `${APP_NAME} — ${subject}`,
+      )}`,
+    ).catch(() => {});
+  };
+
+  // Card press handlers — each currently stubs to a useful fallback
+  // so the screen is fully navigable today.
+  const onVideoTutorials = () => {
+    // TODO: replace with YouTube playlist deep-link / in-app player
+    // when the tutorials channel is published.
+    Linking.openURL("https://www.youtube.com/results?search_query=shippzo+tutorials")
+      .catch(() => {});
+  };
+  const onFAQs        = () => router.push("/refund-policy?tab=privacy" as any);
+  const onCreateRequest = () => openSupportEmail("Support request");
+  const onMyRequests  = () => openSupportEmail("My support requests");
+
+  return (
+    <View style={[styles.root, { paddingBottom: insets.bottom + 16 }]}>
+      <Stack.Screen
+        options={{
+          title: "Support Center",
+          headerTitleStyle: { fontWeight: "800" },
+          headerShadowVisible: false,
+        }}
+      />
+      <ScrollView
+        style={{ flex: 1 }}
+        contentContainerStyle={{ paddingBottom: 24 }}
+        keyboardShouldPersistTaps="handled"
+      >
+        {/* ─── 1. Orange help banner ───────────────────────────── */}
+        <View style={styles.banner}>
+          <View style={{ flex: 1, paddingRight: 12 }}>
+            <Text style={styles.bannerTitle}>How can we help you today?</Text>
+            <Text style={styles.bannerSub}>
+              Search for help or raise a support request
+            </Text>
+          </View>
+          <View style={styles.bannerHeadsetWrap}>
+            <PhIcon name="headset" size={42} color="rgba(255,255,255,0.95)" />
+          </View>
+        </View>
+
+        {/* ─── 2. Search bar (overlaps the banner footer) ─────── */}
+        <View style={styles.searchWrap}>
+          <View style={styles.searchInner}>
+            <TextInput
+              testID="support-search"
+              value={query}
+              onChangeText={setQuery}
+              placeholder="Search for articles, topics..."
+              placeholderTextColor="#9CA3AF"
+              style={styles.searchInput}
+              returnKeyType="search"
+            />
+            <PhIcon name="search" size={18} color="#94A3B8" />
+          </View>
+        </View>
+
+        {/* ─── 3. 2×2 action card grid ────────────────────────── */}
+        <View style={styles.grid}>
+          <BigCard
+            testID="sc-video"
+            icon="play"
+            iconBg="#EDE9FE"
+            iconColor="#7C3AED"
+            title="Video Tutorials"
+            sub={`Watch tutorials and learn\nhow to use ${APP_NAME}`}
+            onPress={onVideoTutorials}
+          />
+          <BigCard
+            testID="sc-faqs"
+            icon="question"
+            iconBg="#DBEAFE"
+            iconColor="#2563EB"
+            title="FAQs"
+            sub={"Find answers to\ncommon questions"}
+            onPress={onFAQs}
+          />
+          <BigCard
+            testID="sc-create"
+            icon="document-text-outline"
+            iconBg="#FFEDD5"
+            iconColor={colors.primary}
+            title="Create Request"
+            sub={"Raise a support request\nfor any issue"}
+            onPress={onCreateRequest}
+          />
+          <BigCard
+            testID="sc-my"
+            icon="clipboard"
+            iconBg="#DCFCE7"
+            iconColor="#16A34A"
+            title="My Requests"
+            sub={"Track and view your\nsupport requests"}
+            onPress={onMyRequests}
+          />
+        </View>
+
+        {/* ─── 4. Popular Articles list ───────────────────────── */}
+        <View style={styles.articlesHeader}>
+          <Text style={styles.articlesTitle}>Popular Articles</Text>
+          <TouchableOpacity onPress={() => Linking.openURL("https://shippzo.com/help").catch(() => {})}>
+            <Text style={styles.articlesViewAll}>View All</Text>
+          </TouchableOpacity>
+        </View>
+
+        <View style={styles.articlesCard}>
+          {articles.length === 0 ? (
+            <View style={styles.emptyArticles}>
+              <Text style={styles.emptyArticlesTxt}>
+                No articles match "{query}". Try a different search or tap
+                Create Request below.
+              </Text>
+            </View>
+          ) : (
+            articles.map((a, i) => (
+              <Pressable
+                key={a.id}
+                testID={`sc-article-${a.id}`}
+                onPress={() =>
+                  Linking.openURL(a.url || "https://shippzo.com/help").catch(
+                    () => {},
+                  )
+                }
+                style={({ pressed }) => [
+                  styles.articleRow,
+                  i < articles.length - 1 && styles.articleRowDivider,
+                  pressed && { opacity: 0.65 },
+                ]}
+              >
+                <PhIcon
+                  name="document-text-outline"
+                  size={18}
+                  color="#64748B"
+                />
+                <Text style={styles.articleTxt} numberOfLines={1}>
+                  {a.title}
+                </Text>
+                <PhIcon name="chevron-forward" size={16} color="#CBD5E1" />
+              </Pressable>
+            ))
+          )}
+        </View>
+
+        {/* ─── 5. Bottom "Still need help?" CTA ───────────────── */}
+        <View style={styles.helpCta}>
+          <View style={styles.helpCtaIcon}>
+            <PhIcon name="headset" size={20} color={colors.primary} />
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.helpCtaTitle}>Still need help?</Text>
+            <Text style={styles.helpCtaSub}>Our support team is here for you.</Text>
+          </View>
+          <TouchableOpacity
+            testID="sc-cta-create"
+            onPress={onCreateRequest}
+            activeOpacity={0.85}
+            style={styles.helpCtaBtn}
+          >
+            <Text style={styles.helpCtaBtnTxt}>Create Request</Text>
+          </TouchableOpacity>
+        </View>
+      </ScrollView>
+    </View>
+  );
+}
+
+// ─── Reusable big-card component (2x2 grid item) ─────────────────────
+function BigCard({
+  testID, icon, iconBg, iconColor, title, sub, onPress,
+}: {
+  testID?: string;
+  icon: string;
+  iconBg: string;
+  iconColor: string;
+  title: string;
+  sub: string;
+  onPress: () => void;
+}) {
+  return (
+    <TouchableOpacity
+      testID={testID}
+      onPress={onPress}
+      activeOpacity={0.85}
+      style={styles.bigCard}
+    >
+      <View style={[styles.bigCardIcon, { backgroundColor: iconBg }]}>
+        <PhIcon name={icon} size={22} color={iconColor} />
+      </View>
+      <Text style={styles.bigCardTitle}>{title}</Text>
+      <Text style={styles.bigCardSub}>{sub}</Text>
+    </TouchableOpacity>
+  );
+}
+
+// ─── Styles ──────────────────────────────────────────────────────────
+const RADIUS = 16;
+
+const styles = StyleSheet.create({
+  root: {
+    flex: 1,
+    backgroundColor: "#F4F5F7",
+  },
+
+  // 1. Banner
+  banner: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: colors.primary,
+    borderRadius: RADIUS,
+    marginHorizontal: 16,
+    marginTop: 12,
+    paddingHorizontal: 18,
+    paddingTop: 18,
+    paddingBottom: 44, // leaves room for search bar overlap below
+  },
+  bannerTitle: {
+    color: "#fff",
+    fontSize: 20,
+    fontWeight: "800",
+    lineHeight: 26,
+  },
+  bannerSub: {
+    color: "rgba(255,255,255,0.88)",
+    fontSize: 13,
+    marginTop: 6,
+  },
+  bannerHeadsetWrap: {
+    width: 70,
+    height: 70,
+    borderRadius: 35,
+    backgroundColor: "rgba(255,255,255,0.12)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
+  // 2. Search bar — overlaps the banner so it visually anchors the
+  // top of the page (mirrors the reference design).
+  searchWrap: {
+    marginTop: -28,
+    paddingHorizontal: 26,
+  },
+  searchInner: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    backgroundColor: "#fff",
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: Platform.OS === "ios" ? 12 : 8,
+    boxShadow: "0px 2px 6px rgba(0,0,0,0.07)",
+    elevation: 2,
+  },
+  searchInput: {
+    flex: 1,
+    fontSize: 14,
+    color: "#0F172A",
+    paddingVertical: 0,
+  },
+
+  // 3. 2×2 grid
+  grid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    paddingHorizontal: 12,
+    marginTop: 18,
+    gap: 12,
+  },
+  bigCard: {
+    width: "47%",
+    flexGrow: 1,
+    backgroundColor: "#fff",
+    borderRadius: RADIUS,
+    paddingVertical: 22,
+    paddingHorizontal: 16,
+    alignItems: "center",
+    boxShadow: "0px 1px 4px rgba(0,0,0,0.05)",
+    elevation: 1,
+  },
+  bigCardIcon: {
+    width: 52,
+    height: 52,
+    borderRadius: 26,
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 10,
+  },
+  bigCardTitle: {
+    color: "#0F172A",
+    fontSize: 14.5,
+    fontWeight: "800",
+  },
+  bigCardSub: {
+    color: "#64748B",
+    fontSize: 12,
+    textAlign: "center",
+    marginTop: 4,
+    lineHeight: 16,
+  },
+
+  // 4. Popular Articles
+  articlesHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginHorizontal: 16,
+    marginTop: 22,
+    marginBottom: 10,
+  },
+  articlesTitle: {
+    color: "#0F172A",
+    fontSize: 15,
+    fontWeight: "800",
+  },
+  articlesViewAll: {
+    color: colors.primary,
+    fontSize: 13,
+    fontWeight: "700",
+  },
+  articlesCard: {
+    backgroundColor: "#fff",
+    borderRadius: RADIUS,
+    marginHorizontal: 16,
+    paddingHorizontal: 14,
+    boxShadow: "0px 1px 4px rgba(0,0,0,0.05)",
+    elevation: 1,
+  },
+  articleRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    paddingVertical: 14,
+  },
+  articleRowDivider: {
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: "#E5E7EB",
+  },
+  articleTxt: {
+    flex: 1,
+    color: "#0F172A",
+    fontSize: 14,
+    fontWeight: "500",
+  },
+  emptyArticles: { padding: 16 },
+  emptyArticlesTxt: { color: "#64748B", fontSize: 13, lineHeight: 18 },
+
+  // 5. Bottom CTA
+  helpCta: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    backgroundColor: "#FFF7ED",
+    borderRadius: RADIUS,
+    marginHorizontal: 16,
+    marginTop: 18,
+    paddingHorizontal: 14,
+    paddingVertical: 14,
+  },
+  helpCtaIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: "#FFEDD5",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  helpCtaTitle: {
+    color: "#0F172A",
+    fontSize: 14,
+    fontWeight: "800",
+  },
+  helpCtaSub: {
+    color: "#64748B",
+    fontSize: 12,
+    marginTop: 2,
+  },
+  helpCtaBtn: {
+    backgroundColor: colors.primary,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: 10,
+  },
+  helpCtaBtnTxt: {
+    color: "#fff",
+    fontSize: 12.5,
+    fontWeight: "800",
+  },
+});

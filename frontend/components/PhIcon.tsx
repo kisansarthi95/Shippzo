@@ -193,6 +193,17 @@ const ICON_MAP: Record<string, React.ComponentType<any>> = {
   "call-outline":          Ph.Phone,
   phone:                   Ph.Phone,
   "phone-outline":         Ph.Phone,
+
+  // Phase-21 — Support Center screen icons.
+  // Mapped to closest phosphor SVGs so the new screen reuses the
+  // existing icon pipeline (no extra deps, consistent stroke width).
+  headset:                 Ph.Headset,
+  search:                  Ph.MagnifyingGlass,
+  "search-outline":        Ph.MagnifyingGlass,
+  play:                    Ph.MonitorPlay,         // Video Tutorials card
+  "play-outline":          Ph.MonitorPlay,
+  question:                Ph.Question,            // FAQs card
+  clipboard:               Ph.Clipboard,           // My Requests card
 };
 
 // Aliases for less obvious mappings — the kebab-case key is the
