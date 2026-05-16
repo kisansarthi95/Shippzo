@@ -44,6 +44,17 @@ const WHEN_OPTIONS = [
   { k: "older",      label: "Earlier" },
 ];
 
+/**
+ * Categories where the "Courier Name" field is contextually
+ * relevant. For unrelated categories (login, wallet, WhatsApp,
+ * app bug, feature request, etc.) the field is hidden to keep
+ * the form short and on-topic.
+ */
+const COURIER_RELEVANT_CATEGORIES: SupportCategoryKey[] = [
+  "label_print",
+  "order_input",
+];
+
 export default function CreateTicketForm() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
@@ -62,6 +73,12 @@ export default function CreateTicketForm() {
   const [createdTicketNumber, setCreatedTicketNumber] = useState<string>("");
   const [createdTicketId, setCreatedTicketId]         = useState<string>("");
 
+  /** Courier Name input is only relevant for label/courier and
+   *  order-input issues. For other categories (login, wallet,
+   *  WhatsApp, app bug, feature requests, etc.) we hide the
+   *  field so the form stays focused. */
+  const showCourierField = COURIER_RELEVANT_CATEGORIES.includes(category.k);
+
   const deviceInfo = useMemo(() => ({
     app_version: Constants.expoConfig?.version || "",
     platform:    Platform.OS,
@@ -79,7 +96,7 @@ export default function CreateTicketForm() {
         title:         category.title,
         description:   problem.trim(),
         category:      category.k,
-        courier_name:  courierName.trim(),
+        courier_name:  showCourierField ? courierName.trim() : "",
         order_id:      orderId.trim(),
         issue_started: when,
         device_info:   deviceInfo,
@@ -194,17 +211,21 @@ export default function CreateTicketForm() {
       >
         <Text style={styles.sectionLbl}>Please provide details about the issue</Text>
 
-        <Text style={styles.fieldLbl}>Courier Name</Text>
-        <View style={styles.inputWrap}>
-          <TextInput
-            value={courierName}
-            onChangeText={setCourierName}
-            placeholder="Optional… (e.g. Delhivery)"
-            placeholderTextColor="#9CA3AF"
-            style={styles.input}
-            maxLength={80}
-          />
-        </View>
+        {showCourierField && (
+          <>
+            <Text style={styles.fieldLbl}>Courier Name</Text>
+            <View style={styles.inputWrap}>
+              <TextInput
+                value={courierName}
+                onChangeText={setCourierName}
+                placeholder="Optional… (e.g. Delhivery)"
+                placeholderTextColor="#9CA3AF"
+                style={styles.input}
+                maxLength={80}
+              />
+            </View>
+          </>
+        )}
 
         <Text style={styles.fieldLbl}>Order ID (If Applicable)</Text>
         <View style={styles.inputWrap}>
