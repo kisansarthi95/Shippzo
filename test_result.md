@@ -19871,3 +19871,87 @@ agent_communication:
         covered by the review. Main agent can finalise/finish this
         sub-feature.
 
+
+---
+
+## Backend Test Run: Phase-21 Video Tutorials (2026-05-16)
+
+backend:
+  - task: "Phase-21 Video Tutorials CRUD + Admin Access Control + YouTube ID Extraction"
+    implemented: true
+    working: true
+    file: "/app/backend/routers/video_tutorials.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "testing"
+        -comment: |
+            40/40 assertions PASSED via /app/backend_test.py against
+            https://logistics-hub-740.preview.emergentagent.com/api.
+
+            Coverage (all 6 scenarios in the review request):
+
+            1) Auto YouTube ID extraction & thumbnail:
+               • POST /api/admin/video-tutorials with watch?v=dQw4w9WgXcQ →
+                 youtube_video_id="dQw4w9WgXcQ" + thumbnail_url=
+                 "https://img.youtube.com/vi/dQw4w9WgXcQ/hqdefault.jpg" ✅
+               • Short form youtu.be/ABC123def → "ABC123def" extracted ✅
+               • Embed youtube.com/embed/XYZ789abc → "XYZ789abc" ✅
+               • Invalid URL "not-a-youtube-link" → 400 with detail
+                 "Could not extract YouTube video ID from URL" ✅
+
+            2) Categories seed + list:
+               • GET /api/video-tutorial-categories returned all 5 defaults
+                 (Labels, Wallet, Excel, WhatsApp, Smart Fill) with
+                 is_active=true. Backend log confirmed
+                 "Seeded 5 default video tutorial categories" on startup ✅
+
+            3) Admin access control (user2@test.com — regular user):
+               • POST /api/admin/video-tutorials → 403 ✅
+               • DELETE /api/admin/video-tutorials/{id} → 403 ✅
+               • POST /api/admin/video-tutorial-categories → 403 ✅
+               • DELETE /api/admin/video-tutorial-categories/{id} → 403 ✅
+               • Read-only endpoints GET /api/video-tutorials and
+                 /api/video-tutorial-categories → 200 for regular user ✅
+
+            4) Tutorial CRUD (admin):
+               • Create → 200, appears in GET list ✅
+               • GET list with ?category=Labels filters correctly (all
+                 returned items had category=="Labels") ✅
+               • GET /api/video-tutorials/{id} → 200 with matching id ✅
+               • PATCH title → 200, new title persists ✅
+               • PATCH youtube_url to a new URL →
+                 youtube_video_id AND thumbnail_url both auto-updated ✅
+               • DELETE → 200, subsequent GET returns 404 ✅
+
+            5) Category CRUD:
+               • Admin creates {name:"Tracking", icon:"location-outline",
+                 display_order:6} → 200 with all fields correct ✅
+               • New category appears in GET list ✅
+               • PATCH name → 200, name updated to "TrackingUpdated" ✅
+               • DELETE (soft) → 200; subsequent GET list no longer
+                 contains the category (is_active=false filter) ✅
+
+            6) Filter "All" / no param:
+               • GET /api/video-tutorials (no param) and
+                 /api/video-tutorials?category=All returned identical
+                 result sets (backend treats "All" case-insensitively
+                 as "no filter") ✅
+
+            Cleanup: All test tutorials deleted at end of run; soft-deleted
+            "TrackingUpdated" category left as is_active=false (does not
+            affect users). 5 default seed categories intact.
+
+agent_communication:
+    -agent: "testing"
+    -message: |
+        Phase-21 Video Tutorials backend FULLY VERIFIED. 40/40 assertions
+        passed across all 6 review scenarios (YouTube ID extraction for 3
+        URL formats + invalid URL 400, default categories seed, admin
+        access control on all 4 admin write endpoints, full tutorial CRUD
+        incl. category filter + thumbnail auto-update on URL PATCH, full
+        category CRUD with soft-delete, and the "All"/no-param filter
+        equivalence). No critical or minor issues. Test artifacts cleaned
+        up. Main agent can finalise this feature.

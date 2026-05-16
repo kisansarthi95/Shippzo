@@ -1790,6 +1790,36 @@ export const Api = {
     api.post<{ ok: boolean }>(`/support/tickets/${id}/close`)
       .then((r) => r.data),
 
+  // ─────── Phase-21 — Video Tutorials ──────────────────────────
+  /** Active tutorials, optional `category` filter. */
+  listVideoTutorials: (category?: string) =>
+    api.get<{ items: VideoTutorial[]; count: number }>(`/video-tutorials`, {
+      params: category && category !== "All" ? { category } : undefined,
+    }).then((r) => r.data),
+  getVideoTutorial: (id: string) =>
+    api.get<VideoTutorial>(`/video-tutorials/${id}`).then((r) => r.data),
+  /** Categories list — sorted by display_order asc. */
+  listVideoTutorialCategories: () =>
+    api.get<{ items: VideoTutorialCategory[]; count: number }>(`/video-tutorial-categories`)
+      .then((r) => r.data),
+
+  // Admin
+  adminCreateVideoTutorial: (payload: {
+    youtube_url: string;
+    title: string;
+    short_description?: string;
+    category: string;
+    duration?: string;
+    display_order?: number;
+  }) =>
+    api.post<VideoTutorial>(`/admin/video-tutorials`, payload).then((r) => r.data),
+  adminUpdateVideoTutorial: (id: string, patch: Partial<VideoTutorial> & { youtube_url?: string }) =>
+    api.patch<VideoTutorial>(`/admin/video-tutorials/${id}`, patch).then((r) => r.data),
+  adminDeleteVideoTutorial: (id: string) =>
+    api.delete<{ ok: boolean }>(`/admin/video-tutorials/${id}`).then((r) => r.data),
+  adminCreateVideoCategory: (payload: { name: string; icon?: string; display_order?: number }) =>
+    api.post<VideoTutorialCategory>(`/admin/video-tutorial-categories`, payload).then((r) => r.data),
+
   // ─────── Phase F1 — CSV / XLSX bulk import ───────
   /** Parse an uploaded CSV/XLSX without writing to DB. Returns columns,
    *  first 10 rows, total row count, schema fields, and an
@@ -2272,7 +2302,31 @@ export const SHEET_FIELD_ALIASES: Record<string, string> = {
   timestamp: "created_at_override",
 };
 
-// ───────── Phase-21 — Support Center types ───────────────────────────
+// ───────── Phase-21 — Video Tutorials types ─────────────────────────
+export type VideoTutorial = {
+  id: string;
+  youtube_video_id: string;
+  youtube_url: string;
+  title: string;
+  short_description: string;
+  category: string;
+  thumbnail_url: string;
+  duration: string;
+  display_order: number;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
+export type VideoTutorialCategory = {
+  id: string;
+  name: string;
+  icon: string;
+  display_order: number;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+};
 export type SupportMessage = {
   id: string;
   author_id: string;

@@ -5398,6 +5398,19 @@ try:
 except Exception as _sup_exc:
     logger.exception(f"Failed to mount support router: {_sup_exc}")
 
+# Phase-21 — Video Tutorials router.
+try:
+    from routers.video_tutorials import (
+        tutorials_router       as _vt_router,
+        admin_tutorials_router as _admin_vt_router,
+        init as _init_vt_router,
+    )
+    _init_vt_router()
+    app.include_router(_vt_router)
+    app.include_router(_admin_vt_router)
+except Exception as _vt_exc:
+    logger.exception(f"Failed to mount video tutorials router: {_vt_exc}")
+
 # Phase-1 modular refactor — extracted routers. Each router is wired
 # in *after* server.py has finished defining its helpers + db, so the
 # late-binding `init()` calls inside them can `from server import …`

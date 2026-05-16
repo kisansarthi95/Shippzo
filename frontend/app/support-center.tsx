@@ -97,15 +97,10 @@ export default function SupportCenter() {
     ).catch(() => {});
   };
 
-  // Card press handlers. Phase-21 — Create Request + My Requests
-  // now route to dedicated screens backed by the support_tickets API.
-  // Video Tutorials + FAQs remain as fallbacks until the KB ships.
-  const onVideoTutorials = () => {
-    // TODO: replace with YouTube playlist deep-link / in-app player
-    // when the tutorials channel is published.
-    Linking.openURL("https://www.youtube.com/results?search_query=shippzo+tutorials")
-      .catch(() => {});
-  };
+  // Card press handlers. Phase-21 — Video Tutorials, Create Request,
+  // and My Requests all route to dedicated screens. FAQs stays as a
+  // fallback until the KB ships.
+  const onVideoTutorials = () => router.push("/support-center/tutorials" as any);
   const onFAQs        = () => router.push("/refund-policy?tab=privacy" as any);
   const onCreateRequest = () => router.push("/support-center/create" as any);
   const onMyRequests  = () => router.push("/support-center/my-tickets" as any);
