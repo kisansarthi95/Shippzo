@@ -1,497 +1,544 @@
-"""Backend test — Phase-21 order_id priority chain fix on ship_pending_order.
-
-Tests POST /api/orders/pending/{order_id}/ship to verify the Shipment's
-`order_id` is set per the new priority:
-  1. PendingOrder.order_id (upstream-or-master fallback set at ingest)
-  2. order_id_hint (regex paste hint)
-  3. master_order_id (final fallback so order_id is NEVER blank)
-
-Test cases:
-  A. Webhook ingest with upstream order_id mapped → preserved on Shipment.
-  B. Webhook ingest WITHOUT order_id mapping → falls back to master_order_id.
-  C. Smart Paste with explicit "Order #ABC-001" in text → preserved.
-  D. Smart Paste WITHOUT order_id in text → master_order_id fallback.
-  E. File import with order_id column populated → preserved.
 """
-import io
+Phase-21 Support Tickets backend test.
+
+Tests /api/support/* (user-side) and /api/admin/support/* (admin-side)
+endpoints against the live preview backend.
+
+Run: python3 /app/backend_test.py
+"""
+from __future__ import annotations
+
 import os
 import sys
-import time
-import uuid
-import json
+import traceback
+from typing import Any, Dict, Optional
+
 import requests
 
+BASE = "https://logistics-hub-740.preview.emergentagent.com/api"
 
-def _resolve_base_url() -> str:
-    env_path = "/app/frontend/.env"
-    if os.path.exists(env_path):
-        with open(env_path, "r", encoding="utf-8") as fh:
-            for line in fh:
-                line = line.strip()
-                if not line or line.startswith("#") or "=" not in line:
-                    continue
-                k, _, v = line.partition("=")
-                if k.strip() in ("EXPO_PUBLIC_BACKEND_URL", "REACT_APP_BACKEND_URL"):
-                    return v.strip().strip('"').strip("'").rstrip("/")
-    raise RuntimeError("EXPO_PUBLIC_BACKEND_URL not in /app/frontend/.env")
+ADMIN_EMAIL = "admin@test.com"
+ADMIN_PASS = "Admin@12345"
+USER_EMAIL = "user2@test.com"
+USER_PASS = "User@12345"
+
+PASS_COUNT = 0
+FAIL_COUNT = 0
+FAILURES: list[str] = []
 
 
-BASE_URL = _resolve_base_url() + "/api"
-print(f"[setup] BASE_URL = {BASE_URL}")
+def _ok(label: str) -> None:
+    global PASS_COUNT
+    PASS_COUNT += 1
+    print(f"  PASS  {label}")
 
 
-PASS = 0
-FAIL = 0
-FAILURES: list = []
+def _fail(label: str, detail: str = "") -> None:
+    global FAIL_COUNT
+    FAIL_COUNT += 1
+    FAILURES.append(f"{label} :: {detail}")
+    print(f"  FAIL  {label}  ::  {detail}")
 
 
-def check(cond: bool, label: str, detail: str = "") -> None:
-    global PASS, FAIL
+def _assert(cond: bool, label: str, detail: str = "") -> None:
     if cond:
-        PASS += 1
-        print(f"  PASS {label}")
+        _ok(label)
     else:
-        FAIL += 1
-        FAILURES.append(label + (f"  -- {detail}" if detail else ""))
-        print(f"  FAIL {label}" + (f"  -- {detail}" if detail else ""))
+        _fail(label, detail)
 
 
-def login(email: str, pwd: str) -> str:
+def login(email: str, password: str) -> Optional[str]:
     r = requests.post(
-        f"{BASE_URL}/auth/login",
-        json={"email": email, "password": pwd},
+        f"{BASE}/auth/login",
+        json={"email": email, "password": password},
         timeout=30,
     )
-    r.raise_for_status()
-    return r.json()["token"]
-
-
-TOKEN = login("admin@test.com", "Admin@12345")
-H = {"Authorization": f"Bearer {TOKEN}"}
-print("[setup] Logged in as admin@test.com")
-
-
-created_pending_ids: set = set()
-created_shipment_ids: set = set()
-created_courier_id: str = ""
-
-
-def cleanup():
-    print("\n[cleanup]")
-    for pid in list(created_pending_ids):
-        try:
-            r = requests.delete(
-                f"{BASE_URL}/orders/pending/{pid}", headers=H, timeout=20,
-            )
-            print(f"  DELETE /orders/pending/{pid} -> {r.status_code}")
-        except Exception as e:
-            print(f"  DELETE pending {pid} failed: {e}")
-    for sid in list(created_shipment_ids):
-        try:
-            r = requests.delete(
-                f"{BASE_URL}/shipments/{sid}", headers=H, timeout=30,
-            )
-            print(f"  DELETE /shipments/{sid} -> {r.status_code}")
-        except Exception as e:
-            print(f"  DELETE shipment {sid} failed: {e}")
-    if created_courier_id:
-        try:
-            r = requests.delete(
-                f"{BASE_URL}/couriers/{created_courier_id}", headers=H, timeout=20,
-            )
-            print(f"  DELETE /couriers/{created_courier_id} -> {r.status_code}")
-        except Exception as e:
-            print(f"  DELETE courier failed: {e}")
-
-
-# ----- Ensure auto-generate is ON -----------------------------------------
-print("\n[pre-req] Ensure order_id_auto_generate is ON in /settings")
-r = requests.put(
-    f"{BASE_URL}/settings",
-    headers=H,
-    json={"order_id_auto_generate": True},
-    timeout=30,
-)
-print(f"  PUT /settings -> {r.status_code}")
-
-# ----- Ensure courier exists ----------------------------------------------
-print("\n[pre-req] Ensure a courier exists for shipping tests")
-r = requests.get(f"{BASE_URL}/couriers", headers=H, timeout=20)
-r.raise_for_status()
-couriers = r.json()
-COURIER_ID = ""
-if couriers:
-    real = [c for c in couriers if not c.get("is_demo")]
-    COURIER_ID = (real[0] if real else couriers[0])["id"]
-    print(f"  Reusing courier id={COURIER_ID}")
-else:
-    payload = {
-        "name": f"Test Courier {uuid.uuid4().hex[:6]}",
-        "series_prefix": "TC",
-        "next_number": 1,
-        "number_padding": 4,
-        "tracking_url_template": "https://example.com/track/{tracking}",
-    }
-    r = requests.post(f"{BASE_URL}/couriers", headers=H, json=payload, timeout=20)
-    r.raise_for_status()
-    COURIER_ID = r.json()["id"]
-    created_courier_id = COURIER_ID
-    print(f"  Created courier id={COURIER_ID}")
-
-
-def ensure_webhook_with_order_id_mapping() -> str:
-    r = requests.get(f"{BASE_URL}/me/webhook-config", headers=H, timeout=20)
-    r.raise_for_status()
-    cfg = r.json()
-    secret = cfg.get("secret") or ""
-    if not secret:
-        r2 = requests.post(
-            f"{BASE_URL}/me/webhook-config/rotate",
-            headers=H, json={"name": "Test Webhook"}, timeout=20,
-        )
-        r2.raise_for_status()
-        secret = r2.json()["secret"]
-        print(f"  Rotated to create webhook secret={secret[:8]}...")
-
-    mapping = {
-        "order_id":     "order_id",
-        "name":         "customer_name",
-        "phone":        "customer_phone",
-        "address":      "address",
-        "city":         "city",
-        "state":        "state",
-        "pincode":      "pincode",
-        "amount":       "amount",
-    }
-    r3 = requests.put(
-        f"{BASE_URL}/me/webhook-config",
-        headers=H, json={"mapping": mapping}, timeout=20,
-    )
-    r3.raise_for_status()
-    return secret
-
-
-WH_SECRET = ensure_webhook_with_order_id_mapping()
-print(f"\n[setup] Webhook secret prepared ({WH_SECRET[:8]}...)")
-
-
-def find_pending_by_phone(phone: str) -> dict | None:
-    r = requests.get(f"{BASE_URL}/orders/pending", headers=H, timeout=30)
-    r.raise_for_status()
-    for o in r.json():
-        if (o.get("customer_phone") or "").strip().endswith(phone[-10:]):
-            return o
-    return None
-
-
-def ship(pending_id: str) -> dict:
-    r = requests.post(
-        f"{BASE_URL}/orders/pending/{pending_id}/ship",
-        headers=H, json={"courier_id": COURIER_ID}, timeout=30,
-    )
     if r.status_code != 200:
-        raise RuntimeError(f"ship failed {r.status_code} {r.text[:200]}")
-    return r.json()
+        print(f"LOGIN FAILED {email}: {r.status_code} {r.text[:200]}")
+        return None
+    return r.json().get("token")
 
 
-# ===== TEST A — Webhook with upstream order_id ===========================
-print("\n" + "=" * 72)
-print("TEST A: Webhook ingest with upstream order_id")
-print("=" * 72)
-phone_a = "9112000111"
-upstream_a = f"UPSTREAM-XYZ-{uuid.uuid4().hex[:6].upper()}"
-payload_a = {
-    "order_id": upstream_a,
-    "name":     "Rohit Sharma",
-    "phone":    phone_a,
-    "address":  "1, MG Road",
-    "city":     "Ahmedabad",
-    "state":    "Gujarat",
-    "pincode":  "380015",
-    "amount":   799,
-}
-r = requests.post(
-    f"{BASE_URL}/webhook/orders/{WH_SECRET}", json=payload_a, timeout=30,
-)
-print(f"  POST webhook -> {r.status_code} {r.text[:160]}")
-check(r.status_code == 200, "Test A: webhook accepts payload")
-body = r.json()
-check(body.get("imported") == 1, "Test A: imported=1", f"got {body}")
+def auth_headers(tok: Optional[str]) -> Dict[str, str]:
+    if not tok:
+        return {}
+    return {"Authorization": f"Bearer {tok}"}
 
-time.sleep(0.5)
-po_a = find_pending_by_phone(phone_a)
-check(po_a is not None, "Test A: pending order created and discoverable")
-if po_a:
-    created_pending_ids.add(po_a["id"])
-    print(f"  pending.order_id          = {po_a.get('order_id')!r}")
-    print(f"  pending.master_order_id   = {po_a.get('master_order_id')!r}")
-    print(f"  pending.external_order_id = {po_a.get('external_order_id')!r}")
-    check(
-        po_a.get("order_id") == upstream_a,
-        "Test A: PendingOrder.order_id preserves upstream value",
-        f"expected {upstream_a!r}, got {po_a.get('order_id')!r}",
-    )
+
+def main() -> int:
+    print("=" * 72)
+    print("Phase-21 Support Tickets backend test")
+    print("=" * 72)
+
+    admin_tok = login(ADMIN_EMAIL, ADMIN_PASS)
+    user_tok = login(USER_EMAIL, USER_PASS)
+    if not admin_tok or not user_tok:
+        print("Cannot proceed: login failed.")
+        return 1
+
+    print(f"\nadmin_tok={admin_tok[:24]}...   user_tok={user_tok[:24]}...\n")
+
+    Hu = auth_headers(user_tok)
+    Ha = auth_headers(admin_tok)
+
+    created_ticket_id: Optional[str] = None
+    second_ticket_id: Optional[str] = None
+
+    # Provision a third user for cross-user 403 tests
+    other_tok: Optional[str] = None
+    other_email = f"phase21user_{os.getpid()}@test.com"
     try:
-        ship_a = ship(po_a["id"])
-        created_shipment_ids.add(ship_a["id"])
-        created_pending_ids.discard(po_a["id"])
-        print(f"  ship.order_id        = {ship_a.get('order_id')!r}")
-        print(f"  ship.master_order_id = {ship_a.get('master_order_id')!r}")
-        check(
-            ship_a.get("order_id") == upstream_a,
-            "Test A: Shipment.order_id == upstream order_id",
-            f"expected {upstream_a!r}, got {ship_a.get('order_id')!r}",
+        r = requests.post(
+            f"{BASE}/auth/signup",
+            json={
+                "email": other_email,
+                "password": "Other@12345",
+                "name": "Phase21 OtherUser",
+                "shop_name": "Phase21 Shop",
+            },
+            timeout=30,
         )
-        check(
-            ship_a.get("order_id") != ship_a.get("master_order_id"),
-            "Test A: Shipment.order_id is NOT the master_order_id",
-        )
-    except Exception as e:
-        check(False, "Test A: ship POST 200", str(e))
-
-
-# ===== TEST B — Webhook without order_id ================================
-print("\n" + "=" * 72)
-print("TEST B: Webhook ingest WITHOUT order_id -> master_order_id fallback")
-print("=" * 72)
-phone_b = "9111000333"
-payload_b = {
-    "name":    "Test User B",
-    "phone":   phone_b,
-    "address": "55 Some Street",
-    "city":    "X",
-    "state":   "Y",
-    "pincode": "380015",
-    "amount":  499,
-}
-r = requests.post(
-    f"{BASE_URL}/webhook/orders/{WH_SECRET}", json=payload_b, timeout=30,
-)
-print(f"  POST webhook -> {r.status_code} {r.text[:160]}")
-check(r.status_code == 200, "Test B: webhook accepts payload")
-check(r.json().get("imported") == 1, "Test B: imported=1")
-
-time.sleep(0.5)
-po_b = find_pending_by_phone(phone_b)
-check(po_b is not None, "Test B: pending order created and discoverable")
-if po_b:
-    created_pending_ids.add(po_b["id"])
-    moid_b = po_b.get("master_order_id") or ""
-    oid_b  = po_b.get("order_id") or ""
-    print(f"  pending.master_order_id = {moid_b!r}")
-    print(f"  pending.order_id        = {oid_b!r}")
-    check(
-        bool(moid_b) and moid_b.isdigit() and len(moid_b) >= 8,
-        "Test B: PendingOrder.master_order_id is allocated (YYMMDD+seq)",
-        f"got {moid_b!r}",
-    )
-    check(
-        oid_b == moid_b,
-        "Test B: PendingOrder.order_id == master_order_id (ingest fallback)",
-        f"order_id={oid_b!r} master={moid_b!r}",
-    )
-    try:
-        ship_b = ship(po_b["id"])
-        created_shipment_ids.add(ship_b["id"])
-        created_pending_ids.discard(po_b["id"])
-        print(f"  ship.order_id        = {ship_b.get('order_id')!r}")
-        print(f"  ship.master_order_id = {ship_b.get('master_order_id')!r}")
-        check(
-            ship_b.get("order_id") == moid_b,
-            "Test B: Shipment.order_id == master_order_id",
-            f"expected {moid_b!r}, got {ship_b.get('order_id')!r}",
-        )
-        check(
-            bool(ship_b.get("order_id")),
-            "Test B: Shipment.order_id is NOT empty",
-        )
-    except Exception as e:
-        check(False, "Test B: ship POST 200", str(e))
-
-
-# ===== TEST C — Smart-paste with explicit Order ID =====================
-print("\n" + "=" * 72)
-print("TEST C: Smart-paste with explicit Order #ABC-001 -> preserved")
-print("=" * 72)
-phone_c = "9999000444"
-# Use canonical "Order ID:" form (parser pre-normalises space → underscore).
-text_c = (
-    "Order ID: ABC-001\n"
-    "NAME: Riya Singh\n"
-    f"PHONE: {phone_c}\n"
-    "ADDRESS: 22 Park Lane\n"
-    "CITY: Ahmedabad\n"
-    "STATE: Gujarat\n"
-    "PINCODE: 380015\n"
-    "AMOUNT: 599\n"
-    "PAYMENT: COD\n"
-    "ITEMS: T-Shirt\n"
-)
-r = requests.post(
-    f"{BASE_URL}/smart-paste", headers=H,
-    json={"text": text_c, "skip_llm": True}, timeout=60,
-)
-print(f"  POST /smart-paste -> {r.status_code} {r.text[:240]}")
-check(r.status_code == 200, "Test C: smart-paste 200", r.text[:200])
-if r.status_code == 200:
-    po_c = r.json()
-    created_pending_ids.add(po_c["id"])
-    oid_c = po_c.get("order_id") or ""
-    moid_c = po_c.get("master_order_id") or ""
-    print(f"  pending.order_id        = {oid_c!r}")
-    print(f"  pending.master_order_id = {moid_c!r}")
-    check(
-        oid_c == "ABC-001",
-        "Test C: PendingOrder.order_id == 'ABC-001' (parsed)",
-        f"got {oid_c!r}",
-    )
-    check(
-        bool(moid_c) and moid_c != oid_c,
-        "Test C: master_order_id allocated and distinct from order_id",
-        f"master={moid_c!r}",
-    )
-    try:
-        ship_c = ship(po_c["id"])
-        created_shipment_ids.add(ship_c["id"])
-        created_pending_ids.discard(po_c["id"])
-        print(f"  ship.order_id        = {ship_c.get('order_id')!r}")
-        print(f"  ship.master_order_id = {ship_c.get('master_order_id')!r}")
-        check(
-            ship_c.get("order_id") == "ABC-001",
-            "Test C: Shipment.order_id == 'ABC-001'",
-            f"got {ship_c.get('order_id')!r}",
-        )
-    except Exception as e:
-        check(False, "Test C: ship POST 200", str(e))
-
-
-# ===== TEST D — Smart-paste without order_id ===========================
-print("\n" + "=" * 72)
-print("TEST D: Smart-paste WITHOUT order_id -> master fallback")
-print("=" * 72)
-phone_d = "9999000555"
-text_d = (
-    "NAME: Riya Patel\n"
-    f"PHONE: {phone_d}\n"
-    "ADDRESS: 33 Lake View\n"
-    "CITY: Ahmedabad\n"
-    "STATE: Gujarat\n"
-    "PINCODE: 380015\n"
-    "AMOUNT: 599\n"
-    "PAYMENT: COD\n"
-    "ITEMS: T-Shirt\n"
-)
-r = requests.post(
-    f"{BASE_URL}/smart-paste", headers=H,
-    json={"text": text_d, "skip_llm": True}, timeout=60,
-)
-print(f"  POST /smart-paste -> {r.status_code} {r.text[:240]}")
-check(r.status_code == 200, "Test D: smart-paste 200", r.text[:200])
-if r.status_code == 200:
-    po_d = r.json()
-    created_pending_ids.add(po_d["id"])
-    oid_d  = po_d.get("order_id") or ""
-    moid_d = po_d.get("master_order_id") or ""
-    print(f"  pending.order_id        = {oid_d!r}")
-    print(f"  pending.master_order_id = {moid_d!r}")
-    check(bool(moid_d), "Test D: master_order_id allocated", f"got {moid_d!r}")
-    check(
-        oid_d == moid_d,
-        "Test D: PendingOrder.order_id == master_order_id (auto fallback)",
-        f"order_id={oid_d!r} master={moid_d!r}",
-    )
-    try:
-        ship_d = ship(po_d["id"])
-        created_shipment_ids.add(ship_d["id"])
-        created_pending_ids.discard(po_d["id"])
-        print(f"  ship.order_id        = {ship_d.get('order_id')!r}")
-        print(f"  ship.master_order_id = {ship_d.get('master_order_id')!r}")
-        check(
-            ship_d.get("order_id") == moid_d,
-            "Test D: Shipment.order_id == master_order_id",
-            f"expected {moid_d!r}, got {ship_d.get('order_id')!r}",
-        )
-        check(
-            bool(ship_d.get("order_id")),
-            "Test D: Shipment.order_id is NOT empty",
-        )
-    except Exception as e:
-        check(False, "Test D: ship POST 200", str(e))
-
-
-# ===== TEST E — File import with order_id column ========================
-print("\n" + "=" * 72)
-print("TEST E: File import CSV with order_id -> preserved")
-print("=" * 72)
-file_oid = f"FILE-ORD-{uuid.uuid4().hex[:6].upper()}"
-phone_e = "9999000666"
-csv_text = (
-    "customer_name,phone,pincode,city,state,item,amount,order_id\n"
-    f"Test User E,{phone_e},380015,Ahmedabad,Gujarat,Item E,499,{file_oid}\n"
-)
-mapping_e = {
-    "customer_name": "customer_name",
-    "phone":         "customer_phone",
-    "pincode":       "pincode",
-    "city":          "city",
-    "state":         "state",
-    "item":          "items",
-    "amount":        "amount",
-    "order_id":      "order_id",
-}
-files = {
-    "file": ("orders.csv", io.BytesIO(csv_text.encode("utf-8")), "text/csv"),
-}
-data = {
-    "mapping": json.dumps(mapping_e),
-    "save_default": "false",
-}
-r = requests.post(
-    f"{BASE_URL}/orders/import/commit",
-    headers=H, files=files, data=data, timeout=60,
-)
-print(f"  POST /orders/import/commit -> {r.status_code} {r.text[:240]}")
-check(r.status_code == 200, "Test E: file-import 200", r.text[:200])
-if r.status_code == 200:
-    res = r.json()
-    check(res.get("imported") == 1, "Test E: imported=1", f"got {res}")
-    time.sleep(0.5)
-    po_e = find_pending_by_phone(phone_e)
-    check(po_e is not None, "Test E: pending order created and discoverable")
-    if po_e:
-        created_pending_ids.add(po_e["id"])
-        oid_e  = po_e.get("order_id") or ""
-        moid_e = po_e.get("master_order_id") or ""
-        print(f"  pending.order_id        = {oid_e!r}")
-        print(f"  pending.master_order_id = {moid_e!r}")
-        check(
-            oid_e == file_oid,
-            "Test E: PendingOrder.order_id preserves file value",
-            f"expected {file_oid!r}, got {oid_e!r}",
-        )
-        try:
-            ship_e = ship(po_e["id"])
-            created_shipment_ids.add(ship_e["id"])
-            created_pending_ids.discard(po_e["id"])
-            print(f"  ship.order_id        = {ship_e.get('order_id')!r}")
-            print(f"  ship.master_order_id = {ship_e.get('master_order_id')!r}")
-            check(
-                ship_e.get("order_id") == file_oid,
-                "Test E: Shipment.order_id == file order_id",
-                f"expected {file_oid!r}, got {ship_e.get('order_id')!r}",
+        if r.status_code in (200, 201):
+            other_tok = r.json().get("token")
+            print(f"Provisioned other user={other_email}, tok={(other_tok or '')[:24]}...")
+        else:
+            rl = requests.post(
+                f"{BASE}/auth/login",
+                json={"email": other_email, "password": "Other@12345"},
+                timeout=30,
             )
-        except Exception as e:
-            check(False, "Test E: ship POST 200", str(e))
+            if rl.status_code == 200:
+                other_tok = rl.json().get("token")
+                print(f"Logged in pre-existing other user={other_email}")
+            else:
+                print(f"Signup status={r.status_code} body={r.text[:200]}")
+    except Exception as e:
+        print(f"Could not provision other user via signup: {e}")
+
+    if not other_tok:
+        print("No third user available — cross-user 403 tests will be skipped.")
+
+    Ho = auth_headers(other_tok) if other_tok else {}
+
+    # ───────────────────────────────────────────────────────────────
+    # 1) POST /api/support/tickets
+    # ───────────────────────────────────────────────────────────────
+    print("\n[1] POST /api/support/tickets (create)")
+
+    r = requests.post(
+        f"{BASE}/support/tickets",
+        headers=Hu,
+        json={
+            "title": "Label PDF prints blank on iPhone 12",
+            "description": "Hi team, when I tap Print on a shipment "
+                           "label the resulting PDF is completely "
+                           "blank. iOS 17.4, app version 2026.05.",
+            "category": "technical",
+        },
+        timeout=30,
+    )
+    _assert(r.status_code == 200, "create valid ticket -> 200",
+            f"status={r.status_code} body={r.text[:200]}")
+    if r.status_code == 200:
+        t = r.json()
+        created_ticket_id = t.get("id")
+        _assert(t.get("status") == "open", "new ticket status=open",
+                f"got={t.get('status')}")
+        _assert(t.get("priority") == "medium", "new ticket priority=medium",
+                f"got={t.get('priority')}")
+        _assert(t.get("category") == "technical", "category preserved",
+                f"got={t.get('category')}")
+        _assert(t.get("user_id") and t.get("user_email") == USER_EMAIL,
+                "user_id + user_email stamped",
+                f"user_id={t.get('user_id')} email={t.get('user_email')}")
+        msgs = t.get("messages") or []
+        _assert(len(msgs) == 1, "messages[] has 1 entry from description",
+                f"len={len(msgs)}")
+        if msgs:
+            _assert(msgs[0].get("author_role") == "user",
+                    "first message author_role=user",
+                    f"got={msgs[0].get('author_role')}")
+            _assert("blank" in (msgs[0].get("body") or ""),
+                    "first message body == description",
+                    f"body={msgs[0].get('body','')[:80]}")
+        _assert(bool(t.get("created_at")) and bool(t.get("updated_at"))
+                and bool(t.get("last_reply_at")),
+                "timestamps present")
+
+    r = requests.post(
+        f"{BASE}/support/tickets",
+        headers=Hu,
+        json={
+            "title": "Random",
+            "description": "Random description for invalid cat test.",
+            "category": "BOGUS_CAT",
+        },
+        timeout=30,
+    )
+    _assert(r.status_code == 400, "invalid category -> 400",
+            f"status={r.status_code} body={r.text[:200]}")
+
+    r = requests.post(
+        f"{BASE}/support/tickets",
+        headers=Hu,
+        json={"title": "A", "description": "Hello there"},
+        timeout=30,
+    )
+    _assert(r.status_code in (400, 422), "title < 2 -> 400/422",
+            f"status={r.status_code}")
+
+    r = requests.post(
+        f"{BASE}/support/tickets",
+        json={"title": "NoAuth", "description": "Should fail without token"},
+        timeout=30,
+    )
+    _assert(r.status_code == 401, "no auth -> 401",
+            f"status={r.status_code} body={r.text[:200]}")
+
+    # second ticket for list filter
+    r = requests.post(
+        f"{BASE}/support/tickets",
+        headers=Hu,
+        json={
+            "title": "Billing question about Silver plan renewal",
+            "description": "I was charged twice for my renewal - "
+                           "can you check invoice INV-2026-0517?",
+            "category": "billing",
+        },
+        timeout=30,
+    )
+    if r.status_code == 200:
+        second_ticket_id = r.json().get("id")
+        _ok("second ticket created for list tests")
+    else:
+        _fail("second ticket create", f"status={r.status_code}")
+
+    # ───────────────────────────────────────────────────────────────
+    # 2) GET /api/support/tickets
+    # ───────────────────────────────────────────────────────────────
+    print("\n[2] GET /api/support/tickets (list mine)")
+    r = requests.get(f"{BASE}/support/tickets", headers=Hu, timeout=30)
+    _assert(r.status_code == 200, "list mine -> 200",
+            f"status={r.status_code}")
+    if r.status_code == 200:
+        body = r.json()
+        items = body.get("items") or []
+        _assert("count" in body and "items" in body,
+                "response has items + count")
+        ids = [t.get("id") for t in items]
+        _assert(created_ticket_id in ids,
+                "newly-created ticket appears in list")
+        sample = next((t for t in items if t.get("id") == created_ticket_id),
+                      None)
+        if sample:
+            _assert("message_count" in sample
+                    and sample["message_count"] >= 1,
+                    "list item has message_count >= 1",
+                    f"got={sample.get('message_count')}")
+            _assert("last_message_preview" in sample
+                    and isinstance(sample["last_message_preview"], str),
+                    "list item has last_message_preview string")
+            _assert("messages" not in sample,
+                    "list items strip full messages[] array",
+                    f"keys={list(sample.keys())}")
+
+    r = requests.get(f"{BASE}/support/tickets?status=open",
+                     headers=Hu, timeout=30)
+    _assert(r.status_code == 200, "list status=open -> 200")
+    if r.status_code == 200:
+        ids = [t.get("id") for t in (r.json().get("items") or [])]
+        _assert(created_ticket_id in ids,
+                "status=open includes the new ticket")
+
+    r = requests.get(f"{BASE}/support/tickets?status=closed",
+                     headers=Hu, timeout=30)
+    _assert(r.status_code == 200, "list status=closed -> 200")
+    if r.status_code == 200:
+        ids = [t.get("id") for t in (r.json().get("items") or [])]
+        _assert(created_ticket_id not in ids,
+                "status=closed does NOT include the open ticket")
+
+    r = requests.get(f"{BASE}/support/tickets?status=bogus",
+                     headers=Hu, timeout=30)
+    _assert(r.status_code == 400, "invalid status filter -> 400",
+            f"status={r.status_code}")
+
+    # ───────────────────────────────────────────────────────────────
+    # 3) GET /api/support/tickets/{id}
+    # ───────────────────────────────────────────────────────────────
+    print("\n[3] GET /api/support/tickets/{id} (detail)")
+    if created_ticket_id:
+        r = requests.get(f"{BASE}/support/tickets/{created_ticket_id}",
+                         headers=Hu, timeout=30)
+        _assert(r.status_code == 200, "own ticket detail -> 200",
+                f"status={r.status_code}")
+        if r.status_code == 200:
+            t = r.json()
+            _assert(t.get("id") == created_ticket_id, "id matches")
+            _assert(isinstance(t.get("messages"), list)
+                    and len(t["messages"]) >= 1,
+                    "detail returns full messages[] thread",
+                    f"len={len(t.get('messages') or [])}")
+
+    r = requests.get(f"{BASE}/support/tickets/does-not-exist-12345",
+                     headers=Hu, timeout=30)
+    _assert(r.status_code == 404, "nonexistent ticket -> 404",
+            f"status={r.status_code}")
+
+    if other_tok and created_ticket_id:
+        r = requests.get(f"{BASE}/support/tickets/{created_ticket_id}",
+                         headers=Ho, timeout=30)
+        _assert(r.status_code == 403, "other user reading my ticket -> 403",
+                f"status={r.status_code} body={r.text[:160]}")
+    else:
+        print("  SKIP  3c — no other user")
+
+    # ───────────────────────────────────────────────────────────────
+    # 4) reply
+    # ───────────────────────────────────────────────────────────────
+    print("\n[4] POST /api/support/tickets/{id}/reply")
+    if created_ticket_id:
+        before = requests.get(f"{BASE}/support/tickets/{created_ticket_id}",
+                              headers=Hu, timeout=30).json()
+        before_len = len(before.get("messages") or [])
+
+        r = requests.post(
+            f"{BASE}/support/tickets/{created_ticket_id}/reply",
+            headers=Hu,
+            json={"body": "Following up - I cleared cache, still blank PDF."},
+            timeout=30,
+        )
+        _assert(r.status_code == 200, "user reply -> 200",
+                f"status={r.status_code} body={r.text[:200]}")
+
+        after = requests.get(f"{BASE}/support/tickets/{created_ticket_id}",
+                             headers=Hu, timeout=30).json()
+        after_len = len(after.get("messages") or [])
+        _assert(after_len == before_len + 1,
+                "messages length increased by 1",
+                f"before={before_len} after={after_len}")
+        _assert(after.get("status") == "open",
+                "user reply does NOT auto-change status",
+                f"got={after.get('status')}")
+
+    if created_ticket_id:
+        r = requests.post(
+            f"{BASE}/support/tickets/{created_ticket_id}/reply",
+            headers=Hu,
+            json={"body": ""},
+            timeout=30,
+        )
+        _assert(r.status_code in (400, 422),
+                "empty body reply -> 422 (or 400)",
+                f"status={r.status_code}")
+
+    if other_tok and created_ticket_id:
+        r = requests.post(
+            f"{BASE}/support/tickets/{created_ticket_id}/reply",
+            headers=Ho,
+            json={"body": "Hi I'm a stranger trying to reply"},
+            timeout=30,
+        )
+        _assert(r.status_code == 403,
+                "reply on other user's ticket -> 403",
+                f"status={r.status_code}")
+    else:
+        print("  SKIP  4c — no other user")
+
+    # ───────────────────────────────────────────────────────────────
+    # 5) close
+    # ───────────────────────────────────────────────────────────────
+    print("\n[5] POST /api/support/tickets/{id}/close")
+    close_test_id = second_ticket_id
+    if close_test_id:
+        if other_tok:
+            r = requests.post(
+                f"{BASE}/support/tickets/{close_test_id}/close",
+                headers=Ho, timeout=30,
+            )
+            _assert(r.status_code == 403,
+                    "other user closes my ticket -> 403",
+                    f"status={r.status_code}")
+        else:
+            print("  SKIP  5c — no other user")
+
+        r = requests.post(
+            f"{BASE}/support/tickets/{close_test_id}/close",
+            headers=Hu, timeout=30,
+        )
+        _assert(r.status_code == 200, "owner close -> 200",
+                f"status={r.status_code} body={r.text[:200]}")
+
+        after = requests.get(f"{BASE}/support/tickets/{close_test_id}",
+                             headers=Hu, timeout=30).json()
+        _assert(after.get("status") == "closed",
+                "after close: status=closed",
+                f"got={after.get('status')}")
+
+        r = requests.post(
+            f"{BASE}/support/tickets/{close_test_id}/reply",
+            headers=Hu,
+            json={"body": "Hello after close"},
+            timeout=30,
+        )
+        _assert(r.status_code == 409,
+                "reply on closed ticket -> 409",
+                f"status={r.status_code} body={r.text[:200]}")
+
+    # ───────────────────────────────────────────────────────────────
+    # 6) admin list
+    # ───────────────────────────────────────────────────────────────
+    print("\n[6] GET /api/admin/support/tickets")
+    r = requests.get(f"{BASE}/admin/support/tickets", headers=Ha, timeout=30)
+    _assert(r.status_code == 200, "admin list all -> 200",
+            f"status={r.status_code} body={r.text[:200]}")
+    if r.status_code == 200:
+        body = r.json()
+        items = body.get("items") or []
+        ids = [t.get("id") for t in items]
+        _assert(created_ticket_id in ids,
+                "admin list includes user2's ticket (cross-user)",
+                f"created_ticket_id={created_ticket_id}")
+        if second_ticket_id:
+            _assert(second_ticket_id in ids,
+                    "admin list includes user2's closed ticket")
+
+    r = requests.get(f"{BASE}/admin/support/tickets", headers=Hu, timeout=30)
+    _assert(r.status_code == 403,
+            "regular user accessing admin list -> 403",
+            f"status={r.status_code}")
+
+    # ───────────────────────────────────────────────────────────────
+    # 7) admin status patch
+    # ───────────────────────────────────────────────────────────────
+    print("\n[7] PATCH admin status")
+    if created_ticket_id:
+        r = requests.patch(
+            f"{BASE}/admin/support/tickets/{created_ticket_id}/status",
+            headers=Ha, json={"status": "resolved"}, timeout=30,
+        )
+        _assert(r.status_code == 200, "admin set status=resolved -> 200",
+                f"status={r.status_code} body={r.text[:200]}")
+        if r.status_code == 200:
+            _assert(r.json().get("status") == "resolved",
+                    "response confirms status=resolved")
+            t = requests.get(f"{BASE}/support/tickets/{created_ticket_id}",
+                             headers=Hu, timeout=30).json()
+            _assert(t.get("status") == "resolved",
+                    "GET confirms ticket status=resolved",
+                    f"got={t.get('status')}")
+
+        r = requests.patch(
+            f"{BASE}/admin/support/tickets/{created_ticket_id}/status",
+            headers=Ha, json={"status": "wibble"}, timeout=30,
+        )
+        _assert(r.status_code == 400, "invalid admin status -> 400",
+                f"status={r.status_code}")
+
+        r = requests.patch(
+            f"{BASE}/admin/support/tickets/{created_ticket_id}/status",
+            headers=Hu, json={"status": "resolved"}, timeout=30,
+        )
+        _assert(r.status_code == 403,
+                "regular user PATCH status -> 403",
+                f"status={r.status_code}")
+
+    # ───────────────────────────────────────────────────────────────
+    # 8) admin priority patch
+    # ───────────────────────────────────────────────────────────────
+    print("\n[8] PATCH admin priority")
+    if created_ticket_id:
+        r = requests.patch(
+            f"{BASE}/admin/support/tickets/{created_ticket_id}/priority",
+            headers=Ha, json={"priority": "high"}, timeout=30,
+        )
+        _assert(r.status_code == 200, "admin set priority=high -> 200",
+                f"status={r.status_code}")
+        if r.status_code == 200:
+            _assert(r.json().get("priority") == "high",
+                    "response confirms priority=high")
+            t = requests.get(f"{BASE}/support/tickets/{created_ticket_id}",
+                             headers=Hu, timeout=30).json()
+            _assert(t.get("priority") == "high",
+                    "GET confirms priority=high")
+
+        r = requests.patch(
+            f"{BASE}/admin/support/tickets/{created_ticket_id}/priority",
+            headers=Ha, json={"priority": "ultra"}, timeout=30,
+        )
+        _assert(r.status_code == 400, "invalid priority -> 400",
+                f"status={r.status_code}")
+
+        r = requests.patch(
+            f"{BASE}/admin/support/tickets/{created_ticket_id}/priority",
+            headers=Hu, json={"priority": "low"}, timeout=30,
+        )
+        _assert(r.status_code == 403, "regular user PATCH priority -> 403",
+                f"status={r.status_code}")
+
+    # ───────────────────────────────────────────────────────────────
+    # 9) Admin reply flips status
+    # ───────────────────────────────────────────────────────────────
+    print("\n[9] Admin reply via user endpoint flips status")
+    r = requests.post(
+        f"{BASE}/support/tickets",
+        headers=Hu,
+        json={
+            "title": "Need help with bulk import CSV",
+            "description": "My 200-row CSV fails on import - error says "
+                           "'pincode missing' but col is filled.",
+            "category": "general",
+        },
+        timeout=30,
+    )
+    _assert(r.status_code == 200, "create fresh ticket for admin-reply test",
+            f"status={r.status_code}")
+    fresh_id = None
+    if r.status_code == 200:
+        fresh_id = r.json().get("id")
+        _assert(r.json().get("status") == "open",
+                "fresh ticket starts at status=open")
+
+    if fresh_id:
+        r = requests.post(
+            f"{BASE}/support/tickets/{fresh_id}/reply",
+            headers=Ha,
+            json={"body": "Hi - please email the CSV to support@kisan, "
+                          "we'll diagnose."},
+            timeout=30,
+        )
+        _assert(r.status_code == 200, "admin reply via user endpoint -> 200",
+                f"status={r.status_code} body={r.text[:200]}")
+
+        t = requests.get(f"{BASE}/support/tickets/{fresh_id}",
+                         headers=Hu, timeout=30).json()
+        _assert(t.get("status") == "in_progress",
+                "after admin reply, status flipped to in_progress",
+                f"got={t.get('status')}")
+
+        msgs = t.get("messages") or []
+        if msgs:
+            _assert(msgs[-1].get("author_role") == "admin",
+                    "last message author_role=admin",
+                    f"got={msgs[-1].get('author_role')}")
+
+    total = PASS_COUNT + FAIL_COUNT
+    print("\n" + "=" * 72)
+    print(f"RESULT: {PASS_COUNT}/{total} assertions passed "
+          f"({FAIL_COUNT} failed)")
+    print("=" * 72)
+    if FAILURES:
+        print("\nFailures:")
+        for f in FAILURES:
+            print(f"  - {f}")
+        return 1
+    return 0
 
 
-cleanup()
-
-print("\n" + "=" * 72)
-print(f"RESULT: PASS={PASS}  FAIL={FAIL}")
-print("=" * 72)
-if FAIL:
-    print("\nFailures:")
-    for f in FAILURES:
-        print(f"  - {f}")
-    sys.exit(1)
-sys.exit(0)
+if __name__ == "__main__":
+    try:
+        rc = main()
+    except Exception:
+        traceback.print_exc()
+        rc = 1
+    sys.exit(rc)

@@ -5383,6 +5383,21 @@ except Exception as _tm_exc:
 app.include_router(api_router)
 app.include_router(auth_router)
 
+# Phase-21 — Support Tickets router (Support Center backend).
+# Mounted right after the core api_router so the /api/support and
+# /api/admin/support paths come up alongside the rest of the API.
+try:
+    from routers.support import (
+        support_router as _support_router,
+        admin_support_router as _admin_support_router,
+        init as _init_support_router,
+    )
+    _init_support_router()
+    app.include_router(_support_router)
+    app.include_router(_admin_support_router)
+except Exception as _sup_exc:
+    logger.exception(f"Failed to mount support router: {_sup_exc}")
+
 # Phase-1 modular refactor — extracted routers. Each router is wired
 # in *after* server.py has finished defining its helpers + db, so the
 # late-binding `init()` calls inside them can `from server import …`

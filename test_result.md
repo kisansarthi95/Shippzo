@@ -19458,3 +19458,177 @@ agent_communication:
 
         Phase-21 is production-ready. Main agent can summarise and finish.
 
+
+---
+
+## Backend Test Run: Phase-21 Support Tickets (2026-05-16)
+
+backend:
+  - task: "Phase-21 Support Tickets — user + admin endpoints"
+    implemented: true
+    working: false
+    file: "/app/backend/routers/support.py"
+    stuck_count: 1
+    priority: "high"
+    needs_retesting: true
+    status_history:
+        -working: false
+        -agent: "testing"
+        -comment: |
+            CRITICAL BUG — almost every authenticated /api/support/* and
+            /api/admin/support/* endpoint returns HTTP 500.
+
+            Root cause (single bug, fix is ~6 lines):
+              /app/backend/routers/support.py uses the pattern
+                current_user = Depends(lambda: get_current_user())
+              on every endpoint (lines 125, 170, 201, 216, 261, 287,
+              317, 337).
+
+              `get_current_user` is an async dependency function
+              produced by `get_current_user_factory(db)` in
+              /app/backend/auth.py — it expects FastAPI to invoke it
+              with the Request (or token via OAuth2PasswordBearer) and
+              awaits inside.
+
+              The lambda used in support.py:
+                a) Is synchronous, so FastAPI calls it sync and
+                   receives a coroutine object — never awaited →
+                   `current_user["id"]` then raises:
+                     TypeError: 'coroutine' object is not subscriptable
+                b) Calls `get_current_user()` with NO arguments, so
+                   even if it were awaited it wouldn't see the
+                   request/token.
+
+              Backend logs (live preview /var/log/supervisor/backend.err.log)
+              confirm:
+                File "/app/backend/routers/support.py", line 139, in
+                create_ticket
+                  "user_id": current_user["id"],
+                  TypeError: 'coroutine' object is not subscriptable
+
+            Suggested fix (any of these — main agent's call):
+              Option A — drop the lambda, reference the real dep
+              (works because `get_current_user` is late-bound module
+              global; FastAPI captures the wrapper function name at
+              router-include time but resolves at call time only if
+              the name is module-level):
+                current_user: Dict[str, Any] = Depends(get_current_user)
+              + ensure `init()` writes `get_current_user` into the
+              router module global BEFORE `app.include_router(...)`
+              (server.py already calls init() first — good).
+
+              Option B — define a tiny async wrapper at module top:
+                async def _user(request: Request) -> Dict[str, Any]:
+                    return await get_current_user(request)
+              and `Depends(_user)`.
+
+              Option C — make the lambda async and forward request:
+                Depends(lambda req: get_current_user(req))  # still
+                wrong, lambda is sync → coroutine warning. Use async
+                wrapper.
+
+            Test results (13 assertions ran before bailing on 500s):
+              PASS  4 / 13
+                ✅ invalid category -> 400 (validated before auth dep
+                   coroutine is dereferenced? actually 400 returned
+                   from inside route — wait, see note below)
+                ✅ title < 2  -> 422
+                ✅ no auth   -> 401 (handled by auth_gate middleware
+                   BEFORE reaching the broken route)
+                ✅ GET /api/support/tickets/<bogus-id> -> 404
+              FAIL 9 / 13
+                ❌ POST /api/support/tickets (valid)  -> 500
+                ❌ POST /api/support/tickets (2nd)    -> 500
+                ❌ GET  /api/support/tickets          -> 500
+                ❌ GET  /api/support/tickets?status=open    -> 500
+                ❌ GET  /api/support/tickets?status=closed  -> 500
+                ❌ GET  /api/support/tickets?status=bogus   -> 500
+                   (expected 400)
+                ❌ GET  /api/admin/support/tickets    -> 500
+                ❌ GET  /api/admin/support/tickets as user -> 500
+                   (expected 403)
+                ❌ POST /api/support/tickets (admin reply test setup)
+                   -> 500
+
+              Re-check on the 4 PASSing rows: the "invalid category
+              -> 400" and "title < 2 -> 422" successes are because
+              pydantic / category validation in the route body run
+              BEFORE the first dereference of `current_user`. Pydantic
+              validation runs before route body, and the
+              category-check is just before the first `current_user`
+              access. So those two return their proper validation
+              error and never reach the broken code. The 404 case
+              also passes because the route hits
+              `db.support_tickets.find_one(...) → None → raise 404`
+              BEFORE touching `current_user["id"]`. Misleading
+              partial pass.
+
+              Endpoints that CANNOT be tested until the bug is fixed:
+              every endpoint that reads / writes user-scoped data,
+              i.e. all of:
+                POST /api/support/tickets   (create)
+                GET  /api/support/tickets   (list mine)
+                GET  /api/support/tickets/{id} (own — passes only the
+                   404 nonexistent variant by accident)
+                POST /api/support/tickets/{id}/reply
+                POST /api/support/tickets/{id}/close
+                GET  /api/admin/support/tickets
+                PATCH /api/admin/support/tickets/{id}/status
+                PATCH /api/admin/support/tickets/{id}/priority
+                Admin-reply auto-status-flip flow.
+
+            Side observation (minor, NOT blocking):
+              /api/auth/signup requires a `phone` field
+              (422 "Field required" when omitted). Documented behaviour
+              for cross-user 403 testing — test will need to pass a
+              phone. Updated /app/backend_test.py uses phone=
+              "9000000001" on the third-user provisioning.
+
+            Test artefacts: zero tickets created (every POST 500'd).
+            Database is clean.
+
+            REQUIRED ACTION (main agent):
+              Fix the dependency wiring in support.py as described
+              above, restart backend, then ask testing agent to
+              re-run /app/backend_test.py.
+
+agent_communication:
+    -agent: "testing"
+    -message: |
+        Phase-21 Support Tickets — BLOCKED by a single critical bug.
+
+        /app/backend/routers/support.py:125 (and 7 sibling lines) uses
+          Depends(lambda: get_current_user())
+        which fails because `get_current_user` is async and the
+        lambda passes no request → the dep returns an un-awaited
+        coroutine, and `current_user["id"]` raises TypeError:
+        'coroutine' object is not subscriptable. Confirmed via
+        backend logs.
+
+        Result: 4/13 assertions pass (only the ones that error out
+        BEFORE first touching `current_user` — pydantic validation
+        errors and the 401 from auth_gate middleware). Every
+        endpoint that needs `current_user["id"]` returns 500.
+
+        Suggested fix: replace
+            Depends(lambda: get_current_user())
+        with
+            Depends(get_current_user)
+        in all 8 occurrences in routers/support.py. The router's
+        init() function already injects get_current_user into the
+        module global before app.include_router() is called, so a
+        direct reference at module import time would still see None,
+        BUT FastAPI resolves Depends() lazily on each request — so a
+        function reference like `_get_user` (defined at module top
+        that proxies to the global) is the safest pattern. See three
+        suggested approaches in the status_history above.
+
+        Please fix and request re-test.
+
+test_plan:
+  current_focus:
+    - "Phase-21 Support Tickets — user + admin endpoints"
+  stuck_tasks:
+    - "Phase-21 Support Tickets — user + admin endpoints"
+  test_all: false
+  test_priority: "stuck_first"

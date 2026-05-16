@@ -1736,6 +1736,45 @@ export const Api = {
       `/orders/pending/${id}/mark-viewed`,
     ).then((r) => r.data),
 
+  // ─────── Phase-21 — Support Center / Tickets ───────
+  /** Create a new support ticket. The first message is taken from
+   *  `description` and stored inline on the ticket so the detail
+   *  screen renders without a second fetch. */
+  supportCreateTicket: (payload: {
+    title: string;
+    description: string;
+    category?: string;
+  }) =>
+    api.post<SupportTicket>(`/support/tickets`, {
+      title: payload.title,
+      description: payload.description,
+      category: payload.category || "general",
+    }).then((r) => r.data),
+
+  /** List the current user's tickets (newest-first). Pass `status`
+   *  to narrow to open / in_progress / resolved / closed. */
+  supportListMyTickets: (status?: string) =>
+    api.get<{ items: SupportTicket[]; count: number }>(`/support/tickets`, {
+      params: status ? { status } : undefined,
+    }).then((r) => r.data),
+
+  /** Full ticket including the inline `messages[]` thread. */
+  supportGetTicket: (id: string) =>
+    api.get<SupportTicket>(`/support/tickets/${id}`).then((r) => r.data),
+
+  /** Append a reply. The server flips ticket status to `in_progress`
+   *  when an admin replies to an `open` ticket. */
+  supportReply: (id: string, body: string) =>
+    api.post<{ ok: boolean; message: SupportMessage }>(
+      `/support/tickets/${id}/reply`,
+      { body },
+    ).then((r) => r.data),
+
+  /** User-side close — marks the ticket resolved + closed. */
+  supportCloseTicket: (id: string) =>
+    api.post<{ ok: boolean }>(`/support/tickets/${id}/close`)
+      .then((r) => r.data),
+
   // ─────── Phase F1 — CSV / XLSX bulk import ───────
   /** Parse an uploaded CSV/XLSX without writing to DB. Returns columns,
    *  first 10 rows, total row count, schema fields, and an
@@ -2216,4 +2255,31 @@ export const SHEET_FIELD_ALIASES: Record<string, string> = {
   phone:     "customer_phone",
   item:      "items",
   timestamp: "created_at_override",
+};
+
+// ───────── Phase-21 — Support Center types ───────────────────────────
+export type SupportMessage = {
+  id: string;
+  author_id: string;
+  author_name: string;
+  author_role: "user" | "admin";
+  body: string;
+  created_at: string;
+};
+
+export type SupportTicket = {
+  id: string;
+  user_id: string;
+  user_email?: string;
+  title: string;
+  category: "general" | "billing" | "technical" | "feature" | "other";
+  status:   "open" | "in_progress" | "resolved" | "closed";
+  priority: "low" | "medium" | "high";
+  messages?: SupportMessage[];     // present on detail; stripped on list
+  message_count?: number;          // present on list
+  last_message_preview?: string;   // present on list
+  created_at: string;
+  updated_at: string;
+  last_reply_at?: string;
+  last_reply_by?: "user" | "admin";
 };

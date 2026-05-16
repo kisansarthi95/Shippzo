@@ -204,6 +204,11 @@ const ICON_MAP: Record<string, React.ComponentType<any>> = {
   "play-outline":          Ph.MonitorPlay,
   question:                Ph.Question,            // FAQs card
   clipboard:               Ph.Clipboard,           // My Requests card
+  // Phase-21 — Ticket flows (create / detail / list) need a few more.
+  send:                    Ph.PaperPlaneTilt,      // submit-ticket / reply
+  "send-outline":          Ph.PaperPlaneTilt,
+  add:                     Ph.Plus,                // header "+" on My Tickets
+  "chatbubbles-outline":   Ph.ChatsCircle,         // general category chip
 };
 
 // Aliases for less obvious mappings — the kebab-case key is the

@@ -84,11 +84,12 @@ export default function SupportCenter() {
     );
   }, [query]);
 
-  // Centralised "fall back to email" so a single source of truth
-  // exists for the legacy mailto behaviour. Used by Create Request,
-  // My Requests, and the bottom "Still need help?" CTA until the
-  // real ticketing endpoints come online.
-  const openSupportEmail = (subject: string) => {
+  // Centralised "fall back to email" helper kept for completeness —
+  // not used directly anymore (Create Request + My Requests now route
+  // to their own screens) but ready when the Video Tutorials and FAQs
+  // surfaces need an "Email us instead" fallback.
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const _openSupportEmail = (subject: string) => {
     Linking.openURL(
       `mailto:${SUPPORT_EMAIL}?subject=${encodeURIComponent(
         `${APP_NAME} — ${subject}`,
@@ -96,8 +97,9 @@ export default function SupportCenter() {
     ).catch(() => {});
   };
 
-  // Card press handlers — each currently stubs to a useful fallback
-  // so the screen is fully navigable today.
+  // Card press handlers. Phase-21 — Create Request + My Requests
+  // now route to dedicated screens backed by the support_tickets API.
+  // Video Tutorials + FAQs remain as fallbacks until the KB ships.
   const onVideoTutorials = () => {
     // TODO: replace with YouTube playlist deep-link / in-app player
     // when the tutorials channel is published.
@@ -105,8 +107,8 @@ export default function SupportCenter() {
       .catch(() => {});
   };
   const onFAQs        = () => router.push("/refund-policy?tab=privacy" as any);
-  const onCreateRequest = () => openSupportEmail("Support request");
-  const onMyRequests  = () => openSupportEmail("My support requests");
+  const onCreateRequest = () => router.push("/support-center/create" as any);
+  const onMyRequests  = () => router.push("/support-center/my-tickets" as any);
 
   return (
     <View style={[styles.root, { paddingBottom: insets.bottom + 16 }]}>
