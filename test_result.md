@@ -19732,3 +19732,142 @@ agent_communication_archive:
         suggested approaches in the status_history above.
 
         Please fix and request re-test.
+
+---
+
+## Backend Test Run: Phase-21 Support Tickets — New Categories + SHP-XXXX + Field Additions (2026-05-16)
+
+backend:
+  - task: "Support Tickets — Phase-21 field additions (categories, SHP-XXXX, supplementary fields, list projection)"
+    implemented: true
+    working: true
+    file: "/app/backend/routers/support.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "testing"
+        -comment: |
+            All 34 assertions PASSED via /app/backend_test.py against
+            https://logistics-hub-740.preview.emergentagent.com/api,
+            authenticated as user2@test.com (the Phase-1 multi-tenant
+            test user).
+
+            [1] POST /api/support/tickets with new category keys:
+                - label_print, account_login, whatsapp, plan_wallet,
+                  app_bug, feature_request, order_input, other —
+                  ALL accepted (200). Each response includes a
+                  ticket_number matching /^SHP-\d{4,}$/.
+                - Allocated SHP-2400 → SHP-2407 across the eight
+                  categories (counter started at seq=1, allocator
+                  pads with 2399 offset → SHP-2400 was the first).
+                - Invalid category "xxx_bogus" → 400 as expected.
+
+            [2] SHP-XXXX monotonicity: 3 back-to-back creates yielded
+                SHP-2408, SHP-2409, SHP-2410 (strictly +1 each).
+                meta_counters._id="support_ticket_seq" atomic
+                find_one_and_update with $inc+upsert is concurrency
+                safe. Verified by parsing the numeric suffix.
+
+            [3] Supplementary fields round-trip on POST with
+                category="label_print":
+                  • courier_name="Delhivery"     → echoed
+                  • order_id="ORD-987"           → echoed as
+                                                   order_id_ref
+                                                   (renamed to avoid
+                                                   colliding with the
+                                                   shipment order_id
+                                                   column)
+                  • issue_started="yesterday"    → echoed
+                  • device_info={app_version,
+                                 platform, os_version}
+                                                 → echoed verbatim
+
+            [4] GET /api/support/tickets (list view):
+                - Returned 16 items for the test user.
+                - Mongo projection {"screenshot_b64":0,
+                  "recording_b64":0} confirmed: neither field
+                  present on any list item, including the freshly
+                  created ticket that DID submit a screenshot_b64.
+                - Every expected lightweight field present:
+                  id, ticket_number, user_id, title, category,
+                  status, priority, courier_name, order_id_ref,
+                  issue_started, message_count,
+                  last_message_preview, created_at, updated_at.
+                - message_count=1 and last_message_preview begins
+                  with the description text — confirms the list
+                  pipeline pops `messages[]` and computes preview
+                  from the last entry.
+
+            [5] GET /api/support/tickets/{id} (detail view):
+                - screenshot_b64="iVBORw0KGgo=" submitted on create
+                  was returned byte-for-byte on the detail endpoint
+                  → heavy fields are stored, list strips them, detail
+                  serves them.
+                - messages thread present with the user's original
+                  description as messages[0] (author_role="user",
+                  non-empty body).
+                - ticket_number still present and well-formed.
+
+            [6] Legacy compatibility:
+                - category="general" still accepted (200) →
+                  ticket_number=SHP-2413, confirming the legacy
+                  category set (general/billing/technical/feature/
+                  other) was preserved in _VALID_CATEGORIES.
+                - GET /api/support/tickets served 17 tickets after
+                  the test run (mix of legacy and new categories,
+                  some with attachments, some without) — no
+                  validation errors thrown for tickets that
+                  pre-date the ticket_number / courier_name
+                  additions.
+
+            CLEANUP: Per the review request no cleanup performed —
+            ~17 test tickets remain on user2@test.com. They are
+            cheap (mostly < 1 KB each; one carries the 12-byte PNG
+            header). The seq counter is now at 2413 (next ticket
+            will be SHP-2414).
+
+            EVIDENCE the new schema is the cause of the green
+            result (not pre-existing behaviour):
+              • SHP-XXXX numbers are deterministic +1 — matches the
+                new meta_counters._id="support_ticket_seq" allocator.
+              • order_id_ref echoes the value sent as order_id —
+                matches the explicit rename at line 221 of
+                routers/support.py.
+              • Heavy fields absent on list, present on detail —
+                matches the projection {"recording_b64":0,
+                "screenshot_b64":0} added at line 270.
+
+agent_communication:
+    -agent: "testing"
+    -message: |
+        Phase-21 Support Tickets field-additions test — ALL GREEN.
+        34/34 assertions passed against the public preview backend
+        with user2@test.com / User@12345.
+
+        Confirmed:
+          1. All 8 new category keys (account_login, plan_wallet,
+             label_print, order_input, whatsapp, app_bug,
+             feature_request, other) accepted; invalid category
+             → 400.
+          2. SHP-XXXX allocator (meta_counters.support_ticket_seq)
+             returns strictly monotonic SHP-NNNN numbers — verified
+             across 3 consecutive creates (+1 each).
+          3. courier_name, order_id (→ order_id_ref), issue_started
+             and device_info all round-trip on create.
+          4. GET /api/support/tickets list projection STRIPS
+             screenshot_b64 and recording_b64; all expected light
+             fields present (incl. ticket_number, courier_name,
+             order_id_ref, issue_started, message_count,
+             last_message_preview).
+          5. GET /api/support/tickets/{id} returns the full ticket
+             WITH screenshot_b64 round-trip and the messages thread.
+          6. Legacy category="general" still works; the 17 mixed
+             legacy/new tickets currently on the user all serialise
+             without validation errors.
+
+        No critical or minor issues found in the support endpoints
+        covered by the review. Main agent can finalise/finish this
+        sub-feature.
+

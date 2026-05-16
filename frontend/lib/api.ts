@@ -1744,11 +1744,26 @@ export const Api = {
     title: string;
     description: string;
     category?: string;
+    // Phase-21 — Optional supplementary fields from the Issue
+    // Details screen. None are required so calls that only pass
+    // title/description/category keep working.
+    courier_name?: string;
+    order_id?: string;
+    issue_started?: string;       // "today" | "yesterday" | "this_week" | "older"
+    screenshot_b64?: string;
+    recording_b64?: string;
+    device_info?: Record<string, any>;
   }) =>
     api.post<SupportTicket>(`/support/tickets`, {
       title: payload.title,
       description: payload.description,
       category: payload.category || "general",
+      courier_name: payload.courier_name || "",
+      order_id: payload.order_id || "",
+      issue_started: payload.issue_started || "",
+      screenshot_b64: payload.screenshot_b64 || "",
+      recording_b64: payload.recording_b64 || "",
+      device_info: payload.device_info || {},
     }).then((r) => r.data),
 
   /** List the current user's tickets (newest-first). Pass `status`
@@ -2269,12 +2284,20 @@ export type SupportMessage = {
 
 export type SupportTicket = {
   id: string;
+  ticket_number?: string;          // SHP-XXXX (Phase-21)
   user_id: string;
   user_email?: string;
   title: string;
-  category: "general" | "billing" | "technical" | "feature" | "other";
+  category: string;                // expanded set — see support.py _VALID_CATEGORIES
   status:   "open" | "in_progress" | "resolved" | "closed";
   priority: "low" | "medium" | "high";
+  // Phase-21 supplementary fields
+  courier_name?: string;
+  order_id_ref?: string;
+  issue_started?: string;
+  screenshot_b64?: string;
+  recording_b64?: string;
+  device_info?: Record<string, any>;
   messages?: SupportMessage[];     // present on detail; stripped on list
   message_count?: number;          // present on list
   last_message_preview?: string;   // present on list

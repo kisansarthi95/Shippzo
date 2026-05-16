@@ -61,7 +61,24 @@ def _utcnow_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-_VALID_CATEGORIES = {"general", "billing", "technical", "feature", "other"}
+_VALID_CATEGORIES = {
+    # Phase-21 — Expanded category set matching the Support Center
+    # Category Selection screen. Each key is the canonical machine
+    # value persisted on the ticket; the UI maps these to human
+    # labels (e.g. "label_print" → "Label Generate & Print Related
+    # Issue"). The legacy "general" / "billing" / "technical" /
+    # "feature" / "other" set is folded into this list (and the
+    # legacy values keep working — existing tickets stay valid).
+    "account_login",     # Account Login & Forgot Account
+    "plan_wallet",       # Plan & Wallet Issue
+    "label_print",       # Label Generate & Print Related Issue
+    "order_input",       # Order Input Related Issue
+    "whatsapp",          # WhatsApp Integration Problem
+    "app_bug",           # App Crash / Bug
+    "feature_request",   # Required Feature
+    # Legacy keys preserved so older tickets keep validating.
+    "general", "billing", "technical", "feature", "other",
+}
 _VALID_STATUSES   = {"open", "in_progress", "resolved", "closed"}
 _VALID_PRIORITIES = {"low", "medium", "high"}
 
@@ -93,6 +110,15 @@ class CreateTicketIn(BaseModel):
     title:       str = Field(..., min_length=2,  max_length=140)
     description: str = Field(..., min_length=2,  max_length=5000)
     category:    str = "general"
+    # Phase-21 — Optional structured fields gathered by the Issue
+    # Details screen. None are required so legacy clients that only
+    # send {title, description, category} keep working.
+    courier_name:  Optional[str] = ""
+    order_id:      Optional[str] = ""
+    issue_started: Optional[str] = ""   # "today" | "yesterday" | "this_week" | "older"
+    screenshot_b64: Optional[str] = ""  # data: URL or base64 (PNG/JPG, <5 MB)
+    recording_b64:  Optional[str] = ""  # base64 mp4 — optional, capped client-side
+    device_info:   Optional[Dict[str, Any]] = None
 
 
 class ReplyIn(BaseModel):
@@ -129,6 +155,27 @@ def init() -> None:
         get_current_user as _get_current_user,
     )
 
+    # Phase-21 — Atomic SHP-XXXX ticket-number allocator. Each
+    # support ticket gets a human-readable `ticket_number` like
+    # SHP-2487 (4+ zero-padded digits) so operators and admins can
+    # quote/search by a short identifier instead of the UUID. The
+    # counter lives on the `meta_counters` collection under
+    # `support_ticket_seq`; findOneAndUpdate with upsert+inc is
+    # crash-safe and concurrency-safe (Mongo guarantees atomicity).
+    async def _next_ticket_number() -> str:
+        seq_doc = await db.meta_counters.find_one_and_update(
+            {"_id": "support_ticket_seq"},
+            {"$inc": {"seq": 1}},
+            upsert=True,
+            return_document=True,
+        )
+        n = int((seq_doc or {}).get("seq", 1))
+        # Start at 2400 so the very first prod ticket is SHP-2400 —
+        # matches the design mockup (SHP-2487 visible in the My
+        # Requests screenshot) and avoids feeling like "user #1".
+        n_padded = max(n + 2399, 1000)
+        return f"SHP-{n_padded:04d}"
+
     # ───────── USER endpoints ──────────────────────────────────────
     @support_router.post("/tickets")
     async def create_ticket(
@@ -146,14 +193,36 @@ def init() -> None:
         now = _utcnow_iso()
         tid = str(uuid.uuid4())
         msg_id = str(uuid.uuid4())
+        # Generate SHP-XXXX number. If the allocator fails for any
+        # reason, fall back to "SHP-" + first 4 chars of the uuid so
+        # the ticket can still be created — better than 500-ing the
+        # whole request over a counter hiccup.
+        try:
+            ticket_number = await _next_ticket_number()
+        except Exception:
+            ticket_number = f"SHP-{tid[:4].upper()}"
+
         doc = {
             "id":            tid,
+            "ticket_number": ticket_number,
             "user_id":       current_user["id"],
             "user_email":    (current_user.get("email") or ""),
             "title":         _norm_str(payload.title, 140),
             "category":      cat,
             "status":        "open",
             "priority":      "medium",
+            # Phase-21 — structured supplementary fields from the
+            # Issue Details screen. All are optional; stored as-is
+            # for the detail view to render later. Screenshot +
+            # recording capped on the client (5 MB / 8 MB) so the
+            # whole ticket doc stays well under Mongo's 16 MB
+            # document limit even with both attachments.
+            "courier_name":   _norm_str(payload.courier_name, 80),
+            "order_id_ref":   _norm_str(payload.order_id, 80),
+            "issue_started":  _norm_str(payload.issue_started, 32),
+            "screenshot_b64": _norm_str(payload.screenshot_b64, 8_000_000),
+            "recording_b64":  _norm_str(payload.recording_b64, 12_000_000),
+            "device_info":    (payload.device_info or {}),
             "messages": [
                 {
                     "id":           msg_id,
@@ -189,16 +258,26 @@ def init() -> None:
                 raise HTTPException(status_code=400, detail="invalid status")
             q["status"] = st
         cursor = (
-            db.support_tickets.find(q)
+            db.support_tickets.find(
+                q,
+                # Phase-21 — Strip heavy base64 attachments from the
+                # list view; the detail endpoint fetches them when
+                # actually needed. Mongo `find` with a projection that
+                # omits these fields is dramatically cheaper over the
+                # wire when a user has 50+ tickets each with a 5 MB
+                # screenshot. The full doc is still available via
+                # GET /tickets/{id}.
+                {"recording_b64": 0, "screenshot_b64": 0},
+            )
             .sort("updated_at", -1)
             .limit(limit)
         )
         items: List[Dict[str, Any]] = []
         async for t in cursor:
-            # Strip the messages array on list view — the detail
-            # endpoint returns full thread. Keep only the count + last
-            # preview so the list UI can show "3 replies · last: …"
-            # badges.
+            # Strip the messages array on list view too — the detail
+            # endpoint returns the full thread. Keep only count +
+            # last-preview so the list UI can show "3 replies …"
+            # badges without paying the bandwidth cost.
             msgs = t.pop("messages", []) or []
             last = msgs[-1] if msgs else None
             t["message_count"] = len(msgs)

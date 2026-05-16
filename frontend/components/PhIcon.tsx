@@ -209,6 +209,13 @@ const ICON_MAP: Record<string, React.ComponentType<any>> = {
   "send-outline":          Ph.PaperPlaneTilt,
   add:                     Ph.Plus,                // header "+" on My Tickets
   "chatbubbles-outline":   Ph.ChatsCircle,         // general category chip
+  // Phase-21 — Category-picker tiles + success-screen tick.
+  bug:                     Ph.Bug,                 // App Crash / Bug category
+  sparkles:                Ph.Sparkle,             // Required Feature category
+  "ellipsis-horizontal":   Ph.DotsThree,           // Other Issue category
+  "wallet-outline":        Ph.Wallet,              // Plan & Wallet category
+  "cloud-upload-outline":  Ph.UploadSimple,        // upload screenshot tile
+  checkmark:               Ph.Check,               // success screen
 };
 
 // Aliases for less obvious mappings — the kebab-case key is the
