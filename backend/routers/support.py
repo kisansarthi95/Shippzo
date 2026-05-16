@@ -47,8 +47,27 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
+
+# Phase-22 — email notification alerts (best-effort, fire-and-forget).
+# The service module loads `.env` itself; missing creds become a no-op
+# so the rest of the request still succeeds cleanly.
+try:
+    from services.email_service import (
+        send_new_ticket_admin_alert,
+        send_reply_user_alert,
+    )
+except Exception as _e:                                     # pragma: no cover
+    logging.getLogger(__name__).warning(
+        "[support] email_service unavailable: %s — alerts disabled", _e,
+    )
+
+    def send_new_ticket_admin_alert(**_kw):  # type: ignore
+        return False
+
+    def send_reply_user_alert(**_kw):        # type: ignore
+        return False
 
 
 _logger = logging.getLogger(__name__)
@@ -180,6 +199,7 @@ def init() -> None:
     @support_router.post("/tickets")
     async def create_ticket(
         payload: CreateTicketIn,
+        background: BackgroundTasks,
         current_user: Dict[str, Any] = Depends(_get_current_user),
     ):
         """Create a new support ticket. The author's first message is
@@ -241,6 +261,23 @@ def init() -> None:
             "last_reply_by":  "user",
         }
         await db.support_tickets.insert_one(doc)
+
+        # Phase-22 — fire admin-alert email in the background so the
+        # API call returns fast even when the SMTP/SaaS provider is
+        # slow. The helper swallows all exceptions internally so
+        # there's no need for a try/except here.
+        try:
+            background.add_task(
+                send_new_ticket_admin_alert,
+                ticket_number=ticket_number,
+                title=doc["title"],
+                description=doc["messages"][0]["body"],
+                category=cat,
+                user_email=doc.get("user_email", "") or "",
+            )
+        except Exception as e:                                  # noqa: BLE001
+            _logger.warning("[support] failed to schedule admin alert: %s", e)
+
         return _serialise(doc)
 
     @support_router.get("/tickets")
@@ -302,6 +339,7 @@ def init() -> None:
     async def reply_to_ticket(
         ticket_id: str,
         payload: ReplyIn,
+        background: BackgroundTasks,
         current_user: Dict[str, Any] = Depends(_get_current_user),
     ):
         t = await db.support_tickets.find_one({"id": ticket_id})
@@ -342,6 +380,25 @@ def init() -> None:
         if is_admin_user and t.get("status") == "open":
             update["$set"]["status"] = "in_progress"
         await db.support_tickets.update_one({"id": ticket_id}, update)
+
+        # Phase-22 — when the admin replies, send the customer an
+        # alert email so they know to reopen the app. User-to-admin
+        # replies don't trigger email since the admin already polls
+        # the inbox; we'll add reverse alerts only if the owner asks.
+        if is_admin_user:
+            try:
+                background.add_task(
+                    send_reply_user_alert,
+                    ticket_number=t.get("ticket_number", "")
+                                  or f"SHP-{ticket_id[:4].upper()}",
+                    ticket_id=ticket_id,
+                    title=t.get("title", "Your support request"),
+                    reply_preview=msg["body"],
+                    to_email=t.get("user_email", "") or "",
+                )
+            except Exception as e:                                  # noqa: BLE001
+                _logger.warning("[support] failed to schedule user alert: %s", e)
+
         return {"ok": True, "message": msg}
 
     @support_router.post("/tickets/{ticket_id}/close")
