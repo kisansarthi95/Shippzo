@@ -2,23 +2,27 @@
  * Phase-21 — Support Center → Create Request → STEP 2 / 3 / 4
  *
  * Three-phase wizard inside a single screen:
- *   step “form”    → Issue Details form (order id, problem, etc.)
- *   step “review”  → Review & Submit summary
- *   step “done”    → "Request Submitted!" success with SHP-XXXX
+ *   step "form"    → Issue Details form (order id, problem, etc.)
+ *   step "review"  → Review & Submit summary
+ *   step "done"    → "Request Submitted!" success with SHP-XXXX
  *
  * Category arrives as a URL param `cat` (one of the keys in
  * CATEGORIES). The success screen exposes "View My Requests" and
  * "Back to Home" CTAs.
  *
- * Phase-21 scope note: screenshot + screen-recording uploads are
- * STUBBED for now (placeholder cards) — enabling them requires the
- * image-picker / file-picker plumbing which can land in a follow-up.
- * Backend already accepts the `screenshot_b64` / `recording_b64`
- * fields so flipping the stubs on is a frontend-only change.
+ * 2026-05-16 — Screenshot + screen-recording uploads enabled.
+ *   • Screenshot → `expo-image-picker` (camera or gallery), 5 MB cap,
+ *     PNG/JPG only, base64-encoded for the existing
+ *     `screenshot_b64` payload field.
+ *   • Screen recording → `expo-document-picker` (MP4), 20 MB cap,
+ *     read via `expo-file-system` into base64 for the
+ *     `recording_b64` payload field.
  */
 import React, { useMemo, useState } from "react";
 import {
+  ActivityIndicator,
   Alert,
+  Image,
   KeyboardAvoidingView,
   Platform,
   ScrollView,
@@ -31,11 +35,24 @@ import {
 import Constants from "expo-constants";
 import { Stack, useLocalSearchParams, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import * as ImagePicker from "expo-image-picker";
+import * as DocumentPicker from "expo-document-picker";
+import * as FileSystem from "expo-file-system";
 
 import PhIcon from "../../../components/PhIcon";
 import { colors } from "../../../lib/theme";
 import { Api } from "../../../lib/api";
 import { CATEGORIES, SupportCategoryKey } from "../create";
+
+const MAX_IMAGE_BYTES = 5 * 1024 * 1024;   // 5 MB
+const MAX_VIDEO_BYTES = 20 * 1024 * 1024;  // 20 MB
+
+const fmtSize = (bytes: number): string => {
+  if (!bytes || bytes <= 0) return "";
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(2)} MB`;
+};
 
 const WHEN_OPTIONS = [
   { k: "today",      label: "Today" },
@@ -87,6 +104,21 @@ export default function CreateTicketForm() {
   const [createdTicketNumber, setCreatedTicketNumber] = useState<string>("");
   const [createdTicketId, setCreatedTicketId]         = useState<string>("");
 
+  // Attachment state — populated by the image / document pickers
+  // below. The `*B64` strings are full data-URIs (so the receiving
+  // side can render them directly); `*Name` / `*Size` drive the
+  // preview chip UI. `*Busy` shows a spinner inside the upload card
+  // while the picker is fetching / encoding the file.
+  const [screenshotB64, setScreenshotB64]     = useState<string>("");
+  const [screenshotName, setScreenshotName]   = useState<string>("");
+  const [screenshotSize, setScreenshotSize]   = useState<number>(0);
+  const [screenshotBusy, setScreenshotBusy]   = useState<boolean>(false);
+
+  const [recordingB64, setRecordingB64]       = useState<string>("");
+  const [recordingName, setRecordingName]     = useState<string>("");
+  const [recordingSize, setRecordingSize]     = useState<number>(0);
+  const [recordingBusy, setRecordingBusy]     = useState<boolean>(false);
+
   /** Per-category field visibility — drives which inputs are
    *  rendered (and which values are submitted) so each category
    *  only collects the data points that actually matter for it. */
@@ -98,6 +130,122 @@ export default function CreateTicketForm() {
     os_version:  String(Platform.Version || ""),
   }), []);
 
+  // ────── Screenshot picker ───────────────────────────────────────
+  // Shows a small action-sheet so the user can grab a fresh photo
+  // (e.g. of the printer / error dialog) or pick one already saved
+  // in the gallery. Both paths go through expo-image-picker and
+  // come back base64-encoded so we can stick the result straight
+  // into the existing `screenshot_b64` payload field.
+  const pickScreenshot = () => {
+    Alert.alert(
+      "Add Screenshot",
+      "Choose a source",
+      [
+        { text: "Take Photo",       onPress: () => doPickImage("camera") },
+        { text: "Pick from Gallery", onPress: () => doPickImage("gallery") },
+        { text: "Cancel", style: "cancel" },
+      ],
+    );
+  };
+
+  const doPickImage = async (src: "camera" | "gallery") => {
+    try {
+      if (src === "camera") {
+        const perm = await ImagePicker.requestCameraPermissionsAsync();
+        if (!perm.granted) {
+          Alert.alert("Permission needed", "Please allow camera access from Settings to attach a photo.");
+          return;
+        }
+      } else {
+        const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+        if (!perm.granted) {
+          Alert.alert("Permission needed", "Please allow photo library access from Settings to attach a screenshot.");
+          return;
+        }
+      }
+      setScreenshotBusy(true);
+      const opts: ImagePicker.ImagePickerOptions = {
+        // expo-image-picker v17 uses the string array form. Cast to
+        // any to keep TS happy across minor version drift.
+        mediaTypes: ["images"] as any,
+        base64: true,
+        quality: 0.7,
+        allowsEditing: false,
+      };
+      const res = src === "camera"
+        ? await ImagePicker.launchCameraAsync(opts)
+        : await ImagePicker.launchImageLibraryAsync(opts);
+      if (res.canceled || !res.assets?.[0]) return;
+      const asset = res.assets[0];
+      // Prefer the OS-reported size; fall back to estimating from
+      // the base64 string length (≈ bytes * 4/3).
+      const size = (asset as any).fileSize ?? Math.floor(((asset.base64 || "").length * 3) / 4);
+      if (size > MAX_IMAGE_BYTES) {
+        Alert.alert(
+          "Image too large",
+          `Please pick a PNG/JPG under 5 MB. Selected size: ${fmtSize(size)}.`,
+        );
+        return;
+      }
+      const ext  = (asset.uri.split(".").pop() || "jpg").toLowerCase();
+      const mime = ext === "png" ? "image/png" : "image/jpeg";
+      setScreenshotB64(`data:${mime};base64,${asset.base64 || ""}`);
+      setScreenshotName((asset as any).fileName || `screenshot.${ext}`);
+      setScreenshotSize(size);
+    } catch (e: any) {
+      Alert.alert("Couldn't attach image", e?.message || "Please try again.");
+    } finally {
+      setScreenshotBusy(false);
+    }
+  };
+
+  // ────── Screen-recording picker ─────────────────────────────────
+  // Uses expo-document-picker (the system file-picker) so the user
+  // can attach an MP4 saved via the OS screen recorder. We then
+  // read it into base64 via expo-file-system to push through the
+  // existing `recording_b64` field.
+  const pickRecording = async () => {
+    try {
+      setRecordingBusy(true);
+      const res = await DocumentPicker.getDocumentAsync({
+        type: ["video/mp4", "video/*"],
+        copyToCacheDirectory: true,
+        multiple: false,
+      });
+      if (res.canceled || !res.assets?.[0]) return;
+      const asset = res.assets[0];
+      const reportedSize = (asset as any).size ?? 0;
+      if (reportedSize && reportedSize > MAX_VIDEO_BYTES) {
+        Alert.alert(
+          "Video too large",
+          `Please pick an MP4 under 20 MB. Selected size: ${fmtSize(reportedSize)}.`,
+        );
+        return;
+      }
+      const b64 = await FileSystem.readAsStringAsync(asset.uri, {
+        encoding: "base64" as any,
+      });
+      const actualSize = Math.floor((b64.length * 3) / 4);
+      if (actualSize > MAX_VIDEO_BYTES) {
+        Alert.alert(
+          "Video too large",
+          `Please pick an MP4 under 20 MB. Selected size: ${fmtSize(actualSize)}.`,
+        );
+        return;
+      }
+      setRecordingB64(`data:video/mp4;base64,${b64}`);
+      setRecordingName(asset.name || "recording.mp4");
+      setRecordingSize(reportedSize || actualSize);
+    } catch (e: any) {
+      Alert.alert("Couldn't attach video", e?.message || "Please try again.");
+    } finally {
+      setRecordingBusy(false);
+    }
+  };
+
+  const removeScreenshot = () => { setScreenshotB64(""); setScreenshotName(""); setScreenshotSize(0); };
+  const removeRecording  = () => { setRecordingB64("");  setRecordingName("");  setRecordingSize(0);  };
+
   const onSubmit = async () => {
     if (problem.trim().length < 5) {
       Alert.alert("Description required", "Please describe the issue in a bit more detail.");
@@ -106,13 +254,15 @@ export default function CreateTicketForm() {
     setSaving(true);
     try {
       const ticket = await Api.supportCreateTicket({
-        title:         category.title,
-        description:   problem.trim(),
-        category:      category.k,
-        courier_name:  fields.courierName ? courierName.trim() : "",
-        order_id:      fields.orderId     ? orderId.trim()     : "",
-        issue_started: fields.whenStarted ? when               : "",
-        device_info:   deviceInfo,
+        title:          category.title,
+        description:    problem.trim(),
+        category:       category.k,
+        courier_name:   fields.courierName ? courierName.trim() : "",
+        order_id:       fields.orderId     ? orderId.trim()     : "",
+        issue_started:  fields.whenStarted ? when               : "",
+        screenshot_b64: fields.screenshot  ? screenshotB64      : "",
+        recording_b64:  fields.recording   ? recordingB64       : "",
+        device_info:    deviceInfo,
       });
       setCreatedTicketNumber(ticket.ticket_number || `SHP-${ticket.id.slice(0, 4)}`);
       setCreatedTicketId(ticket.id);
@@ -189,6 +339,18 @@ export default function CreateTicketForm() {
               <SummaryRow
                 lbl="Issue Start Time"
                 val={WHEN_OPTIONS.find((w) => w.k === when)?.label || when}
+              />
+            ) : null}
+            {fields.screenshot && screenshotB64 ? (
+              <SummaryRow
+                lbl="Screenshot"
+                val={`${screenshotName || "image"} (${fmtSize(screenshotSize)})`}
+              />
+            ) : null}
+            {fields.recording && recordingB64 ? (
+              <SummaryRow
+                lbl="Screen Recording"
+                val={`${recordingName || "video.mp4"} (${fmtSize(recordingSize)})`}
               />
             ) : null}
           </View>
@@ -296,20 +458,96 @@ export default function CreateTicketForm() {
           </>
         )}
 
-        {/* Phase-21 — attachment slots stubbed for now. */}
+        {/* Screenshot attachment — PNG/JPG, max 5 MB. */}
         {fields.screenshot && (
-          <View style={styles.uploadCard}>
-            <PhIcon name="cloud-upload-outline" size={22} color={colors.primary} />
-            <Text style={styles.uploadTitle}>Upload Screenshot (Optional)</Text>
-            <Text style={styles.uploadSub}>Coming soon — PNG/JPG up to 5MB.</Text>
-          </View>
+          screenshotB64 ? (
+            <View style={styles.attachedCard}>
+              <Image
+                source={{ uri: screenshotB64 }}
+                style={styles.attachedThumb}
+                resizeMode="cover"
+              />
+              <View style={{ flex: 1, marginLeft: 12 }}>
+                <Text style={styles.attachedName} numberOfLines={1}>
+                  {screenshotName || "Screenshot attached"}
+                </Text>
+                <Text style={styles.attachedMeta}>
+                  {fmtSize(screenshotSize)} · Tap × to remove
+                </Text>
+              </View>
+              <TouchableOpacity
+                onPress={removeScreenshot}
+                hitSlop={10}
+                style={styles.removeBtn}
+                testID="remove-screenshot"
+              >
+                <PhIcon name="close" size={16} color="#64748B" />
+              </TouchableOpacity>
+            </View>
+          ) : (
+            <TouchableOpacity
+              style={styles.uploadCard}
+              activeOpacity={0.85}
+              onPress={pickScreenshot}
+              disabled={screenshotBusy}
+              testID="pick-screenshot"
+            >
+              {screenshotBusy ? (
+                <ActivityIndicator color={colors.primary} />
+              ) : (
+                <PhIcon name="cloud-upload-outline" size={22} color={colors.primary} />
+              )}
+              <Text style={styles.uploadTitle}>Upload Screenshot (Optional)</Text>
+              <Text style={styles.uploadSub}>
+                {screenshotBusy ? "Processing…" : "Tap to choose — PNG/JPG up to 5 MB"}
+              </Text>
+            </TouchableOpacity>
+          )
         )}
+
+        {/* Screen-recording attachment — MP4, max 20 MB. */}
         {fields.recording && (
-          <View style={[styles.uploadCard, { marginTop: 10 }]}>
-            <PhIcon name="play" size={22} color={colors.primary} />
-            <Text style={styles.uploadTitle}>Upload Screen Recording (Optional)</Text>
-            <Text style={styles.uploadSub}>Coming soon — MP4 up to 20MB.</Text>
-          </View>
+          recordingB64 ? (
+            <View style={[styles.attachedCard, { marginTop: 10 }]}>
+              <View style={[styles.attachedThumb, { backgroundColor: "#EEF2FF", alignItems: "center", justifyContent: "center" }]}>
+                <PhIcon name="play" size={26} color={colors.primary} />
+              </View>
+              <View style={{ flex: 1, marginLeft: 12 }}>
+                <Text style={styles.attachedName} numberOfLines={1}>
+                  {recordingName || "Recording attached"}
+                </Text>
+                <Text style={styles.attachedMeta}>
+                  {fmtSize(recordingSize)} · Tap × to remove
+                </Text>
+              </View>
+              <TouchableOpacity
+                onPress={removeRecording}
+                hitSlop={10}
+                style={styles.removeBtn}
+                testID="remove-recording"
+              >
+                <PhIcon name="close" size={16} color="#64748B" />
+              </TouchableOpacity>
+            </View>
+          ) : (
+            <TouchableOpacity
+              style={[styles.uploadCard, { marginTop: 10 }]}
+              activeOpacity={0.85}
+              onPress={pickRecording}
+              disabled={recordingBusy}
+              testID="pick-recording"
+            >
+              {recordingBusy ? (
+                <ActivityIndicator color={colors.primary} />
+              ) : (
+                <PhIcon name="play" size={22} color={colors.primary} />
+              )}
+              <Text style={styles.uploadTitle}>Upload Screen Recording (Optional)</Text>
+              <Text style={styles.uploadSub}>
+                {recordingBusy ? "Encoding…" : "Tap to choose an MP4 up to 20 MB"}
+              </Text>
+            </TouchableOpacity>
+          )
         )}
       </ScrollView>
 
@@ -370,6 +608,26 @@ const styles = StyleSheet.create({
   },
   uploadTitle: { fontSize: 13, fontWeight: "800", color: "#0F172A", marginTop: 8 },
   uploadSub: { fontSize: 11, color: "#94A3B8", marginTop: 2 },
+
+  // Selected-attachment chip — shown once the user has picked a file.
+  attachedCard: {
+    backgroundColor: "#fff", borderRadius: 12,
+    borderWidth: 1, borderColor: "#E5E7EB",
+    paddingVertical: 10, paddingHorizontal: 10, marginTop: 14,
+    flexDirection: "row", alignItems: "center",
+  },
+  attachedThumb: {
+    width: 48, height: 48, borderRadius: 8,
+    backgroundColor: "#F1F5F9",
+  },
+  attachedName: { fontSize: 13, fontWeight: "700", color: "#0F172A" },
+  attachedMeta: { fontSize: 11, color: "#94A3B8", marginTop: 2 },
+  removeBtn: {
+    width: 28, height: 28, borderRadius: 14,
+    backgroundColor: "#F1F5F9",
+    alignItems: "center", justifyContent: "center",
+    marginLeft: 8,
+  },
 
   bar: {
     position: "absolute", left: 0, right: 0, bottom: 0,
