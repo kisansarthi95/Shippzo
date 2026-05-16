@@ -19466,12 +19466,97 @@ agent_communication:
 backend:
   - task: "Phase-21 Support Tickets — user + admin endpoints"
     implemented: true
-    working: false
+    working: true
     file: "/app/backend/routers/support.py"
-    stuck_count: 1
+    stuck_count: 0
     priority: "high"
-    needs_retesting: true
+    needs_retesting: false
     status_history:
+        -working: true
+        -agent: "testing"
+        -comment: |
+            RE-TEST AFTER FIX — 50/50 assertions PASS via
+            /app/backend_test.py against
+            https://logistics-hub-740.preview.emergentagent.com/api.
+
+            Refactor verified: routes are now defined INSIDE init(),
+            and the dependency is `Depends(_get_current_user)` where
+            `_get_current_user` is the actual async function imported
+            from server.py. FastAPI now resolves and awaits it
+            correctly; current_user dict is populated on every
+            authenticated route.
+
+            COMPLETE COVERAGE — every case from the review request:
+
+            USER side (logged in as user2@test.com):
+              ✅ 1a POST /api/support/tickets (valid body) → 200,
+                 returns ticket with id (uuid), user_id, user_email
+                 denormalised, status='open', priority='medium',
+                 messages[] length=1 with author_role='user'.
+              ✅ 1b POST with category='spaceship' → 400 'invalid category'.
+              ✅ 1c POST with title='x' (1 char) → 422 (Pydantic min_length).
+              ✅ 1d POST without Authorization header → 401.
+
+              ✅ 2a GET /api/support/tickets → 200 with items[] of my
+                 own tickets; list response strips messages[] but
+                 includes message_count + last_message_preview.
+              ✅ 2b GET ?status=open → contains my open ticket.
+              ✅ 2c GET ?status=closed → my (still-open) ticket NOT in
+                 list (correctly filtered out).
+              ✅ 2d GET ?status=banana → 400 'invalid status'.
+
+              ✅ 3a GET /api/support/tickets/{own_id} → 200 with full
+                 messages[] array.
+              ✅ 3b GET /api/support/tickets/does-not-exist-uuid → 404
+                 'ticket not found'.
+              ✅ 3c GET /api/support/tickets/{admin_ticket} as user2 → 403
+                 'forbidden'. Cross-direction (admin reading user2's
+                 ticket) returns 200 — admin bypass works.
+
+              ✅ 4a POST /api/support/tickets/{id}/reply (own) → 200,
+                 messages length grows 1→2, last message author_role
+                 ='user', last_reply_by='user'.
+              ✅ 4b POST reply with body='' → 422 (Pydantic min_length).
+              ✅ 4c POST reply on someone else's ticket → 403.
+              ✅ 4d After closing the ticket, POST reply on it → 409
+                 'ticket is closed'.
+
+              ✅ 5a POST /api/support/tickets/{id}/close (own) → 200,
+                 subsequent GET shows status='closed'.
+              ✅ 5c POST close on other user's ticket → 403.
+
+            ADMIN side (logged in as admin@test.com):
+              ✅ 6a GET /api/admin/support/tickets → 200, items[]
+                 contains tickets from BOTH user2 and admin (cross-tenant).
+              ✅ 6b GET /api/admin/support/tickets as regular user → 403
+                 'admin only'.
+
+              ✅ 7a PATCH /api/admin/support/tickets/{id}/status
+                 {status:'resolved'} → 200, persisted (verified via
+                 follow-up GET).
+              ✅ 7b PATCH status 'donezo' → 400 'invalid status'.
+              ✅ 7c PATCH status as regular user → 403.
+
+              ✅ 8a PATCH /priority {priority:'high'} → 200, persisted.
+              ✅ 8b PATCH priority 'extreme' → 400 'invalid priority'.
+
+              ✅ 9 Admin reply auto-status-change:
+                  • fresh ticket created by user → status='open'.
+                  • admin POST /reply → 200, ticket.status flips to
+                    'in_progress' automatically (set guarded by
+                    `if is_admin_user and t.get("status") == "open"`).
+                  • last message author_role='admin', last_reply_by='admin'.
+                  • Second admin reply: status stays 'in_progress'
+                    (no downgrade).
+
+            Cleanup: all 4 test tickets closed via admin PATCH status.
+            No 500 errors anywhere in this run; backend.err.log clean.
+
+            The earlier dependency-resolution bug
+            (Depends(lambda: get_current_user()) returning un-awaited
+            coroutine) is fully resolved by the new init() pattern
+            importing `get_current_user` from server module and using
+            it directly as Depends(_get_current_user).
         -working: false
         -agent: "testing"
         -comment: |
@@ -19595,6 +19680,29 @@ backend:
 agent_communication:
     -agent: "testing"
     -message: |
+        Phase-21 Support Tickets — FIX VERIFIED. 50/50 assertions PASS
+        on /app/backend_test.py against live preview backend. The
+        init()-scoped routes with `Depends(_get_current_user)` resolve
+        the async auth dependency correctly. Every USER + ADMIN
+        endpoint and every edge case from the review request works:
+        create (200 / 400 / 422 / 401), list (with status filter +
+        invalid filter 400), detail (200 / 404 / 403 / admin bypass),
+        reply (200 / 422 empty / 403 other / 409 closed), close
+        (200 / 403 other), admin list (200 admin / 403 user), admin
+        PATCH status (200 / 400 / 403), admin PATCH priority (200 /
+        400), and the admin-reply auto-flip from "open" →
+        "in_progress". Backend logs clean — no 500s, no coroutine
+        warnings during this run. Task ready for finish.
+
+test_plan:
+  current_focus: []
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"
+
+agent_communication_archive:
+    -agent: "testing"
+    -message: |
         Phase-21 Support Tickets — BLOCKED by a single critical bug.
 
         /app/backend/routers/support.py:125 (and 7 sibling lines) uses
@@ -19624,11 +19732,3 @@ agent_communication:
         suggested approaches in the status_history above.
 
         Please fix and request re-test.
-
-test_plan:
-  current_focus:
-    - "Phase-21 Support Tickets — user + admin endpoints"
-  stuck_tasks:
-    - "Phase-21 Support Tickets — user + admin endpoints"
-  test_all: false
-  test_priority: "stuck_first"

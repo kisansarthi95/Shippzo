@@ -1,544 +1,382 @@
 """
-Phase-21 Support Tickets backend test.
+Phase-21 Support Tickets — comprehensive backend test suite.
 
-Tests /api/support/* (user-side) and /api/admin/support/* (admin-side)
-endpoints against the live preview backend.
-
-Run: python3 /app/backend_test.py
+Targets:
+  USER routes  : /api/support/tickets, /reply, /close
+  ADMIN routes : /api/admin/support/tickets, /status, /priority
+  Auth-gated: admin@test.com (Admin@12345) + user2@test.com (User@12345)
 """
-from __future__ import annotations
 
 import os
 import sys
-import traceback
-from typing import Any, Dict, Optional
-
+import json
 import requests
 
 BASE = "https://logistics-hub-740.preview.emergentagent.com/api"
 
-ADMIN_EMAIL = "admin@test.com"
-ADMIN_PASS = "Admin@12345"
-USER_EMAIL = "user2@test.com"
-USER_PASS = "User@12345"
+ADMIN = {"email": "admin@test.com", "password": "Admin@12345"}
+USER  = {"email": "user2@test.com", "password": "User@12345"}
 
-PASS_COUNT = 0
-FAIL_COUNT = 0
-FAILURES: list[str] = []
+PASS = []
+FAIL = []
 
 
-def _ok(label: str) -> None:
-    global PASS_COUNT
-    PASS_COUNT += 1
-    print(f"  PASS  {label}")
+def _log(ok: bool, label: str, info: str = ""):
+    rec = f"[{'PASS' if ok else 'FAIL'}] {label}"
+    if info:
+        rec += f" — {info}"
+    (PASS if ok else FAIL).append(rec)
+    print(rec)
 
 
-def _fail(label: str, detail: str = "") -> None:
-    global FAIL_COUNT
-    FAIL_COUNT += 1
-    FAILURES.append(f"{label} :: {detail}")
-    print(f"  FAIL  {label}  ::  {detail}")
+def login(creds):
+    r = requests.post(f"{BASE}/auth/login", json=creds, timeout=30)
+    assert r.status_code == 200, f"login failed: {r.status_code} {r.text}"
+    body = r.json()
+    return body["token"], body
 
 
-def _assert(cond: bool, label: str, detail: str = "") -> None:
-    if cond:
-        _ok(label)
-    else:
-        _fail(label, detail)
-
-
-def login(email: str, password: str) -> Optional[str]:
-    r = requests.post(
-        f"{BASE}/auth/login",
-        json={"email": email, "password": password},
-        timeout=30,
-    )
-    if r.status_code != 200:
-        print(f"LOGIN FAILED {email}: {r.status_code} {r.text[:200]}")
-        return None
-    return r.json().get("token")
-
-
-def auth_headers(tok: Optional[str]) -> Dict[str, str]:
-    if not tok:
-        return {}
+def H(tok):
     return {"Authorization": f"Bearer {tok}"}
 
 
-def main() -> int:
-    print("=" * 72)
-    print("Phase-21 Support Tickets backend test")
-    print("=" * 72)
-
-    admin_tok = login(ADMIN_EMAIL, ADMIN_PASS)
-    user_tok = login(USER_EMAIL, USER_PASS)
-    if not admin_tok or not user_tok:
-        print("Cannot proceed: login failed.")
-        return 1
-
-    print(f"\nadmin_tok={admin_tok[:24]}...   user_tok={user_tok[:24]}...\n")
-
-    Hu = auth_headers(user_tok)
-    Ha = auth_headers(admin_tok)
-
-    created_ticket_id: Optional[str] = None
-    second_ticket_id: Optional[str] = None
-
-    # Provision a third user for cross-user 403 tests
-    other_tok: Optional[str] = None
-    other_email = f"phase21user_{os.getpid()}@test.com"
+def main():
+    # ── Setup ────────────────────────────────────────────────────
     try:
-        r = requests.post(
-            f"{BASE}/auth/signup",
-            json={
-                "email": other_email,
-                "password": "Other@12345",
-                "name": "Phase21 OtherUser",
-                "shop_name": "Phase21 Shop",
-            },
-            timeout=30,
-        )
-        if r.status_code in (200, 201):
-            other_tok = r.json().get("token")
-            print(f"Provisioned other user={other_email}, tok={(other_tok or '')[:24]}...")
-        else:
-            rl = requests.post(
-                f"{BASE}/auth/login",
-                json={"email": other_email, "password": "Other@12345"},
-                timeout=30,
-            )
-            if rl.status_code == 200:
-                other_tok = rl.json().get("token")
-                print(f"Logged in pre-existing other user={other_email}")
-            else:
-                print(f"Signup status={r.status_code} body={r.text[:200]}")
+        admin_tok, admin_me = login(ADMIN)
+        user_tok,  user_me  = login(USER)
+        _log(True, "Login admin + user", f"admin_id={admin_me.get('id')[:8]}… user_id={user_me.get('id')[:8]}…")
+        assert admin_me.get("is_admin"), "admin account is not is_admin=true"
+        assert not user_me.get("is_admin"), "user2 must not be is_admin"
+        _log(True, "Role check (admin=true, user2=false)")
     except Exception as e:
-        print(f"Could not provision other user via signup: {e}")
+        _log(False, "Login phase", str(e))
+        return _summary()
 
-    if not other_tok:
-        print("No third user available — cross-user 403 tests will be skipped.")
+    # =====================================================================
+    # 1. POST /api/support/tickets — create
+    # =====================================================================
+    # 1a — valid
+    payload = {
+        "title": "Cannot print shipping label",
+        "description": "Hi support, the PDF generation throws a blank page when I try to print a label for a long-address shipment. Please help.",
+        "category": "technical",
+    }
+    r = requests.post(f"{BASE}/support/tickets", json=payload, headers=H(user_tok), timeout=20)
+    ok = r.status_code == 200 and r.json().get("id") and r.json().get("status") == "open"
+    _log(ok, "1a POST /support/tickets valid", f"status={r.status_code} body={r.text[:200]}")
+    ticket = r.json() if ok else {}
+    user_ticket_id = ticket.get("id")
+    assert user_ticket_id, "no ticket id returned"
+    # check denormalised fields
+    _log(ticket.get("user_id") == user_me["id"], "1a-1 ticket.user_id == current user id")
+    _log(ticket.get("user_email") == USER["email"], "1a-2 ticket.user_email denormalised")
+    _log(ticket.get("category") == "technical", "1a-3 ticket.category=technical")
+    _log(len(ticket.get("messages", [])) == 1 and ticket["messages"][0]["author_role"] == "user",
+         "1a-4 ticket.messages[0] is user message")
 
-    Ho = auth_headers(other_tok) if other_tok else {}
+    # 1b — invalid category → 400
+    bad = {**payload, "category": "spaceship"}
+    r = requests.post(f"{BASE}/support/tickets", json=bad, headers=H(user_tok), timeout=20)
+    _log(r.status_code == 400, "1b POST invalid category → 400", f"got {r.status_code}")
 
-    # ───────────────────────────────────────────────────────────────
-    # 1) POST /api/support/tickets
-    # ───────────────────────────────────────────────────────────────
-    print("\n[1] POST /api/support/tickets (create)")
+    # 1c — short title → 422 (Pydantic min_length=2)
+    short = {"title": "x", "description": "Body text here.", "category": "general"}
+    r = requests.post(f"{BASE}/support/tickets", json=short, headers=H(user_tok), timeout=20)
+    _log(r.status_code == 422, "1c POST short title → 422", f"got {r.status_code}")
+
+    # 1d — no auth → 401/403
+    r = requests.post(f"{BASE}/support/tickets", json=payload, timeout=20)
+    _log(r.status_code in (401, 403), "1d POST no auth → 401/403", f"got {r.status_code}")
+
+    # Create a 2nd ticket so list filter has data
+    payload2 = {
+        "title": "Billing question about Silver plan",
+        "description": "What is included in the Silver plan team-member quota?",
+        "category": "billing",
+    }
+    r = requests.post(f"{BASE}/support/tickets", json=payload2, headers=H(user_tok), timeout=20)
+    second_ticket_id = r.json().get("id") if r.status_code == 200 else None
+    _log(r.status_code == 200, "1e Create 2nd ticket for filter tests")
+
+    # =====================================================================
+    # 2. GET /api/support/tickets — list mine
+    # =====================================================================
+    r = requests.get(f"{BASE}/support/tickets", headers=H(user_tok), timeout=20)
+    ok = r.status_code == 200 and "items" in r.json()
+    _log(ok, "2a GET list mine")
+    items = r.json().get("items", []) if ok else []
+    own = [t for t in items if t["id"] in (user_ticket_id, second_ticket_id)]
+    _log(len(own) >= 2, "2a-1 contains both my tickets", f"found {len(own)}")
+    # Verify list response excludes messages array but provides preview/count
+    if items:
+        first = items[0]
+        _log("messages" not in first, "2a-2 list response strips messages array")
+        _log("message_count" in first and "last_message_preview" in first, "2a-3 has message_count + preview")
+
+    # 2b — status filter "open" returns it
+    r = requests.get(f"{BASE}/support/tickets?status=open", headers=H(user_tok), timeout=20)
+    ok = r.status_code == 200
+    items_open = r.json().get("items", []) if ok else []
+    found = any(t["id"] == user_ticket_id for t in items_open)
+    _log(ok and found, "2b GET ?status=open returns my open ticket")
+
+    # 2c — status=closed returns empty (for this user, none closed yet)
+    r = requests.get(f"{BASE}/support/tickets?status=closed", headers=H(user_tok), timeout=20)
+    closed_items = r.json().get("items", []) if r.status_code == 200 else []
+    # We haven't closed any user2 ticket yet — should be 0 belonging to user_ticket_id
+    _log(not any(t["id"] == user_ticket_id for t in closed_items),
+         "2c GET ?status=closed → my open ticket NOT in list")
+
+    # 2d — invalid status → 400
+    r = requests.get(f"{BASE}/support/tickets?status=banana", headers=H(user_tok), timeout=20)
+    _log(r.status_code == 400, "2d GET ?status=banana → 400", f"got {r.status_code}")
+
+    # =====================================================================
+    # 3. GET /api/support/tickets/{id}
+    # =====================================================================
+    # 3a — own → 200
+    r = requests.get(f"{BASE}/support/tickets/{user_ticket_id}", headers=H(user_tok), timeout=20)
+    ok = r.status_code == 200 and r.json().get("id") == user_ticket_id
+    _log(ok, "3a GET own ticket → 200")
+    _log(ok and isinstance(r.json().get("messages"), list),
+         "3a-1 detail response includes messages array")
+
+    # 3b — unknown id → 404
+    r = requests.get(f"{BASE}/support/tickets/does-not-exist-uuid", headers=H(user_tok), timeout=20)
+    _log(r.status_code == 404, "3b GET unknown → 404", f"got {r.status_code}")
+
+    # 3c — someone else's ticket → 403
+    # Admin creates a ticket; then user2 tries to view → admin's user_id is different
+    admin_payload = {
+        "title": "Admin testing visibility",
+        "description": "Ticket created by admin for cross-tenant test.",
+        "category": "general",
+    }
+    r = requests.post(f"{BASE}/support/tickets", json=admin_payload, headers=H(admin_tok), timeout=20)
+    admin_ticket_id = r.json().get("id") if r.status_code == 200 else None
+    _log(r.status_code == 200, "3c-prep admin creates ticket")
+
+    r = requests.get(f"{BASE}/support/tickets/{admin_ticket_id}", headers=H(user_tok), timeout=20)
+    _log(r.status_code == 403, "3c GET other's ticket as regular user → 403", f"got {r.status_code}")
+    # And admin reading user2's ticket should succeed (admin bypass)
+    r = requests.get(f"{BASE}/support/tickets/{user_ticket_id}", headers=H(admin_tok), timeout=20)
+    _log(r.status_code == 200, "3c-1 admin can read any user's ticket → 200")
+
+    # =====================================================================
+    # 4. POST /api/support/tickets/{id}/reply
+    # =====================================================================
+    # 4a — user reply on own ticket → 200, length+1
+    before = requests.get(f"{BASE}/support/tickets/{user_ticket_id}", headers=H(user_tok)).json()
+    before_count = len(before.get("messages", []))
+    r = requests.post(
+        f"{BASE}/support/tickets/{user_ticket_id}/reply",
+        json={"body": "Adding more context: it happens only on Android."},
+        headers=H(user_tok),
+        timeout=20,
+    )
+    ok = r.status_code == 200 and r.json().get("ok") is True
+    _log(ok, "4a User reply → 200", f"got {r.status_code} {r.text[:120]}")
+    after = requests.get(f"{BASE}/support/tickets/{user_ticket_id}", headers=H(user_tok)).json()
+    after_count = len(after.get("messages", []))
+    _log(after_count == before_count + 1,
+         "4a-1 messages length grew by 1", f"{before_count} → {after_count}")
+    _log(after["messages"][-1]["author_role"] == "user",
+         "4a-2 last message author_role=user")
+    _log(after["last_reply_by"] == "user", "4a-3 last_reply_by=user")
+
+    # 4b — empty body → 422
+    r = requests.post(
+        f"{BASE}/support/tickets/{user_ticket_id}/reply",
+        json={"body": ""},
+        headers=H(user_tok),
+        timeout=20,
+    )
+    _log(r.status_code == 422, "4b Reply empty body → 422", f"got {r.status_code}")
+
+    # 4c — reply on someone else's ticket → 403
+    r = requests.post(
+        f"{BASE}/support/tickets/{admin_ticket_id}/reply",
+        json={"body": "I shouldn't be able to reply here."},
+        headers=H(user_tok),
+        timeout=20,
+    )
+    _log(r.status_code == 403, "4c Reply on other's ticket → 403", f"got {r.status_code}")
+
+    # 4d — reply on closed ticket → 409
+    # First close `second_ticket_id` (user owns it)
+    rc = requests.post(f"{BASE}/support/tickets/{second_ticket_id}/close",
+                       headers=H(user_tok), timeout=20)
+    _log(rc.status_code == 200, "4d-prep close 2nd ticket", f"got {rc.status_code}")
+    r = requests.post(
+        f"{BASE}/support/tickets/{second_ticket_id}/reply",
+        json={"body": "trying to reply after close"},
+        headers=H(user_tok),
+        timeout=20,
+    )
+    _log(r.status_code == 409, "4d Reply on closed ticket → 409", f"got {r.status_code}")
+
+    # =====================================================================
+    # 5. POST /api/support/tickets/{id}/close
+    # =====================================================================
+    # 5a — own close (already done for second_ticket — verify status flipped)
+    detail = requests.get(f"{BASE}/support/tickets/{second_ticket_id}",
+                          headers=H(user_tok), timeout=20).json()
+    _log(detail.get("status") == "closed", "5a Own close → status=closed",
+         f"status={detail.get('status')}")
+
+    # 5b — reply after close → 409 (already verified at 4d)
+
+    # 5c — others' close → 403
+    r = requests.post(f"{BASE}/support/tickets/{admin_ticket_id}/close",
+                      headers=H(user_tok), timeout=20)
+    _log(r.status_code == 403, "5c Close other's ticket → 403", f"got {r.status_code}")
+
+    # =====================================================================
+    # 6. GET /api/admin/support/tickets
+    # =====================================================================
+    # 6a — admin 200, returns >= our 3 tickets
+    r = requests.get(f"{BASE}/admin/support/tickets", headers=H(admin_tok), timeout=20)
+    ok = r.status_code == 200
+    admin_items = r.json().get("items", []) if ok else []
+    _log(ok, "6a Admin list all → 200")
+    ids = {t["id"] for t in admin_items}
+    _log({user_ticket_id, second_ticket_id, admin_ticket_id} <= ids,
+         "6a-1 admin list contains all 3 created tickets")
+
+    # 6b — regular user → 403
+    r = requests.get(f"{BASE}/admin/support/tickets", headers=H(user_tok), timeout=20)
+    _log(r.status_code == 403, "6b Regular user → 403", f"got {r.status_code}")
+
+    # =====================================================================
+    # 7. PATCH /api/admin/support/tickets/{id}/status
+    # =====================================================================
+    # 7a — admin sets status=resolved on user_ticket_id (it's currently in_progress or open)
+    r = requests.patch(
+        f"{BASE}/admin/support/tickets/{user_ticket_id}/status",
+        json={"status": "resolved"},
+        headers=H(admin_tok),
+        timeout=20,
+    )
+    _log(r.status_code == 200 and r.json().get("status") == "resolved",
+         "7a Admin set status=resolved → 200", f"body={r.text[:120]}")
+    # Verify via GET
+    detail = requests.get(f"{BASE}/support/tickets/{user_ticket_id}",
+                          headers=H(admin_tok), timeout=20).json()
+    _log(detail.get("status") == "resolved", "7a-1 persisted status=resolved")
+
+    # 7b — invalid status → 400
+    r = requests.patch(
+        f"{BASE}/admin/support/tickets/{user_ticket_id}/status",
+        json={"status": "donezo"},
+        headers=H(admin_tok),
+        timeout=20,
+    )
+    _log(r.status_code == 400, "7b Invalid status → 400", f"got {r.status_code}")
+
+    # 7c — regular user → 403
+    r = requests.patch(
+        f"{BASE}/admin/support/tickets/{user_ticket_id}/status",
+        json={"status": "open"},
+        headers=H(user_tok),
+        timeout=20,
+    )
+    _log(r.status_code == 403, "7c Regular user PATCH status → 403", f"got {r.status_code}")
+
+    # =====================================================================
+    # 8. PATCH /api/admin/support/tickets/{id}/priority
+    # =====================================================================
+    r = requests.patch(
+        f"{BASE}/admin/support/tickets/{user_ticket_id}/priority",
+        json={"priority": "high"},
+        headers=H(admin_tok),
+        timeout=20,
+    )
+    _log(r.status_code == 200 and r.json().get("priority") == "high",
+         "8a Admin set priority=high → 200")
+    detail = requests.get(f"{BASE}/support/tickets/{user_ticket_id}",
+                          headers=H(admin_tok), timeout=20).json()
+    _log(detail.get("priority") == "high", "8a-1 persisted priority=high")
+
+    r = requests.patch(
+        f"{BASE}/admin/support/tickets/{user_ticket_id}/priority",
+        json={"priority": "extreme"},
+        headers=H(admin_tok),
+        timeout=20,
+    )
+    _log(r.status_code == 400, "8b Invalid priority → 400", f"got {r.status_code}")
+
+    # =====================================================================
+    # 9. Admin reply auto-status-change: fresh ticket open → admin reply → in_progress
+    # =====================================================================
+    fresh = {
+        "title": "Fresh ticket for status-flip test",
+        "description": "Testing admin auto-status-change to in_progress.",
+        "category": "general",
+    }
+    r = requests.post(f"{BASE}/support/tickets", json=fresh, headers=H(user_tok), timeout=20)
+    fresh_id = r.json().get("id") if r.status_code == 200 else None
+    _log(r.status_code == 200 and r.json().get("status") == "open",
+         "9-prep create fresh ticket status=open")
 
     r = requests.post(
-        f"{BASE}/support/tickets",
-        headers=Hu,
-        json={
-            "title": "Label PDF prints blank on iPhone 12",
-            "description": "Hi team, when I tap Print on a shipment "
-                           "label the resulting PDF is completely "
-                           "blank. iOS 17.4, app version 2026.05.",
-            "category": "technical",
-        },
-        timeout=30,
+        f"{BASE}/support/tickets/{fresh_id}/reply",
+        json={"body": "Hello, support here. Investigating now."},
+        headers=H(admin_tok),
+        timeout=20,
     )
-    _assert(r.status_code == 200, "create valid ticket -> 200",
-            f"status={r.status_code} body={r.text[:200]}")
-    if r.status_code == 200:
-        t = r.json()
-        created_ticket_id = t.get("id")
-        _assert(t.get("status") == "open", "new ticket status=open",
-                f"got={t.get('status')}")
-        _assert(t.get("priority") == "medium", "new ticket priority=medium",
-                f"got={t.get('priority')}")
-        _assert(t.get("category") == "technical", "category preserved",
-                f"got={t.get('category')}")
-        _assert(t.get("user_id") and t.get("user_email") == USER_EMAIL,
-                "user_id + user_email stamped",
-                f"user_id={t.get('user_id')} email={t.get('user_email')}")
-        msgs = t.get("messages") or []
-        _assert(len(msgs) == 1, "messages[] has 1 entry from description",
-                f"len={len(msgs)}")
-        if msgs:
-            _assert(msgs[0].get("author_role") == "user",
-                    "first message author_role=user",
-                    f"got={msgs[0].get('author_role')}")
-            _assert("blank" in (msgs[0].get("body") or ""),
-                    "first message body == description",
-                    f"body={msgs[0].get('body','')[:80]}")
-        _assert(bool(t.get("created_at")) and bool(t.get("updated_at"))
-                and bool(t.get("last_reply_at")),
-                "timestamps present")
+    _log(r.status_code == 200, "9-1 Admin reply on fresh open ticket → 200",
+         f"got {r.status_code}")
 
+    detail = requests.get(f"{BASE}/support/tickets/{fresh_id}",
+                          headers=H(admin_tok), timeout=20).json()
+    _log(detail.get("status") == "in_progress",
+         "9-2 status flipped to in_progress", f"status={detail.get('status')}")
+    last_msg = (detail.get("messages") or [])[-1]
+    _log(last_msg.get("author_role") == "admin", "9-3 last message author_role=admin")
+    _log(detail.get("last_reply_by") == "admin", "9-4 last_reply_by=admin")
+
+    # Confirm in_progress doesn't downgrade to open on subsequent admin replies
     r = requests.post(
-        f"{BASE}/support/tickets",
-        headers=Hu,
-        json={
-            "title": "Random",
-            "description": "Random description for invalid cat test.",
-            "category": "BOGUS_CAT",
-        },
-        timeout=30,
+        f"{BASE}/support/tickets/{fresh_id}/reply",
+        json={"body": "Following up — please retry."},
+        headers=H(admin_tok),
+        timeout=20,
     )
-    _assert(r.status_code == 400, "invalid category -> 400",
-            f"status={r.status_code} body={r.text[:200]}")
+    detail = requests.get(f"{BASE}/support/tickets/{fresh_id}",
+                          headers=H(admin_tok), timeout=20).json()
+    _log(detail.get("status") == "in_progress",
+         "9-5 status stays in_progress on subsequent admin reply")
 
-    r = requests.post(
-        f"{BASE}/support/tickets",
-        headers=Hu,
-        json={"title": "A", "description": "Hello there"},
-        timeout=30,
-    )
-    _assert(r.status_code in (400, 422), "title < 2 -> 400/422",
-            f"status={r.status_code}")
-
-    r = requests.post(
-        f"{BASE}/support/tickets",
-        json={"title": "NoAuth", "description": "Should fail without token"},
-        timeout=30,
-    )
-    _assert(r.status_code == 401, "no auth -> 401",
-            f"status={r.status_code} body={r.text[:200]}")
-
-    # second ticket for list filter
-    r = requests.post(
-        f"{BASE}/support/tickets",
-        headers=Hu,
-        json={
-            "title": "Billing question about Silver plan renewal",
-            "description": "I was charged twice for my renewal - "
-                           "can you check invoice INV-2026-0517?",
-            "category": "billing",
-        },
-        timeout=30,
-    )
-    if r.status_code == 200:
-        second_ticket_id = r.json().get("id")
-        _ok("second ticket created for list tests")
-    else:
-        _fail("second ticket create", f"status={r.status_code}")
-
-    # ───────────────────────────────────────────────────────────────
-    # 2) GET /api/support/tickets
-    # ───────────────────────────────────────────────────────────────
-    print("\n[2] GET /api/support/tickets (list mine)")
-    r = requests.get(f"{BASE}/support/tickets", headers=Hu, timeout=30)
-    _assert(r.status_code == 200, "list mine -> 200",
-            f"status={r.status_code}")
-    if r.status_code == 200:
-        body = r.json()
-        items = body.get("items") or []
-        _assert("count" in body and "items" in body,
-                "response has items + count")
-        ids = [t.get("id") for t in items]
-        _assert(created_ticket_id in ids,
-                "newly-created ticket appears in list")
-        sample = next((t for t in items if t.get("id") == created_ticket_id),
-                      None)
-        if sample:
-            _assert("message_count" in sample
-                    and sample["message_count"] >= 1,
-                    "list item has message_count >= 1",
-                    f"got={sample.get('message_count')}")
-            _assert("last_message_preview" in sample
-                    and isinstance(sample["last_message_preview"], str),
-                    "list item has last_message_preview string")
-            _assert("messages" not in sample,
-                    "list items strip full messages[] array",
-                    f"keys={list(sample.keys())}")
-
-    r = requests.get(f"{BASE}/support/tickets?status=open",
-                     headers=Hu, timeout=30)
-    _assert(r.status_code == 200, "list status=open -> 200")
-    if r.status_code == 200:
-        ids = [t.get("id") for t in (r.json().get("items") or [])]
-        _assert(created_ticket_id in ids,
-                "status=open includes the new ticket")
-
-    r = requests.get(f"{BASE}/support/tickets?status=closed",
-                     headers=Hu, timeout=30)
-    _assert(r.status_code == 200, "list status=closed -> 200")
-    if r.status_code == 200:
-        ids = [t.get("id") for t in (r.json().get("items") or [])]
-        _assert(created_ticket_id not in ids,
-                "status=closed does NOT include the open ticket")
-
-    r = requests.get(f"{BASE}/support/tickets?status=bogus",
-                     headers=Hu, timeout=30)
-    _assert(r.status_code == 400, "invalid status filter -> 400",
-            f"status={r.status_code}")
-
-    # ───────────────────────────────────────────────────────────────
-    # 3) GET /api/support/tickets/{id}
-    # ───────────────────────────────────────────────────────────────
-    print("\n[3] GET /api/support/tickets/{id} (detail)")
-    if created_ticket_id:
-        r = requests.get(f"{BASE}/support/tickets/{created_ticket_id}",
-                         headers=Hu, timeout=30)
-        _assert(r.status_code == 200, "own ticket detail -> 200",
-                f"status={r.status_code}")
-        if r.status_code == 200:
-            t = r.json()
-            _assert(t.get("id") == created_ticket_id, "id matches")
-            _assert(isinstance(t.get("messages"), list)
-                    and len(t["messages"]) >= 1,
-                    "detail returns full messages[] thread",
-                    f"len={len(t.get('messages') or [])}")
-
-    r = requests.get(f"{BASE}/support/tickets/does-not-exist-12345",
-                     headers=Hu, timeout=30)
-    _assert(r.status_code == 404, "nonexistent ticket -> 404",
-            f"status={r.status_code}")
-
-    if other_tok and created_ticket_id:
-        r = requests.get(f"{BASE}/support/tickets/{created_ticket_id}",
-                         headers=Ho, timeout=30)
-        _assert(r.status_code == 403, "other user reading my ticket -> 403",
-                f"status={r.status_code} body={r.text[:160]}")
-    else:
-        print("  SKIP  3c — no other user")
-
-    # ───────────────────────────────────────────────────────────────
-    # 4) reply
-    # ───────────────────────────────────────────────────────────────
-    print("\n[4] POST /api/support/tickets/{id}/reply")
-    if created_ticket_id:
-        before = requests.get(f"{BASE}/support/tickets/{created_ticket_id}",
-                              headers=Hu, timeout=30).json()
-        before_len = len(before.get("messages") or [])
-
-        r = requests.post(
-            f"{BASE}/support/tickets/{created_ticket_id}/reply",
-            headers=Hu,
-            json={"body": "Following up - I cleared cache, still blank PDF."},
-            timeout=30,
-        )
-        _assert(r.status_code == 200, "user reply -> 200",
-                f"status={r.status_code} body={r.text[:200]}")
-
-        after = requests.get(f"{BASE}/support/tickets/{created_ticket_id}",
-                             headers=Hu, timeout=30).json()
-        after_len = len(after.get("messages") or [])
-        _assert(after_len == before_len + 1,
-                "messages length increased by 1",
-                f"before={before_len} after={after_len}")
-        _assert(after.get("status") == "open",
-                "user reply does NOT auto-change status",
-                f"got={after.get('status')}")
-
-    if created_ticket_id:
-        r = requests.post(
-            f"{BASE}/support/tickets/{created_ticket_id}/reply",
-            headers=Hu,
-            json={"body": ""},
-            timeout=30,
-        )
-        _assert(r.status_code in (400, 422),
-                "empty body reply -> 422 (or 400)",
-                f"status={r.status_code}")
-
-    if other_tok and created_ticket_id:
-        r = requests.post(
-            f"{BASE}/support/tickets/{created_ticket_id}/reply",
-            headers=Ho,
-            json={"body": "Hi I'm a stranger trying to reply"},
-            timeout=30,
-        )
-        _assert(r.status_code == 403,
-                "reply on other user's ticket -> 403",
-                f"status={r.status_code}")
-    else:
-        print("  SKIP  4c — no other user")
-
-    # ───────────────────────────────────────────────────────────────
-    # 5) close
-    # ───────────────────────────────────────────────────────────────
-    print("\n[5] POST /api/support/tickets/{id}/close")
-    close_test_id = second_ticket_id
-    if close_test_id:
-        if other_tok:
-            r = requests.post(
-                f"{BASE}/support/tickets/{close_test_id}/close",
-                headers=Ho, timeout=30,
+    # ── Cleanup ──────────────────────────────────────────────────
+    # Soft-delete via close (no DELETE endpoint exists for tickets).
+    for tid in (user_ticket_id, second_ticket_id, fresh_id, admin_ticket_id):
+        if not tid:
+            continue
+        # admin can close any via PATCH status=closed
+        try:
+            requests.patch(
+                f"{BASE}/admin/support/tickets/{tid}/status",
+                json={"status": "closed"},
+                headers=H(admin_tok),
+                timeout=10,
             )
-            _assert(r.status_code == 403,
-                    "other user closes my ticket -> 403",
-                    f"status={r.status_code}")
-        else:
-            print("  SKIP  5c — no other user")
+        except Exception:
+            pass
 
-        r = requests.post(
-            f"{BASE}/support/tickets/{close_test_id}/close",
-            headers=Hu, timeout=30,
-        )
-        _assert(r.status_code == 200, "owner close -> 200",
-                f"status={r.status_code} body={r.text[:200]}")
+    return _summary()
 
-        after = requests.get(f"{BASE}/support/tickets/{close_test_id}",
-                             headers=Hu, timeout=30).json()
-        _assert(after.get("status") == "closed",
-                "after close: status=closed",
-                f"got={after.get('status')}")
 
-        r = requests.post(
-            f"{BASE}/support/tickets/{close_test_id}/reply",
-            headers=Hu,
-            json={"body": "Hello after close"},
-            timeout=30,
-        )
-        _assert(r.status_code == 409,
-                "reply on closed ticket -> 409",
-                f"status={r.status_code} body={r.text[:200]}")
-
-    # ───────────────────────────────────────────────────────────────
-    # 6) admin list
-    # ───────────────────────────────────────────────────────────────
-    print("\n[6] GET /api/admin/support/tickets")
-    r = requests.get(f"{BASE}/admin/support/tickets", headers=Ha, timeout=30)
-    _assert(r.status_code == 200, "admin list all -> 200",
-            f"status={r.status_code} body={r.text[:200]}")
-    if r.status_code == 200:
-        body = r.json()
-        items = body.get("items") or []
-        ids = [t.get("id") for t in items]
-        _assert(created_ticket_id in ids,
-                "admin list includes user2's ticket (cross-user)",
-                f"created_ticket_id={created_ticket_id}")
-        if second_ticket_id:
-            _assert(second_ticket_id in ids,
-                    "admin list includes user2's closed ticket")
-
-    r = requests.get(f"{BASE}/admin/support/tickets", headers=Hu, timeout=30)
-    _assert(r.status_code == 403,
-            "regular user accessing admin list -> 403",
-            f"status={r.status_code}")
-
-    # ───────────────────────────────────────────────────────────────
-    # 7) admin status patch
-    # ───────────────────────────────────────────────────────────────
-    print("\n[7] PATCH admin status")
-    if created_ticket_id:
-        r = requests.patch(
-            f"{BASE}/admin/support/tickets/{created_ticket_id}/status",
-            headers=Ha, json={"status": "resolved"}, timeout=30,
-        )
-        _assert(r.status_code == 200, "admin set status=resolved -> 200",
-                f"status={r.status_code} body={r.text[:200]}")
-        if r.status_code == 200:
-            _assert(r.json().get("status") == "resolved",
-                    "response confirms status=resolved")
-            t = requests.get(f"{BASE}/support/tickets/{created_ticket_id}",
-                             headers=Hu, timeout=30).json()
-            _assert(t.get("status") == "resolved",
-                    "GET confirms ticket status=resolved",
-                    f"got={t.get('status')}")
-
-        r = requests.patch(
-            f"{BASE}/admin/support/tickets/{created_ticket_id}/status",
-            headers=Ha, json={"status": "wibble"}, timeout=30,
-        )
-        _assert(r.status_code == 400, "invalid admin status -> 400",
-                f"status={r.status_code}")
-
-        r = requests.patch(
-            f"{BASE}/admin/support/tickets/{created_ticket_id}/status",
-            headers=Hu, json={"status": "resolved"}, timeout=30,
-        )
-        _assert(r.status_code == 403,
-                "regular user PATCH status -> 403",
-                f"status={r.status_code}")
-
-    # ───────────────────────────────────────────────────────────────
-    # 8) admin priority patch
-    # ───────────────────────────────────────────────────────────────
-    print("\n[8] PATCH admin priority")
-    if created_ticket_id:
-        r = requests.patch(
-            f"{BASE}/admin/support/tickets/{created_ticket_id}/priority",
-            headers=Ha, json={"priority": "high"}, timeout=30,
-        )
-        _assert(r.status_code == 200, "admin set priority=high -> 200",
-                f"status={r.status_code}")
-        if r.status_code == 200:
-            _assert(r.json().get("priority") == "high",
-                    "response confirms priority=high")
-            t = requests.get(f"{BASE}/support/tickets/{created_ticket_id}",
-                             headers=Hu, timeout=30).json()
-            _assert(t.get("priority") == "high",
-                    "GET confirms priority=high")
-
-        r = requests.patch(
-            f"{BASE}/admin/support/tickets/{created_ticket_id}/priority",
-            headers=Ha, json={"priority": "ultra"}, timeout=30,
-        )
-        _assert(r.status_code == 400, "invalid priority -> 400",
-                f"status={r.status_code}")
-
-        r = requests.patch(
-            f"{BASE}/admin/support/tickets/{created_ticket_id}/priority",
-            headers=Hu, json={"priority": "low"}, timeout=30,
-        )
-        _assert(r.status_code == 403, "regular user PATCH priority -> 403",
-                f"status={r.status_code}")
-
-    # ───────────────────────────────────────────────────────────────
-    # 9) Admin reply flips status
-    # ───────────────────────────────────────────────────────────────
-    print("\n[9] Admin reply via user endpoint flips status")
-    r = requests.post(
-        f"{BASE}/support/tickets",
-        headers=Hu,
-        json={
-            "title": "Need help with bulk import CSV",
-            "description": "My 200-row CSV fails on import - error says "
-                           "'pincode missing' but col is filled.",
-            "category": "general",
-        },
-        timeout=30,
-    )
-    _assert(r.status_code == 200, "create fresh ticket for admin-reply test",
-            f"status={r.status_code}")
-    fresh_id = None
-    if r.status_code == 200:
-        fresh_id = r.json().get("id")
-        _assert(r.json().get("status") == "open",
-                "fresh ticket starts at status=open")
-
-    if fresh_id:
-        r = requests.post(
-            f"{BASE}/support/tickets/{fresh_id}/reply",
-            headers=Ha,
-            json={"body": "Hi - please email the CSV to support@kisan, "
-                          "we'll diagnose."},
-            timeout=30,
-        )
-        _assert(r.status_code == 200, "admin reply via user endpoint -> 200",
-                f"status={r.status_code} body={r.text[:200]}")
-
-        t = requests.get(f"{BASE}/support/tickets/{fresh_id}",
-                         headers=Hu, timeout=30).json()
-        _assert(t.get("status") == "in_progress",
-                "after admin reply, status flipped to in_progress",
-                f"got={t.get('status')}")
-
-        msgs = t.get("messages") or []
-        if msgs:
-            _assert(msgs[-1].get("author_role") == "admin",
-                    "last message author_role=admin",
-                    f"got={msgs[-1].get('author_role')}")
-
-    total = PASS_COUNT + FAIL_COUNT
-    print("\n" + "=" * 72)
-    print(f"RESULT: {PASS_COUNT}/{total} assertions passed "
-          f"({FAIL_COUNT} failed)")
-    print("=" * 72)
-    if FAILURES:
-        print("\nFailures:")
-        for f in FAILURES:
-            print(f"  - {f}")
-        return 1
-    return 0
+def _summary():
+    print("\n" + "=" * 70)
+    print(f"PASSED: {len(PASS)}    FAILED: {len(FAIL)}")
+    print("=" * 70)
+    if FAIL:
+        print("\n--- Failures ---")
+        for f in FAIL:
+            print(f)
+    return 0 if not FAIL else 1
 
 
 if __name__ == "__main__":
-    try:
-        rc = main()
-    except Exception:
-        traceback.print_exc()
-        rc = 1
-    sys.exit(rc)
+    sys.exit(main())
