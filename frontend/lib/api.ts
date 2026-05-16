@@ -1790,6 +1790,28 @@ export const Api = {
     api.post<{ ok: boolean }>(`/support/tickets/${id}/close`)
       .then((r) => r.data),
 
+  // ────── Admin Support Inbox (Phase-22, 2026-05-16) ──────────
+  /**
+   * Super-admin only — list ALL tickets across users. Optional
+   * `status` narrows to open/in_progress/resolved/closed. Each row
+   * carries `message_count` and `last_message_preview` so the inbox
+   * list can render without a second round-trip.
+   */
+  adminListSupportTickets: (status?: string, limit: number = 100) =>
+    api.get<{ items: SupportTicket[]; count: number }>(`/admin/support/tickets`, {
+      params: { ...(status ? { status } : {}), limit },
+    }).then((r) => r.data),
+
+  /** Change ticket status — open / in_progress / resolved / closed. */
+  adminSetSupportStatus: (id: string, status: string) =>
+    api.patch<{ ok: boolean; status: string }>(`/admin/support/tickets/${id}/status`, { status })
+      .then((r) => r.data),
+
+  /** Change priority — low / normal / high / urgent. */
+  adminSetSupportPriority: (id: string, priority: string) =>
+    api.patch<{ ok: boolean; priority: string }>(`/admin/support/tickets/${id}/priority`, { priority })
+      .then((r) => r.data),
+
   // ─────── Phase-21 — Video Tutorials ──────────────────────────
   /** Active tutorials, optional `category` filter. */
   listVideoTutorials: (category?: string) =>

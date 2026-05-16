@@ -3163,6 +3163,20 @@ export default function SettingsScreen() {
               <Text style={styles.aboutLinkText}>Support Center</Text>
               <PhIcon name="chevron-forward" size={16} color="#94A3B8" />
             </TouchableOpacity>
+            {/* Phase-22 — Super-Admin Support Inbox, visible only to
+                the owner (is_admin=true). Lets the owner see/reply to
+                every user's tickets within seconds. */}
+            {(user as any)?.is_admin ? (
+              <TouchableOpacity
+                testID="about-admin-support-inbox"
+                style={styles.aboutLinkRow}
+                onPress={() => router.push("/admin/support-inbox" as any)}
+              >
+                <PhIcon name="shield-checkmark-outline" size={18} color={colors.primary} />
+                <Text style={styles.aboutLinkText}>Admin: Support Inbox</Text>
+                <PhIcon name="chevron-forward" size={16} color="#94A3B8" />
+              </TouchableOpacity>
+            ) : null}
             <TouchableOpacity
               testID="about-whats-new"
               style={styles.aboutLinkRow}

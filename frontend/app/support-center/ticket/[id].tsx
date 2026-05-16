@@ -30,6 +30,8 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import PhIcon from "../../../components/PhIcon";
 import { colors } from "../../../lib/theme";
 import { Api, SupportMessage, SupportTicket } from "../../../lib/api";
+import { useAuth } from "../../../lib/auth";
+import { useFocusEffect } from "expo-router";
 
 const STATUS_LABEL: Record<SupportTicket["status"], string> = {
   open: "Open",
@@ -63,25 +65,70 @@ export default function TicketDetail() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const { id } = useLocalSearchParams<{ id: string }>();
+  const { user } = useAuth();
+  const isAdmin = !!(user as any)?.is_admin;
 
   const [ticket, setTicket] = useState<SupportTicket | null>(null);
   const [loading, setLoading] = useState(true);
   const [reply, setReply] = useState("");
   const [sending, setSending] = useState(false);
+  const [savingStatus, setSavingStatus] = useState(false);
   const scrollRef = useRef<ScrollView | null>(null);
+  const pollRef   = useRef<ReturnType<typeof setInterval> | null>(null);
+  const lastSeenCountRef = useRef<number>(0);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (silent = false) => {
     try {
       const t = await Api.supportGetTicket(String(id));
+      // Skip the state update on silent polls when nothing changed
+      // so we don't re-render or re-scroll unnecessarily.
+      const incoming = t.messages?.length || 0;
+      if (silent && incoming === lastSeenCountRef.current) {
+        return;
+      }
+      lastSeenCountRef.current = incoming;
       setTicket(t);
     } catch (e: any) {
-      Alert.alert("Failed", e?.response?.data?.detail || "Could not load ticket.");
+      if (!silent) {
+        Alert.alert("Failed", e?.response?.data?.detail || "Could not load ticket.");
+      }
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }, [id]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => { load(false); }, [load]);
+
+  // Poll every 8 seconds while focused — picks up admin replies (or
+  // user replies if admin is viewing) within a few seconds without
+  // requiring a WebSocket. Quiet (no spinner) on the silent path.
+  useFocusEffect(
+    useCallback(() => {
+      pollRef.current = setInterval(() => { load(true); }, 8_000);
+      return () => {
+        if (pollRef.current) clearInterval(pollRef.current);
+        pollRef.current = null;
+      };
+    }, [load]),
+  );
+
+  // Admin status changer — used from the status pills in the header
+  // when an admin is viewing the ticket. Optimistic UI: flip locally
+  // first, rollback on failure.
+  const setTicketStatus = useCallback(async (next: SupportTicket["status"]) => {
+    if (!ticket || ticket.status === next) return;
+    const prev = ticket.status;
+    setTicket((t) => (t ? { ...t, status: next } : t));
+    setSavingStatus(true);
+    try {
+      await Api.adminSetSupportStatus(String(id), next);
+    } catch (e: any) {
+      setTicket((t) => (t ? { ...t, status: prev } : t));
+      Alert.alert("Failed", e?.response?.data?.detail || "Could not update status.");
+    } finally {
+      setSavingStatus(false);
+    }
+  }, [ticket, id]);
 
   // Auto-scroll the thread to the bottom whenever new messages appear.
   useEffect(() => {
@@ -94,11 +141,14 @@ export default function TicketDetail() {
     if (!body) return;
     setSending(true);
     // Optimistic bubble — appended immediately so the UI feels instant.
+    // The role mirrors the signed-in user so admin replies render as
+    // "admin" bubbles (left side) and user replies render as "user"
+    // (right side, primary colour).
     const optimistic: SupportMessage = {
       id: `optimistic-${Date.now()}`,
       author_id: "me",
-      author_name: "You",
-      author_role: "user",
+      author_name: isAdmin ? "Support" : "You",
+      author_role: isAdmin ? "admin" : "user",
       body,
       created_at: new Date().toISOString(),
     };
@@ -114,6 +164,9 @@ export default function TicketDetail() {
         const next = (prev.messages || []).map((m) =>
           m.id === optimistic.id ? r.message : m,
         );
+        // Bump cached message count so the next silent poll doesn't
+        // re-trigger a re-render with the same count.
+        lastSeenCountRef.current = next.length;
         return { ...prev, messages: next };
       });
     } catch (e: any) {
@@ -144,7 +197,7 @@ export default function TicketDetail() {
           onPress: async () => {
             try {
               await Api.supportCloseTicket(String(id));
-              await load();
+              await load(false);
             } catch (e: any) {
               Alert.alert("Failed", e?.response?.data?.detail || "Try again.");
             }
@@ -199,6 +252,13 @@ export default function TicketDetail() {
             </Text>
           </View>
           <Text style={styles.headTitle}>{ticket.title}</Text>
+          {/* Admin viewer info — show the customer email + reply-as
+              badge so the owner knows whose ticket they're on. */}
+          {isAdmin ? (
+            <Text style={[styles.metaTxt, { marginTop: 4 }]}>
+              👤 {ticket.user_email || "Unknown user"} · Replying as Admin
+            </Text>
+          ) : null}
           {!isClosed && status === "resolved" ? (
             <TouchableOpacity
               testID="ticket-close-btn"
@@ -211,9 +271,38 @@ export default function TicketDetail() {
           ) : null}
         </View>
 
+        {/* Admin status control bar — flip ticket through the
+            workflow with a single tap. Hidden for regular users. */}
+        {isAdmin && !isClosed ? (
+          <View style={styles.adminBar}>
+            <Text style={styles.adminBarLbl}>Status:</Text>
+            {(["open", "in_progress", "resolved", "closed"] as const).map((s) => {
+              const active = status === s;
+              return (
+                <TouchableOpacity
+                  key={s}
+                  onPress={() => setTicketStatus(s)}
+                  disabled={savingStatus || active}
+                  activeOpacity={0.85}
+                  style={[styles.adminChip, active && styles.adminChipActive]}
+                >
+                  <Text style={[styles.adminChipTxt, active && styles.adminChipTxtActive]}>
+                    {STATUS_LABEL[s]}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+        ) : null}
+
         {/* Messages thread */}
         {(ticket.messages || []).map((m) => {
-          const mine = m.author_role === "user";
+          // "mine" is the bubble for the signed-in user — admin
+          // messages on the right when admin is viewing, user
+          // messages on the right when the customer is viewing.
+          const mine = isAdmin
+            ? m.author_role === "admin"
+            : m.author_role === "user";
           return (
             <View
               key={m.id}
@@ -229,7 +318,7 @@ export default function TicketDetail() {
                 ]}
               >
                 <Text style={[styles.bubbleAuthor, mine && { color: "rgba(255,255,255,0.85)" }]}>
-                  {mine ? "You" : (m.author_name || "Support")}
+                  {mine ? "You" : (m.author_name || (m.author_role === "admin" ? "Support" : "User"))}
                 </Text>
                 <Text style={[styles.bubbleBody, mine && { color: "#fff" }]}>
                   {m.body}
@@ -293,6 +382,25 @@ const styles = StyleSheet.create({
     boxShadow: "0px 1px 3px rgba(0,0,0,0.04)", elevation: 1,
   },
   headRow: { flexDirection: "row", alignItems: "center", gap: 10 },
+
+  // Admin status bar — only rendered when an admin is viewing.
+  adminBar: {
+    flexDirection: "row", flexWrap: "wrap", alignItems: "center",
+    backgroundColor: "#FEF3C7", borderRadius: 12,
+    paddingHorizontal: 10, paddingVertical: 8, marginBottom: 10, gap: 6,
+    borderWidth: 1, borderColor: "#FDE68A",
+  },
+  adminBarLbl: { fontSize: 11.5, fontWeight: "800", color: "#92400E", marginRight: 2 },
+  adminChip: {
+    paddingHorizontal: 10, paddingVertical: 6,
+    borderRadius: 999, backgroundColor: "#fff",
+    borderWidth: 1, borderColor: "#FDE68A",
+  },
+  adminChipActive: {
+    backgroundColor: "#92400E", borderColor: "#92400E",
+  },
+  adminChipTxt:       { fontSize: 11, fontWeight: "700", color: "#92400E" },
+  adminChipTxtActive: { color: "#fff" },
   statusPill: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 6 },
   statusPillTxt: { fontSize: 10.5, fontWeight: "900", letterSpacing: 0.3 },
   metaTxt: { fontSize: 12, color: "#94A3B8", flex: 1 },

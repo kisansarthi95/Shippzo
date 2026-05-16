@@ -158,6 +158,11 @@ export default function RootLayout() {
                   name="support-center/tutorials/admin/add"
                   options={{ headerShown: true, title: "Add Tutorial", headerShadowVisible: false, headerBackTitle: "Back" }}
                 />
+                {/* Phase-22 — Super-Admin Support Inbox */}
+                <Stack.Screen
+                  name="admin/support-inbox"
+                  options={{ headerShown: true, title: "Support Inbox", headerShadowVisible: false, headerBackTitle: "Back" }}
+                />
               </Stack>
             </AuthGate>
           </SafeAreaProvider>
