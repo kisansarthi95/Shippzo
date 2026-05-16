@@ -229,9 +229,10 @@ const styles = StyleSheet.create({
 
   tabsRow: { paddingHorizontal: 16, paddingTop: 12, paddingBottom: 10, gap: 8 },
   tab: {
-    paddingHorizontal: 16, paddingVertical: 8,
-    borderRadius: 999, backgroundColor: "#fff",
+    paddingHorizontal: 18, paddingVertical: 9,
+    borderRadius: 10, backgroundColor: "#fff",
     borderWidth: 1, borderColor: "#E5E7EB",
+    minWidth: 72, alignItems: "center", justifyContent: "center",
   },
   tabActive: {
     backgroundColor: colors.primary,
