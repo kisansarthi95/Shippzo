@@ -61,6 +61,16 @@ function relTime(iso?: string): string {
   return d.toLocaleString();
 }
 
+/** Email-style date stamp: e.g. "16 May 2026 · 3:42 PM". */
+function emailTime(iso?: string): string {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return "";
+  const date = d.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
+  const time = d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+  return `${date} · ${time}`;
+}
+
 export default function TicketDetail() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
@@ -295,44 +305,73 @@ export default function TicketDetail() {
           </View>
         ) : null}
 
-        {/* Messages thread */}
-        {(ticket.messages || []).map((m) => {
-          // "mine" is the bubble for the signed-in user — admin
-          // messages on the right when admin is viewing, user
-          // messages on the right when the customer is viewing.
-          const mine = isAdmin
-            ? m.author_role === "admin"
-            : m.author_role === "user";
+        {/* Conversation thread — email/forum style. Each message is
+            a full-width card with sender header, body, and time.
+            No chat bubbles — this is a support ticket, not a chat. */}
+        {(ticket.messages || []).map((m, idx) => {
+          const isAdminMsg = m.author_role === "admin";
+          const senderLabel = isAdminMsg
+            ? (m.author_name || "Shippzo Support")
+            : (m.author_name || ticket.user_email || "Customer");
           return (
-            <View
-              key={m.id}
-              style={[
-                styles.bubbleWrap,
-                { alignItems: mine ? "flex-end" : "flex-start" },
-              ]}
-            >
-              <View
-                style={[
-                  styles.bubble,
-                  mine ? styles.bubbleMine : styles.bubbleOther,
-                ]}
-              >
-                <Text style={[styles.bubbleAuthor, mine && { color: "rgba(255,255,255,0.85)" }]}>
-                  {mine ? "You" : (m.author_name || (m.author_role === "admin" ? "Support" : "User"))}
-                </Text>
-                <Text style={[styles.bubbleBody, mine && { color: "#fff" }]}>
-                  {m.body}
-                </Text>
-                <Text style={[styles.bubbleTime, mine && { color: "rgba(255,255,255,0.7)" }]}>
-                  {relTime(m.created_at)}
-                </Text>
+            <View key={m.id} style={styles.threadCard}>
+              <View style={styles.threadHeader}>
+                <View style={[
+                  styles.avatar,
+                  { backgroundColor: isAdminMsg ? "#FEF3C7" : "#DBEAFE" },
+                ]}>
+                  <PhIcon
+                    name={isAdminMsg ? "shield-checkmark-outline" : "person"}
+                    size={16}
+                    color={isAdminMsg ? "#92400E" : "#1D4ED8"}
+                  />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <View style={styles.threadHeaderRow}>
+                    <Text style={styles.threadSender} numberOfLines={1}>
+                      {senderLabel}
+                    </Text>
+                    <View style={[
+                      styles.roleBadge,
+                      { backgroundColor: isAdminMsg ? "#FEF3C7" : "#E0E7FF" },
+                    ]}>
+                      <Text style={[
+                        styles.roleBadgeTxt,
+                        { color: isAdminMsg ? "#92400E" : "#3730A3" },
+                      ]}>
+                        {isAdminMsg ? "Support" : "Customer"}
+                      </Text>
+                    </View>
+                  </View>
+                  <Text style={styles.threadTime}>{emailTime(m.created_at)}</Text>
+                </View>
               </View>
+
+              <Text style={styles.threadBody}>{m.body}</Text>
+
+              {/* First message of the ticket may carry the original
+                  screenshot / recording attachments. Render only on
+                  the very first message (i.e. the ticket itself) so
+                  we don't repeat them on every poll. */}
+              {idx === 0 && ticket.screenshot_b64 ? (
+                <View style={styles.attachRow}>
+                  <PhIcon name="image-outline" size={14} color="#475569" />
+                  <Text style={styles.attachLbl}>Screenshot attached</Text>
+                </View>
+              ) : null}
+              {idx === 0 && ticket.recording_b64 ? (
+                <View style={styles.attachRow}>
+                  <PhIcon name="play" size={14} color="#475569" />
+                  <Text style={styles.attachLbl}>Screen recording attached</Text>
+                </View>
+              ) : null}
             </View>
           );
         })}
       </ScrollView>
 
-      {/* Composer */}
+      {/* Composer — email-style reply panel. Full-width textarea with
+          a clear "Send Reply" CTA. No chat-app affordances. */}
       {isClosed ? (
         <View style={[styles.composerClosed, { paddingBottom: insets.bottom + 10 }]}>
           <Text style={styles.composerClosedTxt}>This ticket is closed.</Text>
@@ -344,29 +383,47 @@ export default function TicketDetail() {
           </TouchableOpacity>
         </View>
       ) : (
-        <View style={[styles.composer, { paddingBottom: insets.bottom + 8 }]}>
+        <View style={[styles.replyPanel, { paddingBottom: insets.bottom + 12 }]}>
+          <Text style={styles.replyLbl}>
+            {isAdmin ? "Reply as Support" : "Your reply"}
+          </Text>
           <TextInput
             testID="ticket-reply-input"
             value={reply}
             onChangeText={setReply}
-            placeholder="Type your reply…"
+            placeholder={isAdmin
+              ? "Type your reply to the customer…"
+              : "Write your message to support…"}
             placeholderTextColor="#9CA3AF"
-            style={styles.composerInput}
+            style={styles.replyInput}
             multiline
             maxLength={5000}
+            textAlignVertical="top"
           />
-          <TouchableOpacity
-            testID="ticket-reply-send"
-            onPress={send}
-            disabled={sending || !reply.trim()}
-            activeOpacity={0.85}
-            style={[
-              styles.composerSend,
-              (!reply.trim() || sending) && { opacity: 0.45 },
-            ]}
-          >
-            <PhIcon name="send" size={16} color="#fff" />
-          </TouchableOpacity>
+          <View style={styles.replyActions}>
+            <Text style={styles.replyHint}>
+              {reply.length > 0 ? `${reply.length} / 5000` : "Be clear & concise."}
+            </Text>
+            <TouchableOpacity
+              testID="ticket-reply-send"
+              onPress={send}
+              disabled={sending || !reply.trim()}
+              activeOpacity={0.85}
+              style={[
+                styles.sendBtn,
+                (!reply.trim() || sending) && { opacity: 0.5 },
+              ]}
+            >
+              {sending ? (
+                <ActivityIndicator color="#fff" size="small" />
+              ) : (
+                <>
+                  <PhIcon name="send" size={14} color="#fff" />
+                  <Text style={styles.sendBtnTxt}>Send Reply</Text>
+                </>
+              )}
+            </TouchableOpacity>
+          </View>
         </View>
       )}
     </KeyboardAvoidingView>
@@ -413,37 +470,76 @@ const styles = StyleSheet.create({
   },
   closeBtnTxt: { color: colors.primary, fontSize: 12, fontWeight: "800" },
 
-  bubbleWrap: { marginVertical: 4 },
-  bubble: { maxWidth: "82%", borderRadius: 14, paddingHorizontal: 12, paddingVertical: 10 },
-  bubbleMine: {
-    backgroundColor: colors.primary,
-    borderTopRightRadius: 4,
-  },
-  bubbleOther: {
+  // ─── Email-style thread cards ─────────────────────────────────
+  // Each message is a full-width card. No bubbles, no left/right
+  // alignment — just sender header, body, time. Matches the
+  // mental model of a support ticket (Zendesk/Freshdesk style).
+  threadCard: {
     backgroundColor: "#fff",
-    borderTopLeftRadius: 4,
-    boxShadow: "0px 1px 3px rgba(0,0,0,0.04)", elevation: 1,
+    borderRadius: 12,
+    padding: 14,
+    marginBottom: 10,
+    borderWidth: 1,
+    borderColor: "#E5E7EB",
   },
-  bubbleAuthor: { fontSize: 11, fontWeight: "800", color: "#475569", marginBottom: 4 },
-  bubbleBody: { fontSize: 14, color: "#0F172A", lineHeight: 19 },
-  bubbleTime: { fontSize: 10, color: "#94A3B8", marginTop: 6 },
-
-  composer: {
-    flexDirection: "row", alignItems: "flex-end", gap: 8,
-    backgroundColor: "#fff", borderTopWidth: 1, borderTopColor: "#E5E7EB",
-    paddingHorizontal: 12, paddingTop: 8,
+  threadHeader: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 10,
+    marginBottom: 10,
   },
-  composerInput: {
-    flex: 1, maxHeight: 120, minHeight: 40,
-    backgroundColor: "#F4F5F7", borderRadius: 14,
-    paddingHorizontal: 12, paddingTop: 10, paddingBottom: 10,
-    fontSize: 14, color: "#0F172A",
+  threadHeaderRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
   },
-  composerSend: {
-    width: 44, height: 44, borderRadius: 22,
-    backgroundColor: colors.primary,
+  avatar: {
+    width: 32, height: 32, borderRadius: 16,
     alignItems: "center", justifyContent: "center",
   },
+  threadSender: { fontSize: 13.5, fontWeight: "800", color: "#0F172A", flexShrink: 1 },
+  threadTime:   { fontSize: 11, color: "#94A3B8", marginTop: 2 },
+  roleBadge:    { paddingHorizontal: 8, paddingVertical: 2, borderRadius: 999 },
+  roleBadgeTxt: { fontSize: 10, fontWeight: "800", letterSpacing: 0.2 },
+  threadBody:   { fontSize: 14, color: "#0F172A", lineHeight: 21 },
+
+  attachRow: {
+    flexDirection: "row", alignItems: "center", gap: 6,
+    marginTop: 8, paddingTop: 8,
+    borderTopWidth: 1, borderTopColor: "#F1F5F9",
+  },
+  attachLbl: { fontSize: 12, color: "#475569", fontWeight: "600" },
+
+  // ─── Reply panel — email composer style ───────────────────────
+  replyPanel: {
+    backgroundColor: "#fff",
+    borderTopWidth: 1, borderTopColor: "#E5E7EB",
+    paddingHorizontal: 14, paddingTop: 12,
+  },
+  replyLbl: {
+    fontSize: 12, fontWeight: "800", color: "#475569",
+    textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 8,
+  },
+  replyInput: {
+    backgroundColor: "#F8FAFC",
+    borderRadius: 10,
+    borderWidth: 1, borderColor: "#E5E7EB",
+    paddingHorizontal: 12, paddingTop: 10, paddingBottom: 10,
+    fontSize: 14, color: "#0F172A",
+    minHeight: 96, maxHeight: 200,
+  },
+  replyActions: {
+    flexDirection: "row", justifyContent: "space-between",
+    alignItems: "center", marginTop: 10,
+  },
+  replyHint: { fontSize: 11.5, color: "#94A3B8" },
+  sendBtn: {
+    flexDirection: "row", alignItems: "center", gap: 6,
+    backgroundColor: colors.primary,
+    paddingHorizontal: 16, paddingVertical: 10,
+    borderRadius: 10,
+  },
+  sendBtnTxt: { color: "#fff", fontSize: 13, fontWeight: "800" },
 
   composerClosed: {
     flexDirection: "row", alignItems: "center", gap: 10,
