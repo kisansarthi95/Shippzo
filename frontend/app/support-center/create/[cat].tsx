@@ -45,15 +45,29 @@ const WHEN_OPTIONS = [
 ];
 
 /**
- * Categories where the "Courier Name" field is contextually
- * relevant. For unrelated categories (login, wallet, WhatsApp,
- * app bug, feature request, etc.) the field is hidden to keep
- * the form short and on-topic.
+ * Per-category field visibility. Each category only shows the
+ * inputs that make sense for that workflow — keeping the form
+ * focused and reducing noise. This config is the single source
+ * of truth used by both the form view and the review summary.
  */
-const COURIER_RELEVANT_CATEGORIES: SupportCategoryKey[] = [
-  "label_print",
-  "order_input",
-];
+type FieldConfig = {
+  courierName: boolean;
+  orderId:     boolean;
+  whenStarted: boolean;
+  screenshot:  boolean;
+  recording:   boolean;
+};
+
+const FIELD_CONFIG: Record<SupportCategoryKey, FieldConfig> = {
+  account_login:   { courierName: false, orderId: false, whenStarted: true,  screenshot: true, recording: true  },
+  plan_wallet:     { courierName: false, orderId: false, whenStarted: true,  screenshot: true, recording: true  },
+  label_print:     { courierName: true,  orderId: true,  whenStarted: true,  screenshot: true, recording: true  },
+  order_input:     { courierName: true,  orderId: true,  whenStarted: true,  screenshot: true, recording: true  },
+  whatsapp:        { courierName: false, orderId: false, whenStarted: true,  screenshot: true, recording: true  },
+  app_bug:         { courierName: false, orderId: false, whenStarted: true,  screenshot: true, recording: true  },
+  feature_request: { courierName: false, orderId: false, whenStarted: false, screenshot: true, recording: false },
+  other:           { courierName: false, orderId: false, whenStarted: true,  screenshot: true, recording: true  },
+};
 
 export default function CreateTicketForm() {
   const router = useRouter();
@@ -73,11 +87,10 @@ export default function CreateTicketForm() {
   const [createdTicketNumber, setCreatedTicketNumber] = useState<string>("");
   const [createdTicketId, setCreatedTicketId]         = useState<string>("");
 
-  /** Courier Name input is only relevant for label/courier and
-   *  order-input issues. For other categories (login, wallet,
-   *  WhatsApp, app bug, feature requests, etc.) we hide the
-   *  field so the form stays focused. */
-  const showCourierField = COURIER_RELEVANT_CATEGORIES.includes(category.k);
+  /** Per-category field visibility — drives which inputs are
+   *  rendered (and which values are submitted) so each category
+   *  only collects the data points that actually matter for it. */
+  const fields = FIELD_CONFIG[category.k] || FIELD_CONFIG.other;
 
   const deviceInfo = useMemo(() => ({
     app_version: Constants.expoConfig?.version || "",
@@ -96,9 +109,9 @@ export default function CreateTicketForm() {
         title:         category.title,
         description:   problem.trim(),
         category:      category.k,
-        courier_name:  showCourierField ? courierName.trim() : "",
-        order_id:      orderId.trim(),
-        issue_started: when,
+        courier_name:  fields.courierName ? courierName.trim() : "",
+        order_id:      fields.orderId     ? orderId.trim()     : "",
+        issue_started: fields.whenStarted ? when               : "",
         device_info:   deviceInfo,
       });
       setCreatedTicketNumber(ticket.ticket_number || `SHP-${ticket.id.slice(0, 4)}`);
@@ -169,10 +182,15 @@ export default function CreateTicketForm() {
           <View style={styles.summaryCard}>
             <Text style={styles.summarySection}>Issue Summary</Text>
             <SummaryRow lbl="Category" val={category.title} />
-            {courierName.trim() ? <SummaryRow lbl="Courier Name" val={courierName} /> : null}
-            {orderId.trim()     ? <SummaryRow lbl="Order ID" val={orderId} /> : null}
+            {fields.courierName && courierName.trim() ? <SummaryRow lbl="Courier Name" val={courierName} /> : null}
+            {fields.orderId     && orderId.trim()     ? <SummaryRow lbl="Order ID"     val={orderId} />     : null}
             <SummaryRow lbl="Description" val={problem} multiline />
-            <SummaryRow lbl="Issue Start Time" val={WHEN_OPTIONS.find((w) => w.k === when)?.label || when} />
+            {fields.whenStarted ? (
+              <SummaryRow
+                lbl="Issue Start Time"
+                val={WHEN_OPTIONS.find((w) => w.k === when)?.label || when}
+              />
+            ) : null}
           </View>
           <View style={[styles.summaryCard, { marginTop: 12 }]}>
             <Text style={styles.summarySection}>Technical Information</Text>
@@ -211,7 +229,7 @@ export default function CreateTicketForm() {
       >
         <Text style={styles.sectionLbl}>Please provide details about the issue</Text>
 
-        {showCourierField && (
+        {fields.courierName && (
           <>
             <Text style={styles.fieldLbl}>Courier Name</Text>
             <View style={styles.inputWrap}>
@@ -227,17 +245,21 @@ export default function CreateTicketForm() {
           </>
         )}
 
-        <Text style={styles.fieldLbl}>Order ID (If Applicable)</Text>
-        <View style={styles.inputWrap}>
-          <TextInput
-            value={orderId}
-            onChangeText={setOrderId}
-            placeholder="Enter order ID"
-            placeholderTextColor="#9CA3AF"
-            style={styles.input}
-            maxLength={80}
-          />
-        </View>
+        {fields.orderId && (
+          <>
+            <Text style={styles.fieldLbl}>Order ID (If Applicable)</Text>
+            <View style={styles.inputWrap}>
+              <TextInput
+                value={orderId}
+                onChangeText={setOrderId}
+                placeholder="Enter order ID"
+                placeholderTextColor="#9CA3AF"
+                style={styles.input}
+                maxLength={80}
+              />
+            </View>
+          </>
+        )}
 
         <Text style={styles.fieldLbl}>Describe the problem</Text>
         <View style={[styles.inputWrap, { minHeight: 130, alignItems: "stretch" }]}>
@@ -253,34 +275,42 @@ export default function CreateTicketForm() {
         </View>
         <Text style={styles.charCount}>{problem.length} / 5000</Text>
 
-        <Text style={styles.fieldLbl}>When did this issue start?</Text>
-        <View style={styles.chips}>
-          {WHEN_OPTIONS.map((w) => {
-            const active = w.k === when;
-            return (
-              <TouchableOpacity
-                key={w.k}
-                onPress={() => setWhen(w.k)}
-                style={[styles.whenChip, active && { backgroundColor: colors.primary, borderColor: colors.primary }]}
-                activeOpacity={0.85}
-              >
-                <Text style={[styles.whenChipTxt, active && { color: "#fff" }]}>{w.label}</Text>
-              </TouchableOpacity>
-            );
-          })}
-        </View>
+        {fields.whenStarted && (
+          <>
+            <Text style={styles.fieldLbl}>When did this issue start?</Text>
+            <View style={styles.chips}>
+              {WHEN_OPTIONS.map((w) => {
+                const active = w.k === when;
+                return (
+                  <TouchableOpacity
+                    key={w.k}
+                    onPress={() => setWhen(w.k)}
+                    style={[styles.whenChip, active && { backgroundColor: colors.primary, borderColor: colors.primary }]}
+                    activeOpacity={0.85}
+                  >
+                    <Text style={[styles.whenChipTxt, active && { color: "#fff" }]}>{w.label}</Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+          </>
+        )}
 
         {/* Phase-21 — attachment slots stubbed for now. */}
-        <View style={styles.uploadCard}>
-          <PhIcon name="cloud-upload-outline" size={22} color={colors.primary} />
-          <Text style={styles.uploadTitle}>Upload Screenshot (Optional)</Text>
-          <Text style={styles.uploadSub}>Coming soon — PNG/JPG up to 5MB.</Text>
-        </View>
-        <View style={[styles.uploadCard, { marginTop: 10 }]}>
-          <PhIcon name="play" size={22} color={colors.primary} />
-          <Text style={styles.uploadTitle}>Upload Screen Recording (Optional)</Text>
-          <Text style={styles.uploadSub}>Coming soon — MP4 up to 20MB.</Text>
-        </View>
+        {fields.screenshot && (
+          <View style={styles.uploadCard}>
+            <PhIcon name="cloud-upload-outline" size={22} color={colors.primary} />
+            <Text style={styles.uploadTitle}>Upload Screenshot (Optional)</Text>
+            <Text style={styles.uploadSub}>Coming soon — PNG/JPG up to 5MB.</Text>
+          </View>
+        )}
+        {fields.recording && (
+          <View style={[styles.uploadCard, { marginTop: 10 }]}>
+            <PhIcon name="play" size={22} color={colors.primary} />
+            <Text style={styles.uploadTitle}>Upload Screen Recording (Optional)</Text>
+            <Text style={styles.uploadSub}>Coming soon — MP4 up to 20MB.</Text>
+          </View>
+        )}
       </ScrollView>
 
       <View style={[styles.bar, { paddingBottom: insets.bottom + 10 }]}>
