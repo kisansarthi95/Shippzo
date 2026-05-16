@@ -39,6 +39,23 @@ type FieldDef = {
   multiline?: boolean;
 };
 
+/**
+ * Build a single unified address string from a PendingOrder.
+ * Mirrors the helper used in `(tabs)/add.tsx` so both screens
+ * pre-fill the same "full address" value regardless of which
+ * shape the upstream produced (unified `address` string, legacy
+ * `address_line1`+`address_line2`, or only `address_line1`).
+ * Caps at 300 chars to match the input's hard limit.
+ */
+function unifiedAddressFrom(o: any): string {
+  const unified = String(o?.address || "").trim();
+  if (unified) return unified.slice(0, 300);
+  const l1 = String(o?.address_line1 || "").trim();
+  const l2 = String(o?.address_line2 || "").trim();
+  if (l1 && l2 && l2 !== "-") return `${l1}, ${l2}`.slice(0, 300);
+  return (l1 || l2).slice(0, 300);
+}
+
 const FIELD_GROUPS: { title: string; fields: FieldDef[] }[] = [
   {
     title: "Customer",
@@ -53,8 +70,15 @@ const FIELD_GROUPS: { title: string; fields: FieldDef[] }[] = [
   {
     title: "Address",
     fields: [
+      // Phase-6 (2026-04-28) — Unified address model.
+      // `add.tsx` uses a single full-address field; the legacy
+      // `address_line1` + `address_line2` split caused Smart Paste
+      // to truncate addresses on the first comma. We now show ONE
+      // multiline field (300-char cap) and write it into
+      // `address_line1` on save, blanking `address_line2`. Both
+      // legacy fields are still merged for the initial value so
+      // older webhook orders are not surprised on first open.
       { key: "address_line1", label: "Address",       multiline: true },
-      { key: "address_line2", label: "Address Line 2", multiline: true },
       { key: "city",          label: "City" },
       { key: "state",         label: "State" },
       { key: "pincode",       label: "Pincode",       keyboardType: "numeric" },
@@ -210,7 +234,20 @@ export default function EditPendingScreen() {
   // Use draft override when the user has edited the field; fall back
   // to original for everything else. Empty string + undefined collapse
   // for stable controlled inputs.
+  //
+  // Address special-case (Phase-6 unified address model): the
+  // displayed `address_line1` value is the MERGED full address
+  // (line1 + line2 / unified `address`), so the user sees the
+  // complete delivery address in a single multiline field —
+  // matching the New Shipment form in `(tabs)/add.tsx`.
   const valueOf = (k: keyof PendingOrder): string => {
+    if (k === "address_line1") {
+      // If the user already started editing, respect their draft —
+      // otherwise compute the merged initial value.
+      const drafted = draft.address_line1;
+      if (drafted !== undefined) return String(drafted);
+      return unifiedAddressFrom(original);
+    }
     const v = draft[k] !== undefined ? draft[k] : (original as any)[k];
     if (v === undefined || v === null) return "";
     return String(v);
@@ -218,6 +255,14 @@ export default function EditPendingScreen() {
 
   const setValue = (k: keyof PendingOrder, v: string) => {
     dirtyRef.current = true;
+    if (k === "address_line1") {
+      // Cap to 300 chars to match `add.tsx`. Also explicitly clear
+      // `address_line2` so the legacy split shape never sneaks
+      // back into the saved record.
+      const next = v.length > 300 ? v.slice(0, 300) : v;
+      setDraft((d) => ({ ...d, address_line1: next as any, address_line2: "" as any }));
+      return;
+    }
     setDraft((d) => ({ ...d, [k]: v as any }));
   };
 
@@ -253,21 +298,50 @@ export default function EditPendingScreen() {
           {FIELD_GROUPS.map((g) => (
             <View key={g.title} style={styles.groupCard}>
               <Text style={styles.groupTitle}>{g.title}</Text>
-              {g.fields.map((f) => (
-                <View key={String(f.key)} style={styles.fieldRow}>
-                  <Text style={styles.fieldLabel}>{f.label}</Text>
-                  <TextInput
-                    value={valueOf(f.key)}
-                    onChangeText={(t) => setValue(f.key, t)}
-                    placeholder={f.placeholder || `Enter ${f.label.toLowerCase()}`}
-                    placeholderTextColor="#94A3B8"
-                    keyboardType={f.keyboardType || "default"}
-                    multiline={!!f.multiline}
-                    numberOfLines={f.multiline ? 2 : 1}
-                    style={[styles.fieldInput, f.multiline && { minHeight: 56, textAlignVertical: "top" }]}
-                  />
-                </View>
-              ))}
+              {g.fields.map((f) => {
+                // Address field — apply the same UX as `(tabs)/add.tsx`:
+                //   • 300-char hard cap, multiline 3 lines tall.
+                //   • Friendly placeholder.
+                //   • Live "x / 300" counter (red when near the limit).
+                const isAddress = f.key === "address_line1";
+                const v = valueOf(f.key);
+                return (
+                  <View key={String(f.key)} style={styles.fieldRow}>
+                    <Text style={styles.fieldLabel}>{f.label}</Text>
+                    <TextInput
+                      value={v}
+                      onChangeText={(t) => setValue(f.key, t)}
+                      placeholder={
+                        f.placeholder ||
+                        (isAddress
+                          ? "Full address (landmark, area, street)"
+                          : `Enter ${f.label.toLowerCase()}`)
+                      }
+                      placeholderTextColor="#94A3B8"
+                      keyboardType={f.keyboardType || "default"}
+                      multiline={!!f.multiline}
+                      numberOfLines={isAddress ? 3 : (f.multiline ? 2 : 1)}
+                      maxLength={isAddress ? 300 : undefined}
+                      style={[
+                        styles.fieldInput,
+                        f.multiline && { minHeight: 56, textAlignVertical: "top" },
+                        isAddress && { minHeight: 76, paddingTop: 10 },
+                      ]}
+                    />
+                    {isAddress ? (
+                      <Text style={{
+                        fontSize: 11,
+                        color: v.length > 280 ? "#DC2626" : "#94A3B8",
+                        marginTop: 4,
+                        textAlign: "right",
+                        fontWeight: v.length > 280 ? "700" : "500",
+                      }}>
+                        {v.length} / 300
+                      </Text>
+                    ) : null}
+                  </View>
+                );
+              })}
             </View>
           ))}
 
