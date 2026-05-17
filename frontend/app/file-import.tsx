@@ -158,9 +158,16 @@ export default function FileImportScreen() {
       const r = await Api.fileImportCommit(
         picked.uri, picked.name, picked.mime, mapping, saveDefault,
       );
+      // Phase-F4 (2026-05-17) — duplicate guard surfaces a `duplicates`
+      // count alongside `skipped`. Build a friendly comma-separated
+      // tail so users see exactly which rows were dropped and why.
+      const tail: string[] = [];
+      if (r.skipped)    tail.push(`${r.skipped} skipped`);
+      if (r.duplicates) tail.push(`${r.duplicates} duplicates skipped`);
+      const tailStr = tail.length ? `; ${tail.join(", ")}` : "";
       Alert.alert(
         "Import complete 🎉",
-        `${r.imported} of ${r.total} rows imported${r.skipped ? `; ${r.skipped} skipped` : ""}.`,
+        `${r.imported} of ${r.total} rows imported${tailStr}.`,
         [{
           text: "View Orders",
           onPress: () => router.replace("/(tabs)/orders" as any),

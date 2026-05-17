@@ -1884,6 +1884,9 @@ export const Api = {
         ok: boolean;
         imported: number;
         skipped: number;
+        /** Phase-F4 — rows dropped because a matching pending order
+         *  already exists (or is repeated within the same file). */
+        duplicates?: number;
         total: number;
         errors: string[];
         filename: string;
