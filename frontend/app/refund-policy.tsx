@@ -44,7 +44,6 @@ export default function RefundPolicyScreen() {
         options={{
           title: "Policies",
           headerRight,
-          headerBackVisible: false,
           headerStyle: { backgroundColor: colors.background },
         }}
       />
