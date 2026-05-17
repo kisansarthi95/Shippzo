@@ -971,6 +971,21 @@ export default function SettingsScreen() {
                       <PhIcon name="chevron-forward" size={22} color="#9CA3AF" />
                     </TouchableOpacity>
                     <TouchableOpacity
+                      testID="settings-hub-admin-field-configs"
+                      style={styles.hubRow}
+                      onPress={() => router.push("/admin/field-configs/new_shipment" as any)}
+                      activeOpacity={0.6}
+                    >
+                      <View style={[styles.hubIconWrap, { backgroundColor: "#E0E7FF" }]}>
+                        <PhIcon name="options-outline" size={22} color="#4338CA" />
+                      </View>
+                      <Text style={styles.hubTitle}>Field Controls</Text>
+                      <View style={styles.adminPill}>
+                        <Text style={styles.adminPillTxt}>ADMIN</Text>
+                      </View>
+                      <PhIcon name="chevron-forward" size={22} color="#9CA3AF" />
+                    </TouchableOpacity>
+                    <TouchableOpacity
                       testID="settings-hub-admin-master-sheet"
                       style={[styles.hubRow, styles.hubRowLast]}
                       onPress={() => router.push("/admin/master-sheet" as any)}

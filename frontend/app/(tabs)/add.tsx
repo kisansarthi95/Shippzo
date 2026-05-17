@@ -23,6 +23,7 @@ import { scannerBridge } from "../../lib/scannerBridge";
 import { validateTrackingId } from "../../lib/trackingValidator";
 import { colors } from "../../lib/theme";
 import { useFeatureFlag } from "../../lib/feature_flags";
+import { useFieldConfig } from "../../lib/fieldConfig";
 
 // AsyncStorage keys for "last used" memory — shown as hints (not defaults).
 const LS_LAST_COURIER = "@csm/lastCourierId";
@@ -592,6 +593,13 @@ export default function AddShipment() {
   const flagShipNotes  = useFeatureFlag("form_shipment_notes");
   const flagAutoTrack  = useFeatureFlag("auto_tracking");
   const flagManualScan = useFeatureFlag("manual_tracking_scan");
+
+  // Phase-24 — Centralised Field Control System. Driven by the
+  // /api/field-configs/new_shipment endpoint, super-admin can toggle
+  // visibility/required for non-locked fields without touching code.
+  // Locked fields (customer_name, customer_phone, address, city,
+  // state, pincode, order_id, amount) are still enforced inline below.
+  const fcShipment = useFieldConfig("new_shipment");
   // Holds the courier_id from a shipment we are editing so we can resolve
   // it to the full Courier object once the couriers list finishes loading.
   // (The fetch race meant we used to drop the user's saved courier on edit.)
@@ -1033,7 +1041,7 @@ export default function AddShipment() {
         );
         return;
       }
-      if (!autoTracking && !trackingId.trim()) {
+      if (!autoTracking && !trackingId.trim() && fcShipment.isRequired("tracking_id")) {
         Alert.alert(
           "Tracking ID required",
           courierIsManual
@@ -1759,8 +1767,14 @@ export default function AddShipment() {
             )}
           </Section>
 
-          {/* Tracking */}
-          <Section title="Tracking ID *">
+          {/* Tracking — Phase-24: required asterisk reflects field-config */}
+          <Section
+            title={
+              fcShipment.isRequired("tracking_id")
+                ? "Tracking ID *"
+                : "Tracking ID (optional)"
+            }
+          >
             {/* Phase-23 — Manual-tracking couriers (India Post Speed
                 Post, Anjani physical labels) skip the Auto/Manual
                 choice entirely: a sequential AWB doesn't exist, the

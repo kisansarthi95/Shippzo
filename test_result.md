@@ -256,6 +256,128 @@ agent_communication:
 #====================================================================================================
 # Testing Data - Main Agent and testing sub agent both should log testing data below this section
 #====================================================================================================
+## Backend Test Run: Phase-24 Field-Control System (2026-05-17)
+
+backend:
+  - task: "Phase-24 Field-Control System (field_configs router + service)"
+    implemented: true
+    working: true
+    file: "/app/backend/routers/field_configs.py, /app/backend/services/field_config_service.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "testing"
+        -comment: |
+            31/31 assertions PASSED via /app/backend_test.py against
+            https://logistics-hub-740.preview.emergentagent.com/api.
+
+            SCENARIO A — read paths
+              • GET /api/field-configs/new_shipment (user2 auth) → 200.
+                Response carries locked[8] and configurable[10].
+                Locked keys = {customer_name, customer_phone, address,
+                city, state, pincode, order_id, amount} — every entry
+                has locked=True, enabled=True, required=True. PASS.
+              • Configurable keys = {tracking_id, courier_id,
+                customer_alt_phone, items, item_description, weight,
+                payment_mode, eta_days, sender_address_id, notes}. PASS.
+              • GET /api/field-configs/modules → 200 with
+                modules=['new_shipment']. PASS.
+              • GET /api/field-configs/bogus_module → 404
+                {"detail":"unknown module"}. PASS.
+
+            SCENARIO B — admin happy-path PATCH (admin auth)
+              • PATCH /api/admin/field-configs/new_shipment/tracking_id
+                {"required": true} → 200; configurable[tracking_id]
+                .required === true. PASS.
+              • PATCH same {"required": false} → 200;
+                tracking_id.required === false. PASS.
+              • PATCH .../notes {"enabled":true,"required":true} → 200;
+                notes shows enabled=True, required=True. PASS.
+              • GET as user2 immediately after → reflects both changes
+                (config is global, no per-user cache). PASS.
+
+            SCENARIO C — locked-field defence (admin auth)
+              • PATCH .../address {"required":false} → 400 with
+                detail="Field 'address' is locked and cannot be modified."
+                PASS.
+              • PATCH .../amount {"enabled":false} → 400 (locked). PASS.
+              • PATCH .../customer_name {"required":false} → 400
+                (locked). PASS.
+
+            SCENARIO D — auth/admin guard
+              • PATCH .../tracking_id as user2 → 403
+                {"detail":"Admin access required"}. PASS.
+              • GET /api/admin/field-configs/new_shipment as user2 →
+                403. PASS.
+              • GET /api/field-configs/new_shipment without Bearer →
+                401 (FastAPI HTTPBearer default). PASS.
+              • PATCH /api/admin/field-configs/foo/tracking_id (unknown
+                module) as admin → 404 {"detail":"unknown module"}.
+                PASS.
+
+            SCENARIO E — bad inputs
+              • PATCH .../tracking_id with body {} → 422
+                {"detail":"nothing_to_update"}. PASS — note this is
+                returned as 422 by the router because the service
+                returns "nothing_to_update" which is mapped to 422
+                (not 400 since it's not in {"locked_field",
+                "unknown_module"}). Matches review-request spec.
+              • PATCH .../blah (unregistered field_key) with
+                {"required":true} → 200; DB upserts the row, but the
+                GET endpoints correctly suppress unknown keys — the
+                configurable list still has exactly the 10 registered
+                keys and 'blah' appears nowhere in locked/configurable
+                arrays. The defensive `is_locked()` filter at
+                services/field_config_service.py:141 plus the
+                MODULE_REGISTRY-driven iteration at line 146 keep
+                unknown keys out of the response surface. PASS.
+
+            CLEANUP performed
+              • tracking_id reset to required=false (matches spec /
+                production default).
+              • notes reset to enabled=false, required=false (matches
+                MODULE_REGISTRY default).
+              • DB collection `field_configs` left intact (not dropped)
+                per review-request guardrail.
+
+            NO regressions observed. Sub-second latency on every call.
+            Backend logs show clean field_configs INFO lines for every
+            successful PATCH; no 5xx, no unhandled exceptions.
+
+agent_communication:
+    -agent: "testing"
+    -message: |
+        Phase-24 Field-Control System backend — VERIFIED.
+        31/31 assertions passed across all 5 scenarios (A read paths,
+        B admin PATCH happy-path, C locked-field defence, D auth/admin
+        guard, E bad-input handling).
+
+        Highlights:
+          • Locked-field set (8 entries) cannot be mutated — returns
+            HTTP 400 with explanatory detail.
+          • Configurable set (10 entries) is read by any signed-in user
+            and edited only by admin.
+          • Unknown field_keys upsert into Mongo but the read endpoints
+            correctly hide them — only registered keys + locked keys
+            surface in the response. Good defensive design.
+          • PATCH with empty body returns 422 "nothing_to_update" —
+            matches review spec.
+          • user2 sees admin's PATCH changes immediately (config is
+            global; no per-user override layer yet).
+
+        State left on the server:
+          • tracking_id.required = false (production default).
+          • notes restored to enabled=false, required=false.
+          • field_configs collection retained as audit trail.
+
+        Main agent: backend is solid. No code changes needed.
+        Please summarise and finish.
+
+---
+
+
 ## Backend Test Run: Phase-22 Resend Email Notifications on Support Center (2026-05-16)
 
 backend:
@@ -20544,3 +20666,199 @@ agent_communication:
 
       Marking Phase-23 task working=true, needs_retesting=false.
 
+
+
+# =============================================================
+# Phase-24 — Centralized Field-Control System (New Shipment)
+# =============================================================
+
+backend:
+  - task: "Phase-24: Field-config service + admin API (locked + configurable)"
+    implemented: true
+    working: true
+    file: "backend/routers/field_configs.py + backend/services/field_config_service.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+        - working: true
+          agent: "main"
+          comment: |
+            Phase-24 (2026-05-17) — Built the centralised Field
+            Control System per the New Shipment spec. Two pieces:
+
+            SERVICE (services/field_config_service.py):
+              • LOCKED_FIELDS["new_shipment"] = customer_name,
+                customer_phone, address, city, state, pincode,
+                order_id, amount.  These are hardcoded as always
+                enabled + required; the update_field() call
+                returns (False, "locked_field") if asked to touch
+                them.
+              • MODULE_REGISTRY["new_shipment"] lists configurable
+                fields with sane defaults — tracking_id (Show=ON,
+                Required=OFF by spec), courier_id, customer_alt_phone,
+                items, item_description, weight, payment_mode,
+                eta_days, sender_address_id, notes.
+              • get_module_config(db, module) materialises the
+                effective config from the `field_configs` Mongo
+                collection, falling back to registered defaults.
+
+            ROUTER (routers/field_configs.py):
+              • GET  /api/field-configs/{module}            (any user)
+              • GET  /api/field-configs/modules             (any user)
+              • GET  /api/admin/field-configs/{module}      (admin)
+              • PATCH /api/admin/field-configs/{module}/{field_key}
+                                                            (admin)
+              Late-binding `init()` pattern (same as routers/admin.py)
+              avoids the server.py circular-import issue. PATCH on a
+              locked key returns HTTP 400 with a clear message.
+
+            MANUAL CURL VERIFICATION (admin@test.com):
+              ✓ GET /api/field-configs/new_shipment → returns 8
+                locked rules + 10 configurable rules.
+              ✓ PATCH tracking_id required=false → persists, next
+                GET reflects the change.
+              ✓ PATCH address required=false → 400
+                "Field 'address' is locked and cannot be modified."
+              ✓ Unauth (no Bearer) → 401.
+
+            TESTING REQUEST FOR DEEP_TESTING_BACKEND:
+              --- Auth ---
+              Use admin@test.com / Admin@12345 for admin endpoints
+              and user2@test.com / User@12345 for the read-only path.
+
+              --- Scenario A — read paths ---
+              1. Hit GET /api/field-configs/new_shipment as user2.
+                 Expect 200, payload contains `locked` and
+                 `configurable` arrays. Locked array MUST include
+                 customer_name, customer_phone, address, city,
+                 state, pincode, order_id, amount with locked=true,
+                 enabled=true, required=true.
+              2. Hit /api/field-configs/modules. Expect 200 with
+                 modules list including "new_shipment".
+
+              --- Scenario B — admin happy-path ---
+              1. Login admin. PATCH
+                 /api/admin/field-configs/new_shipment/tracking_id
+                 with {"required": false}. Expect 200; response's
+                 configurable[tracking_id].required === false.
+              2. PATCH same key with {"required": true}. Expect 200
+                 and required === true on read-back.
+              3. PATCH /api/admin/field-configs/new_shipment/notes
+                 with {"enabled": true, "required": true}. Expect
+                 200. Repeat GET as user2 and confirm visibility of
+                 the change (cross-user consistency, since config is
+                 global).
+
+              --- Scenario C — locked-field defence ---
+              1. PATCH /api/admin/field-configs/new_shipment/address
+                 with any payload → 400, detail contains "locked".
+              2. PATCH /api/admin/field-configs/new_shipment/amount
+                 with {"enabled": false} → 400.
+
+              --- Scenario D — auth/admin guard ---
+              1. PATCH as user2 → 403 (admin required).
+              2. PATCH without Bearer → 401.
+              3. PATCH on a non-existent module → 404.
+
+              --- Scenario E — bad inputs ---
+              1. PATCH with empty body {} → expect 422
+                 "nothing_to_update" (no flags provided).
+              2. PATCH on unknown field_key (e.g. "blah") → upserts
+                 it as a new row with the requested flags. Confirm
+                 it does NOT bleed into the configurable list on
+                 read (only registered keys + locked keys appear).
+
+frontend:
+  - task: "Phase-24: useFieldConfig hook + Admin Field-Controls UI + add.tsx wiring"
+    implemented: true
+    working: "NA"
+    file: "frontend/lib/fieldConfig.ts + frontend/app/admin/field-configs/[module].tsx + frontend/app/(tabs)/add.tsx + frontend/app/(tabs)/settings.tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: |
+            Phase-24 (2026-05-17) — Frontend wiring complete:
+              • lib/fieldConfig.ts — useFieldConfig(module) hook
+                with in-memory cache, plus adminGetFieldConfig() and
+                adminPatchFieldConfig() helpers.
+              • app/admin/field-configs/[module].tsx — Admin UI
+                with two sections: 🔒 LOCKED (disabled switches +
+                LOCKED badge) and CONFIGURABLE (Show + Req'd
+                Switches that PATCH on toggle, reloading from the
+                authoritative response).
+              • app/(tabs)/settings.tsx — Added ADMIN entry
+                "Field Controls" that routes to
+                /admin/field-configs/new_shipment.
+              • app/(tabs)/add.tsx — Imported useFieldConfig. The
+                Tracking ID section title now shows "Tracking ID *"
+                vs "Tracking ID (optional)" based on
+                fcShipment.isRequired("tracking_id"). The save-time
+                validation no longer hard-blocks empty trackingId
+                when admin has set tracking_id.required = false.
+
+            User verification pending — needs to:
+              1. Settings → "Field Controls" tile (visible only for
+                 admin users).
+              2. Toggle tracking_id Required OFF in the admin UI.
+              3. Open Add Shipment → confirm "Tracking ID (optional)"
+                 label and that Save proceeds with empty tracking.
+
+  - task: "Phase-24: Settings hub — Admin → Field Controls entry"
+    implemented: true
+    working: "NA"
+    file: "frontend/app/(tabs)/settings.tsx"
+    stuck_count: 0
+    priority: "low"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: |
+            Added one TouchableOpacity row under the admin section
+            (icon: options-outline, badge: ADMIN). Routes via
+            router.push("/admin/field-configs/new_shipment").
+
+metadata:
+  phase24_added_at: "2026-05-17T12:10:00Z"
+  phase24_locked_fields:
+    new_shipment:
+      - customer_name
+      - customer_phone
+      - address
+      - city
+      - state
+      - pincode
+      - order_id
+      - amount
+
+test_plan:
+  current_focus:
+    - "Phase-24: Field-config service + admin API (locked + configurable)"
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"
+
+agent_communication:
+    -agent: "main"
+    -message: |
+      Phase-24 ready for backend testing. New endpoints:
+        - GET  /api/field-configs/{module}            (auth)
+        - GET  /api/field-configs/modules             (auth)
+        - GET  /api/admin/field-configs/{module}      (admin)
+        - PATCH /api/admin/field-configs/{module}/{field_key} (admin)
+
+      Test admin@test.com / Admin@12345 for admin paths,
+      user2@test.com / User@12345 for read-only verification.
+      Detailed scenarios A–E in the task block above.
+
+      LOCKED fields for new_shipment (must always return locked=true,
+      enabled=true, required=true; PATCH must return 400):
+        customer_name, customer_phone, address, city, state,
+        pincode, order_id, amount.
+
+      Frontend changes are wired but waiting for user verification —
+      do NOT run the expo testing agent yet.
