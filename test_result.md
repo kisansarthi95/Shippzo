@@ -20679,7 +20679,7 @@ backend:
     file: "backend/routers/field_configs.py + backend/services/field_config_service.py"
     stuck_count: 0
     priority: "high"
-    needs_retesting: true
+    needs_retesting: false
     status_history:
         - working: true
           agent: "main"
