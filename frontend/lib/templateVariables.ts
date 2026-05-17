@@ -266,7 +266,56 @@ export function fillTemplate(
 /**
  * Quick helper for the common case: shipment + settings + user.
  * Equivalent to `fillTemplate(tpl, buildTemplateVars(...))`.
+ *
+ * Phase-31 (2026-05-17) — Item-name auto-inject. The customer
+ * MUST always see what was shipped. If the user's saved template
+ * doesn't reference any item placeholder (`{item}`, `{items}`,
+ * `{order_items}`, `{item_description}`) yet the shipment HAS item
+ * data, we splice a "📦 Item: …" line into the rendered message
+ * right after the order-id line (or at the top if no order-id line
+ * was found). Likewise, when `{eta_days}` is in the template but
+ * blank, the surrounding "Expected delivery: …days" line is stripped
+ * so customers don't see ugly orphaned text.
  */
+const ITEM_PLACEHOLDER_RE = /\{(item|items|order_items|item_description)\}/;
+
+function autoInjectItemLine(rendered: string, vars: Record<string, string>): string {
+  const itemsText = (vars.items || vars.order_items || vars.item || vars.item_description || "").trim();
+  if (!itemsText) return rendered;
+  const lines = rendered.split("\n");
+  // Insert after the line that contains the order id, otherwise at the
+  // very top so the customer can't miss it.
+  const orderId = (vars.order_id || "").trim();
+  const itemLine = `📦 Item: ${itemsText}`;
+  let inserted = false;
+  for (let i = 0; i < lines.length; i++) {
+    if (orderId && lines[i].includes(orderId)) {
+      lines.splice(i + 1, 0, itemLine);
+      inserted = true;
+      break;
+    }
+  }
+  if (!inserted) lines.splice(1, 0, itemLine);
+  return lines.join("\n");
+}
+
+function stripEmptyEtaLine(rendered: string, vars: Record<string, string>): string {
+  if ((vars.eta_days || "").trim()) return rendered;
+  // Remove lines that mention "delivery" + " days" but have no number
+  // before "days" — these are orphaned templates like
+  // "Expected delivery:  days".
+  return rendered
+    .split("\n")
+    .filter((ln) => {
+      const t = ln.trim();
+      if (!t) return true;
+      // Pattern: any text + ":" + (space)* + "days" with nothing
+      // numeric in between → drop.
+      return !/:\s*(day|days)\b/i.test(t) || /\d/.test(t);
+    })
+    .join("\n");
+}
+
 export function fillFromShipment(
   template: string,
   shipment: ShipmentLike,
@@ -274,5 +323,11 @@ export function fillFromShipment(
   user: UserLike = null,
   courier: CourierLike = null,
 ): string {
-  return fillTemplate(template, buildTemplateVars(shipment, settings, user, courier));
+  const vars = buildTemplateVars(shipment, settings, user, courier);
+  let out = fillTemplate(template, vars);
+  if (!ITEM_PLACEHOLDER_RE.test(template || "")) {
+    out = autoInjectItemLine(out, vars);
+  }
+  out = stripEmptyEtaLine(out, vars);
+  return out;
 }

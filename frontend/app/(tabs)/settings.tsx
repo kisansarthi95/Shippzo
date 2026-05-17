@@ -76,8 +76,9 @@ const PRESETS = {
     "Hello {customer_name} 🙏\n" +
     "\n" +
     "Your order #{order_id} has been shipped successfully.\n" +
+    "📦 Item: {items}\n" +
     "\n" +
-    "📦 Courier: {courier}\n" +
+    "🚚 Courier: {courier}\n" +
     "🔖 Tracking ID: {tracking_id}\n" +
     "\n" +
     "🔗 Track your order:\n" +
@@ -91,8 +92,9 @@ const PRESETS = {
     "Hi {customer_name} 👋\n" +
     "\n" +
     "Your order #{order_id} has been shipped.\n" +
+    "📦 Item: {items}\n" +
     "\n" +
-    "📦 Courier: {courier}\n" +
+    "🚚 Courier: {courier}\n" +
     "🔖 Tracking ID: {tracking_id}\n" +
     "\n" +
     "🔗 Track here:\n" +
@@ -106,6 +108,7 @@ const PRESETS = {
     "Hi {customer_name},\n" +
     "\n" +
     "Your order #{order_id} has been shipped.\n" +
+    "Item: {items}\n" +
     "\n" +
     "Courier: {courier}\n" +
     "Tracking ID: {tracking_id}\n" +
