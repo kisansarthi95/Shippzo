@@ -21292,3 +21292,92 @@ agent_communication:
       Frontend changes await user manual verification — do NOT
       run the expo testing agent without explicit approval.
 
+
+# =============================================================
+# Phase-28 — Wire remaining configurable fields in add.tsx
+# =============================================================
+
+frontend:
+  - task: "Phase-28: All configurable fields honour Field Controls in Add Shipment"
+    implemented: true
+    working: "NA"
+    file: "frontend/app/(tabs)/add.tsx"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: |
+            Phase-28 (2026-05-17) — Wired the remaining
+            configurable fields (courier_id, customer_alt_phone,
+            items, item_description, weight, payment_mode,
+            eta_days, sender_address_id, notes) into the
+            centralised Field Controls system so user toggles
+            in Settings → Field Controls now take effect on the
+            Add Shipment validation + UI.
+
+            CHANGES (frontend/app/(tabs)/add.tsx):
+              1. New FC_KEY_MAP inside the save handler maps
+                 legacy form keys (e.g. "courier_name") to the
+                 field-config registry keys (e.g. "courier_id").
+              2. `isReq` now consults `fcShipment.isRequired(
+                 fcKey)` FIRST for any key in FC_KEY_MAP, with
+                 the existing fieldReqs → HARDCODED_REQS chain
+                 as the fallback for legacy keys (locked
+                 fields, custom_alt_phone before mapping, etc.).
+              3. Section title "Courier Partner *" now renders
+                 the asterisk dynamically based on
+                 fcShipment.isRequired("courier_id"). Same
+                 pattern as the earlier Tracking ID asterisk.
+              4. Added the missing required-validation entry
+                 for `customer_alt_phone` so a user who flips
+                 it Required in Field Controls is enforced.
+
+            FIELDS STILL ENFORCING LEGACY isReq:
+              customer_name, customer_phone, address_line1,
+              city, state, pincode, amount, order_id — these
+              are LOCKED in the backend service so flipping
+              them in Field Controls is rejected anyway.
+              Payment & Parcel section title left at "*"
+              because the "amount" field inside is locked-
+              required.
+
+            ETA_days & sender_address_id are registered in the
+            module registry but DO NOT currently render input
+            controls on Add Shipment — wiring those fields in
+            the UI is a separate UX task (skipped to avoid
+            scope creep). Their required flag does not block
+            save when no input exists.
+
+            USER VERIFICATION STEPS:
+              1. Login as admin@test.com → Settings → Field
+                 Controls.
+              2. Flip Required ON for `courier_id` and `notes`.
+              3. Open Add Shipment → "Courier Partner *" title
+                 visible. Type-only flow (no courier selected,
+                 notes empty) → Save → Alert listing "Courier"
+                 + "Notes" missing.
+              4. Flip Required OFF for both → save proceeds
+                 with empty values.
+              5. Sanity: locked fields (Customer Name,
+                 Address, etc.) continue to be required as
+                 always.
+
+test_plan:
+  current_focus:
+    - "Phase-28: All configurable fields honour Field Controls in Add Shipment"
+  stuck_tasks: []
+  test_all: false
+  test_priority: "low_first"
+
+agent_communication:
+    -agent: "main"
+    -message: |
+      Phase-28 frontend wiring complete. The remaining
+      configurable fields in the New Shipment module now
+      honour Settings → Field Controls toggles via the
+      shared `isReq` helper. No backend changes needed.
+      Awaiting user manual verification before continuing
+      to backlog tasks (Sheets router extraction, etc.).
+

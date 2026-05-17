@@ -992,6 +992,9 @@ export default function AddShipment() {
       // Phase-8: Dynamic per-field requirements honour Settings →
       // Field Requirements. A small "isReq" helper checks the user
       // setting first, falling back to legacy hardcoded defaults.
+      // Phase-27: New centralised Field Controls (`field_configs`)
+      // wins when the user has saved a preference there — that
+      // collection is per-tenant and plan-gated.
       const HARDCODED_REQS: Record<string, boolean> = {
         customer_name: true, customer_phone: true,
         address_line1: true, city: true, state: true,
@@ -1000,8 +1003,27 @@ export default function AddShipment() {
         courier_name: false, order_id: false, notes: false,
         token_amount: false,
       };
-      const isReq = (k: string) =>
-        k in fieldReqs ? !!fieldReqs[k] : !!HARDCODED_REQS[k];
+      // Legacy form keys → new field-config keys. Keys not in this
+      // map continue to use the legacy isReq path (so locked
+      // fields like address_line1/customer_name are unaffected).
+      const FC_KEY_MAP: Record<string, string> = {
+        courier_name: "courier_id",
+        customer_alt_phone: "customer_alt_phone",
+        items: "items",
+        item_description: "item_description",
+        weight: "weight",
+        payment_mode: "payment_mode",
+        eta_days: "eta_days",
+        notes: "notes",
+        sender_address_id: "sender_address_id",
+      };
+      const isReq = (k: string) => {
+        const fcKey = FC_KEY_MAP[k];
+        if (fcKey && fcShipment.cfg) {
+          return fcShipment.isRequired(fcKey);
+        }
+        return k in fieldReqs ? !!fieldReqs[k] : !!HARDCODED_REQS[k];
+      };
 
       const missing: string[] = [];
       if (isReq("customer_phone") && !customerPhone.trim()) missing.push("Mobile");
@@ -1020,6 +1042,10 @@ export default function AddShipment() {
       if (isReq("courier_name") && !selectedCourier) missing.push("Courier");
       if (isReq("order_id") && !orderId.trim()) missing.push("Order ID");
       if (isReq("notes") && !shipmentNotes.trim()) missing.push("Notes");
+      // Phase-27 — Additional field-config gated validations
+      if (isReq("customer_alt_phone") && !customerAltPhone.trim()) {
+        missing.push("Alt. Phone");
+      }
       // Custom Fields with required:true
       for (const ucf of userCustomFields as any[]) {
         if (ucf?.required && !String(userCustomValues[ucf.id] ?? "").trim()) {
@@ -1287,7 +1313,14 @@ export default function AddShipment() {
           </TouchableOpacity>
 
           {/* Courier */}
-          <Section title="Courier Partner *">
+          {/* Phase-27 — Courier Partner title reflects field-config */}
+          <Section
+            title={
+              fcShipment.isRequired("courier_id")
+                ? "Courier Partner *"
+                : "Courier Partner"
+            }
+          >
             {!selectedCourier && (
               <Text style={styles.requiredHint}>
                 Please pick a courier below
