@@ -1529,6 +1529,9 @@ export default function Shipments() {
                     <Text
                       style={[styles.stagePillTxt, { color: curMeta.fg }]}
                       numberOfLines={1}
+                      adjustsFontSizeToFit
+                      minimumFontScale={0.85}
+                      allowFontScaling={false}
                     >
                       {(curMeta.label || item.status || "Pending").toUpperCase()}
                     </Text>
@@ -1536,7 +1539,7 @@ export default function Shipments() {
                       name="chevron-down"
                       size={14}
                       color={curMeta.fg}
-                      style={{ marginLeft: 6 }}
+                      style={{ marginLeft: 4 }}
                     />
                   </TouchableOpacity>
                   {nextMeta ? (
@@ -1562,6 +1565,9 @@ export default function Shipments() {
                           <Text
                             style={[styles.stagePillTxt, { color: nextMeta.fg }]}
                             numberOfLines={1}
+                            adjustsFontSizeToFit
+                            minimumFontScale={0.85}
+                            allowFontScaling={false}
                           >
                             {(nextMeta.label || next).toUpperCase()}
                           </Text>
@@ -1569,7 +1575,7 @@ export default function Shipments() {
                             name="chevron-forward"
                             size={14}
                             color={nextMeta.fg}
-                            style={{ marginLeft: 6 }}
+                            style={{ marginLeft: 4 }}
                           />
                         </>
                       )}
@@ -2018,16 +2024,23 @@ const styles = StyleSheet.create({
     paddingBottom: 12,
     gap: 10,
   },
+  // Phase-22b (2026-05-17) — Responsive stage pills.
+  //   • `flex: 1` keeps both buttons equal-width regardless of
+  //     screen size (no fixed widths).
+  //   • Lower horizontal padding + slightly smaller letterSpacing
+  //     reclaims ~12 px so "READY TO SHIP" no longer truncates on
+  //     360 dp phones. Touch-target stays >= 44 dp via minHeight.
   stagePill: {
     flex: 1,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    paddingHorizontal: 14,
+    paddingHorizontal: 8,
     paddingVertical: 12,
     borderRadius: 8,
     borderWidth: 1.5,
     minHeight: 44,
+    minWidth: 0,            // lets flex:1 children shrink inside row
   },
   stagePillOutline: {
     borderWidth: 1.5,
@@ -2035,7 +2048,9 @@ const styles = StyleSheet.create({
   stagePillTxt: {
     fontSize: 13,
     fontWeight: "800",
-    letterSpacing: 0.5,
+    letterSpacing: 0.3,
+    flexShrink: 1,          // text yields before icon when tight
+    textAlign: "center",
   },
   statusSheetBackdrop: {
     flex: 1,
