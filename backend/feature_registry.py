@@ -332,7 +332,9 @@ DEFAULT_PLAN_FEATURES: Dict[str, List[str]] = {
         "scanner_manual_entry",          # NEW — manual entry is free for all
         "repeat_customer_detect",
         "pdf_download", "print_preview",
-        "whatsapp_template_editor",
+        # Phase-32: REMOVED `whatsapp_template_editor` from free_trial —
+        # free users now see Super Admin defaults in read-only mode.
+        # Custom template authoring unlocks at Silver+.
         "form_alt_phone",
         "label_barcode_sticker",         # NEW (Phase-26) — barcode on label footer
     ],

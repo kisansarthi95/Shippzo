@@ -21673,3 +21673,32 @@ agent_communication:
       all 9 GETs + 2 writes passed; openapi compiles. Awaiting
       backend testing agent confirmation.
 
+      Phase-32 shipped. WhatsApp Template Editor is now gated
+      behind the `whatsapp_template_editor` feature flag.
+
+      Backend:
+        • Removed `whatsapp_template_editor` from the
+          `free_trial` plan's DEFAULT_PLAN_FEATURES list.
+        • Migration script ran live against the prod-shape
+          plan_features doc — pruned the key from the
+          free_trial array (silver/gold/platinum still ship
+          it as before).
+
+      Frontend (settings/whatsapp-templates.tsx):
+        • New "Read-only Mode" amber banner with
+          `Upgrade to unlock` CTA appears at the top of the
+          screen for users without the flag.
+        • All TextInputs in the editor toggle `editable={false}`
+          and gain a muted background style (textareaLocked).
+        • AI Generate button, Reset button, variable chip
+          rows, and sticky Save bar are all hidden when locked.
+        • Read-only users still see the Super Admin defaults
+          via the existing placeholder fallback chain
+          (user → admin → bundled).
+
+      Live smoke-test passed: logged in as user2@test.com
+      (free_trial plan) → /settings/whatsapp-templates rendered
+      the locked banner, with the editor section reduced to a
+      read-only preview. Admin (admin@test.com) screen
+      continues to render fully editable (bypass).
+

@@ -30,6 +30,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { Stack } from "expo-router";
 import { Api } from "../../lib/api";
 import AiTemplateGenerator from "../../components/AiTemplateGenerator";
+import { useFeatureFlag } from "../../lib/feature_flags";
 
 const TYPE_META: Record<string, { label: string; sub: string; icon: any; tone: string }> = {
   shipment_sent: {
@@ -104,6 +105,14 @@ export default function WhatsAppTemplatesSettings() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [data, setData] = useState<ServerData | null>(null);
+  // Phase-32 — When the user's plan does NOT include the
+  // `whatsapp_template_editor` feature, the screen renders in
+  // READ-ONLY mode showing the Super Admin defaults (already
+  // populated for all 6 types × 3 langs) and a language picker.
+  // Editor textarea, AI generator, and Save button are all hidden.
+  // Admin always passes (same convention as every other feature
+  // flag in the app).
+  const editorEnabled = useFeatureFlag("whatsapp_template_editor");
   // The local edit buffer — keyed [type][lang]. Falls back to the
   // user's saved override at load time.
   const [edits, setEdits] = useState<Record<string, Record<string, string>>>({});
@@ -259,6 +268,42 @@ export default function WhatsAppTemplatesSettings() {
             <ActivityIndicator color="#6B5BFF" style={{ marginVertical: 36 }} />
           ) : (
             <>
+              {/* Phase-32: Locked banner — shown when the user's plan
+                  does NOT include the whatsapp_template_editor
+                  feature flag. The screen still renders in READ-ONLY
+                  mode so they can preview the Super Admin defaults
+                  but every editor input is disabled. */}
+              {!editorEnabled && (
+                <View style={styles.lockedBanner}>
+                  <View style={styles.lockedBannerHead}>
+                    <View style={styles.lockedBadge}>
+                      <PhIcon name="lock-closed-outline" size={14} color="#92400E" />
+                    </View>
+                    <Text style={styles.lockedBannerTitle}>
+                      Read-only Mode
+                    </Text>
+                  </View>
+                  <Text style={styles.lockedBannerBody}>
+                    Your current plan uses the professional Super Admin
+                    template defaults. Upgrade to a higher plan to unlock
+                    the Custom Template Editor and AI Generator — author
+                    your own message variants in Gujarati, Hindi & English.
+                  </Text>
+                  <TouchableOpacity
+                    style={styles.upgradeCta}
+                    onPress={() => {
+                      Alert.alert(
+                        "Upgrade required",
+                        "Custom WhatsApp templates are part of higher plans. Please contact your administrator to upgrade.",
+                      );
+                    }}
+                  >
+                    <PhIcon name="sparkles" size={13} color="#fff" />
+                    <Text style={styles.upgradeCtaText}>Upgrade to unlock</Text>
+                  </TouchableOpacity>
+                </View>
+              )}
+
               {/* Phase-12: Business links — referenced by the
                   {google_review_url} / {website_url} variables in the
                   Feedback Request template (and reusable in any
@@ -409,10 +454,10 @@ export default function WhatsAppTemplatesSettings() {
                       />
                       </TouchableOpacity>
                       {/* Phase-15: AI Generate button — one per template
-                          type, keeps its own DB block keyed by ttype.
-                          Modal opens with prefilled saved variants
-                          (if any) for fast re-edits without re-spending
-                          credits. */}
+                          type. Phase-32: gated by `whatsapp_template_editor`
+                          feature flag (hidden when plan doesn't include
+                          the editor — read-only Super Admin Default mode). */}
+                      {editorEnabled && (
                       <TouchableOpacity
                         style={styles.aiBtn}
                         onPress={() => {
@@ -425,6 +470,7 @@ export default function WhatsAppTemplatesSettings() {
                           AI Generate {variantCount > 0 ? "/ Edit" : ""} 9 Variants
                         </Text>
                       </TouchableOpacity>
+                      )}
                     </View>
                   );
                 })}
@@ -434,18 +480,20 @@ export default function WhatsAppTemplatesSettings() {
               <View style={styles.section}>
                 <View style={styles.editorHeader}>
                   <Text style={styles.sectionTitle}>
-                    Edit:{" "}
+                    {editorEnabled ? "Edit: " : "Preview: "}
                     <Text style={{ color: TYPE_META[activeType]?.tone || "#6B5BFF" }}>
                       {TYPE_META[activeType]?.label || activeType}
                     </Text>
                   </Text>
-                  <TouchableOpacity
-                    style={styles.resetBtn}
-                    onPress={() => handleResetType(activeType)}
-                  >
-                    <PhIcon name="refresh" size={12} color="#374151" />
-                    <Text style={styles.resetBtnText}>Reset</Text>
-                  </TouchableOpacity>
+                  {editorEnabled && (
+                    <TouchableOpacity
+                      style={styles.resetBtn}
+                      onPress={() => handleResetType(activeType)}
+                    >
+                      <PhIcon name="refresh" size={12} color="#374151" />
+                      <Text style={styles.resetBtnText}>Reset</Text>
+                    </TouchableOpacity>
+                  )}
                 </View>
 
                 {/* Language tabs */}
@@ -482,10 +530,11 @@ export default function WhatsAppTemplatesSettings() {
                   })}
                 </View>
 
-                {/* TextArea */}
+                {/* TextArea — Phase-32: readOnly when feature flag off */}
                 <TextInput
-                  style={styles.textarea}
+                  style={[styles.textarea, !editorEnabled && styles.textareaLocked]}
                   multiline
+                  editable={editorEnabled}
                   placeholder={placeholderFor(activeType, activeLang)}
                   placeholderTextColor="#9CA3AF"
                   value={currentValue(activeType, activeLang)}
@@ -509,7 +558,9 @@ export default function WhatsAppTemplatesSettings() {
                   </Text>
                 </View>
 
-                {/* Variable chips */}
+                {/* Variable chips — Phase-32: hidden in read-only mode */}
+                {editorEnabled && (
+                <>
                 <Text style={styles.varLabel}>Available variables (tap to insert):</Text>
                 <View style={styles.varChipsRow}>
                   {VARIABLE_HINTS.map((v) => (
@@ -555,12 +606,15 @@ export default function WhatsAppTemplatesSettings() {
                     </TouchableOpacity>
                   ))}
                 </View>
+                </>
+                )}
               </View>
             </>
           )}
         </ScrollView>
 
-        {/* Sticky save bar */}
+        {/* Sticky save bar — Phase-32: only shown when editor is unlocked. */}
+        {editorEnabled && (
         <View style={styles.stickyBar}>
           <Text style={styles.bottomHint}>
             Empty fields use admin / bundled defaults
@@ -576,6 +630,7 @@ export default function WhatsAppTemplatesSettings() {
             </Text>
           </TouchableOpacity>
         </View>
+        )}
       </KeyboardAvoidingView>
 
       {/* Phase-15: AI Generator modal */}
@@ -678,6 +733,61 @@ const styles = StyleSheet.create({
     borderRadius: 10, padding: 12,
     minHeight: 130, fontSize: 13,
     color: "#111827", lineHeight: 20,
+  },
+  // Phase-32: read-only style — clearly indicates the field can't be edited.
+  textareaLocked: {
+    backgroundColor: "#F3F4F6",
+    borderColor: "#D1D5DB",
+    color: "#4B5563",
+  },
+  // Phase-32: Locked / read-only banner.
+  lockedBanner: {
+    backgroundColor: "#FFFBEB",
+    borderWidth: 1,
+    borderColor: "#FCD34D",
+    borderRadius: 14,
+    padding: 14,
+    marginBottom: 12,
+  },
+  lockedBannerHead: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    marginBottom: 8,
+  },
+  lockedBadge: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: "#FEF3C7",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  lockedBannerTitle: {
+    fontSize: 14,
+    fontWeight: "800",
+    color: "#92400E",
+  },
+  lockedBannerBody: {
+    fontSize: 12,
+    color: "#78350F",
+    lineHeight: 18,
+    marginBottom: 10,
+  },
+  upgradeCta: {
+    alignSelf: "flex-start",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 14,
+    paddingVertical: 9,
+    borderRadius: 999,
+    backgroundColor: "#92400E",
+  },
+  upgradeCtaText: {
+    color: "#fff",
+    fontWeight: "800",
+    fontSize: 12,
   },
   previewLabel: {
     fontSize: 11, fontWeight: "700", color: "#6B7280",
