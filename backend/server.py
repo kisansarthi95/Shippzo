@@ -4103,7 +4103,7 @@ def _require_admin(current_user: Dict[str, Any]) -> None:
         raise HTTPException(status_code=403, detail="Admin access required")
 
 
-@api_router.get("/admin/plan-features")
+# [refactor Phase-5g] @api_router.get("/admin/plan-features")
 async def admin_get_plan_features(
     current_user: Dict[str, Any] = Depends(get_current_user)
 ):
@@ -4128,7 +4128,7 @@ class PlanFeaturesPayload(BaseModel):
     plans: Dict[str, List[str]]
 
 
-@api_router.put("/admin/plan-features")
+# [refactor Phase-5g] @api_router.put("/admin/plan-features")
 async def admin_put_plan_features(
     payload: PlanFeaturesPayload,
     current_user: Dict[str, Any] = Depends(get_current_user),
@@ -4177,7 +4177,7 @@ class PlanLimitsPayload(BaseModel):
     plans: Dict[str, PlanLimitsRow]
 
 
-@api_router.get("/admin/plan-limits")
+# [refactor Phase-5g] @api_router.get("/admin/plan-limits")
 async def admin_get_plan_limits(
     current_user: Dict[str, Any] = Depends(get_current_user),
 ):
@@ -4226,7 +4226,7 @@ async def admin_get_plan_limits(
     }
 
 
-@api_router.put("/admin/plan-limits")
+# [refactor Phase-5g] @api_router.put("/admin/plan-limits")
 async def admin_put_plan_limits(
     payload: PlanLimitsPayload,
     current_user: Dict[str, Any] = Depends(get_current_user),
@@ -4310,7 +4310,7 @@ async def admin_put_plan_limits(
     return await admin_get_plan_limits(current_user)
 
 
-@api_router.post("/admin/plan-limits/reset")
+# [refactor Phase-5g] @api_router.post("/admin/plan-limits/reset")
 async def admin_reset_plan_limits(
     current_user: Dict[str, Any] = Depends(get_current_user),
 ):
@@ -4409,7 +4409,7 @@ async def _load_whatsapp_pricing() -> Dict[str, Any]:
     }
 
 
-@api_router.get("/admin/whatsapp-pricing")
+# [refactor Phase-5g] @api_router.get("/admin/whatsapp-pricing")
 async def admin_get_whatsapp_pricing(
     current_user: Dict[str, Any] = Depends(get_current_user),
 ):
@@ -4424,7 +4424,7 @@ async def admin_get_whatsapp_pricing(
     }
 
 
-@api_router.put("/admin/whatsapp-pricing")
+# [refactor Phase-5g] @api_router.put("/admin/whatsapp-pricing")
 async def admin_put_whatsapp_pricing(
     payload: WhatsAppPricingPayload,
     current_user: Dict[str, Any] = Depends(get_current_user),
@@ -4514,7 +4514,7 @@ async def admin_put_whatsapp_pricing(
     return await admin_get_whatsapp_pricing(current_user)
 
 
-@api_router.get("/me/whatsapp-pricing")
+# [refactor Phase-5g] @api_router.get("/me/whatsapp-pricing")
 async def me_get_whatsapp_pricing(
     current_user: Dict[str, Any] = Depends(get_current_user),
 ):
@@ -4567,7 +4567,7 @@ async def _load_stage_rules() -> Dict[str, Any]:
     return _merge_stage_rules(doc.get("stage_rules") or {})
 
 
-@api_router.get("/admin/stage-rules")
+# [refactor Phase-5g] @api_router.get("/admin/stage-rules")
 async def admin_get_stage_rules(
     current_user: Dict[str, Any] = Depends(get_current_user),
 ):
@@ -4583,7 +4583,7 @@ async def admin_get_stage_rules(
     }
 
 
-@api_router.put("/admin/stage-rules")
+# [refactor Phase-5g] @api_router.put("/admin/stage-rules")
 async def admin_put_stage_rules(
     payload: StageRulesPayload,
     current_user: Dict[str, Any] = Depends(get_current_user),
@@ -4657,7 +4657,7 @@ async def admin_put_stage_rules(
     return await admin_get_stage_rules(current_user)
 
 
-@api_router.get("/me/stage-rules")
+# [refactor Phase-5g] @api_router.get("/me/stage-rules")
 async def me_get_stage_rules(
     current_user: Dict[str, Any] = Depends(get_current_user),
 ):
@@ -4751,7 +4751,7 @@ def _current_alert_phones(rules: Dict[str, Any]) -> List[str]:
     return out
 
 
-@api_router.post("/admin/sla/run-now")
+# [refactor Phase-5g] @api_router.post("/admin/sla/run-now")
 async def admin_sla_run_now(
     current_user: Dict[str, Any] = Depends(get_current_user),
 ):
@@ -4776,7 +4776,7 @@ async def admin_sla_run_now(
         _SLA_LAST_RUN["running"] = False
 
 
-@api_router.get("/admin/sla/alerts")
+# [refactor Phase-5g] @api_router.get("/admin/sla/alerts")
 async def admin_sla_alerts(
     stage: Optional[str] = None,
     dismissed: Optional[bool] = None,
@@ -4824,7 +4824,7 @@ async def admin_sla_alerts(
     }
 
 
-@api_router.post("/admin/sla/alerts/{alert_id}/dismiss")
+# [refactor Phase-5g] @api_router.post("/admin/sla/alerts/{alert_id}/dismiss")
 async def admin_sla_dismiss(
     alert_id: str,
     current_user: Dict[str, Any] = Depends(get_current_user),
@@ -4842,7 +4842,7 @@ async def admin_sla_dismiss(
     return {"ok": True, "matched": res.matched_count, "modified": res.modified_count}
 
 
-@api_router.post("/admin/sla/alerts/dismiss-bulk")
+# [refactor Phase-5g] @api_router.post("/admin/sla/alerts/dismiss-bulk")
 async def admin_sla_dismiss_bulk(
     payload: Dict[str, Any] = Body(...),
     current_user: Dict[str, Any] = Depends(get_current_user),
@@ -4869,7 +4869,7 @@ async def admin_sla_dismiss_bulk(
     return {"ok": True, "modified": res.modified_count}
 
 
-@api_router.get("/me/sla/alerts")
+# [refactor Phase-5g] @api_router.get("/me/sla/alerts")
 async def me_sla_alerts(
     stage: Optional[str] = None,
     dismissed: Optional[bool] = False,
@@ -4908,7 +4908,7 @@ async def me_sla_alerts(
     }
 
 
-@api_router.get("/admin/sla/summary")
+# [refactor Phase-5g] @api_router.get("/admin/sla/summary")
 async def admin_sla_summary(
     current_user: Dict[str, Any] = Depends(get_current_user),
 ):
@@ -5152,7 +5152,7 @@ class GlobalConfigPayload(BaseModel):
     master_sheet_tab:   Optional[str]                 = None
 
 
-@api_router.put("/admin/global-config")
+# [refactor Phase-5g] @api_router.put("/admin/global-config")
 async def admin_put_global_config(
     payload: GlobalConfigPayload,
     current_user: Dict[str, Any] = Depends(get_current_user),
@@ -5365,6 +5365,19 @@ try:
     app.include_router(_sheets_router)
 except Exception as _sh_exc:
     logging.getLogger(__name__).exception(f"Failed to mount sheets router: {_sh_exc}")
+
+# Phase-5g modular: Admin/Rules domain (18 endpoints) re-bound onto a
+# dedicated router. Handler bodies stay in server.py (rebinding pattern)
+# so this is a pure interface re-org with zero business-logic change.
+try:
+    from routers.admin_rules import (
+        admin_rules_router as _admin_rules_router,
+        init as _init_admin_rules_router,
+    )
+    _init_admin_rules_router()
+    app.include_router(_admin_rules_router)
+except Exception as _ar_exc:
+    logging.getLogger(__name__).exception(f"Failed to mount admin_rules router: {_ar_exc}")
 
 # Phase-3 modular: couriers + variants + categories.
 try:

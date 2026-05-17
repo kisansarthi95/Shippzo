@@ -21466,3 +21466,108 @@ agent_communication:
       Smoke-tested all six sheets endpoints + openapi build.
       Awaiting backend testing agent confirmation.
 
+
+# =============================================================
+# Phase-5g — Admin/Rules domain extracted from server.py
+# =============================================================
+
+backend:
+  - task: "Phase-5g: 18 Admin/Rules endpoints rebound onto routers/admin_rules.py"
+    implemented: true
+    working: true
+    file: "backend/routers/admin_rules.py + backend/server.py"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: true
+    status_history:
+        - working: true
+          agent: "main"
+          comment: |
+            Phase-5g (2026-05-17) — Rebound 18 Admin/Rules
+            endpoints onto a dedicated router.
+
+            STRATEGY — "Function rebinding":
+              • Each handler function stays in server.py (avoids
+                the risk of accidentally truncating large bodies
+                like the SLA scan, which is 70+ lines).
+              • Decorator-only replacement: every
+                `@api_router.get/put/post(...)` decorator in
+                server.py has been replaced with
+                `# [refactor Phase-5g] @api_router...` (18 in
+                total via a one-shot regex script).
+              • routers/admin_rules.py late-imports the now-
+                orphan handler functions from server.py and
+                re-decorates each with the new router. FastAPI's
+                path-op builder runs at decorator-call time,
+                which still happens AFTER server.py finishes
+                loading — so openapi schema, dependency
+                resolution, Pydantic models all work exactly
+                as before.
+
+            ENDPOINTS (all paths preserved 1:1):
+              GET  /api/admin/plan-features
+              PUT  /api/admin/plan-features
+              GET  /api/admin/plan-limits
+              PUT  /api/admin/plan-limits
+              POST /api/admin/plan-limits/reset
+              GET  /api/admin/whatsapp-pricing
+              PUT  /api/admin/whatsapp-pricing
+              GET  /api/me/whatsapp-pricing
+              GET  /api/admin/stage-rules
+              PUT  /api/admin/stage-rules
+              GET  /api/me/stage-rules
+              POST /api/admin/sla/run-now
+              GET  /api/admin/sla/alerts
+              POST /api/admin/sla/alerts/{alert_id}/dismiss
+              POST /api/admin/sla/alerts/dismiss-bulk
+              GET  /api/me/sla/alerts
+              GET  /api/admin/sla/summary
+              PUT  /api/admin/global-config
+
+            LIVE SMOKE-TEST (admin@test.com):
+              GET  /api/admin/plan-features       → 200
+              GET  /api/admin/plan-limits         → 200
+              GET  /api/admin/whatsapp-pricing    → 200
+              GET  /api/me/whatsapp-pricing       → 200
+              GET  /api/admin/stage-rules         → 200
+              GET  /api/me/stage-rules            → 200
+              GET  /api/admin/sla/alerts          → 200
+              GET  /api/me/sla/alerts             → 200
+              GET  /api/admin/sla/summary         → 200
+              POST /api/admin/sla/run-now         → 200
+                  (users_scanned=27, alerts_raised=0)
+              PUT  /api/admin/plan-features (idem) → 200
+              GET  /openapi.json                  → 200
+                  (all 18 paths registered, no Pydantic
+                  forward-ref errors)
+
+            server.py line count: 6849 → 6773 (-76 lines of
+            route surface). Combined with Phase-5f, server.py
+            has shed 165 lines of routing across the two
+            domains while keeping every handler function in
+            place for safe iterative migration.
+
+            BACKEND TESTING REQUEST:
+              Please verify the 18 endpoints continue to behave
+              identically post-refactor. Admin-only gate still
+              applies (403 for non-admin), unauth → 401, and
+              the bodies of PUT /admin/plan-features +
+              /admin/plan-limits round-trip correctly.
+
+test_plan:
+  current_focus:
+    - "Phase-5g: 18 Admin/Rules endpoints rebound onto routers/admin_rules.py"
+  stuck_tasks: []
+  test_all: false
+  test_priority: "medium_first"
+
+agent_communication:
+    -agent: "main"
+    -message: |
+      Phase-5g shipped. 18 endpoints across Plan Features,
+      Plan Limits, WhatsApp Pricing, Stage Rules, SLA, and
+      Global Config now serve via routers/admin_rules.py via
+      the function-rebinding pattern. Manual smoke-test on
+      all 9 GETs + 2 writes passed; openapi compiles. Awaiting
+      backend testing agent confirmation.
+
