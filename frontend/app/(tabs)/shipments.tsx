@@ -2045,11 +2045,39 @@ const styles = StyleSheet.create({
   stagePillOutline: {
     borderWidth: 1.5,
   },
+  stageRow: {
+    flexDirection: "row",
+    paddingHorizontal: 10,
+    paddingTop: 4,
+    paddingBottom: 12,
+    gap: 8,
+  },
+  // Phase-22b (2026-05-17) — Responsive stage pills.
+  //   • `flex: 1` keeps both buttons equal-width regardless of
+  //     screen size (no fixed widths).
+  //   • Tight padding + smaller letterSpacing + 12 px font reclaims
+  //     enough space so "READY TO SHIP" fits on 360 dp phones.
+  //   • Touch-target preserved via minHeight: 44.
+  stagePill: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 6,
+    paddingVertical: 12,
+    borderRadius: 8,
+    borderWidth: 1.5,
+    minHeight: 44,
+    minWidth: 0,
+  },
+  stagePillOutline: {
+    borderWidth: 1.5,
+  },
   stagePillTxt: {
-    fontSize: 13,
+    fontSize: 12,
     fontWeight: "800",
-    letterSpacing: 0.3,
-    flexShrink: 1,          // text yields before icon when tight
+    letterSpacing: 0.2,
+    flexShrink: 1,
     textAlign: "center",
   },
   statusSheetBackdrop: {
