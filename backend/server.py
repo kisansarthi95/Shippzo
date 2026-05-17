@@ -1682,107 +1682,8 @@ class SheetPreviewRequest(BaseModel):
     url: str
 
 
-@api_router.get("/sheets/service-account")
-async def get_sheets_service_account_email(
-    current_user: Dict[str, Any] = Depends(get_current_user),
-):
-    """Return the Service Account email so the user can share their Sheet
-    with it (Editor role). This keeps the user's Sheet PRIVATE — only the
-    SA is granted access — instead of forcing them to set "Anyone with
-    the link → Viewer" (the older public-CSV path).
-    """
-    email = sheet_get_sa_email() if sheet_get_sa_email else ""
-    return {
-        "email": email,
-        "instructions": (
-            "Open your Google Sheet → Share → paste this email → choose "
-            "'Editor' → Send. Then come back here and connect."
-        ),
-    }
-
-
-@api_router.post("/sheets/preview")
-async def sheets_preview(payload: SheetPreviewRequest):
-    parsed = parse_sheet_url(payload.url)
-
-    # Phase-5: Service-Account-first read. Only fall back to the legacy
-    # public-CSV path if the SA can't access the sheet AND the user has
-    # made it public anyway.
-    if sheet_read_user_sheet is not None:
-        sa_resp = sheet_read_user_sheet(parsed["sheet_id"], parsed["gid"] or "0")
-        if sa_resp.get("ok"):
-            headers = sa_resp.get("headers", [])
-            rows = sa_resp.get("rows", [])
-            guess = auto_guess_mapping(headers)
-            return {
-                "sheet_id": parsed["sheet_id"],
-                "gid": parsed["gid"],
-                "headers": headers,
-                "sample_rows": rows[:5],
-                "total_rows": len(rows),
-                "auto_mapping": guess,
-                "access_method": "service_account",
-            }
-        err = (sa_resp.get("error") or "").strip()
-        # On "not shared" / "not found" we still try the legacy CSV path
-        # so users who have public sheets keep working with no migration.
-        if err in ("SHEET_NOT_SHARED", "SHEET_NOT_FOUND"):
-            try:
-                csv_text = await fetch_sheet_csv(parsed["sheet_id"], parsed["gid"])
-                data = parse_csv_rows(csv_text)
-                guess = auto_guess_mapping(data["headers"])
-                return {
-                    "sheet_id": parsed["sheet_id"],
-                    "gid": parsed["gid"],
-                    "headers": data["headers"],
-                    "sample_rows": data["rows"][:5],
-                    "total_rows": len(data["rows"]),
-                    "auto_mapping": guess,
-                    "access_method": "public_csv",
-                }
-            except HTTPException:
-                # Neither SA nor public works — surface the SA-share guide.
-                sa_email = sheet_get_sa_email() if sheet_get_sa_email else ""
-                raise HTTPException(
-                    status_code=403,
-                    detail=(
-                        "We can't open that sheet. Either:\n"
-                        f"  1. Share it with {sa_email or '<our service account>'} "
-                        "(Editor) — recommended; keeps it private, OR\n"
-                        "  2. Open Share → 'Anyone with the link → Viewer'.\n"
-                        "Then try again."
-                    ),
-                )
-        # Some other unexpected SA error → bubble through CSV path.
-        try:
-            csv_text = await fetch_sheet_csv(parsed["sheet_id"], parsed["gid"])
-            data = parse_csv_rows(csv_text)
-            guess = auto_guess_mapping(data["headers"])
-            return {
-                "sheet_id": parsed["sheet_id"],
-                "gid": parsed["gid"],
-                "headers": data["headers"],
-                "sample_rows": data["rows"][:5],
-                "total_rows": len(data["rows"]),
-                "auto_mapping": guess,
-                "access_method": "public_csv",
-            }
-        except HTTPException:
-            raise HTTPException(status_code=400, detail=f"Sheet read failed: {err or 'unknown error'}")
-
-    # Hard fallback (sheet_writer module unavailable) — legacy CSV path only.
-    csv_text = await fetch_sheet_csv(parsed["sheet_id"], parsed["gid"])
-    data = parse_csv_rows(csv_text)
-    guess = auto_guess_mapping(data["headers"])
-    return {
-        "sheet_id": parsed["sheet_id"],
-        "gid": parsed["gid"],
-        "headers": data["headers"],
-        "sample_rows": data["rows"][:5],
-        "total_rows": len(data["rows"]),
-        "auto_mapping": guess,
-        "access_method": "public_csv",
-    }
+# [refactor Phase-5f] @api_router.get("/sheets/service-account") → routers/sheets.py
+# [refactor Phase-5f] @api_router.post("/sheets/preview")         → routers/sheets.py
 
 
 def auto_guess_mapping(headers: List[str]) -> Dict[str, str]:
@@ -1822,7 +1723,7 @@ def auto_guess_mapping(headers: List[str]) -> Dict[str, str]:
     return mapping
 
 
-@api_router.get("/sheets/orders")
+# [refactor Phase-5f] @api_router.get("/sheets/orders") → routers/sheets.py
 async def sheets_orders(
     background_tasks: BackgroundTasks,
     current_user: Dict[str, Any] = Depends(get_current_user),
@@ -2346,7 +2247,7 @@ DELIVERY_CONF_MIN_DAYS = 5   # default threshold — overridable per user
 # [refactor Phase-5a] @api_router.post("/shipments/delivery-confirmation/mark-delivered") → routers/shipment_ops.py
 
 
-@api_router.get("/sheets/sample-template", response_class=PlainTextResponse)
+# [refactor Phase-5f] @api_router.get("/sheets/sample-template", response_class=PlainTextResponse) → routers/sheets.py
 async def sheets_sample_template():
     """Return a CSV with ideal column layout + example rows for users to import into Google Sheets."""
     buf = io.StringIO()
@@ -3666,7 +3567,7 @@ async def smart_paste_create(
     return po
 
 
-@api_router.get("/sheets/probe")
+# [refactor Phase-5f] @api_router.get("/sheets/probe") → routers/sheets.py
 async def sheets_probe():
     """Quick debug endpoint — verifies Service Account can read the Master Sheet."""
     if sheet_probe_connection is None:
@@ -3714,7 +3615,7 @@ _MAPPED_FIELD_HEADERS: Dict[str, str] = {
 }
 
 
-@api_router.post("/sheets/sync-headers")
+# [refactor Phase-5f] @api_router.post("/sheets/sync-headers") → routers/sheets.py
 async def sync_sheet_headers(
     payload: SyncHeadersPayload,
     current_user: Dict[str, Any] = Depends(get_current_user),
@@ -5453,6 +5354,17 @@ try:
     app.include_router(_me_field_configs_router)
 except Exception as _fc_exc:
     logging.getLogger(__name__).exception(f"Failed to mount field_configs router: {_fc_exc}")
+
+# Phase-5f modular: Google Sheets domain (6 endpoints) extracted out of server.py.
+try:
+    from routers.sheets import (
+        sheets_router as _sheets_router,
+        init as _init_sheets_router,
+    )
+    _init_sheets_router()
+    app.include_router(_sheets_router)
+except Exception as _sh_exc:
+    logging.getLogger(__name__).exception(f"Failed to mount sheets router: {_sh_exc}")
 
 # Phase-3 modular: couriers + variants + categories.
 try:

@@ -21381,3 +21381,88 @@ agent_communication:
       Awaiting user manual verification before continuing
       to backlog tasks (Sheets router extraction, etc.).
 
+
+# =============================================================
+# Phase-5f — Sheets domain extracted from server.py
+# =============================================================
+
+backend:
+  - task: "Phase-5f: Google Sheets routes moved to routers/sheets.py"
+    implemented: true
+    working: true
+    file: "backend/routers/sheets.py + backend/server.py"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: true
+    status_history:
+        - working: true
+          agent: "main"
+          comment: |
+            Phase-5f (2026-05-17) — Moved 6 Google Sheets
+            endpoints out of server.py into routers/sheets.py.
+            server.py is now 6760 lines (down from 6849 → -89
+            lines of route surface; the helper functions stay
+            in server.py because they're shared with other
+            routers via the same late-import pattern used by
+            routers/admin.py and routers/field_configs.py).
+
+            EXTRACTED ENDPOINTS (all paths preserved 1:1):
+              GET  /api/sheets/service-account
+              POST /api/sheets/preview
+              GET  /api/sheets/orders
+              GET  /api/sheets/sample-template
+              GET  /api/sheets/probe
+              POST /api/sheets/sync-headers
+
+            DESIGN:
+              • Late-binding init() pulls db,
+                get_current_user, the Settings model, and the
+                gspread/CSV helpers from server.py.
+              • SheetPreviewRequest is mirrored locally as
+                SheetPreviewRequestLocal to avoid Pydantic
+                forward-ref breakage during the openapi build
+                (server.py model can't be referenced before
+                FastAPI inspects the route).
+              • Each legacy @api_router.* decorator in
+                server.py was replaced with a
+                "# [refactor Phase-5f] @api_router.* →
+                routers/sheets.py" comment line so git-blame
+                stays useful. The function bodies were either
+                deleted (preview / service-account) or simply
+                left intact without their decorator (orders /
+                sample-template / probe / sync-headers) —
+                dead code, but safer than risking accidental
+                deletion of a 250-line handler.
+
+            LIVE SMOKE-TEST (all admin@test.com):
+              GET  /api/sheets/service-account → 200
+              POST /api/sheets/preview          → 400 (invalid sheet — expected)
+              GET  /api/sheets/orders           → 200
+              GET  /api/sheets/sample-template  → 200
+              GET  /api/sheets/probe            → 200 {ok:true,
+                  tab:'All Master Data', row_count:1000}
+              POST /api/sheets/sync-headers (dry_run) → 200
+              GET  /openapi.json → 200 (no Pydantic
+                  forward-ref errors)
+
+            BACKEND TESTING REQUEST:
+              Please verify the six endpoints above continue
+              to behave identically post-refactor. Auth gate
+              still applies (401 without Bearer), admin@test.
+              com retains access. No new business logic — pure
+              interface re-org.
+
+test_plan:
+  current_focus:
+    - "Phase-5f: Google Sheets routes moved to routers/sheets.py"
+  stuck_tasks: []
+  test_all: false
+  test_priority: "medium_first"
+
+agent_communication:
+    -agent: "main"
+    -message: |
+      Phase-5f shipped. server.py is now 6760 lines (-89).
+      Smoke-tested all six sheets endpoints + openapi build.
+      Awaiting backend testing agent confirmation.
+
