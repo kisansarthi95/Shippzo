@@ -23,6 +23,8 @@ function isNetworkErrish(err: any): boolean {
   return /network|timeout|abort|err_network/i.test(String(err?.message || ""));
 }
 import { buildCopyText, buildWhatsAppText, cleanPhone } from "../../lib/format";
+import { fillFromShipment } from "../../lib/templateVariables";
+import { useAuth } from "../../lib/auth";
 import { buildLabelHtml, pageDimensionsFor } from "../../lib/label";
 import { colors } from "../../lib/theme";
 import { useFeatureFlag } from "../../lib/feature_flags";
@@ -158,6 +160,7 @@ function formatTimestamp(iso: string | undefined | null): string {
 
 export default function Shipments() {
   const router = useRouter();
+  const { user } = useAuth();
   const params = useLocalSearchParams<{ status?: string; select?: string }>();
   // Per-row action visibility — feature flags wired from the admin panel.
   // Admin users see everything; other plans render only what's enabled.
@@ -595,7 +598,23 @@ export default function Shipments() {
       Alert.alert("No phone", "Customer phone not set.");
       return;
     }
-    const msg = buildWhatsAppText(s, settings, findCourier(s));
+    // Phase-23 (2026-05-17) — WhatsApp template binding fix.
+    // The older `buildWhatsAppText()` helper only knew about 6
+    // variables, so customer-saved templates that used keys like
+    // `{order_items}`, `{tracking_link}`, `{estimated_delivery}` got
+    // sent as raw text. We now route through the canonical resolver
+    // (`fillFromShipment`) so EVERY registered placeholder — and
+    // every alias (`order_items` ↔ `items`, `courier_name` ↔ `courier`,
+    // `tracking_link` ↔ `tracking_url`) — is replaced from this exact
+    // shipment row. Unknown placeholders fall back to empty strings
+    // courtesy of the underlying `fillTemplate()` (it strips any
+    // `{xyz}` token whose key wasn't resolved). If the user hasn't
+    // saved a personal template we fall back to the legacy
+    // `buildWhatsAppText()` output so the message is still useful.
+    const tpl = String((settings as any)?.whatsapp_template || "").trim();
+    const msg = tpl
+      ? fillFromShipment(tpl, s, settings, user, findCourier(s))
+      : buildWhatsAppText(s, settings, findCourier(s));
     // Phase-15 D: route through the daily-limit guard so the user gets
     // soft-warn / confirm / hard-block per admin policy, and the
     // server-side counter stays in sync across devices.

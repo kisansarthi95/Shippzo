@@ -19,12 +19,17 @@ export type TemplateVarKey =
   | "alt_phone"
   | "item"
   | "items"
+  | "order_items"        // alias of `items` for legacy templates
   | "item_description"
   | "quantity"
   | "order_id"
   | "tracking_id"
+  | "tracking_url"
+  | "tracking_link"      // alias of `tracking_url`
   | "courier"
+  | "courier_name"       // alias of `courier`
   | "eta_days"
+  | "estimated_delivery" // human-readable "X days" / explicit date
   | "address"
   | "address_line1"
   | "address_line2"
@@ -69,14 +74,26 @@ export const TEMPLATE_VARIABLES: TemplateVarMeta[] = [
   { key: "items",            label: "All Items",     emoji: "📦", group: "order",
     example: "Haldar 500g, Jeera 250g",
     description: "Comma-joined list of every item in the parcel" },
+  // alias retained for legacy templates that wrote `{order_items}`
+  { key: "order_items",      label: "Order Items",   emoji: "📦", group: "order",
+    example: "Haldar 500g, Jeera 250g",
+    description: "Alias of {items} — same comma-joined list" },
   { key: "item_description", label: "Item Notes",    emoji: "📝", group: "order",
     example: "Mixed spices",       description: "Free-text item description" },
   { key: "quantity",         label: "Qty",           emoji: "🔢", group: "order",
     example: "2",                  description: "Total item count" },
   { key: "courier",          label: "Courier",       emoji: "🚚", group: "order",
     example: "DTDC",               description: "Courier service name" },
+  { key: "courier_name",     label: "Courier Name",  emoji: "🚚", group: "order",
+    example: "DTDC",               description: "Alias of {courier}" },
   { key: "eta_days",         label: "ETA",           emoji: "⏱️", group: "order",
     example: "3",                  description: "Expected delivery in days" },
+  { key: "estimated_delivery", label: "Est. Delivery", emoji: "📅", group: "order",
+    example: "3 days",             description: "Human-readable ETA (e.g. \"3 days\")" },
+  { key: "tracking_url",     label: "Tracking URL",  emoji: "🔗", group: "order",
+    example: "https://...",        description: "Full tracking page link" },
+  { key: "tracking_link",    label: "Tracking Link", emoji: "🔗", group: "order",
+    example: "https://...",        description: "Alias of {tracking_url}" },
   { key: "amount",           label: "Amount",        emoji: "💰", group: "order",
     example: "499",                description: "Order amount (₹)" },
   { key: "weight",           label: "Weight",        emoji: "⚖️", group: "order",
@@ -173,6 +190,18 @@ export function buildTemplateVars(
       (s as any).eta_days ??
       "",
   );
+  // Phase-22 (2026-05-17) — Resolve the full tracking URL from the
+  // courier's template. Aliases `{tracking_link}` + `{tracking_url}`
+  // share this value so legacy templates keep working. Falls back
+  // to an empty string when either piece is missing (so the message
+  // never sends literal `{tracking_link}` text to customers).
+  const tplUrl = String((courier as any)?.tracking_url_template || "").trim();
+  const trackingUrl = trackingId && tplUrl
+    ? tplUrl.replace(/\{tracking_id\}/g, encodeURIComponent(trackingId))
+    : "";
+  const etaHuman = etaDays
+    ? `${etaDays} day${Number(etaDays) === 1 ? "" : "s"}`
+    : "";
 
   return {
     customer_name:    String(s.customer_name || "").trim(),
@@ -183,11 +212,17 @@ export function buildTemplateVars(
     tracking_id:      trackingId,
     item:             firstItem,
     items:            itemsAll,
+    order_items:      itemsAll,           // alias of {items}
     item_description: itemDesc,
     quantity:         String(items.length || s.quantity || ""),
 
     courier:          courierName,
+    courier_name:     courierName,         // alias of {courier}
     eta_days:         etaDays,
+    estimated_delivery: etaHuman,          // "3 days" / "" fallback
+
+    tracking_url:     trackingUrl,
+    tracking_link:    trackingUrl,         // alias of {tracking_url}
 
     address:          fullAddress,
     address_line1:    String(s.address_line1 || "").trim(),

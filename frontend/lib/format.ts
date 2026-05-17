@@ -1,4 +1,5 @@
-import type { Shipment, SenderAddress, Courier } from "./api";
+import type { Shipment, Settings, SenderAddress, Courier } from "./api";
+import { fillFromShipment } from "./templateVariables";
 
 export function trackingUrlFor(shipment: Shipment, courier?: Courier | null): string {
   const tpl = courier?.tracking_url_template?.trim();
@@ -6,41 +7,45 @@ export function trackingUrlFor(shipment: Shipment, courier?: Courier | null): st
   return tpl.replace(/\{tracking_id\}/g, encodeURIComponent(shipment.tracking_id));
 }
 
+/**
+ * Build a plain-text message ready to be copied to clipboard.
+ *
+ * Phase-23 (2026-05-17) — The old hand-rolled regex chain only knew
+ * about 5–6 variables, so any customer-saved template that used
+ * `{order_items}`, `{tracking_link}`, `{estimated_delivery}`,
+ * `{address}`, etc. leaked literal placeholders into the message.
+ * We now delegate to the canonical resolver so EVERY registered
+ * placeholder (plus aliases like `order_items` ↔ `items`) is mapped
+ * from the exact shipment row, and unknown tokens fall back to
+ * empty strings instead of being sent as-is.
+ */
 export function buildCopyText(
   shipment: Shipment,
   settings: Settings | null,
-  courier?: Courier | null
+  courier?: Courier | null,
 ): string {
   const tpl =
-    settings?.copy_template ||
+    (settings as any)?.copy_template ||
     "Hi {customer_name}, your order #{order_id} has been shipped via {courier}. " +
       "Tracking ID: {tracking_id}. Track here: {tracking_url}";
-  const url = trackingUrlFor(shipment, courier);
-  return tpl
-    .replace(/\{customer_name\}/g, shipment.customer_name || "")
-    .replace(/\{order_id\}/g, shipment.order_id || "-")
-    .replace(/\{courier\}/g, shipment.courier_name || "")
-    .replace(/\{tracking_id\}/g, shipment.tracking_id || "")
-    .replace(/\{tracking_url\}/g, url || "(link not set)")
-    .replace(/\{amount\}/g, String(shipment.amount || 0));
+  return fillFromShipment(tpl, shipment, settings, null, courier);
 }
 
+/**
+ * Build a WhatsApp-ready message. Same Phase-23 treatment as
+ * `buildCopyText` — all variables (including aliases) bind from
+ * the supplied shipment / settings / courier, missing values become
+ * empty strings rather than literal `{xyz}` placeholders.
+ */
 export function buildWhatsAppText(
   shipment: Shipment,
   settings: Settings | null,
-  courier?: Courier | null
+  courier?: Courier | null,
 ): string {
   const tpl =
-    settings?.whatsapp_template ||
+    (settings as any)?.whatsapp_template ||
     "Hi {customer_name}, your parcel via {courier}. Tracking: {tracking_id}. ETA {eta_days} days.";
-  const url = trackingUrlFor(shipment, courier);
-  return tpl
-    .replace(/\{customer_name\}/g, shipment.customer_name || "")
-    .replace(/\{order_id\}/g, shipment.order_id || "-")
-    .replace(/\{courier\}/g, shipment.courier_name || "")
-    .replace(/\{tracking_id\}/g, shipment.tracking_id || "")
-    .replace(/\{tracking_url\}/g, url || "")
-    .replace(/\{eta_days\}/g, String(settings?.default_eta_days ?? 7));
+  return fillFromShipment(tpl, shipment, settings, null, courier);
 }
 
 export function cleanPhone(raw: string): string {
