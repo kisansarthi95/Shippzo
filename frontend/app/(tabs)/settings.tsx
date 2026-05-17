@@ -1486,102 +1486,33 @@ export default function SettingsScreen() {
             <PhIcon name="chevron-forward" size={22} color="#94A3B8" />
           </TouchableOpacity>
 
-          {/* AI Processing Charges — admin-only. Regular users don't need
-              to see (or edit) the rate-card; their charges are dictated by
-              the admin via /admin/global-config. */}
+          {/* Phase-29 — AI Processing Charges editor moved to a
+              dedicated Super-Admin screen (/admin/ai-rates). The Plan
+              & Billing tab now stays clean for everyone; admins click
+              the tile below to open the editor. */}
           {(user as any)?.is_admin ? (
-          <Section title="AI Processing Charges" icon="pricetags-outline">
-            <Text style={styles.spaiHint}>
-              Set the credits to deduct per shipment for AI address checks. Max cap is 2.0 credits/order (spec).
-            </Text>
-            <View style={styles.rateGrid}>
-              <View style={[styles.rateCell, { borderColor: "#04785755" }]}>
-                <View style={styles.rateCellHead}>
-                  <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: "#047857" }} />
-                  <Text style={[styles.rateCellLabel, { color: "#047857" }]}>Simple</Text>
-                </View>
-                <Text style={styles.rateCellHint}>short & clean</Text>
-                <View style={styles.rateCellInputRow}>
-                  <TextInput
-                    testID="rate-simple"
-                    style={styles.rateCellInput}
-                    value={aiCostSimple}
-                    onChangeText={(t) => setAiCostSimple(t.replace(/[^\d.]/g, ""))}
-                    keyboardType="decimal-pad"
-                    placeholder="0.5"
-                    maxLength={4}
-                  />
-                  <Text style={styles.rateCellUnit}>cr</Text>
-                </View>
+            <TouchableOpacity
+              testID="open-admin-ai-rates"
+              onPress={() => router.push("/admin/ai-rates" as any)}
+              style={styles.adminAiRatesTile}
+              activeOpacity={0.85}
+            >
+              <View style={styles.adminAiRatesIcon}>
+                <PhIcon name="pricetags-outline" size={22} color="#EA580C" />
               </View>
-              <View style={[styles.rateCell, { borderColor: "#B4530955" }]}>
-                <View style={styles.rateCellHead}>
-                  <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: "#B45309" }} />
-                  <Text style={[styles.rateCellLabel, { color: "#B45309" }]}>Medium</Text>
+              <View style={{ flex: 1 }}>
+                <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+                  <Text style={styles.adminAiRatesTitle}>AI Processing Rates</Text>
+                  <View style={styles.adminAiRatesBadge}>
+                    <Text style={styles.adminAiRatesBadgeTxt}>ADMIN</Text>
+                  </View>
                 </View>
-                <Text style={styles.rateCellHint}>some extra text</Text>
-                <View style={styles.rateCellInputRow}>
-                  <TextInput
-                    testID="rate-medium"
-                    style={styles.rateCellInput}
-                    value={aiCostMedium}
-                    onChangeText={(t) => setAiCostMedium(t.replace(/[^\d.]/g, ""))}
-                    keyboardType="decimal-pad"
-                    placeholder="1.0"
-                    maxLength={4}
-                  />
-                  <Text style={styles.rateCellUnit}>cr</Text>
-                </View>
+                <Text style={styles.adminAiRatesSub}>
+                  Set global Simple / Medium / Complex credit cost per order
+                </Text>
               </View>
-              <View style={[styles.rateCell, { borderColor: "#B91C1C55" }]}>
-                <View style={styles.rateCellHead}>
-                  <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: "#B91C1C" }} />
-                  <Text style={[styles.rateCellLabel, { color: "#B91C1C" }]}>Complex</Text>
-                </View>
-                <Text style={styles.rateCellHint}>long, messy</Text>
-                <View style={styles.rateCellInputRow}>
-                  <TextInput
-                    testID="rate-complex"
-                    style={styles.rateCellInput}
-                    value={aiCostComplex}
-                    onChangeText={(t) => setAiCostComplex(t.replace(/[^\d.]/g, ""))}
-                    keyboardType="decimal-pad"
-                    placeholder="2.0"
-                    maxLength={4}
-                  />
-                  <Text style={styles.rateCellUnit}>cr</Text>
-                </View>
-              </View>
-            </View>
-            <Text style={styles.rateNote}>
-              ⚠️ Max per-order cap 2.0 — values above 2.0 are clamped server-side.
-            </Text>
-            <View style={styles.spaiActions}>
-              <TouchableOpacity
-                testID="rate-save-btn"
-                disabled={rateCardSaving}
-                onPress={saveRateCard}
-                style={[styles.primaryBtn, rateCardSaving && { opacity: 0.6 }]}
-              >
-                {rateCardSaving ? (
-                  <ActivityIndicator color="#fff" />
-                ) : (
-                  <>
-                    <PhIcon name="checkmark-circle" size={16} color="#fff" />
-                    <Text style={styles.primaryBtnTxt}>Save rates</Text>
-                  </>
-                )}
-              </TouchableOpacity>
-              <TouchableOpacity
-                testID="rate-reset-btn"
-                style={styles.secondaryBtn}
-                onPress={resetRateCard}
-              >
-                <PhIcon name="refresh" size={16} color={colors.primary} />
-                <Text style={styles.secondaryBtnTxt}>Defaults</Text>
-              </TouchableOpacity>
-            </View>
-          </Section>
+              <PhIcon name="chevron-forward" size={22} color="#9CA3AF" />
+            </TouchableOpacity>
           ) : null}
           </>)}
 
@@ -3628,6 +3559,49 @@ const styles = StyleSheet.create({
     backgroundColor: colors.primary, borderRadius: 10, paddingVertical: 11,
   },
   primaryBtnTxt: { color: "#fff", fontWeight: "800", fontSize: 14 },
+
+  // Phase-29 — Admin-only AI Processing Rates navigation tile
+  adminAiRatesTile: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    padding: 14,
+    marginTop: 12,
+    backgroundColor: "#FFF7ED",
+    borderWidth: 1,
+    borderColor: "#FED7AA",
+    borderRadius: 12,
+  },
+  adminAiRatesIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 10,
+    backgroundColor: "#FFEDD5",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  adminAiRatesTitle: {
+    fontSize: 15,
+    fontWeight: "800",
+    color: "#9A3412",
+  },
+  adminAiRatesSub: {
+    fontSize: 11,
+    color: "#9A3412",
+    marginTop: 2,
+  },
+  adminAiRatesBadge: {
+    backgroundColor: "#111827",
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+  },
+  adminAiRatesBadgeTxt: {
+    color: "#fff",
+    fontSize: 9,
+    fontWeight: "800",
+    letterSpacing: 0.5,
+  },
   spaiDefaultToggle: {
     flexDirection: "row", alignItems: "center", gap: 4,
     marginTop: 14, alignSelf: "flex-start",
