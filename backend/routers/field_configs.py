@@ -1,9 +1,19 @@
 """
 Phase-24 (2026-05-17) — Field-config admin API.
+Phase-27 (2026-05-17) — Migrated from a global super-admin API to
+                        per-user (per-tenant) endpoints. Each shop
+                        owner manages THEIR OWN field config; access
+                        to the editing path is gated by the
+                        `field_controls` feature flag (decided by
+                        plan, set by the super admin from the Plan
+                        Features admin panel).
 
-Two routers (mounted under /api by ingress):
-  * /api/field-configs/{module}            (any auth user; read-only)
-  * /api/admin/field-configs/{module}      (admin: list + patch)
+Endpoints (mounted under /api by ingress):
+  • GET   /api/field-configs/modules                (auth)
+  • GET   /api/field-configs/{module}               (auth, reads MY config)
+  • GET   /api/me/field-configs/{module}            (alias for the above)
+  • PATCH /api/me/field-configs/{module}/{field_key}
+                                                    (auth + feature flag)
 
 Follows the late-binding `init()` pattern used by routers/admin.py so
 the module can be imported before server.py finishes wiring up `db`
@@ -36,8 +46,8 @@ log = logging.getLogger(__name__)
 field_configs_router = APIRouter(
     prefix="/api/field-configs", tags=["field-configs"]
 )
-admin_field_configs_router = APIRouter(
-    prefix="/api/admin/field-configs", tags=["field-configs"]
+me_field_configs_router = APIRouter(
+    prefix="/api/me/field-configs", tags=["field-configs"]
 )
 
 
@@ -52,10 +62,30 @@ def init() -> None:
     from server import (  # noqa: WPS433 — intentional late import
         db,
         get_current_user as _get_current_user,
-        _require_admin as _require_admin_helper,
     )
+    # Feature-flag helper lives in server.py — see _user_has_feature
+    # below; we resolve it lazily so this module stays import-safe.
 
-    # ── Public-ish: any signed-in user can read the config ─────
+    async def _require_feature(current_user: Dict[str, Any], key: str) -> None:
+        """Block the request unless the user's plan grants `key`. Admin
+        always passes — same convention as the frontend useFeatureFlag."""
+        if current_user.get("is_admin"):
+            return
+        try:
+            from server import user_has_feature  # noqa: WPS433
+            ok = await user_has_feature(current_user, key)
+        except Exception:
+            ok = False
+        if not ok:
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    f"Your plan does not include '{key}'. "
+                    "Ask your admin to upgrade, or enable the feature on your plan."
+                ),
+            )
+
+    # ── Read paths (no feature-flag gate — every shop sees their config) ─
     @field_configs_router.get("/modules")
     async def list_modules(
         current_user: Dict[str, Any] = Depends(_get_current_user),
@@ -69,29 +99,28 @@ def init() -> None:
     ):
         if module not in MODULE_REGISTRY:
             raise HTTPException(status_code=404, detail="unknown module")
-        return await get_module_config(db, module)
+        return await get_module_config(db, module, current_user.get("id", ""))
 
-    # ── Admin-only: list locked + edit configurable ────────────
-    @admin_field_configs_router.get("/{module}")
-    async def admin_get_module(
+    @me_field_configs_router.get("/{module}")
+    async def get_me_module_config(
         module: str,
         current_user: Dict[str, Any] = Depends(_get_current_user),
     ):
-        _require_admin_helper(current_user)
         if module not in MODULE_REGISTRY:
             raise HTTPException(status_code=404, detail="unknown module")
-        cfg = await get_module_config(db, module)
+        cfg = await get_module_config(db, module, current_user.get("id", ""))
         cfg["locked_keys"] = sorted(LOCKED_FIELDS.get(module, set()))
         return cfg
 
-    @admin_field_configs_router.patch("/{module}/{field_key}")
-    async def admin_patch_field(
+    # ── Write path (feature-flag gated) ────────────────────────
+    @me_field_configs_router.patch("/{module}/{field_key}")
+    async def patch_my_field(
         module: str,
         field_key: str,
         payload: UpdateFieldIn,
         current_user: Dict[str, Any] = Depends(_get_current_user),
     ):
-        _require_admin_helper(current_user)
+        await _require_feature(current_user, "field_controls")
         if module not in MODULE_REGISTRY:
             raise HTTPException(status_code=404, detail="unknown module")
         if is_locked(module, field_key):
@@ -105,13 +134,15 @@ def init() -> None:
             field_key,
             enabled=payload.enabled,
             required=payload.required,
-            actor_id=current_user.get("id", "?"),
+            user_id=current_user.get("id", ""),
         )
         if not ok:
             raise HTTPException(
                 status_code=400 if msg in {"locked_field", "unknown_module"} else 422,
                 detail=msg,
             )
-        return await get_module_config(db, module)
+        cfg = await get_module_config(db, module, current_user.get("id", ""))
+        cfg["locked_keys"] = sorted(LOCKED_FIELDS.get(module, set()))
+        return cfg
 
-    log.info("[field_configs] router endpoints registered")
+    log.info("[field_configs] router endpoints registered (per-user)")

@@ -232,6 +232,11 @@ FEATURE_REGISTRY: Dict[str, Dict[str, str]] = {
     "form_shipment_notes":       {"label": "Special instructions field",   "category": "Form Fields"},
     # NEW (2026-04-30 PM3) — Plan-gated per-user custom fields (Gold=3, Platinum=5)
     "custom_fields":             {"label": "Custom fields (per-user defined columns)", "category": "Form Fields"},
+    # NEW (2026-05-17 — Phase-27) — Centralised Field Controls: each
+    # user can toggle their own per-field enabled/required for the
+    # New Shipment form (locked fields stay locked). Off by default
+    # for the basic tiers so this stays a power-user feature.
+    "field_controls":            {"label": "Field Controls (toggle optional fields)", "category": "Form Fields"},
 
     # ── Packing Variants (NEW category, 2026-05-04) ─────────────
     # Per-courier packing variants (e.g. "ODC 320gm" → weight + dims +
@@ -449,6 +454,7 @@ DEFAULT_PLAN_FEATURES: Dict[str, List[str]] = {
         "form_alt_phone", "form_box_dimensions", "form_token_amount", "form_shipment_notes",
         "custom_fields",                 # NEW (2026-04-30 PM3) — Gold+ (up to 3 fields)
         "label_barcode_sticker",         # NEW (Phase-26)
+        "field_controls",                # NEW (Phase-27) — power feature, Gold+
     ],
     # Platinum gets EVERYTHING — also captures new features auto-added later
     # by referencing ALL_KEYS at runtime in the seeder.

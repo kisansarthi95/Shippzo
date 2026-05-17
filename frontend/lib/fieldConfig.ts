@@ -144,9 +144,13 @@ export function useFieldConfig(module: string) {
   return { cfg, loading, error, rule, isEnabled, isRequired, reload };
 }
 
-// ── Admin endpoints (only the field-configs admin screen uses these) ─
+// ── Self endpoints (any user with `field_controls` feature flag) ────
+//
+// Phase-27 — Migrated from /api/admin/field-configs to
+// /api/me/field-configs because the feature is now per-tenant and
+// gated by the plan-level feature flag `field_controls`.
 export async function adminGetFieldConfig(module: string): Promise<ModuleConfig> {
-  const r = await api.get<ModuleConfig>(`/admin/field-configs/${module}`);
+  const r = await api.get<ModuleConfig>(`/me/field-configs/${module}`);
   return r.data;
 }
 
@@ -156,7 +160,7 @@ export async function adminPatchFieldConfig(
   patch: { enabled?: boolean; required?: boolean }
 ): Promise<ModuleConfig> {
   const r = await api.patch<ModuleConfig>(
-    `/admin/field-configs/${module}/${field_key}`,
+    `/me/field-configs/${module}/${field_key}`,
     patch
   );
   // Bust the cache so consuming screens see the latest immediately.

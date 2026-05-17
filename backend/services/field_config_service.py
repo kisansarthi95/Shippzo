@@ -1,21 +1,29 @@
 """
 Phase-24 (2026-05-17) — Centralized field-configuration service.
+Phase-27 (2026-05-17) — Refactored from a single global doc to
+                        per-user (per-tenant) configs. Each user's
+                        plan decides whether they're allowed to
+                        edit the configs (via the `field_controls`
+                        feature flag), but everyone has their own
+                        effective config that's used at runtime.
 
-Lets a super-admin toggle the visibility (enabled/disabled) and the
-requirement (mandatory/optional) of every NON-locked field across a
-module — without per-screen hardcoding.
+Lets every shop owner toggle the visibility (enabled/disabled) and
+the requirement (mandatory/optional) of every NON-locked field across
+a module — without per-screen hardcoding.
 
 Design contract:
   • LOCKED fields are baked into source code and can NEVER be turned
-    off or made optional. Their entries are rejected by the admin
+    off or made optional. Their entries are rejected by the user
     API and ignored if they show up in the database.
   • Every configurable field has a sensible DEFAULT (enabled=True,
     required=False unless explicitly marked otherwise). Defaults are
     materialised the first time the module is read so older shops
     upgrade seamlessly.
-  • Storage is GLOBAL (one config per module — managed by the super
-    admin). Per-user override can be layered on top later without
-    schema changes.
+  • Storage is PER-USER: documents in `field_configs` are keyed by
+    `(user_id, module, field_key)`. Rows lacking `user_id` (legacy
+    Phase-24 global rows) are migrated lazily by being ignored at
+    read time and re-upserted into the user's namespace on next
+    edit.
 
 Adding a new module = append to MODULE_REGISTRY below; nothing else.
 """
@@ -113,15 +121,17 @@ def _utcnow_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-async def get_module_config(db, module: str) -> Dict[str, Any]:
+async def get_module_config(db, module: str, user_id: str) -> Dict[str, Any]:
     """
-    Build the effective config for `module`:
+    Build the effective config for `module` for the given user:
       • locked fields are emitted FIRST, marked locked=True
-      • configurable fields use stored values if present, else
-        their registered defaults
+      • configurable fields use the user's stored values if present,
+        else their registered defaults
     """
     if module not in MODULE_REGISTRY:
         raise ValueError(f"unknown module {module!r}")
+    if not user_id:
+        raise ValueError("user_id is required")
 
     locked = [
         {
@@ -136,7 +146,9 @@ async def get_module_config(db, module: str) -> Dict[str, Any]:
     ]
 
     stored: Dict[str, Dict[str, Any]] = {}
-    async for row in db.field_configs.find({"module": module}, {"_id": 0}):
+    async for row in db.field_configs.find(
+        {"module": module, "user_id": user_id}, {"_id": 0}
+    ):
         # Defensive: ignore any rows that accidentally store locked keys.
         if is_locked(module, row.get("field_key", "")):
             continue
@@ -170,10 +182,10 @@ async def update_field(
     *,
     enabled: Optional[bool],
     required: Optional[bool],
-    actor_id: str,
+    user_id: str,
 ) -> Tuple[bool, str]:
     """
-    Upsert a single field's config. Returns (ok, message).
+    Upsert a single field's config for `user_id`. Returns (ok, message).
     Refuses to mutate locked fields with a 'locked' error string so
     the router can map it to HTTP 400.
     """
@@ -181,10 +193,12 @@ async def update_field(
         return False, "unknown_module"
     if is_locked(module, field_key):
         return False, "locked_field"
+    if not user_id:
+        return False, "user_id_required"
 
     set_doc: Dict[str, Any] = {
         "updated_at": _utcnow_iso(),
-        "updated_by": actor_id,
+        "updated_by": user_id,
     }
     if enabled is not None:
         set_doc["enabled"] = bool(enabled)
@@ -194,15 +208,17 @@ async def update_field(
         return False, "nothing_to_update"
 
     await db.field_configs.update_one(
-        {"module": module, "field_key": field_key},
+        {"user_id": user_id, "module": module, "field_key": field_key},
         {
             "$set":         set_doc,
-            "$setOnInsert": {"module": module, "field_key": field_key},
+            "$setOnInsert": {
+                "user_id": user_id, "module": module, "field_key": field_key,
+            },
         },
         upsert=True,
     )
     log.info(
-        "[field_configs] updated module=%s key=%s enabled=%s required=%s actor=%s",
-        module, field_key, set_doc.get("enabled"), set_doc.get("required"), actor_id,
+        "[field_configs] updated user=%s module=%s key=%s enabled=%s required=%s",
+        user_id, module, field_key, set_doc.get("enabled"), set_doc.get("required"),
     )
     return True, "ok"

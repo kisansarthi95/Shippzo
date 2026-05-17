@@ -5445,14 +5445,14 @@ except Exception as _adm_exc:
 try:
     from routers.field_configs import (
         field_configs_router as _field_configs_router,
-        admin_field_configs_router as _admin_field_configs_router,
+        me_field_configs_router as _me_field_configs_router,
         init as _init_field_configs_router,
     )
     _init_field_configs_router()
     app.include_router(_field_configs_router)
-    app.include_router(_admin_field_configs_router)
+    app.include_router(_me_field_configs_router)
 except Exception as _fc_exc:
-    logger.exception(f"Failed to mount field_configs router: {_fc_exc}")
+    logging.getLogger(__name__).exception(f"Failed to mount field_configs router: {_fc_exc}")
 
 # Phase-3 modular: couriers + variants + categories.
 try:

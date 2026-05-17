@@ -21087,3 +21087,208 @@ agent_communication:
       verification before P2 (Field-Controls plan-gating
       + per-tenant refactor).
 
+
+# =============================================================
+# Phase-27 — Field Controls: Super-Admin → Per-Tenant + Plan-Gate
+# =============================================================
+
+backend:
+  - task: "Phase-27: Per-tenant field-config + feature-flag gated PATCH"
+    implemented: true
+    working: true
+    file: "backend/services/field_config_service.py + backend/routers/field_configs.py + backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: true
+          agent: "main"
+          comment: |
+            Phase-27 (2026-05-17) — Refactored the Phase-24
+            global Field Controls into a per-tenant feature
+            gated by the new `field_controls` plan-feature flag.
+
+            SERVICE (services/field_config_service.py):
+              • `field_configs` collection rows now carry `user_id`.
+              • get_module_config(db, module, user_id) reads ONLY
+                that user's rows; falls back to MODULE_REGISTRY
+                defaults for missing keys.
+              • update_field(db, module, key, *, enabled, required,
+                user_id) upserts into (user_id, module, key).
+              • LOCKED_FIELDS for new_shipment unchanged — locked
+                fields stay locked, PATCH on them is still 400.
+
+            ROUTER (routers/field_configs.py):
+              • New endpoint pair:
+                  GET   /api/me/field-configs/{module}            (auth)
+                  PATCH /api/me/field-configs/{module}/{field_key}
+                                              (auth + field_controls)
+              • Existing GET /api/field-configs/{module} kept as
+                alias of /me/{module} (no breaking change for the
+                Add Shipment screen that already consumes it).
+              • Removed admin write endpoints — every user now
+                manages their OWN config.
+              • PATCH gated via server.user_has_feature(user,
+                "field_controls"); admin bypasses (same convention
+                as the frontend useFeatureFlag hook). 403 on plan
+                miss includes the feature key in the detail string.
+
+            FEATURE REGISTRY (feature_registry.py):
+              • Added `field_controls` ("Field Controls (toggle
+                optional fields)") under Form Fields category.
+              • Plan defaults: Gold + Platinum. Free / Silver
+                are intentionally OFF (power-user feature).
+              • Migration-A auto-injected field_controls into the
+                stored plan-features doc for Platinum; Gold was
+                back-filled via a one-shot admin PUT after the
+                registry edit (Migration-A skipped because
+                `known_keys` tracked the key the moment FEATURE_
+                REGISTRY landed — before DEFAULT_PLAN_FEATURES
+                received the gold entry). Current live state:
+                  free_trial: field_controls=False
+                  silver:     field_controls=False
+                  gold:       field_controls=True
+                  platinum:   field_controls=True
+
+            VERIFICATION — 47/47 assertions PASSED via
+            /app/backend/tests/test_phase27_field_controls.py:
+
+              Scenario A — Read paths (admin + user2):
+                ✓ GET /field-configs/new_shipment → 200, 8 locked
+                  + 10 configurable; locked entries have locked=
+                  true, enabled=true, required=true; locked_keys
+                  array exactly matches the registry.
+                ✓ GET /me/field-configs/new_shipment → 200 with
+                  same shape + locked_keys array.
+                ✓ GET /field-configs/modules → 200 with modules.
+                ✓ GET /field-configs/bogus_module → 404.
+
+              Scenario B — PATCH gated by feature flag:
+                ✓ user2 (free_trial) PATCH tracking_id → 403,
+                  detail contains "field_controls".
+                ✓ admin PATCH same → 200 (admin bypass).
+                ✓ Read-back confirms admin's saved value.
+
+              Scenario C — Per-user isolation:
+                ✓ Admin PATCH notes {enabled,required: true}.
+                ✓ user2's GET still shows notes default (False).
+                ✓ Admin's GET shows their saved (True/True).
+
+              Scenario D — Locked-field defence:
+                ✓ PATCH address → 400 "locked".
+                ✓ PATCH amount → 400 "locked".
+
+              Scenario E — Auth/401:
+                ✓ Unauth GET → 401.
+                ✓ Unauth PATCH → 401.
+
+              Scenario F — Legacy admin endpoints removed:
+                ✓ /api/admin/field-configs/new_shipment → 404.
+                ✓ /api/admin/field-configs/new_shipment/x → 404.
+
+              Scenario G — Bad inputs:
+                ✓ PATCH with empty body → 422.
+                ✓ PATCH on unknown field_key → 200 upsert.
+                ✓ Subsequent GET does NOT surface the unknown
+                  key (only registered + locked keys appear).
+
+              Cleanup left admin's notes back at default.
+
+frontend:
+  - task: "Phase-27: User-level Field Controls UI + Settings tab gate"
+    implemented: true
+    working: "NA"
+    file: "frontend/lib/fieldConfig.ts + frontend/app/settings/field-controls/[module].tsx + frontend/app/(tabs)/settings.tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: |
+            Phase-27 (2026-05-17) — Migrated Field Controls from
+            the Super-Admin section to a regular user feature.
+
+            CHANGES:
+              1. lib/fieldConfig.ts — `adminGetFieldConfig` and
+                 `adminPatchFieldConfig` helpers now call
+                 /me/field-configs/* (instead of /admin/field-
+                 configs/*). Function names retained for back-
+                 compat with the Field Controls screen.
+              2. app/admin/field-configs/[module].tsx moved to
+                 app/settings/field-controls/[module].tsx (same
+                 file, same imports — depth unchanged so no
+                 import path edits required).
+              3. app/(tabs)/settings.tsx —
+                 • Removed the Super-Admin "Field Controls" tile
+                   that used to live next to Master Sheet.
+                 • Added a NEW Section under the user-facing
+                   settings stack (right above Team Members) —
+                   gated by `useFeatureFlag("field_controls")`.
+                   No ADMIN badge; behaves like every other
+                   plan-gated section (Gold+ shows it, Silver/
+                   Free hides it cleanly).
+                 • Indigo Open button → /settings/field-controls/
+                   new_shipment.
+
+            USER VERIFICATION STEPS:
+              1. Login as admin@test.com / Admin@12345 (admin
+                 bypass — sees the section regardless of plan).
+              2. Open Settings tab → scroll → "Field Controls"
+                 section appears with description + indigo
+                 "Open Field Controls" button. Tap → opens the
+                 same screen as before with 8 LOCKED + 10
+                 configurable rows.
+              3. Toggle e.g. notes Required ON → PATCH fires
+                 against /api/me/field-configs/new_shipment/
+                 notes → row updates.
+              4. Open Add Shipment → no behaviour regression
+                 (the public read endpoint still works).
+              5. Sanity: as a free_trial user the Section is
+                 hidden in Settings, and any direct attempt to
+                 hit /api/me/field-configs/new_shipment/notes
+                 PATCH returns 403.
+
+  - task: "Phase-27: Old Super-Admin Field Configs tile removed"
+    implemented: true
+    working: "NA"
+    file: "frontend/app/(tabs)/settings.tsx + frontend/app/admin/field-configs/ (deleted)"
+    stuck_count: 0
+    priority: "low"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: |
+            The previous "Field Controls (ADMIN)" tile under
+            Settings → Admin Hub is gone. The route folder
+            /app/admin/field-configs has been deleted. Any
+            stale deep-links pointing at /admin/field-configs/
+            new_shipment will simply 404 from expo-router (no
+            redirect added — Phase-27 is a clean cut).
+
+test_plan:
+  current_focus:
+    - "Phase-27: Per-tenant field-config + feature-flag gated PATCH"
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"
+
+agent_communication:
+    -agent: "main"
+    -message: |
+      Phase-27 (P2) shipped. Field Controls is now per-tenant
+      and plan-gated via `field_controls` (defaults: Gold+
+      Platinum). All four scenarios verified by
+      /app/backend/tests/test_phase27_field_controls.py —
+      47/47 assertions PASSED including:
+        • per-user isolation (admin's changes don't bleed to
+          user2)
+        • free_trial PATCH → 403 with field_controls in detail
+        • admin bypass → 200
+        • locked fields still 400
+        • legacy /admin/field-configs/* routes → 404 (cleanly
+          removed).
+      Frontend changes await user manual verification — do NOT
+      run the expo testing agent without explicit approval.
+

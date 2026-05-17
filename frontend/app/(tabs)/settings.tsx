@@ -182,6 +182,8 @@ export default function SettingsScreen() {
   const flagOrderIdAutofillNew     = useFeatureFlag("master_order_id_autofill_new");
   const flagOfflineSyncQueueView   = useFeatureFlag("offline_sync_queue_view");
   const flagLabelContentBudget     = useFeatureFlag("label_content_budget");
+  // Phase-27 — Field Controls (per-tenant) feature flag
+  const flagFieldControls          = useFeatureFlag("field_controls");
   const params = useLocalSearchParams<{ section?: string }>();
   // Section routing: empty = Hub view, otherwise show only the matching
   // group of cards. Keeps the screen short, focused, and click-driven.
@@ -965,21 +967,6 @@ export default function SettingsScreen() {
                         <PhIcon name="chatbubble-ellipses-outline" size={22} color="#16A34A" />
                       </View>
                       <Text style={styles.hubTitle}>WhatsApp Templates</Text>
-                      <View style={styles.adminPill}>
-                        <Text style={styles.adminPillTxt}>ADMIN</Text>
-                      </View>
-                      <PhIcon name="chevron-forward" size={22} color="#9CA3AF" />
-                    </TouchableOpacity>
-                    <TouchableOpacity
-                      testID="settings-hub-admin-field-configs"
-                      style={styles.hubRow}
-                      onPress={() => router.push("/admin/field-configs/new_shipment" as any)}
-                      activeOpacity={0.6}
-                    >
-                      <View style={[styles.hubIconWrap, { backgroundColor: "#E0E7FF" }]}>
-                        <PhIcon name="options-outline" size={22} color="#4338CA" />
-                      </View>
-                      <Text style={styles.hubTitle}>Field Controls</Text>
                       <View style={styles.adminPill}>
                         <Text style={styles.adminPillTxt}>ADMIN</Text>
                       </View>
@@ -2080,6 +2067,34 @@ export default function SettingsScreen() {
               <Text style={styles.saveBtnText}>Open WhatsApp Templates</Text>
             </TouchableOpacity>
           </Section>
+
+          {/* Phase-27 — Field Controls (per-tenant) — gated by
+              the `field_controls` feature flag. When the user's plan
+              doesn't include the flag, the section is hidden so the
+              feature feels like a clean plan upgrade. */}
+          {flagFieldControls && (
+          <Section title="Field Controls" icon="options-outline">
+            <Text style={styles.toggleSub}>
+              Toggle which fields appear on the New Shipment form and
+              which are required. Locked fields (Customer Name, Phone,
+              Address, City, State, Pincode, Order ID, Amount) stay
+              mandatory for every shipment.
+            </Text>
+            <TouchableOpacity
+              testID="settings-hub-field-controls"
+              onPress={() =>
+                router.push("/settings/field-controls/new_shipment" as any)
+              }
+              style={[
+                styles.saveBtn,
+                { marginTop: 12, backgroundColor: "#4338CA" },
+              ]}
+            >
+              <PhIcon name="options-outline" size={18} color="#fff" />
+              <Text style={styles.saveBtnText}>Open Field Controls</Text>
+            </TouchableOpacity>
+          </Section>
+          )}
 
           {/* Phase A — Team Members & Permissions
               Lets the shop-owner add staff who'll receive SLA alert
