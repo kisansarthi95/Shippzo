@@ -237,6 +237,22 @@ const ICON_MAP: Record<string, React.ComponentType<any>> = {
   plus:                    Ph.Plus,                // requested — alias of "add"
   tag:                     Ph.Tag,                 // requested — alias of "pricetag"
   x:                       Ph.X,                   // requested — alias of "close"
+
+  // Phase-30b (2026-05-17) — Second sweep. The first audit only
+  // caught static `name="..."` props; this batch covers icons whose
+  // names appear inside ternary expressions (Plan tiles, radios,
+  // password toggles, etc.) and were also rendering as Ph.Question.
+  ribbon:                  Ph.Medal,               // Silver plan tile + Current Plan badge
+  trophy:                  Ph.Trophy,              // Gold plan tile
+  rose:                    Ph.Flower,              // Free Trial tile (Rose not in Phosphor; Flower is closest)
+  "radio-button-on":       Ph.RadioButton,         // Add Shipment courier basis (selected)
+  "radio-button-off":      Ph.Circle,              // Add Shipment courier basis (unselected)
+  "eye-off":               Ph.EyeSlash,            // Password hide toggle
+  filter:                  Ph.Funnel,              // Filter buttons
+  infinite:                Ph.Infinity,            // Unlimited plan-limit indicator
+  pause:                   Ph.Pause,               // Pause action
+  "chatbubble-outline":    Ph.ChatCircle,          // Chat / message bubble (also matched by base "chatbubble")
+  chatbubble:              Ph.ChatCircle,          // base — wrapper strips "-outline"
 };
 
 // Aliases for less obvious mappings — the kebab-case key is the
