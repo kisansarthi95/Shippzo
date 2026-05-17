@@ -216,6 +216,27 @@ const ICON_MAP: Record<string, React.ComponentType<any>> = {
   "wallet-outline":        Ph.Wallet,              // Plan & Wallet category
   "cloud-upload-outline":  Ph.UploadSimple,        // upload screenshot tile
   checkmark:               Ph.Check,               // success screen
+
+  // Phase-30 (2026-05-17) — Replace fallback "?" icons across the
+  // app. These names were discovered by scanning every `name="…"`
+  // usage in /app and /components and diff'ing against the existing
+  // ICON_MAP. Each entry below was previously rendering as
+  // Ph.Question — including the Plan-picker tiles the user
+  // reported. Professional Phosphor SVGs picked per closest
+  // semantic match.
+  "volume-high":           Ph.SpeakerHigh,         // requested
+  "volume-mute":           Ph.SpeakerSlash,        // requested
+  shield:                  Ph.Shield,              // requested
+  delete:                  Ph.Trash,               // requested — alias of "trash"
+  edit:                    Ph.PencilSimple,        // requested — alias of "create"
+  "check-circle":          Ph.CheckCircle,         // requested — alias of "checkmark-circle"
+  "chevron-right":         Ph.CaretRight,          // requested — alias of "chevron-forward"
+  "clipboard-text":        Ph.ClipboardText,       // requested — plan details / notes
+  "arrow-clockwise":       Ph.ArrowClockwise,      // requested — alias of "refresh-circle"
+  lightning:               Ph.Lightning,           // requested — alias of "flash"
+  plus:                    Ph.Plus,                // requested — alias of "add"
+  tag:                     Ph.Tag,                 // requested — alias of "pricetag"
+  x:                       Ph.X,                   // requested — alias of "close"
 };
 
 // Aliases for less obvious mappings — the kebab-case key is the
