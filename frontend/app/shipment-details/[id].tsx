@@ -12,15 +12,16 @@
  * (`/label/[id]`) so operators can hop straight from "review" to
  * "print" without losing context.
  */
-import React, { useEffect, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import {
   View, Text, ScrollView, StyleSheet, TouchableOpacity,
   ActivityIndicator, Alert, Linking,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { useLocalSearchParams, useRouter } from "expo-router";
+import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 import PhIcon from "../../components/PhIcon";
 import { Api, type Shipment } from "../../lib/api";
+import { scannerBridge } from "../../lib/scannerBridge";
 import { colors } from "../../lib/theme";
 
 const fmtDate = (iso?: string | null) => {
@@ -65,21 +66,64 @@ export default function ShipmentDetailsScreen() {
   const router  = useRouter();
   const [ship, setShip] = useState<Shipment | null>(null);
   const [loading, setLoading] = useState(true);
+  const [savingTracking, setSavingTracking] = useState(false);
+
+  const loadShipment = useCallback(async () => {
+    try {
+      const s = await Api.getShipment(String(id));
+      setShip(s);
+    } catch (e: any) {
+      Alert.alert("Couldn't load shipment", e?.message || "Try again.");
+    } finally {
+      setLoading(false);
+    }
+  }, [id]);
 
   useEffect(() => {
-    let alive = true;
-    (async () => {
-      try {
-        const s = await Api.getShipment(String(id));
-        if (alive) setShip(s);
-      } catch (e: any) {
-        Alert.alert("Couldn't load shipment", e?.message || "Try again.");
-      } finally {
-        if (alive) setLoading(false);
-      }
-    })();
-    return () => { alive = false; };
-  }, [id]);
+    loadShipment();
+  }, [loadShipment]);
+
+  // Phase-25 — Tracking-ID Gate. When the user scans a tracking ID
+  // from this screen (via "Add Tracking ID first" CTA → /scanner),
+  // the scanner pushes the value through scannerBridge. On focus
+  // return, we consume it, PATCH the shipment, and refresh.
+  useFocusEffect(
+    useCallback(() => {
+      const v = scannerBridge.consume();
+      if (!v?.value || !ship || ship.tracking_id) return;
+      (async () => {
+        setSavingTracking(true);
+        try {
+          await Api.updateShipment(ship.id, { tracking_id: v.value });
+          await loadShipment();
+        } catch (e: any) {
+          Alert.alert(
+            "Couldn't save tracking",
+            e?.response?.data?.detail || e?.message || "Try again."
+          );
+        } finally {
+          setSavingTracking(false);
+        }
+      })();
+    }, [ship, loadShipment])
+  );
+
+  const openScanner = useCallback(() => {
+    router.push(
+      `/scanner?returnTo=shipment-details&id=${encodeURIComponent(String(id))}` as any
+    );
+  }, [router, id]);
+
+  const promptManualTracking = useCallback(() => {
+    if (!ship) return;
+    // Prompt-style native picker is not available cross-platform —
+    // navigate to the existing edit screen for the typed-flow. The
+    // tracking ID input there is wired to PUT /api/shipments/{id}.
+    router.push({
+      pathname: "/(tabs)/add",
+      params: { edit_id: ship.id },
+    } as any);
+  }, [router, ship]);
 
   if (loading) {
     return (
@@ -107,6 +151,12 @@ export default function ShipmentDetailsScreen() {
   const itemsTxt = (ship.items || []).join(", ")
     || (ship as any).item_description || "—";
 
+  // Phase-25 — Tracking gate. When the shipment has no tracking_id
+  // we hide the Print Preview link entirely and surface a prominent
+  // "Add Tracking ID first" CTA in its place, so the operator can
+  // either scan or type without leaving the screen.
+  const hasTracking = !!(ship.tracking_id || "").trim();
+
   return (
     <SafeAreaView style={styles.safe} edges={["top"]}>
       {/* Header bar */}
@@ -118,20 +168,85 @@ export default function ShipmentDetailsScreen() {
           <Text style={styles.headerTitle} numberOfLines={1}>
             Shipment Details
           </Text>
-          <Text style={styles.headerSub} numberOfLines={1}>
-            {ship.tracking_id}
-          </Text>
+          {hasTracking ? (
+            <Text style={styles.headerSub} numberOfLines={1}>
+              {ship.tracking_id}
+            </Text>
+          ) : (
+            <Text style={[styles.headerSub, styles.headerSubMissing]} numberOfLines={1}>
+              Tracking ID missing
+            </Text>
+          )}
         </View>
-        <TouchableOpacity
-          testID="print-preview-btn"
-          style={styles.printBtn}
-          onPress={() => router.push(`/label/${ship.id}` as any)}
-          activeOpacity={0.85}
-        >
-          <PhIcon name="print-outline" size={16} color="#fff" />
-          <Text style={styles.printBtnTxt}>Print Preview</Text>
-        </TouchableOpacity>
+        {hasTracking ? (
+          <TouchableOpacity
+            testID="print-preview-btn"
+            style={styles.printBtn}
+            onPress={() => router.push(`/label/${ship.id}` as any)}
+            activeOpacity={0.85}
+          >
+            <PhIcon name="print-outline" size={16} color="#fff" />
+            <Text style={styles.printBtnTxt}>Print Preview</Text>
+          </TouchableOpacity>
+        ) : (
+          <TouchableOpacity
+            testID="print-preview-btn-disabled"
+            style={[styles.printBtn, styles.printBtnDisabled]}
+            onPress={() =>
+              Alert.alert(
+                "Tracking ID required",
+                "Please add a tracking ID before printing the label.",
+                [
+                  { text: "Cancel", style: "cancel" },
+                  { text: "Scan now", onPress: openScanner },
+                ]
+              )
+            }
+            activeOpacity={0.85}
+          >
+            <PhIcon name="print-outline" size={16} color="#fff" />
+            <Text style={styles.printBtnTxt}>Print</Text>
+          </TouchableOpacity>
+        )}
       </View>
+
+      {/* Tracking-gate CTA — shown only when no tracking is set */}
+      {!hasTracking ? (
+        <View style={styles.trackingCtaCard}>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.trackingCtaTitle}>Add Tracking ID first</Text>
+            <Text style={styles.trackingCtaSub}>
+              Print labels are disabled until a tracking ID is added to this
+              shipment.
+            </Text>
+          </View>
+          <TouchableOpacity
+            testID="tracking-cta-scan"
+            style={styles.trackingCtaScanBtn}
+            onPress={openScanner}
+            activeOpacity={0.85}
+            disabled={savingTracking}
+          >
+            {savingTracking ? (
+              <ActivityIndicator size="small" color="#fff" />
+            ) : (
+              <PhIcon name="scan-outline" size={18} color="#fff" />
+            )}
+            <Text style={styles.trackingCtaScanTxt}>
+              {savingTracking ? "Saving…" : "Scan"}
+            </Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            testID="tracking-cta-type"
+            style={styles.trackingCtaTypeBtn}
+            onPress={promptManualTracking}
+            activeOpacity={0.85}
+            disabled={savingTracking}
+          >
+            <PhIcon name="create-outline" size={18} color={colors.primary} />
+          </TouchableOpacity>
+        </View>
+      ) : null}
 
       <ScrollView contentContainerStyle={{ padding: 12, paddingBottom: 40 }}>
         {/* Status chip */}
@@ -148,7 +263,22 @@ export default function ShipmentDetailsScreen() {
 
         {/* IDs */}
         <Section title="Identifiers" icon="barcode-outline">
-          <Row label="Tracking Number" value={ship.tracking_id} mono />
+          {hasTracking ? (
+            <Row label="Tracking Number" value={ship.tracking_id} mono />
+          ) : (
+            <View style={styles.kvRow}>
+              <Text style={styles.kvKey}>Tracking Number</Text>
+              <TouchableOpacity
+                testID="tracking-row-add"
+                style={styles.kvCtaRow}
+                onPress={openScanner}
+                activeOpacity={0.7}
+              >
+                <Text style={styles.kvCtaTxt}>Add Tracking ID first</Text>
+                <PhIcon name="scan-outline" size={16} color={colors.primary} />
+              </TouchableOpacity>
+            </View>
+          )}
           <Row label="Shipment ID"     value={ship.id} mono />
           <Row label="Master Order ID" value={ship.master_order_id} mono />
           <Row label="Order ID"        value={ship.order_id} mono />
@@ -351,4 +481,69 @@ const styles = StyleSheet.create({
     fontWeight: "600",
   },
   mono: { fontFamily: "monospace", letterSpacing: 0.3 },
+
+  // Phase-25 — Tracking gate styles
+  headerSubMissing: { color: "#DC2626", fontWeight: "700" },
+  printBtnDisabled: {
+    backgroundColor: "#9CA3AF",
+    opacity: 0.6,
+  },
+  trackingCtaCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    backgroundColor: "#FEF3C7",
+    borderBottomWidth: 1,
+    borderBottomColor: "#FCD34D",
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+  },
+  trackingCtaTitle: {
+    fontSize: 14,
+    fontWeight: "800",
+    color: "#92400E",
+  },
+  trackingCtaSub: {
+    fontSize: 11,
+    color: "#92400E",
+    marginTop: 2,
+    lineHeight: 15,
+  },
+  trackingCtaScanBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    backgroundColor: colors.primary,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 8,
+  },
+  trackingCtaScanTxt: {
+    color: "#fff",
+    fontSize: 12,
+    fontWeight: "800",
+  },
+  trackingCtaTypeBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 8,
+    backgroundColor: "#fff",
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderColor: colors.primary,
+  },
+  kvCtaRow: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 8,
+  },
+  kvCtaTxt: {
+    flex: 1,
+    fontSize: 13,
+    color: colors.primary,
+    fontWeight: "700",
+  },
 });

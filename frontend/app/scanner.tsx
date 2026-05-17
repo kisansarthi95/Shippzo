@@ -187,6 +187,17 @@ export default function ScannerModal() {
           },
         });
       }
+    } else if (params.returnTo === "shipment-details") {
+      // Phase-25 — Tracking-ID Gate. User scanned from the Shipment
+      // Details screen to attach a tracking ID to an existing shipment.
+      // Push to the bridge so the screen's useFocusEffect can pick it
+      // up and PATCH the shipment.
+      scannerBridge.push({
+        value: v,
+        courier_id: matchedCourier?.id || null,
+        courier_name: matchedCourier?.name || null,
+      });
+      router.back();
     } else {
       router.back();
     }

@@ -20862,3 +20862,115 @@ agent_communication:
 
       Frontend changes are wired but waiting for user verification —
       do NOT run the expo testing agent yet.
+
+# =============================================================
+# Phase-25 — Tracking-ID Gate (Print disabled without tracking)
+# =============================================================
+
+frontend:
+  - task: "Phase-25: Tracking-ID Gate on shipment list / details / label"
+    implemented: true
+    working: "NA"
+    file: "frontend/app/(tabs)/shipments.tsx + frontend/app/shipment-details/[id].tsx + frontend/app/label/[id].tsx + frontend/app/scanner.tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: |
+            Phase-25 (2026-05-17) — Tracking-ID gate for label
+            printing. Print + Preview are now hard-disabled
+            whenever a shipment has no tracking_id, and the user
+            is funnelled to a one-tap scan/edit flow.
+
+            CHANGES:
+              1. /app/(tabs)/shipments.tsx — Shipment card now
+                 renders an amber "Add Tracking ID first 📷" pill
+                 in place of the mono tracking ID when the
+                 shipment has no tracking. Tap routes to
+                 /shipment-details/{id} so the scan/type flow
+                 lives in one screen. The top-right "Print Now"
+                 button is greyed out and re-routes to the same
+                 details screen instead of /label/{id}.
+              2. /app/shipment-details/[id].tsx —
+                 • Header subtitle shows "Tracking ID missing"
+                   (red) when empty, real tracking otherwise.
+                 • Print Preview button text changes to "Print"
+                   and gets disabled (grey + alert dialog with a
+                   "Scan now" button).
+                 • Yellow CTA card slides in under the header
+                   when tracking is missing — "Add Tracking ID
+                   first" + Scan + Type buttons.
+                 • Identifiers section shows the same CTA inline
+                   in place of the Tracking Number row.
+                 • useFocusEffect consumes scannerBridge and
+                   PATCHes /api/shipments/{id} with the scanned
+                   tracking_id, then reloads the screen.
+              3. /app/label/[id].tsx —
+                 • Yellow banner at the top "Add Tracking ID
+                   first" with an "Add" button that routes back
+                   to /shipment-details/{id}.
+                 • Both Preview PDF and Print Labels buttons are
+                   disabled (opacity 0.45) when no tracking.
+                 • Print button text becomes "Add Tracking First".
+              4. /app/scanner.tsx — Added a new `returnTo=
+                 shipment-details` branch that pushes the scanned
+                 value through scannerBridge and goes back. The
+                 existing "scan an already-saved tracking →
+                 redirect to /label/{id}" behaviour stays intact
+                 for the global scan path.
+
+            USER VERIFICATION STEPS:
+              1. Login as user with at least one shipment in the
+                 DB that has tracking_id == "" (or create one via
+                 the new "Tracking ID optional" Add flow).
+              2. Open Shipments tab — that row should show the
+                 amber "Add Tracking ID first" pill in place of
+                 the mono AWB and a greyed-out "Print Now".
+              3. Tap the row → /shipment-details opens with a
+                 yellow CTA card. Tap Scan → scanner opens →
+                 scan a code → screen returns + auto-PATCHes the
+                 tracking → CTA disappears, real tracking shows.
+              4. Tap Print Preview (grey state) → Alert "Tracking
+                 ID required" → tap Scan now → camera opens.
+              5. From the shipment card, tap greyed Print Now
+                 → /shipment-details opens (gate).
+              6. Open /label/{id} directly (e.g. from a deep
+                 link or by typing in an URL): the banner shows
+                 and both Print + Preview are disabled.
+
+backend:
+  - task: "Phase-25 (backend): tracking gate is UI-only — no API change needed"
+    implemented: true
+    working: true
+    file: "n/a"
+    stuck_count: 0
+    priority: "low"
+    needs_retesting: false
+    status_history:
+        - working: true
+          agent: "main"
+          comment: |
+            Phase-25 is intentionally a UI gate. The API still
+            accepts shipments with empty tracking_id (Phase-24
+            optional toggle) and the PUT /api/shipments/{id}
+            endpoint already accepts a tracking_id patch — both
+            already covered by existing test suites. No backend
+            test work required for this phase.
+
+test_plan:
+  current_focus:
+    - "Phase-25: Tracking-ID Gate on shipment list / details / label"
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"
+
+agent_communication:
+    -agent: "main"
+    -message: |
+      Phase-25 (P0) shipped. The print/preview surfaces are now
+      gated on tracking_id presence. No backend change required.
+      Awaiting user manual verification before P1 (Barcode
+      Sticker plan-gated toggle).
+

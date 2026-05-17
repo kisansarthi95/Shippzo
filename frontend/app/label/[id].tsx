@@ -292,6 +292,12 @@ export default function LabelScreen() {
     else router.replace("/(tabs)/shipments");
   };
 
+  // Phase-25 — Tracking gate. Without a tracking_id we cannot
+  // produce a meaningful label / barcode, so disable Print + Preview
+  // and surface a "Add Tracking ID first" banner that links back to
+  // the shipment-details screen (where the scan/type flow lives).
+  const hasTracking = !!(shipment?.tracking_id || "").trim();
+
   if (loading || !shipment || !sender) {
     return (
       <SafeAreaView style={styles.safe}>
@@ -320,6 +326,29 @@ export default function LabelScreen() {
         testID="label-scroll"
         contentContainerStyle={{ padding: 16, paddingBottom: 100 }}
       >
+        {/* Phase-25 — Tracking gate banner */}
+        {!hasTracking ? (
+          <View style={styles.trackingGateBanner}>
+            <PhIcon name="alert-circle" size={18} color="#92400E" />
+            <View style={{ flex: 1 }}>
+              <Text style={styles.trackingGateTitle}>
+                Add Tracking ID first
+              </Text>
+              <Text style={styles.trackingGateSub}>
+                Print is disabled until this shipment has a tracking ID.
+              </Text>
+            </View>
+            <TouchableOpacity
+              testID="trackgate-go-add"
+              style={styles.trackingGateBtn}
+              onPress={() => router.push(`/shipment-details/${shipment.id}` as any)}
+              activeOpacity={0.85}
+            >
+              <PhIcon name="scan-outline" size={16} color="#fff" />
+              <Text style={styles.trackingGateBtnTxt}>Add</Text>
+            </TouchableOpacity>
+          </View>
+        ) : null}
         {/* Preview WebView — renders the EXACT HTML used for the PDF.
             Preview = PDF guaranteed because they share the same template. */}
         <View style={styles.previewCard}>
@@ -436,23 +465,29 @@ export default function LabelScreen() {
           {flagPdfDownload ? (
             <TouchableOpacity
               testID="preview-pdf-btn"
-              style={styles.secondaryBtn}
+              style={[styles.secondaryBtn, !hasTracking && styles.btnDisabled]}
               onPress={previewPdf}
+              disabled={!hasTracking}
             >
-              <PhIcon name="eye-outline" size={18} color={colors.text} />
-              <Text style={styles.secondaryBtnText}>
+              <PhIcon name="eye-outline" size={18} color={hasTracking ? colors.text : "#9CA3AF"} />
+              <Text style={[styles.secondaryBtnText, !hasTracking && { color: "#9CA3AF" }]}>
                 {Platform.OS === "web" ? "Preview PDF" : "Preview / Share"}
               </Text>
             </TouchableOpacity>
           ) : null}
           <TouchableOpacity
             testID="print-btn"
-            style={styles.primaryBtn}
+            style={[styles.primaryBtn, !hasTracking && styles.btnDisabled]}
             onPress={printNow}
+            disabled={!hasTracking}
           >
             <PhIcon name="print" size={18} color="#fff" />
             <Text style={styles.primaryBtnText}>
-              {perPage === "barcode" ? "Print Stickers" : "Print Labels"}
+              {!hasTracking
+                ? "Add Tracking First"
+                : perPage === "barcode"
+                ? "Print Stickers"
+                : "Print Labels"}
             </Text>
           </TouchableOpacity>
         </View>
@@ -612,4 +647,39 @@ const styles = StyleSheet.create({
     borderRadius: 12,
   },
   primaryBtnText: { fontWeight: "800", color: "#fff" },
+
+  // Phase-25 — Tracking gate styles
+  btnDisabled: { opacity: 0.45 },
+  trackingGateBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    padding: 12,
+    marginBottom: 12,
+    backgroundColor: "#FEF3C7",
+    borderWidth: 1,
+    borderColor: "#FCD34D",
+    borderRadius: 12,
+  },
+  trackingGateTitle: {
+    fontSize: 14,
+    fontWeight: "800",
+    color: "#92400E",
+  },
+  trackingGateSub: {
+    fontSize: 11,
+    color: "#92400E",
+    marginTop: 2,
+    lineHeight: 15,
+  },
+  trackingGateBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    backgroundColor: colors.primary,
+    borderRadius: 8,
+  },
+  trackingGateBtnTxt: { color: "#fff", fontSize: 12, fontWeight: "800" },
 });

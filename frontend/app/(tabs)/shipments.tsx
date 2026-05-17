@@ -1387,25 +1387,58 @@ export default function Shipments() {
                       color={isSelected ? colors.primary : colors.textMuted}
                     />
                   )}
-                  <Text style={styles.track}>{item.tracking_id}</Text>
+                  {item.tracking_id ? (
+                    <Text style={styles.track}>{item.tracking_id}</Text>
+                  ) : (
+                    <TouchableOpacity
+                      testID={`add-tracking-${item.id}`}
+                      onPress={() =>
+                        router.push(`/shipment-details/${item.id}` as any)
+                      }
+                      style={styles.trackingMissingPill}
+                      activeOpacity={0.7}
+                      hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+                    >
+                      <PhIcon name="scan-outline" size={12} color="#92400E" />
+                      <Text style={styles.trackingMissingPillTxt}>
+                        Add Tracking ID first
+                      </Text>
+                    </TouchableOpacity>
+                  )}
                 </View>
                 {/* Phase-20 — Replaced the top-right StatusChip with a
-                    direct "Print Now" CTA. The current stage is already
-                    surfaced (and tappable) via the wide stage-flow row
-                    at the bottom of every card, so the chip up here was
-                    redundant. Putting Print Now in this slot makes the
-                    most-used action one-tap accessible without hunting
-                    through the actions row. */}
+                    direct "Print Now" CTA. Phase-25 — disabled when
+                    tracking_id is empty (cannot print without it). */}
                 {flagPrint && !selectMode ? (
                   <TouchableOpacity
-                    onPress={() => router.push(`/label/${item.id}`)}
+                    onPress={() => {
+                      if (!item.tracking_id) {
+                        router.push(`/shipment-details/${item.id}` as any);
+                        return;
+                      }
+                      router.push(`/label/${item.id}`);
+                    }}
                     activeOpacity={0.7}
-                    style={styles.printNowBtn}
-                    testID={`print-now-${item.tracking_id}`}
+                    style={[
+                      styles.printNowBtn,
+                      !item.tracking_id && styles.printNowBtnDisabled,
+                    ]}
+                    testID={`print-now-${item.tracking_id || item.id}`}
                     hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
                   >
-                    <PhIcon name="print" size={14} color="#fff" />
-                    <Text style={styles.printNowTxt}>Print Now</Text>
+                    <PhIcon
+                      name="print"
+                      size={14}
+                      color={item.tracking_id ? "#fff" : "#9CA3AF"}
+                    />
+                    <Text
+                      style={[
+                        styles.printNowTxt,
+                        !item.tracking_id && { color: "#6B7280" },
+                      ]}
+                    >
+                      Print Now
+                    </Text>
                   </TouchableOpacity>
                 ) : null}
               </View>
@@ -2030,6 +2063,28 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: "800",
     letterSpacing: 0.3,
+  },
+  // Phase-25 — Tracking-ID Gate. When a shipment has no tracking
+  // we replace the mono tracking text with this amber pill that
+  // routes to /shipment-details where the user can scan/type.
+  printNowBtnDisabled: {
+    backgroundColor: "#E5E7EB",
+  },
+  trackingMissingPill: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 6,
+    backgroundColor: "#FEF3C7",
+    borderWidth: 1,
+    borderColor: "#FCD34D",
+  },
+  trackingMissingPillTxt: {
+    color: "#92400E",
+    fontSize: 11,
+    fontWeight: "800",
   },
   // shipment card. Two equal-width pills, the left filled with the
   // current stage's palette + a chevron-down hint, the right tinted
