@@ -15,6 +15,12 @@ export type LabelOptions = {
   shipmentTagline?: string; // fallback tagline when shipment.shipment_notes is empty
   customFields?: CustomLabelField[]; // user-defined custom fields to inject
   textScale?: "compact" | "normal" | "large"; // user text-size preference
+  // Phase-26 — When false, the barcode rectangle in the regular label
+  // footer renders as an EMPTY div of the same height so the existing
+  // layout (sender block / track-id / powered-by) doesn't shift. The
+  // dedicated "barcode" sticker layout always renders the barcode
+  // regardless of this flag (sticker == barcode by definition).
+  showBarcode?: boolean;
 };
 
 /**
@@ -223,6 +229,14 @@ function singleLabel(s: Shipment, sender: SenderAddress, opts: LabelOptions) {
       : (s.item_description || "-");
 
   const bcSvg = renderBarcodeSvg(s.tracking_id);
+  // Phase-26 — Plan-gated barcode visibility on the regular label
+  // footer. Default ON; when the flag is explicitly OFF we render
+  // an empty wrap of the same height so the surrounding layout
+  // (track-id / powered-by) stays put.
+  const showBarcode = opts.showBarcode !== false;
+  const barcodeWrap = showBarcode
+    ? `<div class="barcode-wrap">${bcSvg}</div>`
+    : `<div class="barcode-wrap barcode-wrap-empty"></div>`;
 
   // Token / advance info (only if toggled on AND COD with real advance).
   // For PAID/Prepaid orders we never show this box (no confusion possible).
@@ -338,7 +352,7 @@ function singleLabel(s: Shipment, sender: SenderAddress, opts: LabelOptions) {
         </div>
         <div class="track-wrap">
           <div class="track-id">${escape(s.tracking_id)}</div>
-          <div class="barcode-wrap">${bcSvg}</div>
+          ${barcodeWrap}
         </div>
       </div>
       ${cfFooterBottom}

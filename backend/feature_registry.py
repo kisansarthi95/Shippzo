@@ -145,6 +145,11 @@ FEATURE_REGISTRY: Dict[str, Dict[str, str]] = {
     # NEW (2026-04-30) — Customer ID & Content Budget on label
     "label_customer_id":         {"label": "Customer ID on label (per courier)", "category": "Label Design"},
     "label_content_budget":      {"label": "Content budget indicator (3 max)",   "category": "Label Design"},
+    # NEW (2026-05-17 — Phase-26) — Barcode sticker on the regular
+    # label footer. When OFF, the barcode rectangle stays empty (layout
+    # preserved). The dedicated "Barcode Sticker 50×25mm" page layout
+    # is unaffected — that layout is a barcode by definition.
+    "label_barcode_sticker":     {"label": "Barcode on label footer",            "category": "Label Design"},
 
     # ── Google Sheets ────────────────────────────────────────────
     "sheet_import":              {"label": "Import orders from sheet",     "category": "Google Sheets"},
@@ -324,6 +329,7 @@ DEFAULT_PLAN_FEATURES: Dict[str, List[str]] = {
         "pdf_download", "print_preview",
         "whatsapp_template_editor",
         "form_alt_phone",
+        "label_barcode_sticker",         # NEW (Phase-26) — barcode on label footer
     ],
     "silver": [
         "smart_paste_ai", "smart_paste_voice", "smart_paste_image_ocr",
@@ -375,6 +381,7 @@ DEFAULT_PLAN_FEATURES: Dict[str, List[str]] = {
         "bulk_print", "pdf_download", "print_preview",
         "whatsapp_template_editor", "whatsapp_eta_customization",
         "form_alt_phone", "form_box_dimensions",
+        "label_barcode_sticker",         # NEW (Phase-26)
     ],
     "gold": [
         "smart_paste_ai", "smart_paste_voice", "smart_paste_image_ocr",
@@ -441,6 +448,7 @@ DEFAULT_PLAN_FEATURES: Dict[str, List[str]] = {
         "ai_rate_customization",
         "form_alt_phone", "form_box_dimensions", "form_token_amount", "form_shipment_notes",
         "custom_fields",                 # NEW (2026-04-30 PM3) — Gold+ (up to 3 fields)
+        "label_barcode_sticker",         # NEW (Phase-26)
     ],
     # Platinum gets EVERYTHING — also captures new features auto-added later
     # by referencing ALL_KEYS at runtime in the seeder.

@@ -20974,3 +20974,116 @@ agent_communication:
       Awaiting user manual verification before P1 (Barcode
       Sticker plan-gated toggle).
 
+
+# =============================================================
+# Phase-26 — Barcode-Sticker Plan-Gated Toggle on Label Footer
+# =============================================================
+
+backend:
+  - task: "Phase-26: label_barcode_sticker feature flag in registry + plan defaults"
+    implemented: true
+    working: true
+    file: "backend/feature_registry.py"
+    stuck_count: 0
+    priority: "low"
+    needs_retesting: false
+    status_history:
+        - working: true
+          agent: "main"
+          comment: |
+            Phase-26 (2026-05-17) — Added the new feature key
+            `label_barcode_sticker` ("Barcode on label footer") to
+            the central FEATURE_REGISTRY under Label Design, and
+            seeded all four plan defaults (free_trial, silver,
+            gold, platinum) so existing labels keep their barcode.
+            The Migration-A path in
+            `_get_plan_features_doc()` automatically injects the
+            new key into every stored plan-features doc on next
+            read — verified live:
+
+              free_trial: label_barcode_sticker=True, total=58
+              silver:     label_barcode_sticker=True, total=46
+              gold:       label_barcode_sticker=True, total=74
+              platinum:   label_barcode_sticker=True, total=108
+
+            No new endpoint and no DB schema change — the admin's
+            existing Plan Features panel will surface this new
+            checkbox automatically (data-driven). No backend tests
+            needed beyond the existing plan-features admin suite
+            which already covers add/remove key migration.
+
+frontend:
+  - task: "Phase-26: Plan-gated barcode rendering on label footer"
+    implemented: true
+    working: "NA"
+    file: "frontend/lib/label.ts + frontend/app/label/[id].tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: |
+            Phase-26 (2026-05-17) — Plan-gated barcode rendering.
+
+            CHANGES:
+              1. lib/label.ts —
+                 • LabelOptions gains a new optional field
+                   `showBarcode?: boolean` (default = true).
+                 • In the regular label HTML builder (perPage
+                   1/2/4/thermal), the `<div class="barcode-wrap">`
+                   inside `.track-wrap` is now built dynamically:
+                     - showBarcode === false →
+                       `<div class="barcode-wrap barcode-wrap-empty">
+                        </div>` (empty placeholder of the same
+                        height, layout preserved).
+                     - otherwise → original barcode SVG markup.
+                 • The dedicated "barcode" sticker layout (50×25mm)
+                   is intentionally left unchanged — that whole
+                   layout IS a barcode sticker, so disabling it
+                   would be meaningless.
+
+              2. app/label/[id].tsx —
+                 • New `flagLabelBarcode = useFeatureFlag(
+                   "label_barcode_sticker")` is wired into the
+                   getHtml() options and added to its dep array
+                   so changes take effect live without remount.
+
+            USER VERIFICATION STEPS:
+              1. Login as admin@test.com. Open Settings →
+                 Plan Features. Confirm a new checkbox
+                 "Barcode on label footer" appears under Label
+                 Design for every plan. Default is ON.
+              2. As admin, untick the box for the user's plan
+                 and Save.
+              3. Open any shipment → /label/{id}. The Live Preview
+                 should now render WITHOUT the barcode at the
+                 bottom — the rectangle stays empty but the
+                 "track-id" text and "Powered by Shippzo" footer
+                 stay at the same positions (no layout shift).
+              4. Re-enable the box → preview refreshes with the
+                 barcode back in place.
+              5. The dedicated "Barcode Sticker" page-size option
+                 (50×25mm) is unaffected — it always renders the
+                 barcode regardless of the flag.
+
+test_plan:
+  current_focus:
+    - "Phase-26: Plan-gated barcode rendering on label footer"
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"
+
+agent_communication:
+    -agent: "main"
+    -message: |
+      Phase-26 (P1) shipped. The barcode on the regular label
+      footer is now gated by the new `label_barcode_sticker`
+      feature flag. Default ON for every plan (so existing
+      labels look the same). Admin can untick per plan from the
+      Plan Features admin panel. No backend tests required —
+      the plan-features admin suite already covers the
+      registry/migration path. Awaiting user manual
+      verification before P2 (Field-Controls plan-gating
+      + per-tenant refactor).
+

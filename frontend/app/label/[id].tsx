@@ -143,6 +143,11 @@ export default function LabelScreen() {
   // can still print directly (Print button stays visible) but PDF
   // download is reserved for paid tiers.
   const flagPdfDownload = useFeatureFlag("pdf_download");
+  // Phase-26 — Plan-gated barcode on the regular label footer. When
+  // the user's plan does NOT include `label_barcode_sticker`, the
+  // barcode rectangle in the label footer renders empty (layout
+  // preserved).  Dedicated "barcode" sticker layout is unaffected.
+  const flagLabelBarcode = useFeatureFlag("label_barcode_sticker");
   const { id } = useLocalSearchParams<{ id: string }>();
   const [shipment, setShipment] = useState<Shipment | null>(null);
   const [sender, setSender] = useState<SenderAddress | null>(null);
@@ -239,11 +244,14 @@ export default function LabelScreen() {
       labelFields: labelFields || undefined,
       shipmentTagline: shipmentTagline || undefined,
       customFields: customFields,
+      // Phase-26 — Plan-gated barcode on label footer.
+      showBarcode: flagLabelBarcode,
     };
     return buildLabelHtml(shipments, { ...sender, show_contact: showContact }, opts);
   }, [
     shipment, sender, copies, perPage, showContact, brand, preferLogo,
     logoShape, logoRatio, couriers, labelFields, shipmentTagline, customFields,
+    flagLabelBarcode,
   ]);
 
   const previewHtml = useMemo(() => {
