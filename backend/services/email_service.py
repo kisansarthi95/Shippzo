@@ -81,10 +81,38 @@ def _send(to: str, subject: str, html: str) -> bool:
             "html":    html,
         }
         resp = resend.Emails.send(params)
-        log.info("[email] sent to=%s subject=%r resend_id=%s", to, subject, (resp or {}).get("id"))
+        # Phase-22 polish — surface Resend quota headers in our own
+        # logs so the operator can monitor when the "new-account
+        # probation" 5/day limit auto-lifts to the 100/day free tier
+        # (or whichever quota Resend has assigned). The SDK passes
+        # response headers through under `http_headers`.
+        headers = (resp or {}).get("http_headers", {}) or {}
+        daily   = headers.get("x-resend-daily-quota")
+        monthly = headers.get("x-resend-monthly-quota")
+        quota_tail = ""
+        if daily or monthly:
+            quota_tail = f" quota_daily={daily} quota_monthly={monthly}"
+        log.info(
+            "[email] sent to=%s subject=%r resend_id=%s%s",
+            to, subject, (resp or {}).get("id"), quota_tail,
+        )
         return True
     except Exception as e:                                      # noqa: BLE001
-        log.warning("[email] send FAILED to=%s subject=%r err=%s", to, subject, e)
+        # Pull the readable Resend message if present so quota /
+        # rate-limit / verification errors are immediately obvious
+        # in the logs instead of being hidden behind a generic
+        # exception class name.
+        msg = str(e)
+        is_quota = (
+            "daily quota" in msg.lower()
+            or "rate limit" in msg.lower()
+            or "monthly quota" in msg.lower()
+        )
+        log.warning(
+            "[email] send FAILED to=%s subject=%r err=%s%s",
+            to, subject, msg,
+            " — QUOTA HIT, retry after Resend resets" if is_quota else "",
+        )
         return False
 
 
