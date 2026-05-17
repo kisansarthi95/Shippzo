@@ -33,7 +33,7 @@ import io
 import json
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
@@ -445,6 +445,78 @@ def init() -> None:
                 errors.append(f"row {idx + 2}: {e}")
 
         if batch:
+            # ─── Duplicate guard (Phase-F4, 2026-05-17) ───────────────
+            # Skip rows that match an EXISTING pending order (same user)
+            # on all five business-key fields the user cares about:
+            #   customer_phone, customer_name, items, amount, status.
+            #
+            # We compare against `imported_status` because `doc["status"]`
+            # is hard-set to the pipeline sentinel "pending" on every
+            # imported row (see ~L417), so it would never discriminate.
+            # `imported_status` carries the source-sheet status (e.g.
+            # "Shipped"/"Delivered") which IS what the user maps from
+            # the spreadsheet.
+            #
+            # Also drops intra-batch duplicates (same row appearing
+            # twice in the uploaded file) using the same fingerprint.
+            #
+            # Performance: one indexed query that loads only the
+            # fingerprint fields for the candidate phone-set in this
+            # batch — O(1) round-trips regardless of batch size.
+
+            def _fp(d: Dict[str, Any]) -> Tuple[str, str, str, float, str]:
+                """Stable 5-tuple fingerprint for duplicate detection."""
+                return (
+                    str(d.get("customer_phone") or "").strip(),
+                    str(d.get("customer_name") or "").strip().lower(),
+                    str(d.get("items") or "").strip().lower(),
+                    float(d.get("amount") or 0.0),
+                    str(d.get("imported_status") or "").strip().lower(),
+                )
+
+            phone_set = {
+                str(d.get("customer_phone") or "").strip()
+                for d in batch
+                if d.get("customer_phone")
+            }
+            existing_fps: set = set()
+            if phone_set:
+                cursor = db.pending_orders.find(
+                    {
+                        "user_id":        current_user["id"],
+                        "customer_phone": {"$in": list(phone_set)},
+                    },
+                    {
+                        "customer_phone":  1,
+                        "customer_name":   1,
+                        "items":           1,
+                        "amount":          1,
+                        "imported_status": 1,
+                        "_id":             0,
+                    },
+                )
+                async for ex in cursor:
+                    existing_fps.add(_fp(ex))
+
+            deduped: List[Dict[str, Any]] = []
+            seen_in_batch: set = set()
+            duplicates = 0
+            for d in batch:
+                fp = _fp(d)
+                if fp in existing_fps or fp in seen_in_batch:
+                    duplicates += 1
+                    continue
+                seen_in_batch.add(fp)
+                deduped.append(d)
+            batch = deduped
+            imported = len(batch)
+            if duplicates:
+                _logger.info(
+                    "file-import: skipped %d duplicate row(s) for user=%s",
+                    duplicates, current_user["id"],
+                )
+
+        if batch:
             try:
                 await db.pending_orders.insert_many(batch, ordered=False)
             except Exception as e:
@@ -452,13 +524,14 @@ def init() -> None:
                 raise HTTPException(status_code=500, detail=f"DB write failed: {e}")
 
         _logger.info(
-            "file-import: user=%s file=%s fmt=%s imported=%d skipped=%d",
-            current_user["id"], filename, fmt, imported, skipped,
+            "file-import: user=%s file=%s fmt=%s imported=%d skipped=%d duplicates=%d",
+            current_user["id"], filename, fmt, imported, skipped, locals().get("duplicates", 0),
         )
         return {
             "ok":         True,
             "imported":   imported,
             "skipped":    skipped,
+            "duplicates": locals().get("duplicates", 0),
             "total":      len(rows),
             "errors":     errors[:20],   # cap so the response stays small
             "filename":   filename,
