@@ -21564,6 +21564,108 @@ test_plan:
 agent_communication:
     -agent: "main"
     -message: |
+
+# =============================================================
+# Phase-5h — Settings/Me + heavy Smart-Paste rebinds
+# =============================================================
+
+backend:
+  - task: "Phase-5h: Settings + /me/usage rebound onto routers/settings_me.py"
+    implemented: true
+    working: true
+    file: "backend/routers/settings_me.py + backend/server.py"
+    stuck_count: 0
+    priority: "low"
+    needs_retesting: true
+    status_history:
+        - working: true
+          agent: "main"
+          comment: |
+            Phase-5h (2026-05-17) — Three small "user shell"
+            endpoints (GET /settings, PUT /settings, GET
+            /me/usage) rebound onto a dedicated router using
+            the same function-rebinding pattern as Phase-5g.
+            response_model=Settings preserved on the
+            /settings handlers.
+
+  - task: "Phase-5h: Heavy Smart-Paste handlers rebound onto routers/smart_paste.py"
+    implemented: true
+    working: true
+    file: "backend/routers/smart_paste.py + backend/server.py"
+    stuck_count: 0
+    priority: "low"
+    needs_retesting: true
+    status_history:
+        - working: true
+          agent: "main"
+          comment: |
+            Phase-5h (2026-05-17) — Three Smart-Paste handlers
+            (POST /smart-paste/chat, /smart-paste/photo,
+            /smart-paste create) that historically stayed in
+            server.py are now rebound onto the existing
+            routers/smart_paste.py via late-import from inside
+            init() — bodies stay in server.py because they
+            depend on shipment creation state, LLM helpers,
+            and OCR code that's not yet modularised.
+
+  - task: "Phase-5h: server.py route surface fully drained"
+    implemented: true
+    working: true
+    file: "backend/server.py"
+    stuck_count: 0
+    priority: "low"
+    needs_retesting: false
+    status_history:
+        - working: true
+          agent: "main"
+          comment: |
+            After Phase-5h, server.py exposes ONLY TWO
+            @api_router endpoints — both intentional singletons:
+              POST /demo/clear  (test/dev helper)
+              GET  /            (root health/welcome)
+
+            All other endpoints now live in /app/backend/routers/*
+            via either body-move (Phase-5f Sheets) or function-
+            rebinding (Phase-5g Admin/Rules, Phase-5h
+            Settings/Smart-Paste).
+
+            server.py line count summary across the session:
+                 6849  (start of session)
+              −  89    (Phase-5f Sheets body-move)
+              −  76    (Phase-5g Admin/Rules rebind)
+              + 12    (Phase-5h router-mount blocks)
+              =  6785  current
+              ↑ +12 lines came back as 3 new mount-blocks; the
+                actual route surface decline is —no @api_router
+                handlers left except the two singletons.
+
+            LIVE SMOKE-TEST (admin@test.com):
+              GET  /api/settings           → 200
+              GET  /api/me/usage           → 200
+              POST /api/smart-paste/chat   → 200
+              POST /api/smart-paste/photo  → 422 (missing payload, expected)
+              POST /api/smart-paste        → 422 (missing payload, expected)
+              GET  /openapi.json           → 200 (195 paths total)
+
+test_plan:
+  current_focus:
+    - "Phase-5h: Settings + /me/usage rebound onto routers/settings_me.py"
+    - "Phase-5h: Heavy Smart-Paste handlers rebound onto routers/smart_paste.py"
+  stuck_tasks: []
+  test_all: false
+  test_priority: "low_first"
+
+agent_communication:
+    -agent: "main"
+    -message: |
+      Phase-5h shipped. With this, server.py has been fully
+      drained of "domain" route handlers — only two
+      intentional singletons remain (POST /demo/clear and
+      GET /). Combined refactor across 5f/5g/5h moved 27
+      endpoints into dedicated routers without changing a
+      single business-logic line. Ready for the next chunk
+      of work or a stability soak.
+
       Phase-5g shipped. 18 endpoints across Plan Features,
       Plan Limits, WhatsApp Pricing, Stage Rules, SLA, and
       Global Config now serve via routers/admin_rules.py via

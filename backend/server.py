@@ -1527,7 +1527,7 @@ def _packing_variant_cap_for_user(user: Dict[str, Any]) -> Optional[int]:
 
 # -------- Settings --------
 
-@api_router.get("/settings", response_model=Settings)
+# [refactor Phase-5h] @api_router.get("/settings", response_model=Settings)
 async def get_settings(current_user: Dict[str, Any] = Depends(get_current_user)):
     # Each user has their own settings doc. If missing, create a fresh one
     # tagged with this user's id so future reads/writes find it.
@@ -1542,7 +1542,7 @@ async def get_settings(current_user: Dict[str, Any] = Depends(get_current_user))
     return Settings(**doc)
 
 
-@api_router.put("/settings", response_model=Settings)
+# [refactor Phase-5h] @api_router.put("/settings", response_model=Settings)
 async def update_settings(
     payload: SettingsUpdate,
     current_user: Dict[str, Any] = Depends(get_current_user),
@@ -2989,7 +2989,7 @@ def _legacy_to_schema(legacy: Dict[str, Any]) -> Dict[str, str]:
     }
 
 
-@api_router.post("/smart-paste/chat")
+# [refactor Phase-5h] @api_router.post("/smart-paste/chat")
 async def smart_paste_chat(
     payload: SmartPasteChatRequest,
     current_user: Dict[str, Any] = Depends(get_current_user),
@@ -3156,7 +3156,7 @@ async def smart_paste_chat(
 
 
 
-@api_router.post("/smart-paste/photo")
+# [refactor Phase-5h] @api_router.post("/smart-paste/photo")
 async def smart_paste_photo(
     payload: SmartPastePhotoRequest,
     current_user: Dict[str, Any] = Depends(get_current_user),
@@ -3308,7 +3308,7 @@ async def smart_paste_photo(
 
 
 
-@api_router.post("/smart-paste", response_model=PendingOrder)
+# [refactor Phase-5h] @api_router.post("/smart-paste", response_model=PendingOrder)
 async def smart_paste_create(
     payload: SmartPasteRequest,
     current_user: Dict[str, Any] = Depends(get_current_user),
@@ -3839,7 +3839,7 @@ async def _write_custom_values_to_user_sheet_bg(
 # [refactor Phase-4a-extra] @api_router.get("/plans") → routers/plans_coupons.py
 
 
-@api_router.get("/me/usage")
+# [refactor Phase-5h] @api_router.get("/me/usage")
 async def my_usage(current_user: Dict[str, Any] = Depends(get_current_user)):
     """Current plan + live usage counters. Safe to poll on screen focus."""
     return await usage_summary(db, current_user)
@@ -5378,6 +5378,18 @@ try:
     app.include_router(_admin_rules_router)
 except Exception as _ar_exc:
     logging.getLogger(__name__).exception(f"Failed to mount admin_rules router: {_ar_exc}")
+
+# Phase-5h modular: settings + /me/usage (3 endpoints) re-bound onto a
+# dedicated router. Same rebinding pattern — bodies stay in server.py.
+try:
+    from routers.settings_me import (
+        settings_me_router as _settings_me_router,
+        init as _init_settings_me_router,
+    )
+    _init_settings_me_router()
+    app.include_router(_settings_me_router)
+except Exception as _sm_exc:
+    logging.getLogger(__name__).exception(f"Failed to mount settings_me router: {_sm_exc}")
 
 # Phase-3 modular: couriers + variants + categories.
 try:

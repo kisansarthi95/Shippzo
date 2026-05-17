@@ -419,3 +419,19 @@ def init() -> None:
         except Exception as e:
             _logger.exception("sync_from_master failed")
             raise HTTPException(502, detail=f"Sync failed: {e}")
+
+    # Phase-5h (2026-05-17) — Re-bind the 3 heavy Smart-Paste handlers
+    # that historically stayed in server.py. We do NOT move their bodies
+    # (they share too much state with shipment creation, LLM helpers,
+    # OCR, etc.). We just attach a new decorator from this router and
+    # comment out the @api_router.post(...) line in server.py.
+    from server import (  # noqa: WPS433 — intentional late import
+        smart_paste_chat,
+        smart_paste_photo,
+        smart_paste_create,
+        PendingOrder,
+    )
+    smart_paste_router.post("/smart-paste/chat")(smart_paste_chat)
+    smart_paste_router.post("/smart-paste/photo")(smart_paste_photo)
+    smart_paste_router.post("/smart-paste", response_model=PendingOrder)(smart_paste_create)
+    _logger.info("[smart_paste] 3 heavy endpoints rebound (Phase-5h)")
