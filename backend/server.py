@@ -911,6 +911,16 @@ class Courier(BaseModel):
     tracking_id_min_length: int = 0   # lower bound if exact length unknown
     tracking_id_max_length: int = 0   # upper bound
     tracking_id_pattern: str = ""     # optional regex (advanced users)
+    # Phase-23 (2026-05-17) — Manual tracking workflow.
+    # When True, the sequential `series_prefix + next_number` autogen
+    # is skipped for this courier. Tracking ID is captured manually
+    # (typed/scanned from the physical sticker) — required for India
+    # Post Speed Post, Anjani Courier physical stickers etc. where the
+    # AWB on the printed label is NOT a sequential per-shop counter.
+    #
+    # Defaults to False so existing shops & DB rows behave identically
+    # to before; this is a purely opt-in flag per courier.
+    manual_tracking: bool = False
     created_at: str = Field(default_factory=utcnow_iso)
 
 
@@ -931,6 +941,8 @@ class CourierCreate(BaseModel):
     tracking_id_min_length: Optional[int] = 0
     tracking_id_max_length: Optional[int] = 0
     tracking_id_pattern: Optional[str] = ""
+    # Phase-23 — Manual tracking workflow (opt-in, default False).
+    manual_tracking: Optional[bool] = False
 
 
 class CourierUpdate(BaseModel):
@@ -950,6 +962,7 @@ class CourierUpdate(BaseModel):
     tracking_id_min_length: Optional[int] = None
     tracking_id_max_length: Optional[int] = None
     tracking_id_pattern: Optional[str] = None
+    manual_tracking: Optional[bool] = None
 
 
 class SenderAddress(BaseModel):
@@ -2679,6 +2692,12 @@ class ShipOrderRequest(BaseModel):
     courier_id: str
     # optional overrides before creating the shipment
     overrides: Optional[Dict[str, Any]] = None
+    # Phase-23 (2026-05-17) — Manual tracking workflow.
+    # When the chosen courier has `manual_tracking: true`, the frontend
+    # captures the AWB from the physical sticker and passes it here.
+    # Falls back to sequential auto-generation if absent (preserves
+    # original behaviour for every other courier).
+    manual_tracking_id: Optional[str] = None
 
 
 def _normalize_digits(s: str) -> str:

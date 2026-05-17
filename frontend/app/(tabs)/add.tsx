@@ -478,6 +478,18 @@ export default function AddShipment() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [params.edit_id]);
 
+  // Phase-23 — When the selected courier is in manual-tracking mode
+  // (India Post Speed Post stickers etc.), force the form into manual
+  // entry mode and never preview a next-number. The auto/manual toggle
+  // is also hidden in this case (see JSX) so the user can't pick a
+  // sequential number that doesn't exist for this courier.
+  const courierIsManual = !!(selectedCourier as any)?.manual_tracking;
+  useEffect(() => {
+    if (courierIsManual && autoTracking !== false) {
+      setAutoTracking(false);
+    }
+  }, [courierIsManual, autoTracking]);
+
   // Peek next tracking preview — ONLY for display/hint.
   // We never consume it until user explicitly chose "Auto" AND clicks Save.
   useEffect(() => {
@@ -485,10 +497,15 @@ export default function AddShipment() {
       setNextPreview("");
       return;
     }
+    if (courierIsManual) {
+      // Manual couriers have no sequential number to preview.
+      setNextPreview("");
+      return;
+    }
     Api.peekNextTracking(selectedCourier.id)
       .then((r) => setNextPreview(r.tracking_id))
       .catch(() => setNextPreview(""));
-  }, [selectedCourier]);
+  }, [selectedCourier, courierIsManual]);
 
   // Fill tracking input with preview ONLY when user has explicitly chosen Auto
   // (autoTracking === true, not null). Previously this auto-populated on mount
@@ -1019,7 +1036,9 @@ export default function AddShipment() {
       if (!autoTracking && !trackingId.trim()) {
         Alert.alert(
           "Tracking ID required",
-          "Enter a tracking ID or switch to Auto Series.",
+          courierIsManual
+            ? "Please type the AWB from the courier's printed sticker before saving."
+            : "Enter a tracking ID or switch to Auto Series.",
           [{ text: "OK" }]
         );
         return;
@@ -1742,12 +1761,26 @@ export default function AddShipment() {
 
           {/* Tracking */}
           <Section title="Tracking ID *">
-            {autoTracking === null && (
-              <Text style={styles.requiredHint}>
-                Choose how you want to assign the tracking ID
-              </Text>
-            )}
-            <View style={styles.toggleRow}>
+            {/* Phase-23 — Manual-tracking couriers (India Post Speed
+                Post, Anjani physical labels) skip the Auto/Manual
+                choice entirely: a sequential AWB doesn't exist, the
+                user types from the printed sticker. We show a small
+                yellow info card instead of the toggle. */}
+            {courierIsManual ? (
+              <View style={styles.manualInfoCard}>
+                <PhIcon name="information-circle" size={16} color="#92400E" />
+                <Text style={styles.manualInfoTxt}>
+                  This courier uses manual tracking. Please type the AWB from the printed sticker below.
+                </Text>
+              </View>
+            ) : (
+              <>
+                {autoTracking === null && (
+                  <Text style={styles.requiredHint}>
+                    Choose how you want to assign the tracking ID
+                  </Text>
+                )}
+                <View style={styles.toggleRow}>
               <TouchableOpacity
                 testID="auto-tracking-toggle"
                 style={[styles.toggleBtn, autoTracking === true && styles.toggleBtnActive]}
@@ -1794,14 +1827,18 @@ export default function AddShipment() {
                 </Text>
               </TouchableOpacity>
             </View>
+              </>
+            )}
             <View style={{ position: "relative" }}>
               <TextInput
                 testID="tracking-id-input"
                 value={trackingId}
-                editable={autoTracking === false}
+                editable={courierIsManual ? true : autoTracking === false}
                 onChangeText={setTrackingId}
                 placeholder={
-                  autoTracking === null
+                  courierIsManual
+                    ? "Type AWB from courier sticker"
+                    : autoTracking === null
                     ? "Pick a mode above first"
                     : autoTracking
                     ? nextPreview
@@ -1811,12 +1848,12 @@ export default function AddShipment() {
                 style={[
                   styles.input,
                   styles.trackingInput,
-                  autoTracking === false && { paddingRight: 48 },
-                  autoTracking === null && { opacity: 0.6 },
+                  (courierIsManual || autoTracking === false) && { paddingRight: 48 },
+                  !courierIsManual && autoTracking === null && { opacity: 0.6 },
                 ]}
                 autoCapitalize="characters"
               />
-              {autoTracking === false && (
+              {(courierIsManual || autoTracking === false) && (
                 <TouchableOpacity
                   testID="tracking-inline-scan"
                   onPress={() => router.push("/scanner?returnTo=add&from=add")}
@@ -1827,7 +1864,7 @@ export default function AddShipment() {
                 </TouchableOpacity>
               )}
             </View>
-            {autoTracking === true && nextPreview ? (
+            {!courierIsManual && autoTracking === true && nextPreview ? (
               <Text style={styles.hint}>Next auto: {nextPreview}</Text>
             ) : null}
           </Section>
@@ -2619,6 +2656,18 @@ const styles = StyleSheet.create({
   },
   pillActive: { backgroundColor: colors.secondary, borderColor: colors.secondary },
   pillText: { fontWeight: "700", color: colors.text, fontSize: 13 },
+  // Phase-23 — Manual-tracking info card (replaces Auto/Manual toggle
+  // when the selected courier requires manual AWB entry).
+  manualInfoCard: {
+    flexDirection: "row", alignItems: "flex-start", gap: 8,
+    backgroundColor: "#FEF3C7", borderRadius: 10,
+    borderWidth: 1, borderColor: "#FDE68A",
+    paddingVertical: 10, paddingHorizontal: 12, marginBottom: 10,
+  },
+  manualInfoTxt: {
+    flex: 1,
+    fontSize: 12.5, color: "#92400E", lineHeight: 18, fontWeight: "600",
+  },
   toggleRow: { flexDirection: "row", gap: 8, marginBottom: 10 },
   toggleBtn: {
     flex: 1,

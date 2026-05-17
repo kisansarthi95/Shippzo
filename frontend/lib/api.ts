@@ -101,6 +101,10 @@ export type Courier = {
   tracking_id_min_length?: number;
   tracking_id_max_length?: number;
   tracking_id_pattern?: string;
+  /** Phase-23 — when true, this courier requires manual AWB entry
+   *  (India Post Speed Post stickers, Anjani physical labels, etc.)
+   *  and skips the sequential auto-generated tracking number. */
+  manual_tracking?: boolean;
   created_at: string;
 };
 
@@ -1722,8 +1726,21 @@ export const Api = {
     api.put<PendingOrder>(`/orders/pending/${id}`, data).then((r) => r.data),
   deletePendingOrder: (id: string) =>
     api.delete(`/orders/pending/${id}`).then((r) => r.data),
-  shipPendingOrder: (id: string, courier_id: string, overrides?: any) =>
-    api.post<Shipment>(`/orders/pending/${id}/ship`, { courier_id, overrides }).then((r) => r.data),
+  shipPendingOrder: (
+    id: string,
+    courier_id: string,
+    overrides?: any,
+    manual_tracking_id?: string,
+  ) =>
+    api
+      .post<Shipment>(`/orders/pending/${id}/ship`, {
+        courier_id,
+        overrides,
+        // Only forward the manual tracking id when the caller passes
+        // one (manual-tracking couriers); auto-mode couriers ignore it.
+        ...(manual_tracking_id ? { manual_tracking_id } : {}),
+      })
+      .then((r) => r.data),
   pendingOrdersCount: () =>
     api.get<{ count: number; new_count?: number; smart_paste_count?: number; sheet_count?: number }>(
       "/orders/pending-count",

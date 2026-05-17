@@ -38,6 +38,12 @@ export default function CourierEdit() {
   const [tidLength, setTidLength] = useState("");
   const [tidMinLen, setTidMinLen] = useState("");
   const [tidMaxLen, setTidMaxLen] = useState("");
+  // Phase-23 (2026-05-17) — Manual-tracking workflow.
+  // When ON, this courier skips the sequential `series_prefix +
+  // next_number` autogen and asks for the AWB to be typed/scanned
+  // from the printed sticker (India Post Speed Post, Anjani physical
+  // labels, etc.). Default OFF preserves the historic auto-flow.
+  const [manualTracking, setManualTracking] = useState(false);
 
   const load = useCallback(async () => {
     if (isNew) return;
@@ -58,6 +64,7 @@ export default function CourierEdit() {
       setTidLength(String((c as any).tracking_id_length || "") === "0" ? "" : String((c as any).tracking_id_length || ""));
       setTidMinLen(String((c as any).tracking_id_min_length || "") === "0" ? "" : String((c as any).tracking_id_min_length || ""));
       setTidMaxLen(String((c as any).tracking_id_max_length || "") === "0" ? "" : String((c as any).tracking_id_max_length || ""));
+      setManualTracking(Boolean((c as any).manual_tracking));
     } catch (e: any) {
       Alert.alert("Error", e?.message || "Failed to load");
       router.back();
@@ -91,6 +98,7 @@ export default function CourierEdit() {
         tracking_id_length: Number(tidLength) || 0,
         tracking_id_min_length: Number(tidMinLen) || 0,
         tracking_id_max_length: Number(tidMaxLen) || 0,
+        manual_tracking: manualTracking,
       } as any;
       if (isNew) {
         await Api.createCourier(payload);
@@ -215,6 +223,46 @@ export default function CourierEdit() {
           </Section>
 
           <Section title="Tracking Series">
+            {/* Phase-23 — Manual-tracking toggle. When ON, the sequential
+                auto-generated AWB pipeline is disabled for this courier
+                and the user must type/scan the AWB from the printed
+                sticker (India Post Speed Post, Anjani physical labels,
+                etc.). Auto-mode (default OFF) keeps the historic flow. */}
+            <TouchableOpacity
+              testID="courier-manual-tracking-toggle"
+              activeOpacity={0.85}
+              onPress={() => setManualTracking((v) => !v)}
+              style={styles.manualToggleRow}
+            >
+              <View style={{ flex: 1, paddingRight: 12 }}>
+                <Text style={styles.manualToggleTitle}>
+                  Use manual tracking entry
+                </Text>
+                <Text style={styles.manualToggleSub}>
+                  Type the AWB from the printed sticker for every shipment
+                  (e.g. India Post Speed Post). Turn ON only if your
+                  courier gives you physical pre-printed labels.
+                </Text>
+              </View>
+              <View
+                style={[
+                  styles.toggleTrack,
+                  manualTracking && { backgroundColor: colors.primary },
+                ]}
+              >
+                <View
+                  style={[
+                    styles.toggleThumb,
+                    manualTracking && { transform: [{ translateX: 18 }] },
+                  ]}
+                />
+              </View>
+            </TouchableOpacity>
+
+            {/* Sequence inputs dim out when manual mode is ON so the user
+                visually understands they don't apply. Still rendered &
+                editable in case the user toggles back to auto. */}
+            <View style={{ opacity: manualTracking ? 0.4 : 1 }} pointerEvents={manualTracking ? "none" : "auto"}>
             <View style={{ flexDirection: "row", gap: 10 }}>
               <View style={{ flex: 1 }}>
                 <Field label="Prefix">
@@ -237,10 +285,15 @@ export default function CourierEdit() {
                 style={styles.input} />
             </Field>
             <View style={styles.preview}>
-              <Text style={styles.previewLabel}>Next tracking ID will be:</Text>
-              <Text style={styles.previewTrack}>
-                {`${prefix}${String(Number(nextNumber) || 0).padStart(Number(padding) || 4, "0")}`}
+              <Text style={styles.previewLabel}>
+                {manualTracking ? "Manual mode — you'll type each AWB:" : "Next tracking ID will be:"}
               </Text>
+              <Text style={styles.previewTrack}>
+                {manualTracking
+                  ? "Enter from sticker"
+                  : `${prefix}${String(Number(nextNumber) || 0).padStart(Number(padding) || 4, "0")}`}
+              </Text>
+            </View>
             </View>
           </Section>
 
@@ -478,6 +531,25 @@ const styles = StyleSheet.create({
   previewTrack: {
     marginTop: 4, fontFamily: "Courier", fontSize: 18, fontWeight: "800",
     color: colors.text, letterSpacing: 2,
+  },
+  // Phase-23 — Manual-tracking toggle row + iOS-style switch.
+  manualToggleRow: {
+    flexDirection: "row", alignItems: "center",
+    backgroundColor: "#FEF3C7", borderRadius: 12,
+    paddingVertical: 12, paddingHorizontal: 12,
+    borderWidth: 1, borderColor: "#FDE68A",
+    marginBottom: 10,
+  },
+  manualToggleTitle: { fontSize: 13.5, fontWeight: "800", color: "#0F172A" },
+  manualToggleSub:   { fontSize: 11.5, color: "#64748B", marginTop: 4, lineHeight: 16 },
+  toggleTrack: {
+    width: 42, height: 24, borderRadius: 999,
+    backgroundColor: "#CBD5E1", justifyContent: "center", padding: 3,
+  },
+  toggleThumb: {
+    width: 18, height: 18, borderRadius: 999,
+    backgroundColor: "#fff",
+    boxShadow: "0px 1px 2px rgba(0,0,0,0.15)",
   },
   saveBtn: {
     flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8,

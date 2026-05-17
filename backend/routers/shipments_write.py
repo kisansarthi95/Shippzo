@@ -501,17 +501,39 @@ def init() -> None:
         if not courier:
             raise HTTPException(status_code=404, detail="Courier not found")
 
-        # Allocate tracking ID
-        padding = int(courier.get("number_padding") or 4)
-        next_num = int(courier.get("next_number") or 1)
-        tracking_id = (
-            f"{courier.get('series_prefix','')}"
-            f"{str(next_num).zfill(padding)}"
-        )
-        await db.couriers.update_one(
-            {"id": courier["id"], "user_id": current_user["id"]},
-            {"$inc": {"next_number": 1}},
-        )
+        # ─── Allocate tracking ID ────────────────────────────────
+        # Phase-23 — Manual-tracking couriers (India Post Speed Post
+        # stickers, Anjani Courier physical AWB, etc.) skip the
+        # sequential counter entirely. The frontend collects the AWB
+        # typed/scanned from the printed sticker and passes it as
+        # `manual_tracking_id`. For every other courier the original
+        # series_prefix + zero-padded next_number path runs unchanged,
+        # preserving 100% of historic behaviour.
+        manual_mode = bool(courier.get("manual_tracking"))
+        if manual_mode:
+            manual_id = (payload.manual_tracking_id or "").strip()
+            if not manual_id:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"Courier '{courier.get('name')}' uses manual tracking. "
+                        "Please enter the tracking number from the courier sticker."
+                    ),
+                )
+            tracking_id = manual_id
+            # No $inc on next_number — the counter is irrelevant for
+            # manual couriers and must stay where the user left it.
+        else:
+            padding  = int(courier.get("number_padding") or 4)
+            next_num = int(courier.get("next_number") or 1)
+            tracking_id = (
+                f"{courier.get('series_prefix','')}"
+                f"{str(next_num).zfill(padding)}"
+            )
+            await db.couriers.update_one(
+                {"id": courier["id"], "user_id": current_user["id"]},
+                {"$inc": {"next_number": 1}},
+            )
 
         # Build shipment from order + optional overrides
         overrides = payload.overrides or {}

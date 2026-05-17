@@ -186,10 +186,20 @@ def init() -> None:
         if not doc:
             raise HTTPException(status_code=404, detail="Courier not found")
         c = _Courier(**doc)
+        # Phase-23 — manual-tracking couriers don't have a next-number
+        # to preview. We surface the flag so the UI can swap the read-
+        # only "next tracking ID" pill for a manual entry field.
+        if getattr(c, "manual_tracking", False):
+            return {
+                "tracking_id":     "",
+                "next_number":     c.next_number,
+                "manual_tracking": True,
+            }
         num = str(c.next_number).zfill(c.number_padding)
         return {
-            "tracking_id": f"{c.series_prefix}{num}",
-            "next_number": c.next_number,
+            "tracking_id":     f"{c.series_prefix}{num}",
+            "next_number":     c.next_number,
+            "manual_tracking": False,
         }
 
     @couriers_router.post("/couriers/{courier_id}/consume-tracking")
