@@ -13,6 +13,7 @@ import {
   ActivityIndicator,
   Modal,
   FlatList,
+  Linking,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useLocalSearchParams, useRouter, useFocusEffect } from "expo-router";
@@ -68,6 +69,13 @@ export default function AddShipment() {
 
   const [couriers, setCouriers] = useState<Courier[]>([]);
   const [selectedCourier, setSelectedCourier] = useState<Courier | null>(null);
+  // Phase-35 — Inquiry CTA. Shows a small premium pill button on the
+  // Courier Partner section header that opens an editable WhatsApp /
+  // SMS draft pre-populated with the current shipment's details.
+  // The button only activates after a courier is picked, and the
+  // outgoing inquiry uses ONLY the selected courier's contact phone.
+  const [inquiryOpen, setInquiryOpen] = useState(false);
+  const [inquiryDraft, setInquiryDraft] = useState("");
   // null = user hasn't chosen yet. true = auto series. false = manual/scan.
   const [autoTracking, setAutoTracking] = useState<boolean | null>(null);
   const [nextPreview, setNextPreview] = useState<string>("");
@@ -1336,10 +1344,91 @@ export default function AddShipment() {
                 ? "Courier Partner *"
                 : "Courier Partner"
             }
+            rightSlot={
+              // Phase-35 — Compact premium "Inquiry" pill button. Stays
+              // disabled until a courier partner has been picked so the
+              // outbound WhatsApp / SMS draft always targets exactly one
+              // courier (no ambiguity). The button is *visually* slightly
+              // smaller than the courier chips below so the chips remain
+              // the primary action on this section.
+              <TouchableOpacity
+                testID="courier-inquiry-btn"
+                style={[
+                  styles.inquiryBtn,
+                  !selectedCourier && styles.inquiryBtnDisabled,
+                ]}
+                disabled={!selectedCourier}
+                onPress={() => {
+                  if (!selectedCourier) return;
+                  // Compose the inquiry message — Phase-35 spec.
+                  // Empty fields auto-hide so the recipient never
+                  // sees "Customer Name: " with nothing after.
+                  const full = (addr1 || "").trim();
+                  const cityStateLine = [city, state]
+                    .map((x) => (x || "").trim())
+                    .filter(Boolean)
+                    .join(", ");
+                  const addressBlock = [full, cityStateLine]
+                    .filter(Boolean)
+                    .join("\n");
+                  const wUnit = (weightUnit || "g").toLowerCase();
+                  const weightTxt = weight ? `${weight}${wUnit}` : "";
+                  const itemsTxt = (itemsText || "")
+                    .split(/[\n,;|]/)
+                    .map((s) => s.trim())
+                    .filter(Boolean)
+                    .join(", ");
+                  const lines: string[] = [
+                    "Hello Team,",
+                    "",
+                    "Please confirm delivery feasibility for below shipment:",
+                    "",
+                  ];
+                  if (customerName.trim())
+                    lines.push(`Customer Name: ${customerName.trim()}`);
+                  if (addressBlock) {
+                    lines.push("");
+                    lines.push("Full Address:");
+                    lines.push(addressBlock);
+                  }
+                  if (pincode.trim())
+                    lines.push(`Pincode: ${pincode.trim()}`);
+                  if (weightTxt)
+                    lines.push(`Parcel Weight: ${weightTxt}`);
+                  if (itemsTxt)
+                    lines.push(`Parcel Content: ${itemsTxt}`);
+                  lines.push("");
+                  lines.push("Please confirm:");
+                  lines.push("1. Delivery possible or not?");
+                  lines.push("2. Expected charges");
+                  lines.push("3. Any remote/ODA issue");
+                  lines.push("");
+                  lines.push("Thank you.");
+                  setInquiryDraft(lines.join("\n"));
+                  setInquiryOpen(true);
+                }}
+              >
+                <PhIcon
+                  name="chatbubble-outline"
+                  size={13}
+                  color={selectedCourier ? "#EA580C" : "#D1D5DB"}
+                />
+                <Text
+                  style={[
+                    styles.inquiryBtnText,
+                    !selectedCourier && { color: "#9CA3AF" },
+                  ]}
+                >
+                  Inquiry
+                </Text>
+              </TouchableOpacity>
+            }
           >
             {!selectedCourier && (
               <Text style={styles.requiredHint}>
-                Please pick a courier below
+                {couriers.length === 0
+                  ? "Please pick a courier below"
+                  : "Select a courier partner to enable inquiry"}
               </Text>
             )}
             <ScrollView
@@ -2590,6 +2679,143 @@ export default function AddShipment() {
           )}
         </SafeAreaView>
       </Modal>
+
+      {/* Phase-35 — Courier Inquiry preview modal.
+
+          Opens when the operator taps the small "Inquiry" pill on the
+          Courier Partner section. The textarea is fully editable so
+          the operator can tweak the auto-composed message before it
+          leaves their device. "Open WhatsApp" hits wa.me with the
+          selected courier's contact_phone; if WhatsApp isn't
+          installed we fall back to the system SMS composer at the
+          same number. Both routes use deep-links — no backend call,
+          no network requirement, no PII leaving the device until
+          the operator hits Send in WhatsApp/SMS themselves. */}
+      <Modal
+        visible={inquiryOpen}
+        animationType="slide"
+        transparent
+        onRequestClose={() => setInquiryOpen(false)}
+      >
+        <View style={styles.inquiryBackdrop}>
+          <View style={styles.inquiryCard}>
+            <View style={styles.inquiryHead}>
+              <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+                <View style={styles.inquiryIconCircle}>
+                  <PhIcon name="chatbubble-outline" size={16} color="#EA580C" />
+                </View>
+                <View>
+                  <Text style={styles.inquiryTitle}>Courier Inquiry</Text>
+                  <Text style={styles.inquirySub} numberOfLines={1}>
+                    To: {selectedCourier?.name || ""}
+                    {(selectedCourier as any)?.contact_phone
+                      ? ` · ${(selectedCourier as any).contact_phone}`
+                      : ""}
+                  </Text>
+                </View>
+              </View>
+              <TouchableOpacity
+                onPress={() => setInquiryOpen(false)}
+                hitSlop={10}
+              >
+                <PhIcon name="close" size={20} color="#374151" />
+              </TouchableOpacity>
+            </View>
+
+            {!(selectedCourier as any)?.contact_phone && (
+              <View style={styles.inquiryWarn}>
+                <PhIcon name="alert-circle-outline" size={14} color="#92400E" />
+                <Text style={styles.inquiryWarnText}>
+                  This courier has no contact number saved. Add one in
+                  Settings → Couriers to enable inquiry.
+                </Text>
+              </View>
+            )}
+
+            <Text style={styles.inquiryLabel}>Message (editable)</Text>
+            <TextInput
+              style={styles.inquiryTextarea}
+              value={inquiryDraft}
+              onChangeText={setInquiryDraft}
+              multiline
+              textAlignVertical="top"
+            />
+
+            <View style={styles.inquiryActions}>
+              <TouchableOpacity
+                style={[styles.inquiryActionBtn, styles.inquirySmsBtn]}
+                onPress={async () => {
+                  const phone = String(
+                    (selectedCourier as any)?.contact_phone || "",
+                  ).replace(/\D/g, "");
+                  if (!phone) {
+                    Alert.alert(
+                      "No contact number",
+                      "This courier has no phone saved. Add one in Settings → Couriers.",
+                    );
+                    return;
+                  }
+                  const sep = Platform.OS === "ios" ? "&" : "?";
+                  const url = `sms:${phone}${sep}body=${encodeURIComponent(inquiryDraft)}`;
+                  try {
+                    await Linking.openURL(url);
+                    setInquiryOpen(false);
+                  } catch {
+                    Alert.alert("SMS app unavailable", "Couldn't open the SMS composer.");
+                  }
+                }}
+              >
+                <PhIcon name="chatbubble-outline" size={14} color="#374151" />
+                <Text style={styles.inquirySmsText}>SMS</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[styles.inquiryActionBtn, styles.inquiryWaBtn]}
+                onPress={async () => {
+                  const phoneRaw = String(
+                    (selectedCourier as any)?.contact_phone || "",
+                  ).replace(/\D/g, "");
+                  if (!phoneRaw) {
+                    Alert.alert(
+                      "No contact number",
+                      "This courier has no phone saved. Add one in Settings → Couriers.",
+                    );
+                    return;
+                  }
+                  // Normalise to international format (default IN +91 if
+                  // operator saved a bare 10-digit number).
+                  const phone =
+                    phoneRaw.length === 10 ? `91${phoneRaw}` : phoneRaw;
+                  const waUrl = `whatsapp://send?phone=${phone}&text=${encodeURIComponent(inquiryDraft)}`;
+                  const httpsUrl = `https://wa.me/${phone}?text=${encodeURIComponent(inquiryDraft)}`;
+                  // Try the native WhatsApp scheme first, fall back to
+                  // the universal wa.me link, then finally fall back
+                  // to SMS so the inquiry NEVER silently fails.
+                  try {
+                    const can = await Linking.canOpenURL(waUrl);
+                    await Linking.openURL(can ? waUrl : httpsUrl);
+                    setInquiryOpen(false);
+                  } catch {
+                    try {
+                      await Linking.openURL(httpsUrl);
+                      setInquiryOpen(false);
+                    } catch {
+                      const sep = Platform.OS === "ios" ? "&" : "?";
+                      await Linking.openURL(
+                        `sms:${phoneRaw}${sep}body=${encodeURIComponent(inquiryDraft)}`,
+                      );
+                      setInquiryOpen(false);
+                    }
+                  }
+                }}
+              >
+                <PhIcon name="logo-whatsapp" size={14} color="#fff" />
+                <Text style={styles.inquiryWaText}>Open WhatsApp</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -2597,13 +2823,26 @@ export default function AddShipment() {
 function Section({
   title,
   children,
+  rightSlot,
 }: {
   title: string;
   children: React.ReactNode;
+  /** Optional content rendered on the SAME row as the section title,
+   *  right-aligned. Used by Phase-35 to host the "Inquiry" CTA on the
+   *  Courier Partner section without breaking other sections. */
+  rightSlot?: React.ReactNode;
 }) {
   return (
     <View style={styles.section}>
-      <Text style={styles.sectionTitle}>{title}</Text>
+      <View style={styles.sectionHeaderRow}>
+        {/* When sitting inside a row, drop the title's own marginBottom
+            so the spacing math stays exactly the same as before (the
+            wrapper row carries it instead). */}
+        <Text style={[styles.sectionTitle, { marginBottom: 0, flex: 1 }]}>
+          {title}
+        </Text>
+        {rightSlot}
+      </View>
       {children}
     </View>
   );
@@ -2678,6 +2917,115 @@ const styles = StyleSheet.create({
     textTransform: "uppercase",
     marginBottom: 10,
   },
+  // Phase-35 — section-header row + right slot for the new Inquiry CTA.
+  // Keeps the title and the action button on the SAME baseline so the
+  // section header doesn't double its height on phones that wrap.
+  sectionHeaderRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 10,
+    marginBottom: 10,
+  },
+  // Compact premium "Inquiry" pill — white bg, thin orange border,
+  // small message icon + orange text. Slightly smaller font than the
+  // courier chips below so the chips remain the visual primary.
+  inquiryBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "#FB923C",
+    backgroundColor: "#fff",
+  },
+  inquiryBtnDisabled: {
+    borderColor: "#E5E7EB",
+    backgroundColor: "#F9FAFB",
+  },
+  inquiryBtnText: {
+    fontSize: 12,
+    fontWeight: "800",
+    color: "#EA580C",
+  },
+  // -------- Inquiry preview modal --------
+  inquiryBackdrop: {
+    flex: 1,
+    backgroundColor: "rgba(15,23,42,0.55)",
+    justifyContent: "flex-end",
+  },
+  inquiryCard: {
+    backgroundColor: "#fff",
+    borderTopLeftRadius: 22,
+    borderTopRightRadius: 22,
+    padding: 18,
+    paddingBottom: 28,
+    gap: 12,
+  },
+  inquiryHead: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  inquiryIconCircle: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: "#FFF7ED",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  inquiryTitle: { fontSize: 16, fontWeight: "800", color: "#0F172A" },
+  inquirySub: { fontSize: 11, color: "#6B7280", maxWidth: 240 },
+  inquiryLabel: { fontSize: 11, color: "#6B7280", fontWeight: "700" },
+  inquiryTextarea: {
+    minHeight: 200,
+    maxHeight: 320,
+    borderWidth: 1,
+    borderColor: "#E5E7EB",
+    borderRadius: 12,
+    padding: 12,
+    fontSize: 13,
+    lineHeight: 19,
+    color: "#111827",
+    backgroundColor: "#F8F9FB",
+  },
+  inquiryWarn: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 8,
+    backgroundColor: "#FFFBEB",
+    borderWidth: 1,
+    borderColor: "#FCD34D",
+    borderRadius: 10,
+    padding: 10,
+  },
+  inquiryWarnText: {
+    flex: 1,
+    fontSize: 11,
+    color: "#78350F",
+    lineHeight: 16,
+  },
+  inquiryActions: { flexDirection: "row", gap: 10 },
+  inquiryActionBtn: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    paddingVertical: 12,
+    borderRadius: 12,
+  },
+  inquirySmsBtn: {
+    backgroundColor: "#F3F4F6",
+    borderWidth: 1,
+    borderColor: "#E5E7EB",
+  },
+  inquirySmsText: { fontSize: 13, fontWeight: "700", color: "#374151" },
+  inquiryWaBtn: { backgroundColor: "#25D366" },
+  inquiryWaText: { fontSize: 13, fontWeight: "800", color: "#fff" },
   fieldLabel: {
     fontSize: 12,
     color: colors.textMuted,
