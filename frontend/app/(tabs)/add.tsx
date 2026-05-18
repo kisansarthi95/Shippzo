@@ -458,6 +458,26 @@ export default function AddShipment() {
   //   - Auto-Generate Order ID is ON
   //   - Auto-fill in New Shipment is ON
   //   - User hasn't already typed in the Order ID input
+  //
+  // Phase-37 (2026-05-18) — Auto-generation now decoupled from
+  // Master ID. The previous logic gated auto-fill behind BOTH
+  // `auto_generate` AND `autofill_in_new_shipment` AND
+  // `master_order_id` non-empty, which meant a user whose admin
+  // turned off "autofill in new shipment" would land on a blank
+  // Order ID field even though Master ID was present in the system.
+  // That broke shipment creation because the field is `*` required.
+  //
+  // New rule (matches the product spec):
+  //   * If the form already has an external Order ID (loaded from
+  //     Smart-Paste / pending / sheet / webhook / edit / draft) →
+  //     leave it untouched.
+  //   * Otherwise auto-generate using the same unique sequence the
+  //     Master ID uses. Master ID and Order ID are DIFFERENT fields
+  //     conceptually (Master ID = internal system ref, Order ID =
+  //     end-customer reference) but when no external Order ID is
+  //     provided they happen to share the same generated value
+  //     because re-using the already-allocated sequence avoids
+  //     two parallel counters.
   useEffect(() => {
     const eid = String(params.edit_id || "").trim();
     if (eid) return;          // edit mode → leave existing value alone
@@ -469,13 +489,26 @@ export default function AddShipment() {
         setPreviewMasterId(r.master_order_id || "");
         setOrderIdAutoGen(!!r.auto_generate);
         setOrderIdAutofillNew(!!r.autofill_in_new_shipment);
+        // Auto-fill ONLY when:
+        //   1) The sequence engine is on (admin hasn't disabled
+        //      Master ID generation entirely), AND
+        //   2) The Order ID input is empty (no external order id
+        //      came in from any source), AND
+        //   3) The user hasn't started typing manually.
+        //
+        // NOTE: `autofill_in_new_shipment` is intentionally NOT a
+        // gate here — that setting used to leave the field blank,
+        // which is the bug the operator reported. The field can
+        // never stay blank when no external Order ID is provided.
         if (
           r.auto_generate &&
-          r.autofill_in_new_shipment &&
           r.master_order_id &&
           !userTouchedOrderId
         ) {
-          setOrderId(r.master_order_id);
+          // Read the current orderId from state via the functional
+          // setter so we don't race against a Smart-Paste /
+          // pending-order loader that fired after us.
+          setOrderId((prev) => (prev && prev.trim() ? prev : r.master_order_id));
         }
       } catch {
         /* offline / fresh user — silently skip preview */
@@ -728,7 +761,13 @@ export default function AddShipment() {
     if (params.prefill) {
       try {
         const o = JSON.parse(String(params.prefill));
-        setOrderId(o.order_id || "");
+        // Phase-37 — Only overwrite Order ID when the prefill source
+        // ACTUALLY provided one. Empty prefill → leave the field at
+        // whatever the peek-master effect already auto-filled. This
+        // is the fix for "Order ID stayed blank because no external
+        // order id existed AND prefill wiped the auto-fill".
+        const incomingOid = String(o.order_id || "").trim();
+        if (incomingOid) setOrderId(incomingOid);
         setCustomerName(o.customer_name || "");
         setCustomerPhone(o.phone || "");
         setCustomerAltPhone(o.alt_phone || o.customer_alt_phone || "");
@@ -849,7 +888,11 @@ export default function AddShipment() {
   }, [sheetConnected]);
 
   const pickOrder = (o: SheetOrder) => {
-    setOrderId(o.order_id);
+    // Phase-37 — Sheet pick: only overwrite Order ID when the sheet
+    // row ACTUALLY had one. Empty value → keep the auto-generated
+    // Order ID from the peek-master effect.
+    const incomingOid = String(o.order_id || "").trim();
+    if (incomingOid) setOrderId(incomingOid);
     setCustomerName(o.customer_name);
     setCustomerPhone(o.phone);
     // Phase-9 unified-address (2026-04-30): use FULL address verbatim,
@@ -2032,8 +2075,8 @@ export default function AddShipment() {
                   setOrderId(t);
                 }}
                 placeholder={
-                  orderIdAutoGen && orderIdAutofillNew
-                    ? "Auto-filled from Master Order ID"
+                  orderIdAutoGen
+                    ? "Auto-generated (editable)"
                     : "Order ID / Invoice #"
                 }
                 placeholderTextColor="#9CA3AF"
@@ -2041,10 +2084,16 @@ export default function AddShipment() {
               />
             </Field>
             {orderIdAutoGen && previewMasterId ? (
+              // Phase-37 — Master ID is now displayed as a pure
+              // INTERNAL system reference, not a sibling of Order
+              // ID. The hint copy below makes the distinction
+              // explicit so operators don't think Order ID stays
+              // blank "because Master ID exists" (which was the
+              // original bug — see useEffect above).
               <Text style={styles.hint}>
-                Master ID (system): {previewMasterId}
+                Master ID (system, internal only): {previewMasterId}
                 {orderId && orderId !== previewMasterId
-                  ? "  ·  Your ID kept separately"
+                  ? "  ·  Order ID kept separately"
                   : ""}
               </Text>
             ) : null}
