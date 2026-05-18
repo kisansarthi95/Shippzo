@@ -242,37 +242,43 @@ street / area / colony / village / post / taluka / district /
 landmark — ALL of it together on ONE line, separated by commas.
 NEVER products, quantity, or amount.
 
-**Rule 8 — CRITICAL ADDRESS RULE: never blank, NEVER split, NEVER drop:**
+**Rule 8 — CRITICAL ADDRESS RULE: never blank, NEVER split, MOVE the trio out:**
 NEVER LEAVE ADDRESS_1 EMPTY IF THE INPUT CONTAINS ANY ADDRESS-LIKE
 TEXT. NEVER use ADDRESS_2 — leave it as `-`.
   * If the input has a label like "Shipping address" / "Delivery
     address" / "Address" / "પત્તો" / "पता", treat the WHOLE multi-
     line block that follows (until you hit phone / email / name /
     order id / payment) as the address block.
-  * COPY (do NOT cut) the trailing CITY + STATE + PINCODE into
-    their own fields. They MUST ALSO REMAIN inside ADDRESS_1 — the
-    courier label needs the city visible on the address line. The
-    City/State/Pincode fields are PARALLEL extracts, not a
-    subtraction.
-  * ADDRESS_1 = the full physical address verbatim (house, street,
-    apartment, area, landmark, locality, road, city, state, pincode)
-    joined with ", " in the same order they appear in the source.
-    DO NOT split into ADDRESS_2.
-  * Example of the new behaviour (city + state KEPT inside ADDRESS_1):
+  * MOVE (do NOT copy) the trailing CITY + STATE + PINCODE into
+    their own dedicated fields. They MUST BE REMOVED from
+    ADDRESS_1 — those three values live ONLY in the CITY / STATE /
+    PINCODE columns. The courier-label renderer composes the
+    printable footer line "<city>, <state> - <pincode>" from those
+    dedicated fields, so duplicating them inside ADDRESS_1 prints
+    the same trio twice on the sticker.
+  * ADDRESS_1 = the physical address MINUS the trailing
+    city/state/pincode trio (house, street, apartment, area,
+    landmark, locality, road) joined with ", " in the same order
+    they appear in the source. DO NOT split into ADDRESS_2.
+  * Example of the correct behaviour (city + state + pincode
+    REMOVED from ADDRESS_1):
       Input  : "Shipping address: C-401 Venus Apartment, near
                 Sainik Vihar Saraswati Vihar, Rani Bagh, Pitampura,
                 Delhi, 110034 Delhi"
       WRONG  : ADDRESS_1: C-401 Venus Apartment, near Sainik Vihar,
-                          Saraswati Vihar, Rani Bagh, Pitampura
-               (city "Delhi" got stripped from ADDRESS_1)
-      RIGHT  : ADDRESS_1: C-401 Venus Apartment, near Sainik Vihar,
                           Saraswati Vihar, Rani Bagh, Pitampura,
                           Delhi, 110034 Delhi
+               (city / state / pincode duplicated inside ADDRESS_1)
+      RIGHT  : ADDRESS_1: C-401 Venus Apartment, near Sainik Vihar,
+                          Saraswati Vihar, Rani Bagh, Pitampura
                ADDRESS_2: -
                CITY: Delhi  STATE: Delhi  PINCODE: 110034
+               (city / state / pincode MOVED into their own fields
+                and STRIPPED from ADDRESS_1.)
   * If the same word (e.g. "Delhi") appears TWICE — once as a
-    neighbourhood name and once as the city — KEEP both inside
-    ADDRESS_1. Do NOT silently drop either.
+    neighbourhood name and once as the city — keep only the
+    NEIGHBOURHOOD occurrence inside ADDRESS_1, and put the trailing
+    CITY occurrence into the CITY field.
   * "near …" / "behind …" / "opp …" landmarks → stay INSIDE
     ADDRESS_1, separated by ", ".
   * Flat/house numbers (C-401, B/12, 3rd floor, Room 5, Plot 22
@@ -335,37 +341,37 @@ DO NOT guess. The user will set it later if needed.
     copy EVERYTHING after that label (until you hit a different
     field) into ITEMS.
 
-**Rule 13 — NEVER LEAVE ADDRESS PARTIAL — capture EVERY line in ADDRESS_1:**
-There is now a SINGLE address line (ADDRESS_1). Capacity is up to
-~280 characters — long enough for any real-world Indian address.
-ADDRESS_2 must always be `-`.
-NEVER drop any visible street/area/landmark/city/state/pincode text
-from ADDRESS_1.
+**Rule 13 — MOVE the trailing city/state/pincode OUT of ADDRESS_1:**
+There is a SINGLE address line (ADDRESS_1). Capacity is up to
+~280 characters. ADDRESS_2 must always be `-`.
+NEVER drop any visible street/area/landmark text from ADDRESS_1 —
+but DO strip the trailing CITY / STATE / PINCODE trio so each
+value lives in EXACTLY ONE field.
   * Procedure when the address block has 3+ comma-separated parts:
-      1. Last 2-3 parts → ALSO copy into CITY / STATE / PINCODE
-         (parallel extract, not subtraction).
-      2. ALL parts (including those city/state/pincode bits) →
-         ADDRESS_1, joined by ", ", in original order.
-         Do NOT split into ADDRESS_2.
-  * Example showing the bug to AVOID and the right behaviour:
+      1. Last 2-3 parts (city, state, pincode) → MOVE into CITY /
+         STATE / PINCODE (not parallel; an EXTRACT-and-REMOVE).
+      2. Remaining earlier parts → ADDRESS_1, joined by ", ",
+         in original order. Do NOT split into ADDRESS_2.
+  * Example showing the bug to AVOID and the correct behaviour:
       Input  : "20 \"Dev Atelier\", Nr RK Enterprise, Hiran Circle,
                 Ramdevnagar Road, Prahladnagar, Ahmedabad,
                 380015 Gujarat"
       WRONG #1: ADDRESS_1: 20 "Dev Atelier", Nr RK Enterprise
                 ADDRESS_2: Hiran Circle, Ramdevnagar Road
-                (splitting into TWO lines is FORBIDDEN now.)
+                (splitting into TWO lines is FORBIDDEN.)
       WRONG #2: ADDRESS_1: 20 "Dev Atelier", Nr RK Enterprise,
                            Hiran Circle, Ramdevnagar Road,
-                           Prahladnagar
-                (city/state/pincode got STRIPPED from ADDRESS_1.)
+                           Prahladnagar, Ahmedabad, 380015 Gujarat
+                (city / state / pincode duplicated inside ADDRESS_1
+                 — they belong ONLY in CITY/STATE/PINCODE.)
       RIGHT   : ADDRESS_1: 20 "Dev Atelier", Nr RK Enterprise,
                            Hiran Circle, Ramdevnagar Road,
-                           Prahladnagar, Ahmedabad, 380015 Gujarat
+                           Prahladnagar
                 ADDRESS_2: -
                 CITY: Ahmedabad  STATE: Gujarat  PINCODE: 380015
-                (city / state / pincode are KEPT inside ADDRESS_1
-                AND ALSO copied to their own fields.)
-  * If the joined ADDRESS_1 would exceed 280 chars (very rare),
+                (city / state / pincode MOVED out of ADDRESS_1 into
+                 their dedicated fields — single source of truth.)
+  * If the joined ADDRESS_1 would still exceed 280 chars (very rare),
     truncate trailing duplicates only — do NOT move parts into
     ADDRESS_2.
   * "Near / Opp / Behind / Landmark / etc." stay INSIDE ADDRESS_1,
@@ -1165,29 +1171,41 @@ def repair_address_from_raw(raw_text: str, schema: Dict[str, str]) -> Dict[str, 
     if state and not (schema.get("STATE") or "").strip():
         schema["STATE"] = state
 
-    # Final defensive pass — even if we didn't override line1 wholesale,
-    # ensure city / state / pincode (from any source) ALSO appear inside
-    # ADDRESS_1. This is the courier-label-needs-them-visible rule. We
-    # ONLY append values that aren't already present (case-insensitive).
-    cur_addr = (schema.get("ADDRESS_1", "") or "").strip().rstrip(", ")
-    cur_lower = cur_addr.lower()
-    final_city = (schema.get("CITY", "") or "").strip()
-    final_state = (schema.get("STATE", "") or "").strip()
-    final_pin = (schema.get("PINCODE", "") or "").strip()
-    appendix = []
-    if final_city and final_city.lower() not in cur_lower:
-        appendix.append(final_city)
-    if final_state and final_state.lower() not in cur_lower and final_state.lower() != final_city.lower():
-        appendix.append(final_state)
-    if final_pin and final_pin not in cur_addr:
-        appendix.append(final_pin)
-    if appendix:
-        glue = ", " if cur_addr else ""
-        merged = (cur_addr + glue + ", ".join(appendix)).strip(", ")
-        if len(merged) <= 300:
-            schema["ADDRESS_1"] = merged
-        else:
-            schema["ADDRESS_1"] = merged[:300]
+    # Phase-36 (2026-05-18) — DISABLED: previously this block re-
+    # appended CITY / STATE / PINCODE back onto ADDRESS_1 so the
+    # printable courier label would always see the trio. The new label
+    # renderer composes the trio from their dedicated fields, so
+    # re-appending here just produced duplicates on the printed
+    # sticker (e.g. "...Pitampura, Delhi, 110034 Delhi\nDelhi, Delhi -
+    # 110034"). Leaving the block out makes the dedicated CITY /
+    # STATE / PINCODE columns the single source of truth, which keeps
+    # the address line clean across:
+    #   * Smart Paste preview
+    #   * Shipment edit form
+    #   * Master sheet column "Address"
+    #   * Printed courier sticker
+    #
+    # Original logic preserved below as a comment for archaeology.
+    #
+    # cur_addr = (schema.get("ADDRESS_1", "") or "").strip().rstrip(", ")
+    # cur_lower = cur_addr.lower()
+    # final_city  = (schema.get("CITY",    "") or "").strip()
+    # final_state = (schema.get("STATE",   "") or "").strip()
+    # final_pin   = (schema.get("PINCODE", "") or "").strip()
+    # appendix = []
+    # if final_city and final_city.lower() not in cur_lower:
+    #     appendix.append(final_city)
+    # if final_state and final_state.lower() not in cur_lower and final_state.lower() != final_city.lower():
+    #     appendix.append(final_state)
+    # if final_pin and final_pin not in cur_addr:
+    #     appendix.append(final_pin)
+    # if appendix:
+    #     glue = ", " if cur_addr else ""
+    #     merged = (cur_addr + glue + ", ".join(appendix)).strip(", ")
+    #     if len(merged) <= 300:
+    #         schema["ADDRESS_1"] = merged
+    #     else:
+    #         schema["ADDRESS_1"] = merged[:300]
 
     return schema
 
@@ -1299,6 +1317,64 @@ def to_legacy_fields(ai_fields: Dict[str, str]) -> Dict[str, str]:
         # already a substring of addr1 (some prompt drift is possible).
         if addr2_raw.lower() not in addr1_raw.lower():
             addr1_raw = (addr1_raw + ", " + addr2_raw) if addr1_raw else addr2_raw
+
+    # Phase-36 (2026-05-18) — Strip city, state, and pincode from the
+    # trailing end of ADDRESS_1 so the dedicated city/state/pincode
+    # fields are the single source of truth for those values. The new
+    # courier-label renderer composes the printable address as:
+    #   "<address_line1>\n<city>, <state> - <pincode>"
+    # so if we leave the trio inside ADDRESS_1 we get duplicates on the
+    # label (e.g. "...Pitampura, Delhi, 110034 Delhi\nDelhi, Delhi -
+    # 110034"). Order of removal matters: pincode first (most specific),
+    # then state, then city. Each strip is anchored to a trailing-comma
+    # context so we never accidentally hit a SAME-named landmark earlier
+    # in the address (e.g. a road called "Gujarat Road" stays intact).
+    city_val   = (ai_fields.get("CITY",   "") or "").strip()
+    state_val  = (ai_fields.get("STATE",  "") or "").strip()
+    pin_val    = (ai_fields.get("PINCODE","") or "").strip()
+
+    def _strip_tail_token(text: str, token: str) -> str:
+        """Remove `token` (case-insensitive) when it sits at the end of
+        the string, optionally preceded by a comma + whitespace. Leaves
+        any earlier occurrence of the same token untouched. Whitespace
+        and stray commas are normalised at the end."""
+        if not text or not token:
+            return text
+        # Build a regex that matches the token at the trailing end,
+        # tolerating: ", token" / "token" / "  ,  token,  " / "token."
+        pat = re.compile(
+            r"\s*[,;\u3001]?\s*"        # optional separator before
+            r"\b" + re.escape(token) + r"\b"  # the token itself
+            r"\s*[\.,;]?\s*$",          # optional trailing punctuation
+            re.IGNORECASE,
+        )
+        return pat.sub("", text).rstrip(" ,;").strip()
+
+    cleaned_addr = addr1_raw
+    # Run the three strips in a loop until the address text stops
+    # changing. This handles inputs where the tokens are glued in
+    # unexpected order (e.g. "110034 Delhi" — pincode then state, so
+    # the first pincode-pass can't see it as trailing but a second
+    # pass can after the state-pass exposes it). Loop is bounded so
+    # a pathological input can't spin forever.
+    for _ in range(4):
+        prev = cleaned_addr
+        # 1) Pincode at the trailing end (most specific).
+        if pin_val:
+            cleaned_addr = _strip_tail_token(cleaned_addr, pin_val)
+        # 2) State at the trailing end.
+        if state_val:
+            cleaned_addr = _strip_tail_token(cleaned_addr, state_val)
+        # 3) City at the trailing end (last because state often sits
+        #    AFTER city in Indian inputs).
+        if city_val:
+            cleaned_addr = _strip_tail_token(cleaned_addr, city_val)
+        if cleaned_addr == prev:
+            break
+    # Final tidy — collapse any double commas / dangling separators
+    # left behind by repeated strips.
+    cleaned_addr = re.sub(r"\s*,\s*,+\s*", ", ", cleaned_addr).strip(" ,;")
+    addr1_raw = cleaned_addr
 
     return {
         "customer_name":  ai_fields.get("NAME", ""),
