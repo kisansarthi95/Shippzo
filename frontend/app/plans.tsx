@@ -362,6 +362,20 @@ export default function PlansScreen() {
           </Text>
         </View>
 
+        {/* Phase-38 — Legal-entity transparency note. Razorpay
+            settles to the parent KYC entity (Kisan Sarathi Organic);
+            disclosing this once here keeps the customer informed
+            before they see the name on a bank statement, while the
+            actual checkout popup stays Shippzo-branded. */}
+        <View style={styles.entityNote}>
+          <PhIcon name="information-circle-outline" size={13} color="#64748B" />
+          <Text style={styles.entityNoteTxt}>
+            Payments are processed by Shippzo's parent entity{" "}
+            <Text style={{ fontWeight: "700" }}>Kisan Sarathi Organic</Text>
+            {" "}via Razorpay — this name may appear on your bank statement.
+          </Text>
+        </View>
+
         {/* Wallet card — tap to manage credits */}
         <TouchableOpacity
           testID="wallet-card"
@@ -878,6 +892,27 @@ const styles = StyleSheet.create({
     marginBottom: 14,
   },
   mockBannerTxt: { flex: 1, color: "#065F46", fontSize: 12, fontWeight: "700" },
+  // Phase-38 — transparency note about the parent legal entity.
+  // Visually quieter than the green Razorpay banner above so it
+  // reads as supplementary, not a primary message.
+  entityNote: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    backgroundColor: "#F8FAFC",
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+    borderRadius: 12,
+    marginBottom: 16,
+  },
+  entityNoteTxt: {
+    flex: 1,
+    color: "#475569",
+    fontSize: 11,
+    lineHeight: 16,
+  },
   usageBox: {
     backgroundColor: "#fff",
     borderRadius: 12,

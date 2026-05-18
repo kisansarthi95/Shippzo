@@ -117,6 +117,14 @@ export default function CheckoutScreen() {
 
   const html = useMemo(() => {
     if (!order) return "";
+    // Phase-38 — Razorpay Checkout is now fully Shippzo-branded so
+    // customers never see the legal entity name ("Kisan Sarathi
+    // Organic" — the KYC owner) inside the popup. Razorpay supports
+    // multiple brands under a single merchant account; we override
+    // `name`, `description`, `image` and `theme.color` to present a
+    // pure Shippzo experience. The bank settlement / GST invoice
+    // still settle to the legal entity — that's disclosed once via
+    // the Billing screen banner (Option B).
     const description =
       order.mode === "wallet"
         ? `${order.credits_to_grant} credits top-up`
@@ -128,13 +136,28 @@ export default function CheckoutScreen() {
       order_id: order.mode === "team_extra_member" ? order.razorpay_order_id : order.order_id,
       amount: order.amount_paise,
       currency: order.currency,
-      name: "Courier Manager",
-      description,
+      // Brand override — visible in the Razorpay popup header.
+      name: "Shippzo",
+      description: `Courier Labels & Billing — ${description}`,
+      // Hosted square logo (256×256 PNG). Razorpay requires HTTPS;
+      // we serve the asset from the platform CDN. To upgrade
+      // permanence, re-upload the same PNG via Razorpay Dashboard
+      // → Account & Settings → Business Profile → Logo so it
+      // survives even if this CDN URL changes.
+      image: "https://customer-assets.emergentagent.com/job_logistics-hub-740/artifacts/0eqd6jf8_1000112224.png",
       prefill: {
         name: order.user_name || "",
         email: order.user_email || "",
       },
+      // Brand orange — matches the app's primary CTA color.
       theme: { color: "#FF5A00" },
+      // Phase-38 — Source tag so Razorpay Dashboard analytics can
+      // separate Shippzo (app) transactions from the parent
+      // Kisan Sarathi website transactions on the same account.
+      notes: {
+        source: "shippzo_app",
+        mode: order.mode || "",
+      },
     };
     return `<!doctype html>
 <html><head>
