@@ -21676,6 +21676,75 @@ agent_communication:
       Phase-32 shipped. WhatsApp Template Editor is now gated
       behind the `whatsapp_template_editor` feature flag.
 
+      Phase-33 shipped. Permanent Cancel / Return dead-state.
+
+      Backend (lib/terminal_states.py + 3 router patches):
+        • New `TERMINAL_SHIPMENT_STATUSES = {Cancelled,
+          Cancel by buyer, Returned}` constant + helper
+          `is_terminal_shipment_status()`.
+        • `PUT /api/shipments/{id}` now 423-LOCKs when the
+          current row is already terminal AND stamps
+          `cancelled_at` / `cancel_reason="user_action"` on
+          the way IN.
+        • `DELETE /api/shipments/{id}` no longer hard-deletes.
+          It flips status to "Cancelled" (idempotent ack
+          for already-terminal rows) and runs the existing
+          sheet status sync. Local row stays so dedupe
+          blocks any future webhook re-insertion.
+        • `PUT /api/orders/pending/{id}` 423-LOCKs when the
+          pending order is already cancelled.
+        • `DELETE /api/orders/pending/{id}` → flips
+          status="cancelled" (no removal).
+        • `POST /api/orders/pending/{id}/ship` 423-LOCKs on
+          cancelled pending orders so the legacy promote
+          path can't revive a dead row.
+        • `routers/webhook.py` order_status_update filter
+          now excludes terminal statuses → upstream
+          marketplace re-emits cannot un-cancel an order.
+
+      Live smoke-test (admin@test.com):
+        • PUT on already-Cancelled → 423 Locked ✓
+        • Revive attempt → 423 Locked ✓
+        • DELETE → {ok:true, already_cancelled:true} ✓
+        • Normal active update → 200 OK ✓ (no regressions)
+
+      Frontend:
+        • New `components/ConfirmCancelModal.tsx` — one
+          reusable modal with dynamic title/body for the 4
+          kinds (cancel, cancel_by_buyer, returned, delete).
+        • `app/(tabs)/shipments.tsx`:
+            - Trash icon REPLACED by a red X close-circle
+              "Cancel Order" icon → opens the modal.
+            - Status picker sheet routes terminal targets
+              (Cancelled / Cancel by buyer / Returned)
+              through the modal before the API write.
+            - Tapping the stage pill on an already-terminal
+              card shows an "Order locked" alert instead of
+              the picker.
+            - Edit & X icons hidden when the row is
+              already terminal.
+        • `app/(tabs)/orders.tsx`:
+            - Trash icon REPLACED by X close-circle on every
+              pending-order card → opens the same modal.
+            - New "❌ Cancelled" chip in the source filter row
+              loads cancelled pending orders (read-only
+              history). Cancelled rows render with no Edit
+              and no X buttons.
+        • `app/(tabs)/add.tsx`:
+            - Edit-mode hydrate refuses to populate the form
+              for terminal shipments and bounces back with
+              an "Order locked" alert.
+
+      UI proof:
+        • Shipments list shows a previously-cancelled card
+          with NO X / no Edit (only contact + view), plus
+          the new red X on active rows.
+        • Orders tab filter row now includes "❌ Cancelled"
+          chip at the end (count auto-renders).
+        • Cancel Order modal renders with title, customer
+          label, body copy, and Close / "Yes, Cancel" red
+          CTA exactly as the product spec demanded.
+
       Backend:
         • Removed `whatsapp_template_editor` from the
           `free_trial` plan's DEFAULT_PLAN_FEATURES list.

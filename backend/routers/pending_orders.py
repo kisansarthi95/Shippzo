@@ -99,6 +99,21 @@ def init() -> None:
                 status_code=403,
                 detail="Your plan doesn't include editing pending orders.",
             )
+        # Phase-33 — Terminal-state lock for pending orders.
+        from lib.terminal_states import (
+            is_terminal_pending_status, TERMINAL_LOCK_DETAIL,
+        )
+        existing = await db.pending_orders.find_one(
+            {"id": order_id, "user_id": current_user["id"]},
+            {"_id": 0, "status": 1},
+        )
+        if not existing:
+            raise HTTPException(status_code=404, detail="Order not found")
+        if is_terminal_pending_status(existing.get("status")):
+            raise HTTPException(
+                status_code=423,
+                detail=TERMINAL_LOCK_DETAIL,
+            )
         # Allow partial field updates (user edits before shipping).
         # Whitelist against PendingOrder fields so the client can't
         # tamper with id/created_at/source.
@@ -119,23 +134,34 @@ def init() -> None:
         )
         return doc
 
-    # =================  Soft delete (sheet tombstone aware)  ==========
+    # =================  Cancel (was: soft delete)  ====================
 
     @pending_orders_router.delete("/orders/pending/{order_id}")
     async def delete_pending_order(
         order_id: str,
         current_user: Dict[str, Any] = Depends(_get_current_user),
     ):
-        """Soft-delete pending (Smart-Paste) orders: tombstone the
-        Master Sheet row if linked, then remove the local record. Sheet
-        failures are logged but do not block local deletion."""
-        # Phase F3.9.2 — Plan-gated. Without the feature flag the API
-        # responds 403 so the UI gate can't be bypassed by a direct
-        # API call. Same pattern as update_pending_order above.
+        """Phase-33 — HARD DELETE REMOVED.
+
+        Legacy `DELETE /orders/pending/{id}` is retained as an
+        idempotent CANCEL action so older clients keep working. The
+        record is NEVER removed from Mongo. Instead the pending order
+        flips to `status="cancelled"` with an audit stamp, after
+        which every other endpoint (update, ship-now) refuses to
+        operate on it.
+
+        Master-Sheet tombstone is still emitted when the user's plan
+        includes `sheet_soft_delete_tombstone` so the source-sheet
+        row reflects the cancellation (visible audit trail). Sheet
+        failures are logged but never block the local cancel write.
+        """
+        from lib.terminal_states import is_terminal_pending_status
+        from server import utcnow_iso
+
         if not await user_has_feature(current_user, "pending_orders_delete"):
             raise HTTPException(
                 status_code=403,
-                detail="Your plan doesn't include deleting pending orders.",
+                detail="Your plan doesn't include cancelling pending orders.",
             )
         doc = await db.pending_orders.find_one(
             {"id": order_id, "user_id": current_user["id"]}, {"_id": 0},
@@ -143,9 +169,16 @@ def init() -> None:
         if not doc:
             raise HTTPException(status_code=404, detail="Order not found")
 
+        # Already cancelled → idempotent ack.
+        if is_terminal_pending_status(doc.get("status")):
+            return {
+                "ok": True,
+                "already_cancelled": True,
+                "status": doc.get("status"),
+            }
+
         sheet_result: Dict[str, Any] = {"attempted": False}
         row_num = doc.get("sheet_row_num")
-        # Plan-gated: same flag as shipment soft-delete tombstone.
         if (
             row_num
             and sheet_mark_row_deleted is not None
@@ -159,22 +192,26 @@ def init() -> None:
                     f"pending order "
                     f"{doc.get('order_id_hint') or order_id[:8]} "
                     f"({(doc.get('customer_name') or '')[:40]}) "
-                    "removed from app"
+                    "cancelled in app"
                 )
                 sheet_result.update(
                     sheet_mark_row_deleted(int(row_num), reason=reason),
                 )
             except Exception as e:
-                _logger.exception("Soft-delete sheet mark failed (pending)")
+                _logger.exception("Cancel sheet mark failed (pending)")
                 sheet_result["ok"] = False
                 sheet_result["error"] = str(e)
 
-        res = await db.pending_orders.delete_one(
+        # Flip status — DO NOT remove the document.
+        await db.pending_orders.update_one(
             {"id": order_id, "user_id": current_user["id"]},
+            {"$set": {
+                "status": "cancelled",
+                "cancelled_at": utcnow_iso(),
+                "cancel_reason": "user_action",
+            }},
         )
-        if res.deleted_count == 0:
-            raise HTTPException(status_code=404, detail="Order not found")
-        return {"ok": True, "sheet": sheet_result}
+        return {"ok": True, "sheet": sheet_result, "status": "cancelled"}
 
     # =================  Combined badge count  =========================
 

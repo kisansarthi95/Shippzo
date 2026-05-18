@@ -282,11 +282,38 @@ def init() -> None:
         payload: ShipmentUpdate,
         current_user: Dict[str, Any] = Depends(_get_current_user),
     ):
+        # Phase-33 — Terminal-state lock. Cancelled / Cancel by buyer /
+        # Returned shipments are PERMANENTLY dead. Any attempt to
+        # mutate them (status change, edit, re-ship workflow, etc.)
+        # is rejected at the API boundary with HTTP 423 LOCKED so the
+        # frontend can pattern-match the response and show the right
+        # banner.  Reads remain fully open.
+        from lib.terminal_states import (
+            is_terminal_shipment_status, TERMINAL_LOCK_DETAIL,
+        )
+        existing = await db.shipments.find_one(
+            {"id": shipment_id, "user_id": current_user["id"]},
+            {"_id": 0, "status": 1},
+        )
+        if not existing:
+            raise HTTPException(status_code=404, detail="Shipment not found")
+        if is_terminal_shipment_status(existing.get("status")):
+            raise HTTPException(
+                status_code=423,
+                detail=TERMINAL_LOCK_DETAIL,
+            )
+
         update = {
             k: v for k, v in payload.model_dump().items() if v is not None
         }
         if "status" in update and update["status"] == "Delivered":
             update["delivered_at"] = utcnow_iso()
+        # Phase-33 — Stamp terminal-state metadata when the target
+        # status is one of the dead-states so reporting can group /
+        # filter on cancelled_at (and we have an audit trail).
+        if "status" in update and is_terminal_shipment_status(update["status"]):
+            update.setdefault("cancelled_at", utcnow_iso())
+            update.setdefault("cancel_reason", "user_action")
         if "amount" in update:
             update["cod_amount"] = (
                 float(update["amount"])
@@ -386,67 +413,96 @@ def init() -> None:
         shipment_id: str,
         current_user: Dict[str, Any] = Depends(_get_current_user),
     ):
-        """Soft-delete: if the shipment is linked to a Master Sheet row,
-        mark that row's Status="DELETED" before removing the local
-        record. The Sheet row itself is preserved as an audit trail so
-        that data never disappears from the source-of-truth even when
-        the app-level record is removed. Sheet failures do NOT block
-        the local delete — we log and proceed."""
+        """Phase-33 — HARD DELETE REMOVED.
+
+        The legacy delete endpoint has been re-purposed into a
+        "Cancel Order" flip. The local record is NEVER removed from
+        Mongo so that:
+          * Reporting / history / customer contacts stay intact.
+          * Sync sources (sheet, webhook, file-import) can detect a
+            previously-cancelled order ID and refuse to re-insert it
+            as a fresh active row.
+
+        Behaviour:
+          * If the shipment is already in a terminal state, the call
+            is idempotent → 200 with `already_cancelled=True`.
+          * Otherwise the status is flipped to `Cancelled`, with
+            `cancelled_at` / `cancel_reason="user_action"` stamped.
+          * Existing Master-Sheet tombstone / user-sheet status-sync
+            integrations still run so the source-of-truth row stays
+            in lock-step.
+        """
+        from lib.terminal_states import is_terminal_shipment_status
+
         doc = await db.shipments.find_one(
             {"id": shipment_id, "user_id": current_user["id"]}, {"_id": 0},
         )
         if not doc:
             raise HTTPException(status_code=404, detail="Shipment not found")
 
+        # Already terminal → idempotent ack so the frontend can show
+        # the right toast without spamming the API.
+        if is_terminal_shipment_status(doc.get("status")):
+            return {
+                "ok": True,
+                "already_cancelled": True,
+                "status": doc.get("status"),
+            }
+
         sheet_result: Dict[str, Any] = {"attempted": False}
         row_num = doc.get("sheet_row_num")
-        # Plan-gated: `sheet_soft_delete_tombstone` controls whether
-        # deletion leaves an audit-trail row in the Master Sheet.
         if (
             row_num
-            and sheet_mark_row_deleted is not None
+            and sheet_update_row_status is not None
             and await user_has_feature(
-                current_user, "sheet_soft_delete_tombstone",
+                current_user, "sheet_two_way_status_sync",
             )
         ):
             sheet_result["attempted"] = True
             try:
-                reason = (
-                    f"shipment {doc.get('tracking_id') or doc.get('id')} "
-                    f"({doc.get('customer_name','')[:40]}) "
-                    "removed from app"
+                tracking = doc.get("tracking_id") or ""
+                sheet_update_row_status(
+                    int(row_num),
+                    "Cancelled",
+                    extra_notice=(
+                        f"Tracking: {tracking}" if tracking else None
+                    ),
                 )
-                sheet_result.update(
-                    sheet_mark_row_deleted(int(row_num), reason=reason),
-                )
+                sheet_result["ok"] = True
             except Exception as e:
-                # Don't block local delete — but surface the error so the
-                # client knows the sheet was not marked.
-                _logger.exception("Soft-delete sheet mark failed")
+                _logger.exception("Sheet cancel sync failed (non-fatal)")
                 sheet_result["ok"] = False
                 sheet_result["error"] = str(e)
 
-        res = await db.shipments.delete_one(
+        # Flip to Cancelled (no removal) — write audit fields.
+        await db.shipments.update_one(
             {"id": shipment_id, "user_id": current_user["id"]},
+            {"$set": {
+                "status": "Cancelled",
+                "cancelled_at": utcnow_iso(),
+                "cancel_reason": "user_action",
+            }},
         )
-        # Phase H: best-effort tombstone on the user's personal sheet too.
+
+        # Best-effort user-sheet status sync (same as the PUT path).
         try:
             import user_sheet_sync as _uss
-            await _uss.sync_delete(
-                db, current_user, doc,
-                reason=(
-                    f"shipment {doc.get('tracking_id') or doc.get('id')} "
-                    "removed"
+            tracking = doc.get("tracking_id") or ""
+            fresh = await db.shipments.find_one(
+                {"id": shipment_id, "user_id": current_user["id"]},
+                {"_id": 0},
+            )
+            await _uss.sync_status_change(
+                db, current_user, fresh, "Cancelled",
+                extra_notice=(
+                    f"Tracking: {tracking}" if tracking else None
                 ),
             )
         except Exception:
             _logger.exception(
-                "user-sheet auto-sync (delete) failed (non-fatal)",
+                "user-sheet auto-sync (cancel) failed (non-fatal)",
             )
-        if res.deleted_count == 0:
-            # Race condition — someone else deleted. Still return 404.
-            raise HTTPException(status_code=404, detail="Shipment not found")
-        return {"ok": True, "sheet": sheet_result}
+        return {"ok": True, "sheet": sheet_result, "status": "Cancelled"}
 
     # =================  POST /orders/pending/{id}/ship  =============
 
@@ -491,6 +547,17 @@ def init() -> None:
         )
         if not order:
             raise HTTPException(status_code=404, detail="Order not found")
+        # Phase-33 — Cancelled pending orders cannot be promoted to a
+        # shipment. This is the final back-stop after the PUT-update
+        # lock: even a direct POST .../ship call gets rejected.
+        from lib.terminal_states import (
+            is_terminal_pending_status, TERMINAL_LOCK_DETAIL,
+        )
+        if is_terminal_pending_status(order.get("status")):
+            raise HTTPException(
+                status_code=423,
+                detail=TERMINAL_LOCK_DETAIL,
+            )
         if order.get("status") == "shipped":
             raise HTTPException(status_code=400, detail="Order already shipped")
 

@@ -625,6 +625,22 @@ export default function AddShipment() {
       try {
         const s = await Api.getShipment(eid);
         if (cancelled || !s) return;
+        // Phase-33 — Terminal shipments are read-only. If a user
+        // deep-links to /(tabs)/add?edit_id=<cancelled-id> we
+        // refuse to populate the form (which would otherwise
+        // produce an editable form whose submit would 423 anyway)
+        // and bounce them back to the Shipments list with a clear
+        // explanation.
+        const status = String((s as any).status || "");
+        const lc = status.trim().toLowerCase();
+        if (["cancelled", "cancel by buyer", "returned"].includes(lc)) {
+          Alert.alert(
+            "Order locked",
+            "This order has been cancelled or returned. It cannot be edited anymore.",
+            [{ text: "OK", onPress: () => router.back() }],
+          );
+          return;
+        }
         // Map every shipment field back into the form state.
         setOrderId(s.order_id || "");
         setCustomerName(s.customer_name || "");

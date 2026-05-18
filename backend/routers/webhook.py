@@ -643,6 +643,20 @@ def init() -> None:
                 if source_app:
                     ship_filter["source_meta.source_app"] = source_app
 
+                # Phase-33 — Terminal-state lock for inbound webhook
+                # status updates. Once an order is permanently dead
+                # (Cancelled / Cancel by buyer / Returned), an
+                # upstream marketplace re-emitting a status change
+                # MUST NOT revive it. We bake the lock straight into
+                # the Mongo filter so the update_one becomes a no-op
+                # when the row is already terminal — the matched_count
+                # stays 0 and we fall through to the "not_found"
+                # accounting which is exactly the right semantic
+                # (nothing was updated, no duplicate created).
+                ship_filter["status"] = {
+                    "$nin": ["Cancelled", "Cancel by buyer", "Returned"],
+                }
+
                 ship_res = await db.shipments.update_one(
                     ship_filter, {"$set": update_set},
                 )

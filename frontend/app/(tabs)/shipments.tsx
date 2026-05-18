@@ -30,6 +30,10 @@ import { colors } from "../../lib/theme";
 import { useFeatureFlag } from "../../lib/feature_flags";
 import { requestWhatsAppSend } from "../../lib/whatsappGuard";
 import DailyLimitBanner from "../../components/DailyLimitBanner";
+import ConfirmCancelModal, {
+  TerminalAction,
+  isTerminalShipmentStatus,
+} from "../../components/ConfirmCancelModal";
 
 type StatusFilter =
   | "All"
@@ -235,6 +239,18 @@ export default function Shipments() {
   // written via PUT /shipments/:id → which propagates to the Master
   // Sheet via the Two-Way Status Sync we built.
   const [statusPickerShipment, setStatusPickerShipment] = useState<Shipment | null>(null);
+  // Phase-33 — Cancel/Return confirmation modal. Holds the in-flight
+  // terminal action (status flip OR the "cancel order" tick action).
+  // When set, the ConfirmCancelModal renders; submitting it calls the
+  // backend and clears this state.
+  const [pendingTerminal, setPendingTerminal] = useState<
+    | (TerminalAction & {
+        shipmentId: string;
+        targetStatus: "Cancelled" | "Cancel by buyer" | "Returned";
+      })
+    | null
+  >(null);
+  const [terminalSubmitting, setTerminalSubmitting] = useState(false);
   const [statusUpdating, setStatusUpdating] = useState(false);
 
   // Phase-11: Delivery-confirmation count — auto-flagged shipped
@@ -429,13 +445,50 @@ export default function Shipments() {
   };
 
   // Open the full 8-status picker for a single shipment.
+  // Phase-33 — Terminal shipments are read-only; tapping the stage
+  // pill opens a friendly toast instead of the picker. This keeps the
+  // dead-state contract bullet-proof in the UI (the backend already
+  // returns 423 on direct API calls).
   const openStatusPicker = (s: Shipment) => {
+    if (isTerminalShipmentStatus(s.status)) {
+      Alert.alert(
+        "Order locked",
+        "Cancelled / Returned orders cannot change status anymore. Only customer contact and view actions are available.",
+      );
+      return;
+    }
     setStatusPickerShipment(s);
   };
 
   // Apply a new status, close the sheet, and refresh the list.
+  // Phase-33 — Cancel / Cancel-by-buyer / Returned now flow through
+  // a confirmation modal because the action is permanent.
   const changeStatus = async (newStatus: string) => {
     if (!statusPickerShipment) return;
+    // Terminal-state targets need an explicit confirmation. Stage the
+    // modal and let the user finalise via the Yes/Close buttons.
+    if (isTerminalShipmentStatus(newStatus)) {
+      const target = newStatus as "Cancelled" | "Cancel by buyer" | "Returned";
+      const kind =
+        target === "Cancel by buyer"
+          ? "cancel_by_buyer"
+          : target === "Returned"
+          ? "returned"
+          : "cancel";
+      setPendingTerminal({
+        kind,
+        targetStatus: target,
+        shipmentId: statusPickerShipment.id,
+        orderLabel:
+          (statusPickerShipment.tracking_id ||
+            statusPickerShipment.customer_name ||
+            ""),
+      });
+      // Close the status picker but keep the row reference until the
+      // modal resolves so refresh below still finds the right row.
+      setStatusPickerShipment(null);
+      return;
+    }
     setStatusUpdating(true);
     try {
       try {
@@ -446,6 +499,12 @@ export default function Shipments() {
             statusPickerShipment.id,
             newStatus,
             statusPickerShipment.tracking_id,
+          );
+        } else if (e?.response?.status === 423) {
+          Alert.alert(
+            "Order locked",
+            e?.response?.data?.detail ||
+              "This order is permanently cancelled / returned.",
           );
         } else {
           throw e;
@@ -459,6 +518,59 @@ export default function Shipments() {
       setStatusUpdating(false);
     }
   };
+
+  // Phase-33 — Final submit for the Confirm-Cancel modal. Routes both
+  // the trash/X "Cancel Order" tick AND the status-picker terminal
+  // transitions to the right endpoint:
+  //   - kind="delete"  → DELETE /shipments/{id}  (server flips to Cancelled)
+  //   - other kinds   → PUT /shipments/{id} { status: target }
+  const submitTerminal = useCallback(async () => {
+    if (!pendingTerminal) return;
+    setTerminalSubmitting(true);
+    try {
+      try {
+        if (pendingTerminal.kind === "delete") {
+          await Api.deleteShipment(pendingTerminal.shipmentId);
+        } else {
+          await Api.updateShipment(pendingTerminal.shipmentId, {
+            status: pendingTerminal.targetStatus,
+          });
+        }
+      } catch (e: any) {
+        if (isNetworkErrish(e)) {
+          if (pendingTerminal.kind === "delete") {
+            await SyncQueue.enqueueShipmentDelete(
+              pendingTerminal.shipmentId,
+              pendingTerminal.orderLabel || "",
+            );
+          } else {
+            await SyncQueue.enqueueShipmentStatus(
+              pendingTerminal.shipmentId,
+              pendingTerminal.targetStatus,
+              pendingTerminal.orderLabel || "",
+            );
+          }
+        } else if (e?.response?.status === 423) {
+          Alert.alert(
+            "Order locked",
+            e?.response?.data?.detail ||
+              "This order is permanently cancelled / returned.",
+          );
+        } else {
+          throw e;
+        }
+      }
+      setPendingTerminal(null);
+      await load();
+    } catch (e: any) {
+      Alert.alert(
+        "Couldn't cancel order",
+        e?.response?.data?.detail || e?.message || "Try again.",
+      );
+    } finally {
+      setTerminalSubmitting(false);
+    }
+  }, [pendingTerminal]);
 
   // Phase-19 — Linear stage workflow. Tap the Next-Stage button on a
   // shipment card to advance one step instantly (no popup, no dropdown).
@@ -554,43 +666,27 @@ export default function Shipments() {
     return counts;
   }, [items]);
 
+  // Phase-33 — "Remove" no longer hard-deletes. The trash icon has
+  // been replaced by an X "Cancel Order" tick that triggers the
+  // shared ConfirmCancelModal. On confirm the shipment is flipped
+  // to status="Cancelled" via DELETE /shipments/{id} (the server
+  // re-purposes the legacy endpoint into a cancel-flip). Reads stay
+  // intact — operators can still view the card and call/WhatsApp
+  // the customer.
   const remove = (s: Shipment) => {
-    // Explicit warning: sheet row is kept as an audit trail, not fully deleted.
-    // Helps users understand that "Delete" is safe in a multi-user setup.
-    const hasSheet = (s as any).sheet_row_num != null;
-    const msg = hasSheet
-      ? `Delete ${s.tracking_id} from the app?\n\nThe Master Sheet row will be marked "DELETED" (audit trail) — original data is never lost.`
-      : `Delete ${s.tracking_id} from the app?`;
-    Alert.alert("Delete shipment", msg, [
-      { text: "Cancel", style: "cancel" },
-      {
-        text: "Delete", style: "destructive",
-        onPress: async () => {
-          try {
-            const res: any = await Api.deleteShipment(s.id);
-            if (res?.sheet?.attempted && res.sheet.ok === false) {
-              // Local delete succeeded but sheet mark failed; let user know.
-              Alert.alert(
-                "Deleted (sheet mark failed)",
-                `Local record removed. Could not mark Master Sheet row as DELETED:\n${res.sheet.error || "unknown error"}`
-              );
-            }
-          } catch (e: any) {
-            if (isNetworkErrish(e)) {
-              await SyncQueue.enqueueShipmentDelete(s.id, s.tracking_id);
-              // Optimistic UX — let the user know it's queued.
-              Alert.alert(
-                "Queued for deletion",
-                "We're offline — this shipment will be removed once you're back online.",
-              );
-            } else {
-              Alert.alert("Delete error", e?.response?.data?.detail || e?.message || "Failed to delete");
-            }
-          }
-          load();
-        },
-      },
-    ]);
+    if (isTerminalShipmentStatus(s.status)) {
+      Alert.alert(
+        "Already cancelled",
+        "This order is permanently locked and cannot be cancelled again.",
+      );
+      return;
+    }
+    setPendingTerminal({
+      kind: "delete",
+      shipmentId: s.id,
+      targetStatus: "Cancelled",
+      orderLabel: s.tracking_id || s.customer_name || "",
+    });
   };
 
   const sendWhatsApp = async (s: Shipment) => {
@@ -1512,7 +1608,7 @@ export default function Shipments() {
                     testID={`call-${item.tracking_id}`}
                   />
                 ) : null}
-                {flagEdit ? (
+                {flagEdit && !isTerminalShipmentStatus(item.status) ? (
                   <ActionBtn
                     icon="create-outline" color="#2563EB"
                     onPress={() =>
@@ -1537,11 +1633,11 @@ export default function Shipments() {
                   onPress={() => handleSaveContact(item)}
                   testID={`save-contact-${item.tracking_id}`}
                 />
-                {flagDelete ? (
+                {flagDelete && !isTerminalShipmentStatus(item.status) ? (
                   <ActionBtn
-                    icon="trash-outline" color={colors.dangerText}
+                    icon="close-circle-outline" color={colors.dangerText}
                     onPress={() => remove(item)}
-                    testID={`delete-${item.tracking_id}`}
+                    testID={`cancel-order-${item.tracking_id}`}
                   />
                 ) : null}
               </View>
@@ -1815,6 +1911,22 @@ export default function Shipments() {
           </TouchableOpacity>
         </TouchableOpacity>
       </Modal>
+
+      {/* Phase-33 — Reusable Cancel / Return / Cancel-by-buyer
+          confirmation modal. Hosts:
+            • Trash/X tap → kind="delete" → DELETE /shipments/{id}
+            • Terminal status select → kind="cancel" / "cancel_by_buyer"
+              / "returned" → PUT /shipments/{id} { status }
+          Both routes converge on submitTerminal() so error handling,
+          offline-queue fallback, and load() refresh logic stay in
+          one place. The modal closes itself after a successful
+          submit; the underlying card refreshes via load(). */}
+      <ConfirmCancelModal
+        action={pendingTerminal}
+        loading={terminalSubmitting}
+        onClose={() => !terminalSubmitting && setPendingTerminal(null)}
+        onConfirm={submitTerminal}
+      />
     </SafeAreaView>
   );
 }

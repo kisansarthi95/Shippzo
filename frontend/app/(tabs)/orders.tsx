@@ -10,6 +10,9 @@ import { useFocusEffect, useRouter } from "expo-router";
 import { Api, SheetOrder, PendingOrder, Courier, AbandonedCart } from "../../lib/api";
 import { colors } from "../../lib/theme";
 import { useFeatureFlag } from "../../lib/feature_flags";
+import ConfirmCancelModal, {
+  TerminalAction,
+} from "../../components/ConfirmCancelModal";
 
 type Filter = "pending" | "shipped" | "all";   // legacy — retained for type-import compat
 
@@ -74,8 +77,23 @@ export default function OrdersFromSheet() {
   // (already-shipped) sheet rows. Matches the count on the Home tab's
   // "Pending Orders" pill.
   const [sourceFilter, setSourceFilter] = useState<
-    "new" | "all" | "paste" | "file" | "sheet" | "webhook" | "abandoned"
+    "new" | "all" | "paste" | "file" | "sheet" | "webhook" | "abandoned" | "cancelled"
   >("new");
+
+  // Phase-33 — Cancelled pending orders kept for history. Loaded on
+  // demand (same Api.listPendingOrders with status="cancelled") so
+  // the operator can review past cancellations but can never act on
+  // them — every row is read-only and the backend rejects writes.
+  const [cancelledOrders, setCancelledOrders] = useState<PendingOrder[]>([]);
+  // Phase-33 — Reusable Cancel Order modal state. Triggered by the X
+  // tick on any pending-order card. On confirm we hit the existing
+  // DELETE endpoint which the server has re-purposed into a cancel-
+  // flip (status="cancelled") — the record is never removed.
+  const [pendingCancel, setPendingCancel] = useState<
+    | (TerminalAction & { orderId: string })
+    | null
+  >(null);
+  const [cancelSubmitting, setCancelSubmitting] = useState(false);
 
   const loadPasteOrders = useCallback(async () => {
     try {
@@ -106,6 +124,13 @@ export default function OrdersFromSheet() {
       setCouriers(cs);
       setWebhookName((wcfg as any)?.name || "");
       setAbandonedCarts((ac as any)?.carts || []);
+      // Phase-33 — Best-effort load of cancelled pending orders so
+      // operators can review history. Read-only by design — the
+      // backend rejects every write on these rows.
+      try {
+        const cans = await Api.listPendingOrders({ status: "cancelled" });
+        setCancelledOrders(cans as PendingOrder[]);
+      } catch {/* ignore — empty list keeps the chip visible at (0) */}
     } catch {/* ignore */}
   }, []);
 
@@ -281,19 +306,45 @@ export default function OrdersFromSheet() {
     });
   };
 
-  const deletePasteOrder = async (order: PendingOrder) => {
-    Alert.alert("Delete order?", `Remove ${order.customer_name || "order"} from queue?`, [
-      { text: "Cancel", style: "cancel" },
-      {
-        text: "Delete", style: "destructive", onPress: async () => {
-          try {
-            await Api.deletePendingOrder(order.id);
-            await loadPasteOrders();
-          } catch {/* ignore */}
-        },
-      },
-    ]);
+  // Phase-33 — Cancel Order replaces hard-delete. The X tick on each
+  // card stages the action and opens the shared ConfirmCancelModal;
+  // submitCancelPending() hits DELETE /orders/pending/{id} which the
+  // backend has re-purposed into a `status="cancelled"` flip.
+  const deletePasteOrder = (order: PendingOrder) => {
+    setPendingCancel({
+      kind: "delete",
+      orderId: order.id,
+      orderLabel:
+        (order.customer_name || "") +
+        (order.customer_phone ? ` · ${order.customer_phone}` : ""),
+    });
   };
+
+  const submitCancelPending = useCallback(async () => {
+    if (!pendingCancel) return;
+    setCancelSubmitting(true);
+    try {
+      await Api.deletePendingOrder(pendingCancel.orderId);
+      setPendingCancel(null);
+      await loadPasteOrders();
+    } catch (e: any) {
+      if (e?.response?.status === 423) {
+        Alert.alert(
+          "Order locked",
+          e?.response?.data?.detail ||
+            "This pending order has already been cancelled.",
+        );
+        setPendingCancel(null);
+      } else {
+        Alert.alert(
+          "Couldn't cancel",
+          e?.response?.data?.detail || e?.message || "Try again.",
+        );
+      }
+    } finally {
+      setCancelSubmitting(false);
+    }
+  }, [pendingCancel]);
 
   const load = useCallback(async () => {
     setError(null);
@@ -593,6 +644,38 @@ export default function OrdersFromSheet() {
       }
     }
 
+    // Phase-33 — Cancelled pending orders (read-only history).
+    // Only included when the operator explicitly picks the
+    // "Cancelled" filter chip. These rows are dead-state: the X
+    // tick is hidden, the Edit/Ship buttons are skipped, and the
+    // body tap shows a friendly info toast instead of opening
+    // the edit screen.
+    if (sourceFilter === "cancelled") {
+      for (const po of cancelledOrders) {
+        out.push({
+          key: `cancelled|${po.id}`,
+          source: "paste",      // hide edit/ship/X via dedicated flag below
+          badgeLabel: "❌ CANCELLED",
+          badgeBg: "#FEE2E2",
+          badgeFg: "#991B1B",
+          sortTime: Date.parse((po as any).cancelled_at || po.created_at || "") || 0,
+          customer_name: po.customer_name || "",
+          customer_phone: po.customer_phone || "",
+          city: po.city || "",
+          state: po.state || "",
+          pincode: po.pincode || "",
+          items: po.items || "",
+          amount: Number(po.amount || 0),
+          payment_mode: po.payment_mode || "",
+          extra: "Locked — view only",
+          paste: po,
+          // Reuse a different flag would require a renderer split.
+          // We keep this row in the paste source but the renderer
+          // omits Edit/Ship/X when sourceFilter === "cancelled".
+        });
+      }
+    }
+
     // Newest first.
     out.sort((a, b) => b.sortTime - a.sortTime);
     return out;
@@ -631,7 +714,9 @@ export default function OrdersFromSheet() {
           {/* Phase C — Edit + Delete sized identically (32×32 round
               icon buttons) so they read as a paired action group
               instead of a big edit button + tiny delete X. */}
-          {row.paste && flagEditPending ? (
+          {/* Phase-33 — Hide Edit & Cancel-X on cancelled-history
+              rows. Read-only by design. */}
+          {row.paste && flagEditPending && sourceFilter !== "cancelled" ? (
             <TouchableOpacity
               onPress={() => {
                 markViewed(row);
@@ -644,14 +729,18 @@ export default function OrdersFromSheet() {
               <PhIcon name="create-outline" size={16} color="#3B82F6" />
             </TouchableOpacity>
           ) : null}
-          {row.paste && flagDeletePending ? (
+          {row.paste && flagDeletePending && sourceFilter !== "cancelled" ? (
             <TouchableOpacity
               onPress={() => deletePasteOrder(row.paste!)}
               hitSlop={6}
               style={[styles.cardActionBtn, { backgroundColor: "#FEF2F2", borderColor: "#FECACA" }]}
-              testID={`delete-${row.key}`}
+              testID={`cancel-${row.key}`}
             >
-              <PhIcon name="trash-outline" size={16} color="#DC2626" />
+              {/* Phase-33 — X icon (Cancel Order) replaces the
+                  legacy trash icon. Same destructive colour palette
+                  but the semantics now route through the shared
+                  ConfirmCancelModal → backend cancel-flip. */}
+              <PhIcon name="close-circle-outline" size={16} color="#DC2626" />
             </TouchableOpacity>
           ) : null}
         </View>
@@ -913,6 +1002,10 @@ export default function OrdersFromSheet() {
           { k: "sheet",   label: `📊 Sheet${connected ? ` (${orders.filter(o => !o.already_shipped).length})` : ""}` },
           { k: "webhook", label: `🔌 ${(webhookName || "Webhook")}${webhookOrders.length ? ` (${webhookOrders.length})` : ""}` },
           { k: "abandoned", label: `🛒 Abandoned${abandonedCarts.length ? ` (${abandonedCarts.length})` : ""}` },
+          // Phase-33 — Cancelled history filter. Always visible even
+          // at (0) so operators learn the section exists; clicking
+          // loads cancelled rows which render in read-only mode.
+          { k: "cancelled", label: `❌ Cancelled${cancelledOrders.length ? ` (${cancelledOrders.length})` : ""}` },
         ] as const).map((f) => {
           const active = sourceFilter === f.k;
           return (
@@ -1039,6 +1132,18 @@ export default function OrdersFromSheet() {
           </View>
         </View>
       </Modal>
+
+      {/* Phase-33 — Shared Cancel Order modal. The X tick on each
+          pending-order card stages a `kind="delete"` action; the
+          modal confirms it before the API call. On success the row
+          flips to status="cancelled" and shows under the new
+          Cancelled history filter. */}
+      <ConfirmCancelModal
+        action={pendingCancel}
+        loading={cancelSubmitting}
+        onClose={() => !cancelSubmitting && setPendingCancel(null)}
+        onConfirm={submitCancelPending}
+      />
     </SafeAreaView>
   );
 }
