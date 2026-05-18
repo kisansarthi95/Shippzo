@@ -21771,3 +21771,147 @@ agent_communication:
       read-only preview. Admin (admin@test.com) screen
       continues to render fully editable (bypass).
 
+
+---
+
+## Backend Test Run: Phase-5i Utility Router + Phase-33 Terminal-State Lock (2026-05-18)
+
+backend:
+  - task: "Phase-5i utility router extraction (GET /api/, POST /api/demo/clear)"
+    implemented: true
+    working: true
+    file: "/app/backend/routers/utility.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "testing"
+        -comment: |
+            All Phase-5i assertions PASSED (12/12 utility + smoke checks)
+            against https://logistics-hub-740.preview.emergentagent.com/api
+            via /app/backend_test.py.
+
+            UTILITY ROUTER:
+              • GET /api/ → 200 with body {"message":"Courier Label
+                Manager API"} (health-check still served from the
+                new router).
+              • POST /api/demo/clear without bearer → 401 (auth
+                guard intact).
+              • POST /api/demo/clear with admin bearer → 200 with
+                the documented shape:
+                  {"ok": true, "deleted": N, "shipments": ...,
+                   "pending_orders": ..., "couriers": ...}
+                All four sub-keys present; legacy "deleted" grand
+                total field also returned for backwards-compat.
+
+            CROSS-ROUTER SMOKE (8/8 critical extracted endpoints
+            still serve 200 to authenticated admin):
+              • GET /api/settings                    → 200
+              • GET /api/me/usage                    → 200
+              • GET /api/smart-paste/default-prompt  → 200
+              • GET /api/shipments                   → 200
+              • GET /api/orders/pending              → 200
+              • GET /api/sheets/orders               → 200
+              • GET /api/wallet                      → 200
+              • GET /api/admin/plan-features         → 200
+
+            No 5xx, no 404, no missing-router errors. The 92-line
+            dead-placeholder sweep didn't break any of the cross-
+            router wiring.
+
+  - task: "Phase-33 Terminal-state lock on shipments + pending orders"
+    implemented: true
+    working: true
+    file: "/app/backend/routers/shipments_write.py, /app/backend/routers/pending_orders.py, /app/backend/lib/terminal_states.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "testing"
+        -comment: |
+            All Phase-33 assertions PASSED (14/14) against the live
+            preview backend via /app/backend_test.py.
+
+            SHIPMENTS (routers/shipments_write.py:285-316, 420-505)
+              • Fresh shipment A created via POST /api/shipments.
+              • PUT /api/shipments/{id} {"status":"Cancelled"} → 200.
+                Audit fields cancelled_at + cancel_reason="user_action"
+                confirmed in Mongo (response_model strips them — they
+                ARE persisted; verified by direct collection read).
+              • Subsequent PUT /api/shipments/{id} {"status":"Shipped"}
+                → HTTP 423 LOCKED with detail "This order is locked.
+                Cancelled / Returned orders cannot be modified, re-
+                shipped, or restored." PASS.
+              • DELETE /api/shipments/{id} on already-Cancelled row
+                → 200 with {"ok": true, "already_cancelled": true,
+                "status": "Cancelled"} (idempotent ack). PASS.
+
+              • Fresh shipment B → DELETE /api/shipments/{id} →
+                200 with status="Cancelled" + sheet sync attempted.
+                GET /api/shipments/{id} confirms row still exists
+                with status="Cancelled" (NO hard-delete). PASS.
+
+            PENDING ORDERS (routers/pending_orders.py:86-135, 139-214,
+            and shipments_write.py:545-560 for the ship gate)
+              • Fresh pending order created via POST /api/smart-paste
+                (text mode, AI off).
+              • DELETE /api/orders/pending/{id} → 200 with status
+                flipped to "cancelled", sheet status sync to row M{n}.
+              • GET /api/orders/pending/{id} confirms persistence
+                (status="cancelled", NOT removed from DB).
+              • PUT /api/orders/pending/{id} {"status":"pending"} →
+                HTTP 423 LOCKED. PASS.
+              • POST /api/orders/pending/{id}/ship with valid
+                courier_id payload → HTTP 423 LOCKED (terminal lock
+                fires AFTER Pydantic validation, so courier_id had
+                to be supplied to clear the 422 first). PASS.
+
+            CLEANUP: Test left 2 cancelled shipments + 1 cancelled
+            pending order on admin@test.com (intentionally — they
+            are the soft-cancel audit rows the feature is designed
+            to preserve). All have status="Cancelled"/"cancelled"
+            and cancelled_at stamped; future demo/clear or sweeps
+            can purge them.
+
+            MINOR NOTES (NOT bugs):
+              • The Shipment response_model does not expose
+                cancelled_at / cancel_reason. The fields ARE
+                persisted to Mongo (verified). If the frontend needs
+                to display them, the response_model would need to be
+                extended — but the Phase-33 contract is fulfilled
+                (data is durably stamped). Test verifies via direct
+                Mongo read.
+              • PendingOrder list endpoint defaults to status="pending"
+                — cancelled rows are visible only via the single-row
+                GET /api/orders/pending/{id} or by passing explicit
+                ?status=cancelled. Correct, by design.
+
+agent_communication:
+    -agent: "testing"
+    -message: |
+        Phase-5i utility router extraction + Phase-33 terminal-state
+        lock — both VERIFIED. 26/26 assertions PASSED via
+        /app/backend_test.py against the live preview backend.
+
+        Phase-5i:
+          • GET /api/ still served (utility router mounted).
+          • POST /api/demo/clear returns correct shape with auth
+            enforced (401 without bearer, 200 with admin bearer).
+          • 8 critical extracted endpoints across other routers
+            (settings, me/usage, smart-paste prompt, shipments,
+            pending orders, sheets/orders, wallet, admin/plan-
+            features) all serve 200 OK.
+
+        Phase-33:
+          • Shipments — PUT to Cancelled stamps audit fields
+            (verified via direct Mongo read); subsequent PUT
+            returns 423; DELETE of cancelled is idempotent; DELETE
+            of active flips to Cancelled without hard-delete.
+          • Pending orders — DELETE flips to "cancelled" (soft);
+            PUT on cancelled returns 423; POST .../ship on
+            cancelled returns 423.
+
+        No regressions on smoke endpoints. No 5xx. Main agent can
+        summarise & finish.

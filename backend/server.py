@@ -803,81 +803,6 @@ async def auth_google_session(payload: GoogleSessionRequest):
 
 # --- Demo data clear (per-user) ---------------------------------------
 
-@api_router.post("/demo/clear")
-async def clear_demo_data(current_user: Dict[str, Any] = Depends(get_current_user)):
-    """One-tap "Clear Demo Data" sweep — Phase-21 refresh.
-
-    Originally only deleted is_demo shipments, which left the seeded
-    "Demo Courier" + any leftover demo pending-orders behind, making
-    operators think the action didn't work. Now we sweep ALL three
-    surfaces in a single shot:
-
-      1. shipments      where is_demo=True
-      2. pending_orders where is_demo=True (or has DEMO master_order_id)
-      3. couriers       where is_demo=True — but only when NO real
-                        shipments still reference that courier, so the
-                        user's first real order doesn't suddenly lose
-                        its carrier link.
-
-    Returns a per-collection breakdown so the UI can show a clear
-    summary like "Removed 15 shipments + 1 courier".
-    """
-    uid = current_user["id"]
-
-    # 1) Shipments — straightforward delete.
-    sh_res = await db.shipments.delete_many({"user_id": uid, "is_demo": True})
-
-    # 2) Pending orders — delete both explicitly-flagged demo rows AND
-    # legacy seeds with DEMO-ORD-xxxx order ids. Both filters are OR'd
-    # so we never miss a demo row whose flag was lost during a migration.
-    po_res = await db.pending_orders.delete_many({
-        "user_id": uid,
-        "$or": [
-            {"is_demo": True},
-            {"order_id": {"$regex": "^DEMO-ORD-"}},
-            {"master_order_id": {"$regex": "^DEMO"}},
-        ],
-    })
-
-    # 3) Couriers — only delete the demo courier if no real shipment
-    # still references it. Otherwise the user's existing real orders
-    # would render with a blank carrier. We check both `courier_id`
-    # (modern) and `courier_name` (legacy) on shipments.
-    demo_couriers = await db.couriers.find(
-        {"user_id": uid, "is_demo": True}, {"_id": 0, "id": 1, "name": 1},
-    ).to_list(length=50)
-    couriers_deleted = 0
-    for c in demo_couriers:
-        cid = c.get("id")
-        cname = c.get("name") or ""
-        in_use = await db.shipments.find_one(
-            {
-                "user_id": uid,
-                "is_demo": {"$ne": True},
-                "$or": [{"courier_id": cid}, {"courier_name": cname}],
-            },
-            {"_id": 1},
-        )
-        if in_use:
-            # Real shipment still using this courier → keep the row
-            # but strip the is_demo flag so it stops being targeted
-            # by future Clear Demo sweeps.
-            await db.couriers.update_one(
-                {"user_id": uid, "id": cid},
-                {"$unset": {"is_demo": ""}},
-            )
-            continue
-        r = await db.couriers.delete_one({"user_id": uid, "id": cid})
-        couriers_deleted += int(r.deleted_count or 0)
-
-    total = int(sh_res.deleted_count) + int(po_res.deleted_count) + couriers_deleted
-    return {
-        "ok":               True,
-        "deleted":          total,   # legacy field (= grand total)
-        "shipments":        int(sh_res.deleted_count),
-        "pending_orders":   int(po_res.deleted_count),
-        "couriers":         couriers_deleted,
-    }
 
 
 # --------------------------------------------------------------------
@@ -1386,9 +1311,6 @@ async def seed_defaults():
 
 # ---------------------- Routes ----------------------
 
-@api_router.get("/")
-async def root():
-    return {"message": "Courier Label Manager API"}
 
 
 # -------- Couriers --------
@@ -1527,7 +1449,6 @@ def _packing_variant_cap_for_user(user: Dict[str, Any]) -> Optional[int]:
 
 # -------- Settings --------
 
-# [refactor Phase-5h] @api_router.get("/settings", response_model=Settings)
 async def get_settings(current_user: Dict[str, Any] = Depends(get_current_user)):
     # Each user has their own settings doc. If missing, create a fresh one
     # tagged with this user's id so future reads/writes find it.
@@ -1542,7 +1463,6 @@ async def get_settings(current_user: Dict[str, Any] = Depends(get_current_user))
     return Settings(**doc)
 
 
-# [refactor Phase-5h] @api_router.put("/settings", response_model=Settings)
 async def update_settings(
     payload: SettingsUpdate,
     current_user: Dict[str, Any] = Depends(get_current_user),
@@ -1682,8 +1602,6 @@ class SheetPreviewRequest(BaseModel):
     url: str
 
 
-# [refactor Phase-5f] @api_router.get("/sheets/service-account") → routers/sheets.py
-# [refactor Phase-5f] @api_router.post("/sheets/preview")         → routers/sheets.py
 
 
 def auto_guess_mapping(headers: List[str]) -> Dict[str, str]:
@@ -1723,7 +1641,6 @@ def auto_guess_mapping(headers: List[str]) -> Dict[str, str]:
     return mapping
 
 
-# [refactor Phase-5f] @api_router.get("/sheets/orders") → routers/sheets.py
 async def sheets_orders(
     background_tasks: BackgroundTasks,
     current_user: Dict[str, Any] = Depends(get_current_user),
@@ -2167,10 +2084,8 @@ async def _sync_user_sheet_to_master_bg(
 
 # -------- Shipments --------
 
-# [refactor Phase-4c] @api_router.get("/shipments", response_model=List[Shipment]) → routers/shipments_read.py
 
 
-# [refactor Phase-4c] @api_router.get("/shipments/stats") → routers/shipments_read.py
 
 
 # ---------------------------------------------------------------------------
@@ -2188,10 +2103,8 @@ async def _sync_user_sheet_to_master_bg(
 # The client loops calls on each scan; duplicate-scan debouncing is
 # handled on the client (spec: "ignore within a few seconds").
 
-# [refactor Phase-5a] class ScanDispatchRequest → routers/shipment_ops.py
 
 
-# [refactor Phase-5a] @api_router.post("/shipments/scan-dispatch") → routers/shipment_ops.py
 
 
 # ---------------------------------------------------------------------------
@@ -2199,7 +2112,6 @@ async def _sync_user_sheet_to_master_bg(
 # Atomic Dispatch → Shipped transition. Same outcome contract as
 # /scan-dispatch above so the mobile scanner can share its UI code.
 # ---------------------------------------------------------------------------
-# [refactor Phase-5a] @api_router.post("/shipments/scan-ship") → routers/shipment_ops.py
 
 
 # ---------------------------------------------------------------------------
@@ -2208,10 +2120,8 @@ async def _sync_user_sheet_to_master_bg(
 # Bulk-friendly so the operator can multi-select on the Shipments tab and
 # move 50 rows in a single round-trip.
 # ---------------------------------------------------------------------------
-# [refactor Phase-5a] class BulkMarkProcessingRequest → routers/shipment_ops.py
 
 
-# [refactor Phase-5a] @api_router.post("/shipments/bulk-mark-processing") → routers/shipment_ops.py
 
 
 # ---------------------------------------------------------------------------
@@ -2232,22 +2142,16 @@ async def _sync_user_sheet_to_master_bg(
 
 DELIVERY_CONF_MIN_DAYS = 5   # default threshold — overridable per user
 
-# [refactor Phase-5a] _days_since_iso helper → routers/shipment_ops.py
 
 
-# [refactor Phase-5a] @api_router.get("/shipments/delivery-confirmation") → routers/shipment_ops.py
 
 
-# [refactor Phase-5a] class DeliveryConfirmationBulkRequest → routers/shipment_ops.py
 
 
-# [refactor Phase-5a] @api_router.post("/shipments/delivery-confirmation/mark-sent") → routers/shipment_ops.py
 
 
-# [refactor Phase-5a] @api_router.post("/shipments/delivery-confirmation/mark-delivered") → routers/shipment_ops.py
 
 
-# [refactor Phase-5f] @api_router.get("/sheets/sample-template", response_class=PlainTextResponse) → routers/sheets.py
 async def sheets_sample_template():
     """Return a CSV with ideal column layout + example rows for users to import into Google Sheets."""
     buf = io.StringIO()
@@ -2285,16 +2189,12 @@ async def sheets_sample_template():
     )
 
 
-# [refactor Phase-4c] @api_router.get("/shipments/export/csv", response_class=PlainTextResponse) → routers/shipments_read.py
 
 
-# [refactor Phase-4c] @api_router.get("/shipments/by-tracking/{tracking_id}") → routers/shipments_read.py
 
 
-# [refactor Phase-4c] @api_router.post("/shipments/bulk-fetch") → routers/shipments_read.py
 
 
-# [refactor Phase-4c] @api_router.get("/customers/by-phone/{phone}") → routers/shipments_read.py
 
 
 # ───────── Phase-15: Auto-fill State + Pincode from City ──────────────
@@ -2303,15 +2203,12 @@ async def sheets_sample_template():
 # Post (cached forever in Mongo). Returns up to 8 pincode candidates so
 # the user just taps one to confirm — no typing required.
 
-# [refactor Phase-4c] @api_router.get("/lookup/by-city") → routers/shipments_read.py
-
-
-# [refactor Phase-4c] @api_router.get("/lookup/by-pincode/{pincode}") → routers/shipments_read.py
 
 
 
 
-# [refactor Phase-4c] @api_router.get("/shipments/{shipment_id}", response_model=Shipment) → routers/shipments_read.py
+
+
 
 
 # ---------------------------------------------------------------------------
@@ -2448,13 +2345,10 @@ async def _backup_shipment_to_master_sheet(
         )
 
 
-# [refactor Phase-5c-2] @api_router.post("/shipments", response_model=Shipment) → routers/shipments_write.py
 
 
-# [refactor Phase-5c-2] @api_router.put("/shipments/{shipment_id}") → routers/shipments_write.py
 
 
-# [refactor Phase-5c-2] @api_router.delete("/shipments/{shipment_id}") → routers/shipments_write.py
 
 
 # ---------------------- Pending Orders (Smart Paste + Sheet queue) ----------------------
@@ -2806,10 +2700,8 @@ def parse_structured_paste(text: str) -> Dict[str, Any]:
     return {"fields": result, "confidence": confidence, "warnings": warnings}
 
 
-# [refactor Phase-4b] @api_router.get("/smart-paste/default-prompt") → routers/smart_paste.py
 
 
-# [refactor Phase-4b] @api_router.post("/smart-paste/parse") → routers/smart_paste.py
 
 
 # ----------------------------------------------------------------------
@@ -2916,25 +2808,18 @@ async def find_duplicate_matches(
     return results[:limit]
 
 
-# [refactor Phase-4b] class _SyncFromMasterPayload → routers/smart_paste.py
 
 
-# [refactor Phase-4b] @api_router.post("/sheets/sync-from-master") → routers/smart_paste.py
 
 
-# [refactor Phase-4b] @api_router.get("/orders/master-id-counter") → routers/smart_paste.py
 
 
-# [refactor Phase-4b] class _CounterSetPayload → routers/smart_paste.py
 
 
-# [refactor Phase-4b] @api_router.post("/orders/master-id-counter") → routers/smart_paste.py
 
 
-# [refactor Phase-4b] @api_router.get("/orders/peek-master-id") → routers/smart_paste.py
 
 
-# [refactor Phase-4b] @api_router.post("/smart-paste/check-duplicate") → routers/smart_paste.py
 _CHAT_REQUIRED = ["NAME", "PHONE", "ADDRESS_1", "CITY", "STATE", "PINCODE", "AMOUNT", "WEIGHT"]
 _CHAT_LABEL = {
     "NAME": "Name",
@@ -2989,7 +2874,6 @@ def _legacy_to_schema(legacy: Dict[str, Any]) -> Dict[str, str]:
     }
 
 
-# [refactor Phase-5h] @api_router.post("/smart-paste/chat")
 async def smart_paste_chat(
     payload: SmartPasteChatRequest,
     current_user: Dict[str, Any] = Depends(get_current_user),
@@ -3156,7 +3040,6 @@ async def smart_paste_chat(
 
 
 
-# [refactor Phase-5h] @api_router.post("/smart-paste/photo")
 async def smart_paste_photo(
     payload: SmartPastePhotoRequest,
     current_user: Dict[str, Any] = Depends(get_current_user),
@@ -3308,7 +3191,6 @@ async def smart_paste_photo(
 
 
 
-# [refactor Phase-5h] @api_router.post("/smart-paste", response_model=PendingOrder)
 async def smart_paste_create(
     payload: SmartPasteRequest,
     current_user: Dict[str, Any] = Depends(get_current_user),
@@ -3567,7 +3449,6 @@ async def smart_paste_create(
     return po
 
 
-# [refactor Phase-5f] @api_router.get("/sheets/probe") → routers/sheets.py
 async def sheets_probe():
     """Quick debug endpoint — verifies Service Account can read the Master Sheet."""
     if sheet_probe_connection is None:
@@ -3615,7 +3496,6 @@ _MAPPED_FIELD_HEADERS: Dict[str, str] = {
 }
 
 
-# [refactor Phase-5f] @api_router.post("/sheets/sync-headers") → routers/sheets.py
 async def sync_sheet_headers(
     payload: SyncHeadersPayload,
     current_user: Dict[str, Any] = Depends(get_current_user),
@@ -3815,31 +3695,23 @@ async def _write_custom_values_to_user_sheet_bg(
 # [refactor] Admin custom-field-limits moved to routers/custom_fields.py
 
 
-# [refactor Phase-5b] @api_router.get("/orders/pending", response_model=List[PendingOrder]) → routers/pending_orders.py
 
 
-# [refactor Phase-5b] @api_router.get("/orders/pending/{order_id}", response_model=PendingOrder) → routers/pending_orders.py
 
 
-# [refactor Phase-5b] @api_router.put("/orders/pending/{order_id}", response_model=PendingOrder) → routers/pending_orders.py
 
 
-# [refactor Phase-5b] @api_router.delete("/orders/pending/{order_id}") → routers/pending_orders.py
 
 
-# [refactor Phase-5c-2] @api_router.post("/orders/pending/{order_id}/ship") → routers/shipments_write.py
 
 
-# [refactor Phase-5b] @api_router.get("/orders/pending-count") → routers/pending_orders.py
 
 
 # ---------------------- Phase-3a Plans & Usage ----------------------
 
 
-# [refactor Phase-4a-extra] @api_router.get("/plans") → routers/plans_coupons.py
 
 
-# [refactor Phase-5h] @api_router.get("/me/usage")
 async def my_usage(current_user: Dict[str, Any] = Depends(get_current_user)):
     """Current plan + live usage counters. Safe to poll on screen focus."""
     return await usage_summary(db, current_user)
@@ -3873,9 +3745,7 @@ def _coerce_notif_prefs(raw: Optional[Dict[str, Any]]) -> Dict[str, bool]:
     return out
 
 
-# [refactor Phase-5d] notification-prefs GET/PUT + NotificationPrefsRequest → routers/notifications.py
 
-# [refactor Phase-5d] PushTokenRequest model + 4 push-token endpoints → routers/notifications.py
 # `_push_event` helper STAYS here because the SLA cron worker calls
 # it. The push_sender module-level import that used to live next to
 # the (now-relocated) push-token endpoints needs to stay reachable
@@ -3917,31 +3787,23 @@ async def _push_event(
     )
     res["filtered"] = len(user_ids) - len(eligible)
     return res
-# [refactor Phase-5d] orphaned async def cancel_subscription (missing decorator since previous refactor) → restored to routers/plans_billing.py with proper @router.post decorator
 
 
-# [refactor Phase-5c-1] class UpgradePlanRequest → routers/plans_billing.py
 
 
-# [refactor Phase-5c-1] @api_router.post("/plans/upgrade") → routers/plans_billing.py
 
 
 # ---------------------- Phase-4a Credit Wallet ----------------------
 
 
-# [refactor Phase-4a] @api_router.get("/wallet") → routers/wallet.py
 
 
-# [refactor Phase-4a] @api_router.get("/wallet/history") → routers/wallet.py
 
 
-# [refactor Phase-4a] class PurchaseCreditsRequest → routers/wallet.py
 
 
-# [refactor Phase-4a] @api_router.post("/wallet/purchase") → routers/wallet.py
 
 
-# [refactor Phase-4a] @api_router.get("/wallet/quote") → routers/wallet.py
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -4103,7 +3965,6 @@ def _require_admin(current_user: Dict[str, Any]) -> None:
         raise HTTPException(status_code=403, detail="Admin access required")
 
 
-# [refactor Phase-5g] @api_router.get("/admin/plan-features")
 async def admin_get_plan_features(
     current_user: Dict[str, Any] = Depends(get_current_user)
 ):
@@ -4128,7 +3989,6 @@ class PlanFeaturesPayload(BaseModel):
     plans: Dict[str, List[str]]
 
 
-# [refactor Phase-5g] @api_router.put("/admin/plan-features")
 async def admin_put_plan_features(
     payload: PlanFeaturesPayload,
     current_user: Dict[str, Any] = Depends(get_current_user),
@@ -4177,7 +4037,6 @@ class PlanLimitsPayload(BaseModel):
     plans: Dict[str, PlanLimitsRow]
 
 
-# [refactor Phase-5g] @api_router.get("/admin/plan-limits")
 async def admin_get_plan_limits(
     current_user: Dict[str, Any] = Depends(get_current_user),
 ):
@@ -4226,7 +4085,6 @@ async def admin_get_plan_limits(
     }
 
 
-# [refactor Phase-5g] @api_router.put("/admin/plan-limits")
 async def admin_put_plan_limits(
     payload: PlanLimitsPayload,
     current_user: Dict[str, Any] = Depends(get_current_user),
@@ -4310,7 +4168,6 @@ async def admin_put_plan_limits(
     return await admin_get_plan_limits(current_user)
 
 
-# [refactor Phase-5g] @api_router.post("/admin/plan-limits/reset")
 async def admin_reset_plan_limits(
     current_user: Dict[str, Any] = Depends(get_current_user),
 ):
@@ -4409,7 +4266,6 @@ async def _load_whatsapp_pricing() -> Dict[str, Any]:
     }
 
 
-# [refactor Phase-5g] @api_router.get("/admin/whatsapp-pricing")
 async def admin_get_whatsapp_pricing(
     current_user: Dict[str, Any] = Depends(get_current_user),
 ):
@@ -4424,7 +4280,6 @@ async def admin_get_whatsapp_pricing(
     }
 
 
-# [refactor Phase-5g] @api_router.put("/admin/whatsapp-pricing")
 async def admin_put_whatsapp_pricing(
     payload: WhatsAppPricingPayload,
     current_user: Dict[str, Any] = Depends(get_current_user),
@@ -4514,7 +4369,6 @@ async def admin_put_whatsapp_pricing(
     return await admin_get_whatsapp_pricing(current_user)
 
 
-# [refactor Phase-5g] @api_router.get("/me/whatsapp-pricing")
 async def me_get_whatsapp_pricing(
     current_user: Dict[str, Any] = Depends(get_current_user),
 ):
@@ -4567,7 +4421,6 @@ async def _load_stage_rules() -> Dict[str, Any]:
     return _merge_stage_rules(doc.get("stage_rules") or {})
 
 
-# [refactor Phase-5g] @api_router.get("/admin/stage-rules")
 async def admin_get_stage_rules(
     current_user: Dict[str, Any] = Depends(get_current_user),
 ):
@@ -4583,7 +4436,6 @@ async def admin_get_stage_rules(
     }
 
 
-# [refactor Phase-5g] @api_router.put("/admin/stage-rules")
 async def admin_put_stage_rules(
     payload: StageRulesPayload,
     current_user: Dict[str, Any] = Depends(get_current_user),
@@ -4657,7 +4509,6 @@ async def admin_put_stage_rules(
     return await admin_get_stage_rules(current_user)
 
 
-# [refactor Phase-5g] @api_router.get("/me/stage-rules")
 async def me_get_stage_rules(
     current_user: Dict[str, Any] = Depends(get_current_user),
 ):
@@ -4751,7 +4602,6 @@ def _current_alert_phones(rules: Dict[str, Any]) -> List[str]:
     return out
 
 
-# [refactor Phase-5g] @api_router.post("/admin/sla/run-now")
 async def admin_sla_run_now(
     current_user: Dict[str, Any] = Depends(get_current_user),
 ):
@@ -4776,7 +4626,6 @@ async def admin_sla_run_now(
         _SLA_LAST_RUN["running"] = False
 
 
-# [refactor Phase-5g] @api_router.get("/admin/sla/alerts")
 async def admin_sla_alerts(
     stage: Optional[str] = None,
     dismissed: Optional[bool] = None,
@@ -4824,7 +4673,6 @@ async def admin_sla_alerts(
     }
 
 
-# [refactor Phase-5g] @api_router.post("/admin/sla/alerts/{alert_id}/dismiss")
 async def admin_sla_dismiss(
     alert_id: str,
     current_user: Dict[str, Any] = Depends(get_current_user),
@@ -4842,7 +4690,6 @@ async def admin_sla_dismiss(
     return {"ok": True, "matched": res.matched_count, "modified": res.modified_count}
 
 
-# [refactor Phase-5g] @api_router.post("/admin/sla/alerts/dismiss-bulk")
 async def admin_sla_dismiss_bulk(
     payload: Dict[str, Any] = Body(...),
     current_user: Dict[str, Any] = Depends(get_current_user),
@@ -4869,7 +4716,6 @@ async def admin_sla_dismiss_bulk(
     return {"ok": True, "modified": res.modified_count}
 
 
-# [refactor Phase-5g] @api_router.get("/me/sla/alerts")
 async def me_sla_alerts(
     stage: Optional[str] = None,
     dismissed: Optional[bool] = False,
@@ -4908,7 +4754,6 @@ async def me_sla_alerts(
     }
 
 
-# [refactor Phase-5g] @api_router.get("/admin/sla/summary")
 async def admin_sla_summary(
     current_user: Dict[str, Any] = Depends(get_current_user),
 ):
@@ -4963,7 +4808,6 @@ _rzp_client = (
 )
 
 
-# [refactor Phase-4a] class RazorpayCreateOrderRequest → routers/wallet.py
 
 
 # Phase-4a refactor note: RazorpayVerifyRequest is re-declared here
@@ -4972,17 +4816,12 @@ _rzp_client = (
 # it. Both models are tiny, identical request schemas — the duplication
 # is intentional and harmless. When /plans/razorpay/verify itself
 # moves out of server.py, this duplicate can disappear.
-# [refactor Phase-5c-1] class RazorpayVerifyRequest → routers/plans_billing.py
-# [refactor Phase-4a] class RazorpayVerifyRequest → routers/wallet.py
 
 
-# [refactor Phase-4a] @api_router.post("/wallet/razorpay/create-order") → routers/wallet.py
 
 
-# [refactor Phase-4a] @api_router.post("/wallet/razorpay/verify") → routers/wallet.py
 
 
-# [refactor Phase-4a] @api_router.post("/wallet/razorpay/webhook") → routers/wallet.py
 
 
 # ───────────── Razorpay — Plan Subscriptions (Phase-4d) ─────────────
@@ -4995,7 +4834,6 @@ _rzp_client = (
 # can change prices any time (the source of truth is the same as the
 # /plans-pricing payload the frontend reads).
 
-# [refactor Phase-5c-1] class PlanRazorpayCreateOrderRequest → routers/plans_billing.py
 
 
 def _plan_billing_meta(
@@ -5031,7 +4869,6 @@ def _plan_billing_meta(
     }
 
 
-# [refactor Phase-5c-1] @api_router.post("/plans/razorpay/create-order") → routers/plans_billing.py
 
 
 def _extend_plan_expiry(
@@ -5059,7 +4896,6 @@ def _extend_plan_expiry(
     return new_expiry.isoformat()
 
 
-# [refactor Phase-5c-1] @api_router.post("/plans/razorpay/verify") → routers/plans_billing.py
 
 
 DEFAULT_CREDIT_PACKAGES = [
@@ -5152,7 +4988,6 @@ class GlobalConfigPayload(BaseModel):
     master_sheet_tab:   Optional[str]                 = None
 
 
-# [refactor Phase-5g] @api_router.put("/admin/global-config")
 async def admin_put_global_config(
     payload: GlobalConfigPayload,
     current_user: Dict[str, Any] = Depends(get_current_user),
@@ -5252,13 +5087,10 @@ async def admin_put_global_config(
     return await _get_admin_config()
 
 
-# [refactor Phase-4a-extra] @api_router.get("/plans-pricing") → routers/plans_coupons.py
 
 
-# [refactor Phase-4a-extra] @api_router.get("/credit-packages") → routers/plans_coupons.py
 
 
-# [refactor Phase-4a-extra] @api_router.get("/me/ai-rates") → routers/plans_coupons.py
 
 
 # ---------------------- App setup ----------------------
@@ -5390,6 +5222,21 @@ try:
     app.include_router(_settings_me_router)
 except Exception as _sm_exc:
     logging.getLogger(__name__).exception(f"Failed to mount settings_me router: {_sm_exc}")
+
+# Phase-5i modular: tiny utility router that owns the last two
+# orphan routes left in server.py — `GET /api/` health-check and
+# `POST /api/demo/clear` per-user demo wipe. Self-contained (does
+# NOT rebind from server.py) so the dead function bodies can finally
+# be deleted from server.py.
+try:
+    from routers.utility import (
+        utility_router as _utility_router,
+        init as _init_utility_router,
+    )
+    _init_utility_router()
+    app.include_router(_utility_router)
+except Exception as _ut_exc:
+    logging.getLogger(__name__).exception(f"Failed to mount utility router: {_ut_exc}")
 
 # Phase-3 modular: couriers + variants + categories.
 try:
