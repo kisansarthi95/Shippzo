@@ -49,17 +49,24 @@ export default function TutorialPlayer() {
     );
   }
 
-  // Phase-21 — The embedded URL must include:
-  //   playsinline=1      → plays inline on iOS, not full-screen takeover
-  //   rel=0              → hide related videos at end
-  //   modestbranding=1   → minimise YouTube logo
-  //   controls=1         → show standard player controls
-  //   showinfo=0         → hide title/upload metadata overlay (legacy param)
-  //   iv_load_policy=3   → disable interactive annotations
-  //   fs=1               → fullscreen button stays available
+  // Phase-21 / Phase-34 — Embed URL hardening.
+  //   Switched to `youtube-nocookie.com` (privacy-enhanced) since it
+  //   has a more permissive origin policy for in-app WebView embeds.
+  //   `enablejsapi=1` lets the IFrame API answer origin pings.
+  //   `origin=` MUST match the WebView's reported origin (the
+  //   `baseUrl` we set on source below) — otherwise YouTube returns
+  //   Error 153 "Video player configuration error".
+  // Final URL shape:
+  //   https://www.youtube-nocookie.com/embed/<id>
+  //     ?rel=0&modestbranding=1&playsinline=1&controls=1
+  //     &showinfo=0&iv_load_policy=3&fs=1
+  //     &enablejsapi=1&origin=https%3A%2F%2Fshippzo.app
+  const EMBED_ORIGIN = "https://shippzo.app";
   const embedUrl =
-    `https://www.youtube.com/embed/${t.youtube_video_id}` +
-    `?rel=0&modestbranding=1&playsinline=1&controls=1&showinfo=0&iv_load_policy=3&fs=1`;
+    `https://www.youtube-nocookie.com/embed/${t.youtube_video_id}` +
+    `?rel=0&modestbranding=1&playsinline=1&controls=1&showinfo=0` +
+    `&iv_load_policy=3&fs=1&enablejsapi=1` +
+    `&origin=${encodeURIComponent(EMBED_ORIGIN)}`;
 
   // HTML wrapper keeps the WebView background black while the player
   // loads and locks the iframe to fill the screen. We also block
@@ -76,7 +83,10 @@ export default function TutorialPlayer() {
       </style>
     </head><body>
       <div class="wrap">
-        <iframe src="${embedUrl}" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
+        <iframe src="${embedUrl}"
+                allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                allowfullscreen
+                referrerpolicy="origin"></iframe>
       </div>
       <script>
         // Belt-and-braces: block any popups so a stray "watch on YouTube"
@@ -96,7 +106,14 @@ export default function TutorialPlayer() {
       />
       <View style={styles.playerWrap}>
         <WebView
-          source={{ html }}
+          // Phase-34 — Pass `baseUrl` so the WebView reports a real
+          // HTTPS origin to YouTube instead of `about:blank` /
+          // `null`. Combined with the `origin=` query param above
+          // this fixes the recurring Error 153 "Video player
+          // configuration error" that some uploaders' embed policies
+          // would otherwise trigger inside Android WebView.
+          source={{ html, baseUrl: EMBED_ORIGIN }}
+          originWhitelist={["*"]}
           style={{ backgroundColor: "#000", flex: 1 }}
           javaScriptEnabled
           domStorageEnabled
@@ -110,6 +127,7 @@ export default function TutorialPlayer() {
             return (
               u === "about:blank" ||
               u.startsWith("data:") ||
+              u.startsWith(EMBED_ORIGIN) ||
               u.startsWith("https://www.youtube.com/embed/") ||
               u.startsWith("https://www.youtube-nocookie.com/") ||
               u.startsWith("https://i.ytimg.com/")
