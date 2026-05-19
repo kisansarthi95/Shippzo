@@ -139,12 +139,15 @@ export default function CheckoutScreen() {
       // Brand override — visible in the Razorpay popup header.
       name: "Shippzo",
       description: `Courier Labels & Billing — ${description}`,
-      // Hosted square logo (256×256 PNG). Razorpay requires HTTPS;
-      // we serve the asset from the platform CDN. To upgrade
-      // permanence, re-upload the same PNG via Razorpay Dashboard
-      // → Account & Settings → Business Profile → Logo so it
-      // survives even if this CDN URL changes.
-      image: "https://customer-assets.emergentagent.com/job_logistics-hub-740/artifacts/0eqd6jf8_1000112224.png",
+      // Hosted square logo (Shippzo brand). Razorpay requires
+      // HTTPS; we serve the asset from the platform CDN. For the
+      // most reliable rendering on Razorpay's "Magic Checkout"
+      // mobile flow you MUST also upload this same PNG via
+      // Razorpay Dashboard → Account & Settings → Business
+      // Profile → Brand Logo (Razorpay's mobile checkout
+      // prefers the Dashboard-uploaded logo over the API
+      // `image` parameter on many modern flows).
+      image: "https://customer-assets.emergentagent.com/job_logistics-hub-740/artifacts/8a21eswb_1000112224.png",
       prefill: {
         name: order.user_name || "",
         email: order.user_email || "",
