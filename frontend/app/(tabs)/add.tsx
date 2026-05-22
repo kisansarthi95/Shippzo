@@ -321,19 +321,36 @@ export default function AddShipment() {
     if (v.length_cm) setBoxL(String(v.length_cm));
     if (v.width_cm)  setBoxW(String(v.width_cm));
     if (v.height_cm) setBoxH(String(v.height_cm));
-    // Rate — only auto-fill amount when currently empty/0 to avoid
-    // clobbering a manually-entered prepaid amount.
-    const currentAmt = parseFloat(amount) || 0;
-    if (!currentAmt) {
-      const basis: "within_state" | "outside_state" = (() => {
-        if (!originState || !state) return "outside_state";
-        return originState.trim().toLowerCase() === state.trim().toLowerCase()
-          ? "within_state" : "outside_state";
-      })();
-      const rate = basis === "within_state" ? v.within_state_rate : v.outside_state_rate;
-      if (rate) setAmount(String(rate));
-    }
-  }, [amount, originState, state]);
+    // Phase-39 — Rate auto-fill into `amount` REMOVED.
+    //
+    // The variant's within/outside-state rate must populate ONLY the
+    // `rate_applied` field on the save payload (i.e. the courier
+    // charge, not the customer-collectable amount). Auto-filling
+    // the visible Amount input was confusing operators because
+    // "Amount" is the order total the customer pays (COD value /
+    // prepaid order value) and is conceptually different from the
+    // courier rate. The Amount field is now exclusively populated by:
+    //   * Smart Fill / Smart Paste extraction
+    //   * Manual user input
+    //   * Prefill from sheet / pending order
+    //
+    // `rate_applied` (the variant's chosen rate) is computed at
+    // submit-time from `selectedVariant` + the within/outside-state
+    // basis in the save handler, so no state we need to set here.
+    //
+    // Original logic preserved as a comment for archaeology:
+    //
+    // const currentAmt = parseFloat(amount) || 0;
+    // if (!currentAmt) {
+    //   const basis: "within_state" | "outside_state" = (() => {
+    //     if (!originState || !state) return "outside_state";
+    //     return originState.trim().toLowerCase() === state.trim().toLowerCase()
+    //       ? "within_state" : "outside_state";
+    //   })();
+    //   const rate = basis === "within_state" ? v.within_state_rate : v.outside_state_rate;
+    //   if (rate) setAmount(String(rate));
+    // }
+  }, []);
 
   // Phase 2D — Flexible Mode helpers ------------------------------
   // Aggregate distinct dimensions / weights / package_types / categories
@@ -447,10 +464,21 @@ export default function AddShipment() {
       const m = /^([\d.]+)×([\d.]+)×([\d.]+)$/.exec(flexDim);
       if (m) { setBoxL(m[1]); setBoxW(m[2]); setBoxH(m[3]); }
     }
-    if (flexRate) {
-      setAmount(flexRate);
-    }
-  }, [flexibleMode, flexWeightG, flexDim, flexRate]);
+    // Phase-39 — `setAmount(flexRate)` REMOVED.
+    //
+    // Flexible Mode used to drop the picked rate straight into the
+    // Amount input. That conflated "courier rate" with "amount the
+    // customer pays" (COD value / prepaid order total). The form's
+    // Amount field is now reserved for Smart Fill / Smart Paste /
+    // manual entry only — `rate_applied` is computed from
+    // flexRate / variant rate at submit-time and lives on the save
+    // payload independently of the visible Amount input.
+    //
+    // Original logic preserved as a comment for archaeology:
+    //   if (flexRate) {
+    //     setAmount(flexRate);
+    //   }
+  }, [flexibleMode, flexWeightG, flexDim]);
   useEffect(() => { syncFlexToForm(); }, [syncFlexToForm]);
 
   // Auto-fills the Order ID input ONLY when:
