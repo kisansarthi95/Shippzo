@@ -1302,25 +1302,57 @@ def _extract_token_from_raw(raw_text: str, fields: Dict[str, str]) -> None:
         return
     # Match: <number><optional ws><token-keyword>  OR  <token-keyword><optional ws>< ₹/Rs?><number>
     # Examples handled:
-    #   "50 tokn"          → 50
-    #   "Token ₹100"       → 100
-    #   "Token: 100"       → 100
-    #   "advance 200"      → 200
-    #   "ટોકન 300"         → 300
-    #   "ઍડ્વાન્સ Rs 150"   → 150
+    #   "50 tokn"                   → 50
+    #   "Token ₹100"                → 100
+    #   "Token: 100"                → 100
+    #   "advance 200"               → 200
+    #   "ટોકન 300"                  → 300
+    #   "ઍડ્વાન્સ Rs 150"            → 150
+    #   "500 રૂપિયા ટોકન"            → 500   (Phase-43 — Pattern C)
+    #   "200 rupees token"          → 200   (Phase-43 — Pattern C)
+    #   "150 rs advance"            → 150   (Phase-43 — Pattern C)
     keyword = (
         r"(?:token|tokn|advance|adv|"
-        r"\u091F\u094B\u0915\u0928|"                  # टोकन
-        r"\u0A9F\u0acb\u0A95\u0AA8|"                  # ટોકન
-        r"\u0905\u0917\u094D\u0930\u093F\u092E|"      # अग्रिम
-        r"\u0A8D\u0AA1\u0acd\u0AB5\u0Aa3\u0acd\u0Ab8)" # ઍડ્વાન્સ (best-effort)
+        r"\u091F\u094B\u0915\u0928|"                  # टोकन  (Hindi)
+        r"\u0A9F\u0ACB\u0A95\u0AA8|"                  # ટોકન  (Gujarati — case-normalised
+                                                      #         in Phase-43 for readability)
+        r"\u0905\u0917\u094D\u0930\u093F\u092E|"      # अग्रिम (Hindi)
+        r"\u0A8D\u0AA1\u0ACD\u0AB5\u0AA3\u0ACD\u0AB8)" # ઍડ્વાન્સ (Gujarati best-effort)
     )
-    # Pattern A: NUMBER then keyword
+    # Phase-43 — Currency word alternation. Used by Pattern B (after
+    # the keyword) AND the new Pattern C (between number and keyword).
+    # Covers: ₹ symbol, English short / long forms, Gujarati રૂપિયા,
+    # Hindi रुपये / रुपिया variants. The full word forms ALWAYS need a
+    # word-boundary (\b) on the alpha side so "rsmth" doesn't match
+    # "rs" — handled by surrounding \s* and the explicit alternation
+    # order (longest first).
+    currency = (
+        r"(?:"
+        r"rupees|rupee|"                           # English long form
+        r"rs\.?|inr|"                              # English short forms
+        r"\u20B9|"                                 # ₹ symbol (U+20B9)
+        r"\u0AB0\u0AC2\u0AAA\u0ABF\u0AAF\u0ABE|"   # રૂપિયા (Gujarati)
+        r"\u0930\u0941\u092A\u092F\u0947|"          # रुपये  (Hindi)
+        r"\u0930\u0941\u092A\u093F\u092F\u093E"     # रुपिया (Hindi alt)
+        r")"
+    )
+    # Pattern A: NUMBER then keyword (no currency between).
     pat_a = re.compile(rf"(?i)(\d{{1,7}})\s*{keyword}")
     m = pat_a.search(raw_text)
     if not m:
-        # Pattern B: keyword then optional ₹/Rs then number
-        pat_b = re.compile(rf"(?i){keyword}\s*[:\-]?\s*(?:₹|rs\.?|inr)?\s*(\d{{1,7}})")
+        # Phase-43 — Pattern C: NUMBER + optional currency word + KEYWORD.
+        # Distinct from Pattern A because a currency word can sit
+        # between the number and the keyword (e.g. "500 રૂપિયા ટોકન").
+        # Currency is REQUIRED here (the bare "number keyword" case is
+        # already covered by Pattern A) so we don't accidentally match
+        # something like "30 phone" if a stray keyword landed nearby.
+        pat_c = re.compile(rf"(?i)(\d{{1,7}})\s*{currency}\s*{keyword}")
+        m = pat_c.search(raw_text)
+    if not m:
+        # Pattern B: keyword then optional currency word then number.
+        pat_b = re.compile(
+            rf"(?i){keyword}\s*[:\-]?\s*{currency}?\s*(\d{{1,7}})",
+        )
         m = pat_b.search(raw_text)
     if not m:
         return
