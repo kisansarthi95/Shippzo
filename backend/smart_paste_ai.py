@@ -1292,31 +1292,17 @@ def _strip_product_weight_from_parcel_weight(raw_text: str, fields: Dict[str, st
 
     The AI is instructed to do this in Rule 6b — this function is the
     safety net that catches it when the AI ignores the rule.
+
+    Phase-45 — the regex is built ONCE at module-load time from the
+    `_PARCEL_KEYWORDS` + `_WEIGHT_KEYWORDS` dicts so adding a new
+    script (e.g. Sinhala) is a single-line dict entry instead of
+    editing the function body. See `_EXPLICIT_PARCEL_WEIGHT_RE`
+    below.
     """
     weight_val = (fields.get("WEIGHT", "") or "").strip()
     if not weight_val or weight_val == "-":
         return
-    # Look for an explicit "parcel weight" / "shipping weight" /
-    # "dispatch weight" / "package weight" / "wt incl box" mention.
-    #
-    # Phase-41 — Unicode hygiene + Gujarati coverage:
-    #   * Gujarati પાર્સલ now uses the correct Gujarati vowel-sign AA
-    #     (U+0ABE) and Gujarati VIRAMA (U+0ACD) instead of the
-    #     previously-buggy Devanagari U+093E / U+094D. Mixed-script
-    #     codepoints never appear in real user paste, so the old
-    #     regex couldn't actually match Gujarati પાર્સલ.
-    #   * Added Gujarati વજન (U+0AB5 U+0A9C U+0AA8) to the
-    #     weight-keyword alternation alongside Hindi वजन.
-    explicit_weight_re = re.compile(
-        r"(?i)\b(parcel|shipping|dispatch|package|courier|box|"
-        r"\u092A\u093E\u0930\u094D\u0938\u0932|"     # पार्सल (Hindi)
-        r"\u0AAA\u0ABE\u0AB0\u0ACD\u0AB8\u0AB2)"    # પાર્સલ (Gujarati — fixed codepoints)
-        r"[^\n]{0,20}"
-        r"(weight|wt|"
-        r"\u0935\u091C\u0928|"                       # वजन  (Hindi)
-        r"\u0AB5\u0A9C\u0AA8)"                       # વજન  (Gujarati — newly added)
-    )
-    if explicit_weight_re.search(raw_text or ""):
+    if _EXPLICIT_PARCEL_WEIGHT_RE.search(raw_text or ""):
         return  # explicit label found → trust the AI's value
     # No explicit parcel-weight mention → AI almost certainly pulled
     # this from the item name. Clear it.
@@ -1326,6 +1312,84 @@ def _strip_product_weight_from_parcel_weight(raw_text: str, fields: Dict[str, st
         weight_val,
     )
     fields["WEIGHT"] = ""
+
+
+# ----------------------------------------------------------------------
+# Phase-45 — Multi-script keyword dictionaries + precompiled regex.
+#
+# `_PARCEL_KEYWORDS` and `_WEIGHT_KEYWORDS` enumerate the word for
+# "parcel" and "weight / vajan" in each of the 9 Indian scripts the
+# Smart-Paste pipeline understands. Marathi shares the Devanagari
+# script (and the word पार्सल / वजन) with Hindi — both keys point at
+# the same string, which is fine: we dedupe via `set()` when building
+# the regex alternation, and the dedicated keys keep the data file
+# self-documenting for future contributors.
+#
+# Why dicts (rather than lists)? Two reasons:
+#   1) They surface the language mapping in the source code, so a
+#      reader can grep `_WEIGHT_KEYWORDS["ta"]` and see exactly which
+#      Tamil glyph the regex actually accepts.
+#   2) Other call-sites (e.g. UI hints, AI prompt scaffolds) can
+#      reference the dict by ISO code instead of duplicating glyphs.
+# ----------------------------------------------------------------------
+
+_PARCEL_KEYWORDS: Dict[str, str] = {
+    "hi": "पार्सल",     # Hindi      (Devanagari)
+    "gu": "પાર્સલ",     # Gujarati
+    "bn": "পার্সেল",    # Bengali
+    "mr": "पार्सल",     # Marathi    (shares Devanagari with Hindi)
+    "pa": "ਪਾਰਸਲ",      # Punjabi    (Gurmukhi)
+    "ta": "பார்சல்",    # Tamil
+    "te": "పార్సల్",    # Telugu
+    "kn": "ಪಾರ್ಸಲ್",    # Kannada
+    "ml": "പാർസൽ",      # Malayalam
+}
+
+_WEIGHT_KEYWORDS: Dict[str, str] = {
+    "hi": "वजन",        # Hindi      (वजन / vajan)
+    "gu": "વજન",        # Gujarati   (વજન / vajan)
+    "bn": "ওজন",        # Bengali    (ওজন / ojon)
+    "mr": "वजन",        # Marathi    (shares spelling with Hindi)
+    "pa": "ਵਜ਼ਨ",       # Punjabi    (ਵਜ਼ਨ)
+    "ta": "எடை",        # Tamil      (எடை / edai)
+    "te": "బరువు",      # Telugu     (బరువు / baruvu)
+    "kn": "ತೂಕ",        # Kannada    (ತೂಕ / tuka)
+    "ml": "ഭാരം",       # Malayalam  (ഭാരം / bharam)
+}
+
+
+def _alt_from_dict(d: Dict[str, str]) -> str:
+    """Build a regex alternation from the unique values in `d`,
+    sorted longest-first so a longer keyword always wins over a
+    shorter one that happens to be a prefix (regex alternation is
+    left-to-right). Every value goes through `re.escape()` defensively
+    — none of the current keywords contain regex metacharacters, but
+    a future contributor adding a script with a stray `.` shouldn't
+    silently break the engine.
+    """
+    return "|".join(
+        re.escape(w) for w in sorted(set(d.values()), key=len, reverse=True)
+    )
+
+
+# Compiled ONCE at import time — `_strip_product_weight_from_parcel_weight`
+# is on the hot path of every Smart Paste call, so we don't want to
+# rebuild this pattern per invocation. The English keyword cluster
+# stays inline so the alternation reads top-to-bottom: English
+# brand → script-localised brand, then English weight → script-localised
+# weight. Adjacent characters between the two groups can be anything
+# except a newline, capped at 20 chars to avoid runaway backtracking
+# on pathological inputs (the maximum sensible separator in real
+# pastes is ~6 chars, e.g. ` નું ` between પાર્સલ and વજન).
+_EXPLICIT_PARCEL_WEIGHT_RE = re.compile(
+    r"(?i)\b("
+    r"parcel|shipping|dispatch|package|courier|box|"
+    + _alt_from_dict(_PARCEL_KEYWORDS)
+    + r")[^\n]{0,20}("
+    r"weight|wt|"
+    + _alt_from_dict(_WEIGHT_KEYWORDS)
+    + r")"
+)
 
 
 def _extract_token_from_raw(raw_text: str, fields: Dict[str, str]) -> None:
