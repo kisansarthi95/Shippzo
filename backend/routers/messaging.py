@@ -972,8 +972,15 @@ def init() -> None:
             "phrasing from the other 2 variants in the same language\n"
             "  • have a clear call-to-action where relevant "
             "(YES/NO reply, tracking, review link)\n"
-            "  • end with a brand signature line (use the exact "
-            "shop_name supplied)\n"
+            "  • end with a brand signature using the placeholder "
+            "`{shop_name}` (IN BRACES) — do NOT embed the literal "
+            "brand name text. The {shop_name} placeholder gets "
+            "substituted at send-time with whichever shop owns the "
+            "user account, so a template that hard-codes the literal "
+            "name will leak one user's brand into another user's "
+            "messages. The brand name in the Brand / Shop context "
+            "line below is for TONE matching ONLY — never reproduce "
+            "those characters verbatim in the output JSON.\n"
             "  • be WhatsApp-safe: NO heavy markdown, NO long URLs except "
             "the ones in the variables, plain text + 1-2 emojis max\n"
             "  • NOT be a literal translation of the English variant — "
@@ -995,6 +1002,20 @@ def init() -> None:
             "  Shop:      {shop_name}, {shop_phone}, {helpline}\n"
             "  Links:     {google_review_url}, {website_url}\n"
             "\n"
+            "HARD RULE — BRAND NAME PLACEHOLDER:\n"
+            "Anywhere the message needs to mention the seller / shop "
+            "/ brand (greetings, sign-offs, footers, 'Team X' lines, "
+            "etc.) you MUST write `{shop_name}` exactly — including "
+            "the curly braces — and nothing else. Examples:\n"
+            "  ✅ CORRECT: 'Thank you for shopping with {shop_name}.'\n"
+            "  ✅ CORRECT: '— Team {shop_name}'\n"
+            "  ✅ CORRECT: 'નમસ્તે from {shop_name}'\n"
+            "  ❌ WRONG:   'Thank you for shopping with Mahek Creations.'\n"
+            "  ❌ WRONG:   '— Team ShopName'\n"
+            "  ❌ WRONG:   'Greetings from <Brand>'\n"
+            "Any literal brand string in the output will be treated "
+            "as a bug. Use the placeholder ONLY.\n"
+            "\n"
             "STRONG RECOMMENDATION per template type:\n"
             "  • shipment_sent / dispatch_confirmation → include {item} so\n"
             "    the customer immediately knows which order is moving (they\n"
@@ -1012,10 +1033,19 @@ def init() -> None:
             f"Template type:    {ttype}\n"
             f"Intent:           {intent}\n"
             f"Tone:             {tone_block}\n"
-            f"Brand / shop:     {shop_name}\n"
+            # The brand name here is CONTEXT for tone-matching only —
+            # the model has been instructed (HARD RULE above) to never
+            # reproduce these characters verbatim. The actual brand
+            # placeholder `{shop_name}` is what gets substituted per
+            # user at send-time.
+            f"Brand / shop:     {shop_name}  "
+            f"(for tone context ONLY — emit `{{shop_name}}` placeholder, NOT this literal text)\n"
             f"Google review:    {google_url or '(not set — omit if empty)'}\n"
             f"Website:          {website_url or '(not set — omit if empty)'}\n\n"
-            "Generate the JSON now. Strict JSON only, no preamble."
+            "Generate the JSON now. Strict JSON only, no preamble. "
+            "REMEMBER: every brand / shop reference in the output MUST "
+            "be the literal placeholder `{shop_name}` in braces — never "
+            "the actual shop name."
         )
 
         import os, json, re as _re
@@ -1076,6 +1106,33 @@ def init() -> None:
             for s in parsed[L][:3]:
                 cleaned.append(str(s).strip()[:1200])
             variants[L] = cleaned
+
+        # Safety-net post-processing: even though the system prompt
+        # explicitly forbids it, occasionally the model still echoes
+        # the literal brand string supplied for tone context (e.g.
+        # "Thank you for shopping with Mahek Creations"). Auto-convert
+        # any such literal back to the {shop_name} placeholder so a
+        # template saved for User A can never accidentally render
+        # User A's name in User B's messages. Case-insensitive match;
+        # only run when the brand string is meaningful (>= 3 chars,
+        # non-generic) to avoid mangling common words.
+        if shop_name and len(shop_name.strip()) >= 3:
+            literal = shop_name.strip()
+            # Don't strip generic single-word handles like "Shop" /
+            # "Store" — only act when the literal is at least one
+            # space (multi-token) OR has uppercase mid-word, OR is
+            # long enough to be a unique brand name.
+            looks_brand = (
+                " " in literal
+                or any(c.isupper() for c in literal[1:])
+                or len(literal) >= 6
+            )
+            if looks_brand:
+                pat = _re.compile(_re.escape(literal), _re.IGNORECASE)
+                for L in variants:
+                    variants[L] = [
+                        pat.sub("{shop_name}", v) for v in variants[L]
+                    ]
 
         return {
             "template_type": ttype,
