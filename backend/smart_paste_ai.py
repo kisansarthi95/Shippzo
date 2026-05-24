@@ -828,10 +828,20 @@ _BLOCK_END_RE = re.compile(
 
 
 def _norm_for_compare(s: str) -> str:
-    """Lowercase + keep only letters/digits/Devanagari/Gujarati."""
+    """Lowercase + keep only letters / digits / Indian-script characters.
+
+    Phase-46 — Unicode range expanded from the narrow Devanagari +
+    Gujarati pair (`\\u0900-\\u097F\\u0A80-\\u0AFF`) to the contiguous
+    `\\u0900-\\u0D7F` block, which covers every Indic script we care
+    about: Devanagari, Bengali, Gurmukhi, Gujarati, Odia, Tamil,
+    Telugu, Kannada, and Malayalam. Without this fix, a Bengali /
+    Tamil / Malayalam address chunk would lose all of its glyphs
+    during normalisation and compare as empty, so the AI-vs-deterministic
+    address comparison silently mis-ranked which source to trust.
+    """
     if not s:
         return ""
-    return re.sub(r"[^a-z0-9\u0900-\u097F\u0A80-\u0AFF]+", "", s.lower())
+    return re.sub(r"[^a-z0-9\u0900-\u0D7F]+", "", s.lower())
 
 
 def _find_address_block(text: str) -> List[str]:
