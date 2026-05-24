@@ -235,6 +235,10 @@ Examples:
   Input: "Kurti, dispatch wt 1.2 kg"
     →  WEIGHT: 1.2 kg       (explicit "dispatch wt" label)
         ITEMS:  Kurti x 1
+  Input: "પાર્સલ નું વજન 1100ગ્રામ"
+    →  WEIGHT: 1100g        (explicit Gujarati "પાર્સલ ... વજન" label;
+                             grams normalised to "g", no space)
+        ITEMS:  -            (no product name in this line)
 
 **Rule 7 — ADDRESS_1 content:**
 ADDRESS_1 holds the COMPLETE physical address — house no / flat /
@@ -1227,11 +1231,23 @@ def _strip_product_weight_from_parcel_weight(raw_text: str, fields: Dict[str, st
         return
     # Look for an explicit "parcel weight" / "shipping weight" /
     # "dispatch weight" / "package weight" / "wt incl box" mention.
+    #
+    # Phase-41 — Unicode hygiene + Gujarati coverage:
+    #   * Gujarati પાર્સલ now uses the correct Gujarati vowel-sign AA
+    #     (U+0ABE) and Gujarati VIRAMA (U+0ACD) instead of the
+    #     previously-buggy Devanagari U+093E / U+094D. Mixed-script
+    #     codepoints never appear in real user paste, so the old
+    #     regex couldn't actually match Gujarati પાર્સલ.
+    #   * Added Gujarati વજન (U+0AB5 U+0A9C U+0AA8) to the
+    #     weight-keyword alternation alongside Hindi वजन.
     explicit_weight_re = re.compile(
         r"(?i)\b(parcel|shipping|dispatch|package|courier|box|"
-        r"\u092A\u093E\u0930\u094D\u0938\u0932|"     # पार्सल
-        r"\u0aaa\u093e\u0ab0\u094d\u0ab8\u0ab2)"     # પાર્સલ
-        r"[^\n]{0,20}(weight|wt|\u0935\u091C\u0928|\u0935\u091C\u0928)"
+        r"\u092A\u093E\u0930\u094D\u0938\u0932|"     # पार्सल (Hindi)
+        r"\u0AAA\u0ABE\u0AB0\u0ACD\u0AB8\u0AB2)"    # પાર્સલ (Gujarati — fixed codepoints)
+        r"[^\n]{0,20}"
+        r"(weight|wt|"
+        r"\u0935\u091C\u0928|"                       # वजन  (Hindi)
+        r"\u0AB5\u0A9C\u0AA8)"                       # વજન  (Gujarati — newly added)
     )
     if explicit_weight_re.search(raw_text or ""):
         return  # explicit label found → trust the AI's value
