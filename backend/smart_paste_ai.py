@@ -317,9 +317,33 @@ TOKEN is a NUMBER ONLY (just the digits). NEVER copy "tokn" / "token"
 text into TOKEN — only the number.
 TOKEN is its OWN field. DO NOT put token text into NOTES anymore.
 
-If both AMOUNT and TOKEN are present, the customer still owes
-(AMOUNT − TOKEN) on COD, but the AI's job is just to extract both
-numbers verbatim — do NOT do any subtraction.
+**Phase-42 — TOKEN and AMOUNT are SEPARATE FIELDS, NO SUBTRACTION:**
+When BOTH a Token and a Total appear in the same paste, emit BOTH
+values VERBATIM. The downstream form / API will compute COD balance
+as `cod = amount − token` automatically — that math is NOT your job.
+Your job is to extract the two numbers exactly as the customer
+typed them.
+
+  Examples (the ONLY correct behaviour):
+    Input  : "Total ₹1500 · Token ₹500 paid online · COD"
+    RIGHT  : AMOUNT: 1500   TOKEN: 500   PAYMENT: COD
+    WRONG  : AMOUNT: 1000   TOKEN: 500   (do NOT subtract; AMOUNT
+                                          is the BIG total, NOT the
+                                          remaining balance)
+
+    Input  : "₹2400 COD, advance 400"
+    RIGHT  : AMOUNT: 2400   TOKEN: 400   PAYMENT: COD
+    WRONG  : AMOUNT: 2000   TOKEN: 400
+
+    Input  : "Order Value: 800 / Tokn 200"
+    RIGHT  : AMOUNT: 800    TOKEN: 200
+    WRONG  : AMOUNT: 600    TOKEN: 200
+
+The "no subtraction" rule applies to **every other numeric field
+too** — never combine, sum, or subtract values. Numbers in the
+output JSON must be byte-for-byte what appeared in the source for
+that label. The single exception is digit normalisation (Gujarati /
+Hindi numerals → ASCII digits) handled by Rule 2.
 
 **Rule 11 — Payment field:**
 PAYMENT: COD only if "COD/Cash on Delivery" is mentioned;
