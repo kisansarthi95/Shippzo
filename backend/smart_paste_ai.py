@@ -1041,14 +1041,57 @@ def _parse_complexity_block(raw: str) -> Tuple[str, str]:
 
 # ---- Helpers ------------------------------------------------------------
 
-_GUJ_DIGIT = str.maketrans("૦૧૨૩૪૫૬૭૮૯", "0123456789")
-_HIN_DIGIT = str.maketrans("०१२३४५६७८९", "0123456789")
+# Phase-44 — Unified Indic-digit → ASCII translation table.
+#
+# Why one table instead of per-script `str.maketrans()` calls + chained
+# `.translate()` invocations: a single translation table is one O(n)
+# pass over the input string (Python's str.translate is implemented in
+# C against a single dict). The previous implementation chained two
+# .translate() calls and only covered Gujarati + Devanagari, so any
+# Bengali / Tamil / Malayalam / ... digit silently fell through to
+# the int() parsers and produced ValueError.
+#
+# Coverage — all 9 Indian numeral ranges:
+#   * Devanagari   U+0966..U+096F  (०-९)  — Hindi, Marathi, Nepali, Sanskrit
+#   * Gujarati     U+0AE6..U+0AEF  (૦-૯)
+#   * Bengali      U+09E6..U+09EF  (০-৯)  — Bengali, Assamese
+#   * Gurmukhi     U+0A66..U+0A6F  (੦-੯)  — Punjabi
+#   * Odia         U+0B66..U+0B6F  (୦-୯)
+#   * Tamil        U+0BE6..U+0BEF  (௦-௯)
+#   * Telugu       U+0C66..U+0C6F  (౦-౯)
+#   * Kannada      U+0CE6..U+0CEF  (೦-೯)
+#   * Malayalam    U+0D66..U+0D6F  (൦-൯)
+#
+# All 9 ranges are contiguous 10-codepoint blocks where +0..+9 maps
+# straight onto ASCII '0'..'9' — so we build the table programmatically
+# instead of typing every glyph (which can mis-render in editors).
+_INDIC_DIGIT_BASES = (
+    0x0966,  # Devanagari
+    0x0AE6,  # Gujarati
+    0x09E6,  # Bengali
+    0x0A66,  # Gurmukhi
+    0x0B66,  # Odia
+    0x0BE6,  # Tamil
+    0x0C66,  # Telugu
+    0x0CE6,  # Kannada
+    0x0D66,  # Malayalam
+)
+_ALL_INDIC_DIGITS: Dict[int, int] = {
+    base + d: ord("0") + d for base in _INDIC_DIGIT_BASES for d in range(10)
+}
 
 
 def _digits_to_en(s: str) -> str:
+    """Translate any Indian-script numeral in ``s`` to ASCII 0-9.
+
+    Single-pass O(n) using the pre-built `_ALL_INDIC_DIGITS` table.
+    Safe to call on every value before int / float / regex parsing —
+    non-digit characters are left untouched, and ASCII inputs are
+    effectively a no-op.
+    """
     if not s:
         return s
-    return s.translate(_GUJ_DIGIT).translate(_HIN_DIGIT)
+    return s.translate(_ALL_INDIC_DIGITS)
 
 
 def _empty_result(source: str) -> Dict[str, Any]:
