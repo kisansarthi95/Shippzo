@@ -175,8 +175,35 @@ NEVER output angle brackets `<` or `>` in a value. They are only used
 as description markers in this prompt — a value must be a real word
 or the single character `-`.
 
-**Rule 2 — Digit normalisation:**
-Convert Gujarati (૧૨૩) & Hindi (१२३) digits to English (123).
+**Rule 2 — Digit normalisation (9 Indian scripts → ASCII):**
+Customer input may contain digits written in ANY of the 9 official
+Indian numeral systems below. Treat every such digit as 100%
+EQUIVALENT to its ASCII 0-9 counterpart and OUTPUT only ASCII digits
+in every field (PHONE, PINCODE, AMOUNT, TOKEN, WEIGHT, qty, etc.).
+
+  • Devanagari      ० १ २ ३ ४ ५ ६ ७ ८ ९   (U+0966 – U+096F)  — Hindi, Marathi, Sanskrit
+  • Bengali         ০ ১ ২ ৩ ৪ ৫ ৬ ৭ ৮ ৯   (U+09E6 – U+09EF)  — Bengali, Assamese
+  • Gurmukhi        ੦ ੧ ੨ ੩ ੪ ੫ ੬ ੭ ੮ ੯   (U+0A66 – U+0A6F)  — Punjabi
+  • Gujarati        ૦ ૧ ૨ ૩ ૪ ૫ ૬ ૭ ૮ ૯   (U+0AE6 – U+0AEF)  — Gujarati
+  • Odia            ୦ ୧ ୨ ୩ ୪ ୫ ୬ ୭ ୮ ୯   (U+0B66 – U+0B6F)  — Odia
+  • Tamil           ௦ ௧ ௨ ௩ ௪ ௫ ௬ ௭ ௮ ௯   (U+0BE6 – U+0BEF)  — Tamil
+  • Telugu          ౦ ౧ ౨ ౩ ౪ ౫ ౬ ౭ ౮ ౯   (U+0C66 – U+0C6F)  — Telugu
+  • Kannada         ೦ ೧ ೨ ೩ ೪ ೫ ೬ ೭ ೮ ೯   (U+0CE6 – U+0CEF)  — Kannada
+  • Malayalam       ൦ ൧ ൨ ൩ ൪ ൫ ൬ ൭ ൮ ൯   (U+0D66 – U+0D6F)  — Malayalam
+
+Examples (input → output):
+  "મારો નંબર ૯૮૭૬૫૪૩૨૧૦"      → PHONE: 9876543210
+  "फोन १२३४५६७८९०"             → PHONE: 1234567890
+  "ਪਿੰਨ ੧੨੩੪੫੬"                  → PINCODE: 123456
+  "মূল্য ১৫০০ টাকা"              → AMOUNT: 1500
+  "விலை ௨௫௦"                    → AMOUNT: 250
+  "ధర ౧౦౦౦"                     → AMOUNT: 1000
+  "ಬೆಲೆ ೭೫೦"                     → AMOUNT: 750
+  "വില ൫൦൦"                     → AMOUNT: 500
+  "ଦାମ ୩୦୦"                     → AMOUNT: 300
+
+NEVER preserve the original script for any numeric value — always
+emit pure ASCII 0-9 in the final 14-line output.
 
 **Rule 3 — Missing fields:**
 If any field is missing or unclear → write EXACTLY: `-`. NEVER guess,
