@@ -816,7 +816,25 @@ async def parse_paste_via_llm(
 
 _ADDR_HEADER_RE = re.compile(
     r"^\s*(?:shipping\s*address|delivery\s*address|address|"
-    r"પત્તા|સરનામું|ઠેકાણું|पता|ठिकाना)\s*[:\-]?\s*$",
+    # Gujarati
+    r"પત્તા|સરનામું|ઠેકાણું|"
+    # Hindi
+    r"पता|ठिकाना|"
+    # Marathi
+    r"पत्ता|"
+    # Bengali
+    r"ঠিকানা|"
+    # Punjabi (Gurmukhi)
+    r"ਪਤਾ|"
+    # Tamil
+    r"முகவரி|"
+    # Telugu
+    r"చిరునామా|"
+    # Kannada
+    r"ವಿಳಾಸ|"
+    # Malayalam
+    r"വിലാസം"
+    r")\s*[:\-]?\s*$",
     re.I,
 )
 _BLOCK_END_RE = re.compile(
@@ -1152,11 +1170,19 @@ def repair_address_from_raw(raw_text: str, schema: Dict[str, str]) -> Dict[str, 
     header_re = re.compile(
         r"(?im)^[\s>•\-\*]*"
         r"(?:shipping\s*address|delivery\s*address|address|"
-        r"\u0936\u093F\u092A\u093F\u0902\u0917|"  # शिपिंग
-        r"\u092A\u0924\u093E|"                     # पता
-        r"\u0aa1\u0ac0\u0ab2\u093F\u0935\u0930\u0940|"  # ડીલીવરી
-        r"\u0aa0\u0ac7\u0a95\u0abe\u0aa3\u0ac1\u0a82|"   # ઠેકાણું
-        r"\u0AAA\u0AA4\u0acd\u0AA4\u0acB)"         # પત્તો
+        r"\u0936\u093F\u092A\u093F\u0902\u0917|"  # शिपिंग (Hindi)
+        r"\u092A\u0924\u093E|"                     # पता (Hindi)
+        r"\u092A\u0924\u094D\u0924\u093E|"         # पत्ता (Marathi)
+        r"\u0aa1\u0ac0\u0ab2\u093F\u0935\u0930\u0940|"  # ડીલીવરી (Gujarati)
+        r"\u0aa0\u0ac7\u0a95\u0abe\u0aa3\u0ac1\u0a82|"   # ઠેકાણું (Gujarati)
+        r"\u0AAA\u0AA4\u0acd\u0AA4\u0acB|"          # પત્તો (Gujarati)
+        r"\u09A0\u09BF\u0995\u09BE\u09A8\u09BE|"    # ঠিকানা (Bengali)
+        r"\u0A2A\u0A24\u0A3E|"                       # ਪਤਾ (Punjabi)
+        r"\u0BAE\u0BC1\u0B95\u0BB5\u0BB0\u0BBF|"     # முகவரி (Tamil)
+        r"\u0C1A\u0C3F\u0C30\u0C41\u0C28\u0C3E\u0C2E\u0C3E|"  # చిరునామా (Telugu)
+        r"\u0CB5\u0CBF\u0CB3\u0CBE\u0CB8|"           # ವಿಳಾಸ (Kannada)
+        r"\u0D35\u0D3F\u0D32\u0D3E\u0D38\u0D02"      # വിലാസം (Malayalam)
+        r")"
         r"\s*[:\-–—]\s*",
     )
     m = header_re.search(raw_text)
