@@ -34,6 +34,7 @@ import ConfirmCancelModal, {
   TerminalAction,
   isTerminalShipmentStatus,
 } from "../../components/ConfirmCancelModal";
+import { openSaveContactIntent, saveBulkVcf } from "../../lib/contactSave";
 
 type StatusFilter =
   | "All"
@@ -768,8 +769,7 @@ export default function Shipments() {
           shipment_id: ship.id,
           override_category: overrideCategory || "",
         });
-        const mod = await import("../../lib/contactSave");
-        await mod.openSaveContactIntent({
+        await openSaveContactIntent({
           name:   built.name,
           phone:  built.phone,
           postal: built.postal,
@@ -870,8 +870,7 @@ export default function Shipments() {
       setBulkContactBusy(true);
       const ids = Array.from(selectedIds);
       const r = await Api.buildBulkVcf(ids, overrideCategory);
-      const mod = await import("../../lib/contactSave");
-      await mod.saveBulkVcf(r.vcf, `contacts_${ids.length}.vcf`);
+      await saveBulkVcf(r.vcf, `contacts_${ids.length}.vcf`);
       setBulkContactPickerOpen(false);
       Alert.alert(
         "Ready",

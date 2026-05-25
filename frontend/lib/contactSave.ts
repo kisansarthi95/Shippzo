@@ -9,13 +9,54 @@
  *      platform share sheet so the user can drop it into Contacts.
  */
 import { Platform, Alert } from "react-native";
-import * as IntentLauncher from "expo-intent-launcher";
-// expo-file-system v19 dropped `EncodingType` from the root export —
-// the legacy API (which still supports writeAsStringAsync + encoding
-// flags) is now under /legacy. Using it keeps this file working on
-// both SDK 52 (new) and older builds without a conditional fork.
-import * as FileSystem from "expo-file-system/legacy";
-import * as Sharing from "expo-sharing";
+
+// ---------------------------------------------------------------------------
+// Defensive native-module loading.
+//
+// 1. `expo-intent-launcher` is **Android-only**. Importing it on iOS makes
+//    Metro/Hermes attempt to resolve the native module and CRASHES the JS
+//    bundle on first execution. We therefore only require() it when running
+//    on Android — iOS code paths don't need it at all.
+//
+// 2. `expo-file-system/legacy` and `expo-sharing` are normally present, but
+//    on freshly-built dev clients (or after an SDK upgrade gone sideways)
+//    one of them may be missing/half-installed. A throwing top-level import
+//    would take the entire `contactSave` module out of service — including
+//    the safe iOS VCF fallback path. Each native module is therefore loaded
+//    behind its own try/catch, with a clear null-fallback that the calling
+//    helpers below check before use.
+// ---------------------------------------------------------------------------
+let IntentLauncher: any = null;
+if (Platform.OS === "android") {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    IntentLauncher = require("expo-intent-launcher");
+  } catch (e) {
+    // Module not linked / dev-client missing — leave null and fall back to
+    // the VCF share-sheet flow used on iOS.
+    IntentLauncher = null;
+  }
+}
+
+let FileSystem: any = null;
+try {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  // expo-file-system v19 dropped `EncodingType` from the root export —
+  // the legacy API (which still supports writeAsStringAsync + encoding
+  // flags) is now under /legacy. Using it keeps this file working on
+  // both SDK 52 (new) and older builds without a conditional fork.
+  FileSystem = require("expo-file-system/legacy");
+} catch (e) {
+  FileSystem = null;
+}
+
+let Sharing: any = null;
+try {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  Sharing = require("expo-sharing");
+} catch (e) {
+  Sharing = null;
+}
 
 // String-literal encoding so a wildcard import of the legacy module
 // can't blow up with "Cannot read property UTF8 of undefined" when
@@ -68,52 +109,67 @@ export type ContactPayload = {
  */
 export async function openSaveContactIntent(c: ContactPayload): Promise<void> {
   if (Platform.OS === "android") {
-    // `android.intent.action.INSERT` with `vnd.android.cursor.dir/raw_contact`
-    // lets us pre-fill every key. Fields use the classic ContactsContract
-    // intent-extra keys.
-    const extra: Record<string, any> = {};
-    if (c.name)   extra["name"]            = c.name;
-    if (c.phone)  extra["phone"]           = c.phone;
-    if (c.postal) extra["postal"]          = c.postal;
-    if (c.notes)  extra["notes"]           = c.notes;
-    try {
-      await IntentLauncher.startActivityAsync(
-        "android.intent.action.INSERT",
-        {
-          type:  "vnd.android.cursor.dir/raw_contact",
-          extra,
-        },
-      );
-      return;
-    } catch (e) {
-      // Some ROMs reject raw_contact; retry with the general contact
-      // mime which is more widely supported.
+    // If the native module never linked (e.g. iOS-only build accidentally
+    // running on a half-bridged dev client) drop straight to the VCF
+    // fallback instead of throwing on `.startActivityAsync` of null.
+    if (!IntentLauncher || typeof IntentLauncher.startActivityAsync !== "function") {
+      // Fall through to the VCF/share-sheet path below.
+    } else {
+      // `android.intent.action.INSERT` with `vnd.android.cursor.dir/raw_contact`
+      // lets us pre-fill every key. Fields use the classic ContactsContract
+      // intent-extra keys.
+      const extra: Record<string, any> = {};
+      if (c.name)   extra["name"]            = c.name;
+      if (c.phone)  extra["phone"]           = c.phone;
+      if (c.postal) extra["postal"]          = c.postal;
+      if (c.notes)  extra["notes"]           = c.notes;
       try {
         await IntentLauncher.startActivityAsync(
           "android.intent.action.INSERT",
           {
-            type:  "vnd.android.cursor.dir/contact",
+            type:  "vnd.android.cursor.dir/raw_contact",
             extra,
           },
         );
         return;
-      } catch (e2: any) {
-        Alert.alert(
-          "Save Contact failed",
-          e2?.message || "Could not open the system contacts app.",
-        );
-        return;
+      } catch (e) {
+        // Some ROMs reject raw_contact; retry with the general contact
+        // mime which is more widely supported.
+        try {
+          await IntentLauncher.startActivityAsync(
+            "android.intent.action.INSERT",
+            {
+              type:  "vnd.android.cursor.dir/contact",
+              extra,
+            },
+          );
+          return;
+        } catch (e2: any) {
+          Alert.alert(
+            "Save Contact failed",
+            e2?.message || "Could not open the system contacts app.",
+          );
+          return;
+        }
       }
     }
   }
 
-  // iOS: `ContactsContract` doesn't exist. Easiest portable fallback —
-  // generate a single-entry VCF and hand it to the share sheet.
+  // iOS (or Android without the intent module): generate a single-entry
+  // VCF and hand it to the share sheet. Guards below survive the case
+  // where either expo-file-system or expo-sharing is missing.
   try {
+    if (!FileSystem || typeof FileSystem.writeAsStringAsync !== "function") {
+      Alert.alert(
+        "Save Contact unavailable",
+        "File system module isn't installed in this build.",
+      );
+      return;
+    }
     const vcf = toVcf(c);
     const path = `${FileSystem.cacheDirectory || ""}contact_${Date.now()}.vcf`;
     await writeTextSafely(path, vcf);
-    if (await Sharing.isAvailableAsync()) {
+    if (Sharing && typeof Sharing.isAvailableAsync === "function" && (await Sharing.isAvailableAsync())) {
       await Sharing.shareAsync(path, {
         mimeType: "text/vcard",
         dialogTitle: "Add to Contacts",
@@ -156,9 +212,16 @@ function toVcf(c: ContactPayload): string {
  */
 export async function saveBulkVcf(vcfBody: string, filename: string = "contacts.vcf") {
   try {
+    if (!FileSystem || typeof FileSystem.writeAsStringAsync !== "function") {
+      Alert.alert(
+        "Export unavailable",
+        "File system module isn't installed in this build.",
+      );
+      return;
+    }
     const path = `${FileSystem.cacheDirectory || ""}${filename}`;
     await writeTextSafely(path, vcfBody);
-    if (await Sharing.isAvailableAsync()) {
+    if (Sharing && typeof Sharing.isAvailableAsync === "function" && (await Sharing.isAvailableAsync())) {
       await Sharing.shareAsync(path, {
         mimeType: "text/vcard",
         dialogTitle: "Export Contacts",
