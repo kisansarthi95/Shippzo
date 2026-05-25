@@ -1456,11 +1456,27 @@ def _extract_token_from_raw(raw_text: str, fields: Dict[str, str]) -> None:
     #   "150 rs advance"            → 150   (Phase-43 — Pattern C)
     keyword = (
         r"(?:token|tokn|advance|adv|"
-        r"\u091F\u094B\u0915\u0928|"                  # टोकन  (Hindi)
+        r"\u091F\u094B\u0915\u0928|"                  # टोकन  (Hindi / Marathi — same)
         r"\u0A9F\u0ACB\u0A95\u0AA8|"                  # ટોકન  (Gujarati — case-normalised
                                                       #         in Phase-43 for readability)
         r"\u0905\u0917\u094D\u0930\u093F\u092E|"      # अग्रिम (Hindi)
-        r"\u0A8D\u0AA1\u0ACD\u0AB5\u0AA3\u0ACD\u0AB8)" # ઍડ્વાન્સ (Gujarati best-effort)
+        r"\u0906\u0917\u093E\u090A|"                  # आगाऊ  (Marathi — advance)
+        r"\u0A8D\u0AA1\u0ACD\u0AB5\u0AA3\u0ACD\u0AB8|" # ઍડ્વાન્સ (Gujarati best-effort)
+        # Bengali
+        r"\u099F\u09CB\u0995\u09C7\u09A8|"            # টোকেন (Bengali — token)
+        r"\u0985\u0997\u09CD\u09B0\u09BF\u09AE|"      # অগ্রিম (Bengali — advance)
+        # Punjabi (Gurmukhi)
+        r"\u0A1F\u0A4B\u0A15\u0A28|"                  # ਟੋਕਨ  (Punjabi — token)
+        r"\u0A05\u0A17\u0A3E\u0A0A|"                  # ਅਗਾਊ  (Punjabi — advance)
+        # Tamil
+        r"\u0BAE\u0BC1\u0BA9\u0BCD\u0BAA\u0BA3\u0BAE\u0BCD|"  # முன்பணம் (Tamil — advance money)
+        # Telugu
+        r"\u0C05\u0C21\u0C4D\u0C35\u0C3E\u0C28\u0C4D\u0C38\u0C4D|"  # అడ్వాన్స్ (Telugu — advance)
+        # Kannada
+        r"\u0CAE\u0CC1\u0C82\u0C97\u0CA1|"            # ಮುಂಗಡ (Kannada — advance)
+        # Malayalam
+        r"\u0D05\u0D21\u0D4D\u0D35\u0D3E\u0D7B\u0D38\u0D4D"  # അഡ്വാൻസ് (Malayalam — advance)
+        r")"
     )
     # Phase-43 — Currency word alternation. Used by Pattern B (after
     # the keyword) AND the new Pattern C (between number and keyword).
