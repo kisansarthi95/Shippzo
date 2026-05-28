@@ -814,6 +814,14 @@ async def parse_paste_via_llm(
     except Exception as e:
         _LOG.warning("Token-extract guard failed: %s", e)
 
+    # Final pass: clear ORDER_ID when it's an obvious misclassification
+    # (matches PINCODE, bare 6-digit number, or matches PHONE/ALT_PHONE).
+    # Runs LAST so PINCODE/PHONE/ALT_PHONE are already finalised.
+    try:
+        _sanitize_order_id(fields)
+    except Exception as e:
+        _LOG.warning("Order-ID sanitiser failed: %s", e)
+
     return {
         "fields": fields,
         "missing": missing,
@@ -1545,6 +1553,85 @@ def _extract_token_from_raw(raw_text: str, fields: Dict[str, str]) -> None:
     token_val = m.group(1)
     _LOG.info("Smart-paste: TOKEN extracted via deterministic fallback = %s", token_val)
     fields["TOKEN"] = token_val
+
+
+# ─────────── Order-ID Sanitisation ───────────
+#
+# Even after the LLM + deterministic recovery passes, ORDER_ID can be
+# polluted with values that obviously don't belong there. The most
+# common false positives are:
+#
+#   • The customer's PINCODE (LLM grabs the standalone 6-digit number
+#     and assigns it as the order id when no real id is in the paste).
+#   • Any other bare 6-digit numeric string — real shopkeeper order ids
+#     almost always carry a prefix (e.g. "AMZ-12345", "OD#9876", "INV/
+#     2024/0042") or are alphanumeric. A bare 6-digit number is almost
+#     always a pincode misclassified.
+#   • The customer's PHONE / ALT_PHONE — when the paste contains the
+#     phone first and an order id never appears, the LLM occasionally
+#     copies the phone digits into ORDER_ID.
+#
+# This sanitiser runs AFTER all extraction / repair passes (so PINCODE,
+# PHONE, ALT_PHONE are already final), and ONLY clears ORDER_ID when
+# any of the above rules trigger. It never invents a new order id;
+# the auto-generation logic on the New Shipment screen takes over
+# downstream when ORDER_ID is empty.
+def _sanitize_order_id(fields: Dict[str, str]) -> None:
+    """Clear ORDER_ID when it's obviously a misclassified value.
+
+    Mutates ``fields`` in place. Safe to call when keys are missing.
+    """
+    if not isinstance(fields, dict):
+        return
+    order_id = (fields.get("ORDER_ID") or "").strip()
+    if not order_id:
+        return
+
+    pincode = (fields.get("PINCODE") or "").strip()
+    phone   = (fields.get("PHONE")   or "").strip()
+    alt     = (fields.get("ALT_PHONE") or "").strip()
+
+    cleared_reason: str = ""
+
+    # Rule 1 — ORDER_ID exactly equals PINCODE → pincode wins.
+    if pincode and order_id == pincode:
+        cleared_reason = f"matches PINCODE ({pincode})"
+
+    # Rule 2 — bare 6-digit number. Real order IDs carry a prefix or
+    # have at least one non-digit character.
+    elif re.fullmatch(r"\d{6}", order_id):
+        cleared_reason = "bare 6-digit number (looks like a pincode, not an order id)"
+
+    # Rule 3 — ORDER_ID equals the customer phone or alternate phone.
+    # Compare the raw form AND the digits-only form so "+91 98765 43210"
+    # vs "9876543210" still triggers a match. Also tolerate an extra
+    # country-code prefix on either side by comparing the LAST 10 digits
+    # (Indian phone length) when both sides have at least 10 digits.
+    else:
+        digits_only_oid = re.sub(r"\D", "", order_id)
+        for label, candidate in (("PHONE", phone), ("ALT_PHONE", alt)):
+            if not candidate:
+                continue
+            digits_only_c = re.sub(r"\D", "", candidate)
+            matched = (
+                order_id == candidate
+                or (digits_only_oid and digits_only_oid == digits_only_c)
+                or (
+                    len(digits_only_oid) >= 10
+                    and len(digits_only_c) >= 10
+                    and digits_only_oid[-10:] == digits_only_c[-10:]
+                )
+            )
+            if matched:
+                cleared_reason = f"matches {label} ({candidate})"
+                break
+
+    if cleared_reason:
+        _LOG.info(
+            "Smart-paste: cleared ORDER_ID=%r — %s. Auto-gen will assign one.",
+            order_id, cleared_reason,
+        )
+        fields["ORDER_ID"] = ""
 
 
 def to_legacy_fields(ai_fields: Dict[str, str]) -> Dict[str, str]:
