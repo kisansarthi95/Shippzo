@@ -72,7 +72,7 @@ AMOUNT: <number only, no ₹ symbol>
 PAYMENT: <COD or PAID — leave blank if not stated>
 TOKEN: <token / advance / partial-paid amount — number only, no ₹ symbol; `-` if not present>
 COURIER: <courier name or ->
-ORDER_ID: <order number or ->
+ORDER_ID: <order number or `-`. STRICT: extract a value ONLY when the source text contains an EXPLICIT order / reference / invoice label such as "Order ID", "Order #", "Order No", "Order:", "OrderID", "Ref No", "Reference", "Invoice", "Inv #", "Tracking", "AWB", or a vendor prefix like "AMZ", "OD", "FK", "INV", "PO". NEVER assign a bare standalone number (pincode, phone, amount, weight, quantity, or any free-floating digit string) as ORDER_ID. If no explicit label is present, output `-`.>
 WEIGHT: <ALWAYS leave as `-`. NEVER infer parcel weight from item name.>
 NOTES: <special instruction or ->
 EMAIL: <customer email address (lowercase, no spaces) — only if a clear email is visible in the input, else ->
@@ -469,6 +469,53 @@ value lives in EXACTLY ONE field.
     parties' numbers) should still produce ALT_PHONE when a second
     distinct 10-digit number is found.
   * NEVER duplicate the same number into both PHONE and ALT_PHONE.
+
+**Rule 16 — ORDER_ID requires an EXPLICIT label (no guessing):**
+ORDER_ID is the strictest field in this schema. The seller's real
+order identifier is meaningful only when the source text EXPLICITLY
+tags it. The model MUST follow these two laws:
+
+  16.1 ▸ EXTRACT ONLY when an explicit order / reference label is
+         present immediately before the value. Acceptable labels
+         (case-insensitive, with or without spaces / colon / hash /
+         hyphen) include:
+           • "Order ID", "Order #", "Order No", "Order:", "OrderID"
+           • "Ref", "Ref No", "Reference", "Ref #"
+           • "Invoice", "Inv #", "Inv No", "Bill No"
+           • "Tracking", "Track ID", "AWB", "AWB No", "Consignment"
+           • A vendor / marketplace prefix bonded to the value such
+             as "AMZ-12345", "OD9876", "FK_2024_42", "INV/2024/0042",
+             "PO-7788", "SHP-001"
+         The Gujarati / Hindi equivalents also count:
+           • "ઓર્ડર નંબર", "ઓર્ડર આઈડી", "બિલ નંબર"
+           • "ऑर्डर नंबर", "ऑर्डर आईडी", "बिल नंबर", "इन्वॉइस"
+
+  16.2 ▸ NEVER assign a generic standalone number as ORDER_ID.
+         The following are NOT order ids — leave ORDER_ID as `-`:
+           • A bare 6-digit number (that is a pincode — goes to
+             PINCODE, never to ORDER_ID).
+           • Any 10-digit number (that is a phone — goes to PHONE
+             / ALT_PHONE, never to ORDER_ID).
+           • The AMOUNT, WEIGHT, quantity, or any free-floating
+             integer the operator pasted without an explicit label
+             saying it is an order/ref/invoice id.
+           • The customer's house number, flat number, plot number,
+             or any street number that lives inside the address.
+
+Examples:
+  ✅ "Order ID: AMZ-12345"          → ORDER_ID: AMZ-12345
+  ✅ "Invoice #INV/2024/0042"       → ORDER_ID: INV/2024/0042
+  ✅ "AWB 7788991234"               → ORDER_ID: 7788991234
+  ✅ "ઓર્ડર નંબર OD9876"            → ORDER_ID: OD9876
+  ❌ "Pincode 380015"               → ORDER_ID: -   (380015 is pincode)
+  ❌ "Phone 9876543210"             → ORDER_ID: -   (it's a phone)
+  ❌ "₹2400 COD"                    → ORDER_ID: -   (amount, not order id)
+  ❌ Plain paste "1500"             → ORDER_ID: -   (no label, no prefix)
+
+When in doubt, ALWAYS leave ORDER_ID as `-`. A downstream auto-gen
+step will assign a fresh order id when this field is empty — a wrong
+or fabricated value, however, will pollute the customer's record
+forever and is treated as a parse error.
 
 After the 15-line block, on a NEW line, output one JSON object describing
 the address complexity:
