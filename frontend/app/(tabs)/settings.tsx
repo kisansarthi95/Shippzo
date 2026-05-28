@@ -179,6 +179,9 @@ export default function SettingsScreen() {
   const flagWaTemplate        = useFeatureFlag("whatsapp_template_editor");
   const flagWaCopy            = useFeatureFlag("whatsapp_copy_template");
   const flagWaEta             = useFeatureFlag("whatsapp_eta_customization");
+  // 2026-05-25 — Help & Support gating (default ON for every plan).
+  const flagSupportTickets    = useFeatureFlag("support_tickets");
+  const flagVideoTutorials    = useFeatureFlag("video_tutorials");
   // ── 2026-04-30: feature flags for the 14 newly-registered features ──
   const flagRestoreMyOrders        = useFeatureFlag("sheet_restore_my_orders");
   const flagOrderIdCounterCustom   = useFeatureFlag("master_order_id_counter_custom");
@@ -3117,16 +3120,23 @@ export default function SettingsScreen() {
                 row with a richer Support Center that opens a
                 dedicated screen (video tutorials, FAQs, create/track
                 support requests, popular articles, etc.). Email
-                fallback still available from inside that screen. */}
-            <TouchableOpacity
-              testID="about-support-center"
-              style={styles.aboutLinkRow}
-              onPress={() => router.push("/support-center" as any)}
-            >
-              <PhIcon name="headset" size={18} color={colors.primary} />
-              <Text style={styles.aboutLinkText}>Support Center</Text>
-              <PhIcon name="chevron-forward" size={16} color="#94A3B8" />
-            </TouchableOpacity>
+                fallback still available from inside that screen.
+
+                2026-05-25 — Gated behind `support_tickets` feature
+                flag (default ON for every plan). When OFF, the entire
+                row hides — admin then exposes mailto fallback if
+                desired. */}
+            {flagSupportTickets ? (
+              <TouchableOpacity
+                testID="about-support-center"
+                style={styles.aboutLinkRow}
+                onPress={() => router.push("/support-center" as any)}
+              >
+                <PhIcon name="headset" size={18} color={colors.primary} />
+                <Text style={styles.aboutLinkText}>Support Center</Text>
+                <PhIcon name="chevron-forward" size={16} color="#94A3B8" />
+              </TouchableOpacity>
+            ) : null}
             {/* Phase-22 — Super-Admin Support Inbox, visible only to
                 the owner (is_admin=true). Lets the owner see/reply to
                 every user's tickets within seconds. */}

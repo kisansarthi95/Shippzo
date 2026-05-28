@@ -662,6 +662,9 @@ export default function AddShipment() {
   const flagShipNotes  = useFeatureFlag("form_shipment_notes");
   const flagAutoTrack  = useFeatureFlag("auto_tracking");
   const flagManualScan = useFeatureFlag("manual_tracking_scan");
+  // Phase-35 — Plan-gated Courier Inquiry pill. Default ON for every
+  // plan; admin can untick per-plan in the admin Plan Features panel.
+  const flagCourierInquiry = useFeatureFlag("courier_whatsapp_inquiry");
 
   // Phase-24 — Centralised Field Control System. Driven by the
   // /api/field-configs/new_shipment endpoint, super-admin can toggle
@@ -1422,6 +1425,12 @@ export default function AddShipment() {
               // courier (no ambiguity). The button is *visually* slightly
               // smaller than the courier chips below so the chips remain
               // the primary action on this section.
+              //
+              // 2026-05-25 — Gated behind `courier_whatsapp_inquiry`
+              // feature flag (defaults ON for every plan, admin can
+              // untick per-plan). When OFF, the rightSlot is empty so
+              // the row falls back to the plain section header.
+              flagCourierInquiry ? (
               <TouchableOpacity
                 testID="courier-inquiry-btn"
                 style={[
@@ -1493,6 +1502,7 @@ export default function AddShipment() {
                   Inquiry
                 </Text>
               </TouchableOpacity>
+              ) : null
             }
           >
             {!selectedCourier && (

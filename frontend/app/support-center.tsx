@@ -49,6 +49,7 @@ import Constants from "expo-constants";
 
 import PhIcon from "../components/PhIcon";
 import { colors } from "../lib/theme";
+import { useFeatureFlag } from "../lib/feature_flags";
 
 // App branding inline constants — mirror the lookup used in
 // settings.tsx so the support-center stays consistent if/when the
@@ -105,6 +106,12 @@ export default function SupportCenter() {
   const onCreateRequest = () => router.push("/support-center/create" as any);
   const onMyRequests  = () => router.push("/support-center/my-tickets" as any);
 
+  // 2026-05-25 — Plan-gated Video Tutorials card. Defaults ON for
+  // every plan; admin can untick per-plan in the admin Plan
+  // Features panel. The 2×2 grid below renders the tutorial card
+  // only when this flag is ON — the other 3 cards stay visible.
+  const flagVideoTutorials = useFeatureFlag("video_tutorials");
+
   return (
     <View style={[styles.root, { paddingBottom: insets.bottom + 16 }]}>
       <Stack.Screen
@@ -150,15 +157,17 @@ export default function SupportCenter() {
 
         {/* ─── 3. 2×2 action card grid ────────────────────────── */}
         <View style={styles.grid}>
-          <BigCard
-            testID="sc-video"
-            icon="play"
-            iconBg="#EDE9FE"
-            iconColor="#7C3AED"
-            title="Video Tutorials"
-            sub={`Watch tutorials and learn\nhow to use ${APP_NAME}`}
-            onPress={onVideoTutorials}
-          />
+          {flagVideoTutorials ? (
+            <BigCard
+              testID="sc-video"
+              icon="play"
+              iconBg="#EDE9FE"
+              iconColor="#7C3AED"
+              title="Video Tutorials"
+              sub={`Watch tutorials and learn\nhow to use ${APP_NAME}`}
+              onPress={onVideoTutorials}
+            />
+          ) : null}
           <BigCard
             testID="sc-faqs"
             icon="question"

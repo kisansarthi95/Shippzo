@@ -82,6 +82,7 @@ CATEGORY_ORDER = [
     "Team & RBAC",
     "Coupons & Credits",
     "Business Profile",
+    "Help & Support",
 ]
 
 # The single source of truth. Order is preserved by Python 3.7+ dicts.
@@ -94,9 +95,13 @@ FEATURE_REGISTRY: Dict[str, Dict[str, str]] = {
     "smart_paste_custom_prompt": {"label": "Custom AI instructions",       "category": "Smart Paste"},
     # NEW (2026-04-30) — Pre-save duplicate detection
     "smart_paste_duplicate_check": {"label": "Pre-save duplicate detection", "category": "Smart Paste"},
-    # NEW (2026-05-09 — Phase G3) — Multi-address extraction (parked,
-    # ready to wire when Smart Paste agent grows that capability).
-    "smart_paste_multi_address": {"label": "Multi-address extraction (P3)", "category": "Smart Paste"},
+    # NEW (2026-05-09 — Phase G3) — Multi-address extraction (wires
+    # when Smart Paste agent grows that capability).
+    "smart_paste_multi_address": {"label": "Multi-address extraction (multiple orders per paste)", "category": "Smart Paste"},
+    # NEW (2026-05-25) — Smart Paste Indic regional language support:
+    # parses Bengali, Marathi, Punjabi, Tamil, Telugu, Kannada, Malayalam
+    # alongside the existing Hindi & Gujarati digit / keyword tables.
+    "smart_paste_indic_extended": {"label": "Smart Paste — 9 Indic regional languages", "category": "Smart Paste"},
 
     # ── File Import (NEW category, 2026-05-09 — Phase G3) ────────
     # CSV / Excel imports with dynamic column mapping. Already shipped
@@ -133,6 +138,11 @@ FEATURE_REGISTRY: Dict[str, Dict[str, str]] = {
     # NEW (2026-04-30 PM2) — Bulk select + CSV export are tier-gated
     "shipments_bulk_select":     {"label": "Bulk select / multi-pick mode", "category": "Shipments List"},
     "csv_export_orders":         {"label": "Export orders/shipments to CSV", "category": "Shipments List"},
+    # NEW (2026-05-25) — Cancel / Cancel-by-buyer / Returned terminal
+    # status workflow. When enabled, the row menu shows Cancel / Return
+    # actions in place of the old Delete. Backend HTTP-423 locks
+    # terminal shipments regardless of this flag (data integrity).
+    "shipment_terminal_states":  {"label": "Cancel / Return terminal status flow", "category": "Shipments List"},
 
     # ── Label Design ─────────────────────────────────────────────
     "label_brand_logo":          {"label": "Brand logo on label",          "category": "Label Design"},
@@ -174,6 +184,10 @@ FEATURE_REGISTRY: Dict[str, Dict[str, str]] = {
     "courier_rules_engine":      {"label": "Auto-assign courier by rules (state / weight / COD)", "category": "Couriers & Tracking"},
     # NEW (2026-05-09 — Phase G3) — Per-courier required-field config.
     "field_requirements_per_courier": {"label": "Per-courier required-field configuration", "category": "Couriers & Tracking"},
+    # NEW (2026-05-25) — Phase-35 — WhatsApp pre-filled "Courier Inquiry"
+    # button on the courier add screen. Lets the shop owner ping a
+    # potential courier partner with rate-card-ready intro text.
+    "courier_whatsapp_inquiry":  {"label": "Courier Inquiry WhatsApp button", "category": "Couriers & Tracking"},
 
     # ── Scanner (NEW category, 2026-04-30) ───────────────────────
     "scanner_sound_feedback":    {"label": "Beep / buzz feedback on scan", "category": "Scanner"},
@@ -291,6 +305,13 @@ FEATURE_REGISTRY: Dict[str, Dict[str, str]] = {
     # into the Analytics dashboard as a filter. Off by default —
     # admin turns it on for tiers that have advanced analytics.
     "business_category_filter_analytics": {"label": "Use business category as Analytics filter", "category": "Business Profile"},
+
+    # ── Help & Support (NEW category, 2026-05-25) ────────────────
+    # Two surfaces shipped to all users by default; admin can hide
+    # them per plan if desired (e.g. premium-only tutorial library
+    # or restrict ticket creation on trial accounts).
+    "support_tickets":           {"label": "Support Center & ticket creation",   "category": "Help & Support"},
+    "video_tutorials":           {"label": "Video Tutorials library",            "category": "Help & Support"},
 }
 
 ALL_KEYS: List[str] = list(FEATURE_REGISTRY.keys())
@@ -337,6 +358,16 @@ DEFAULT_PLAN_FEATURES: Dict[str, List[str]] = {
         # Custom template authoring unlocks at Silver+.
         "form_alt_phone",
         "label_barcode_sticker",         # NEW (Phase-26) — barcode on label footer
+        # NEW (2026-05-25) — Common to ALL plans, admin can untick if
+        # needed. Terminal status workflow, courier inquiry button,
+        # support center, video tutorials, multi-address & 9-script
+        # Indic Smart Paste are baseline UX for every user.
+        "shipment_terminal_states",
+        "courier_whatsapp_inquiry",
+        "support_tickets",
+        "video_tutorials",
+        "smart_paste_indic_extended",
+        "smart_paste_multi_address",
     ],
     "silver": [
         "smart_paste_ai", "smart_paste_voice", "smart_paste_image_ocr",
@@ -389,6 +420,13 @@ DEFAULT_PLAN_FEATURES: Dict[str, List[str]] = {
         "whatsapp_template_editor", "whatsapp_eta_customization",
         "form_alt_phone", "form_box_dimensions",
         "label_barcode_sticker",         # NEW (Phase-26)
+        # NEW (2026-05-25) — Common to ALL plans, admin can untick.
+        "shipment_terminal_states",
+        "courier_whatsapp_inquiry",
+        "support_tickets",
+        "video_tutorials",
+        "smart_paste_indic_extended",
+        "smart_paste_multi_address",
     ],
     "gold": [
         "smart_paste_ai", "smart_paste_voice", "smart_paste_image_ocr",
@@ -457,6 +495,13 @@ DEFAULT_PLAN_FEATURES: Dict[str, List[str]] = {
         "custom_fields",                 # NEW (2026-04-30 PM3) — Gold+ (up to 3 fields)
         "label_barcode_sticker",         # NEW (Phase-26)
         "field_controls",                # NEW (Phase-27) — power feature, Gold+
+        # NEW (2026-05-25) — Common to ALL plans, admin can untick.
+        "shipment_terminal_states",
+        "courier_whatsapp_inquiry",
+        "support_tickets",
+        "video_tutorials",
+        "smart_paste_indic_extended",
+        "smart_paste_multi_address",
     ],
     # Platinum gets EVERYTHING — also captures new features auto-added later
     # by referencing ALL_KEYS at runtime in the seeder.
