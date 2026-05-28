@@ -2697,6 +2697,46 @@ def parse_structured_paste(text: str) -> Dict[str, Any]:
             result["customer_email"] = m.group(1).lower()
             confidence["customer_email"] = "high"
 
+    # ── ORDER_ID HINT SANITISATION (2026-05-25) ──────────────────
+    # Even when the operator pasted "Order: 380015" verbatim, the
+    # value 380015 is almost certainly the customer's pincode that
+    # was mis-labelled (or a leftover from a label template that
+    # repeated the same number twice). Real shopkeeper order ids
+    # carry a prefix ("AMZ-12345"), are alphanumeric ("OD9876"),
+    # or are clearly longer / shorter than 6 digits.
+    #
+    # Rule A — Drop order_id_hint when it equals the parsed pincode
+    #          (pincode wins; the user can re-enter the order id).
+    # Rule B — Drop order_id_hint when it's a bare 6-digit numeric
+    #          string (^\d{6}$). 6-digit standalone numbers are the
+    #          canonical Indian pincode shape and never make valid
+    #          order ids on their own.
+    #
+    # The downstream auto-generator (master_order_id) will assign a
+    # fresh id when this field is empty, so dropping a wrong value
+    # is strictly safer than keeping it.
+    if "order_id_hint" in result:
+        oid_raw = str(result.get("order_id_hint") or "").strip()
+        pin_val = str(result.get("pincode") or "").strip()
+        drop_reason = ""
+        # Rule A — exact match with parsed pincode (after pincode
+        # was already normalised to its 6-digit form above).
+        if pin_val and oid_raw == pin_val:
+            drop_reason = f"equals parsed pincode ({pin_val})"
+        # Rule B — bare 6-digit numeric value (with no prefix /
+        # suffix / non-digit char anywhere in the string).
+        elif re.fullmatch(r"\d{6}", oid_raw):
+            drop_reason = "bare 6-digit number (looks like a pincode, not an order id)"
+        if drop_reason:
+            logger.info(
+                "parse_structured_paste: dropped order_id_hint=%r — %s",
+                oid_raw, drop_reason,
+            )
+            result.pop("order_id_hint", None)
+            warnings.append(
+                f"Ignored '{oid_raw}' as order id — auto-generated id will be used."
+            )
+
     return {"fields": result, "confidence": confidence, "warnings": warnings}
 
 
