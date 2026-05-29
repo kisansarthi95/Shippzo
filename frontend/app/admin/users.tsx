@@ -212,6 +212,55 @@ export default function AdminUsersScreen() {
     }
   }, []);
 
+  // ────────────────────────────────────────────────────────────────
+  // Super-admin manual wallet & plan adjustments (2026-05-25)
+  //
+  // Both flows share a single AdminAdjustModal (rendered at the
+  // bottom of this screen). Opening it pre-fills the target user
+  // and the current value (balance for credits, expiry for plan).
+  // Confirmation + reason are enforced in the modal itself.
+  // ────────────────────────────────────────────────────────────────
+  const [adjustMode, setAdjustMode] = useState<null | "credit" | "plan">(null);
+  const [adjustTarget, setAdjustTarget] = useState<{
+    userId:   string;
+    email:    string;
+    current:  number | string | null;
+  } | null>(null);
+
+  const openAddCredits = useCallback(
+    (uid: string, email: string, currentBalance: number) => {
+      setAdjustTarget({ userId: uid, email, current: currentBalance });
+      setAdjustMode("credit");
+    },
+    [],
+  );
+
+  const openExtendPlan = useCallback(
+    (uid: string, email: string, currentExpiry: string | null) => {
+      setAdjustTarget({ userId: uid, email, current: currentExpiry });
+      setAdjustMode("plan");
+    },
+    [],
+  );
+
+  const closeAdjust = useCallback(() => {
+    setAdjustMode(null);
+    setAdjustTarget(null);
+  }, []);
+
+  // After a successful adjust, refresh both the detail modal AND
+  // the user list (so the wallet column / expiry pill update).
+  const refreshAfterAdjust = useCallback(async () => {
+    closeAdjust();
+    if (detail?.user?.id) {
+      try {
+        const r = await api.get<DetailResponse>(`/admin/users/${detail.user.id}`);
+        setDetail(r.data);
+      } catch { /* silent */ }
+    }
+    await load();
+  }, [closeAdjust, detail, load]);
+
   const planChips: Array<{ key: "" | PlanKey; label: string }> = useMemo(() => {
     const counts = summary?.plan_counts || {};
     const all = summary?.total_users || 0;
@@ -356,10 +405,23 @@ export default function AdminUsersScreen() {
               <ActivityIndicator color={colors.primary} />
             </View>
           ) : (
-            <DetailView d={detail} onResetPassword={resetUserPassword} />
+            <DetailView
+              d={detail}
+              onResetPassword={resetUserPassword}
+              onAddCredits={openAddCredits}
+              onExtendPlan={openExtendPlan}
+            />
           )}
         </SafeAreaView>
       </Modal>
+
+      {/* ── Super-admin manual wallet & plan adjustment modal ── */}
+      <AdminAdjustModal
+        mode={adjustMode}
+        target={adjustTarget}
+        onClose={closeAdjust}
+        onDone={refreshAfterAdjust}
+      />
     </SafeAreaView>
   );
 }
@@ -442,9 +504,11 @@ function Stat({ icon, value, label }: { icon: string; value: string; label: stri
   );
 }
 
-function DetailView({ d, onResetPassword }: {
+function DetailView({ d, onResetPassword, onAddCredits, onExtendPlan }: {
   d: DetailResponse;
   onResetPassword: (id: string, email: string) => void;
+  onAddCredits:    (id: string, email: string, currentBalance: number) => void;
+  onExtendPlan:    (id: string, email: string, currentExpiry: string | null) => void;
 }) {
   const u = d.user;
   const pal = PLAN_COLORS[u.plan] || PLAN_COLORS.free_trial;
@@ -488,6 +552,28 @@ function DetailView({ d, onResetPassword }: {
           >
             <PhIcon name="key-outline" size={14} color="#fff" />
             <Text style={styles.actionTxt}>Reset Password</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            onPress={() =>
+              onAddCredits(
+                u.id,
+                u.email,
+                Number(d.wallet?.remaining_credits ?? 0),
+              )
+            }
+            style={[styles.actionBtn, { backgroundColor: "#059669" }]}
+            activeOpacity={0.85}
+          >
+            <PhIcon name="cash-outline" size={14} color="#fff" />
+            <Text style={styles.actionTxt}>Adjust Credits</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            onPress={() => onExtendPlan(u.id, u.email, u.plan_expires_at)}
+            style={[styles.actionBtn, { backgroundColor: "#7C3AED" }]}
+            activeOpacity={0.85}
+          >
+            <PhIcon name="calendar-outline" size={14} color="#fff" />
+            <Text style={styles.actionTxt}>Extend Plan</Text>
           </TouchableOpacity>
         </View>
       </View>
@@ -675,4 +761,393 @@ const styles = StyleSheet.create({
   liSub:   { fontSize: 11, color: "#94A3B8", marginTop: 2 },
   liAmt:   { fontSize: 13, fontWeight: "900", color: "#0F172A" },
   empty:   { color: "#94A3B8", fontSize: 12, textAlign: "center", padding: 12 },
+});
+
+
+// ═══════════════════════════════════════════════════════════════════
+// AdminAdjustModal — super-admin manual wallet & plan adjustment.
+//
+// Single component that handles both "credit" and "plan" modes so the
+// UX, validation, and confirmation flow stay consistent. Mode is
+// driven by the parent screen via the `mode` prop:
+//
+//   mode="credit" → amount input + quick-picks [+50/+100/+250/+500],
+//                   optional ± toggle for super-admin deductions.
+//   mode="plan"   → days input + quick-picks [+7d/+15d/+30d/+60d].
+//
+// Both modes enforce:
+//   • A non-empty `reason` (3-200 chars) for audit trail.
+//   • A confirmation dialog before POSTing.
+//
+// On success we call onDone() so the parent screen can refresh both
+// the detail panel AND the user list (wallet column + expiry pill).
+// ═══════════════════════════════════════════════════════════════════
+type AdjustTarget = {
+  userId:  string;
+  email:   string;
+  current: number | string | null;
+};
+
+function AdminAdjustModal({
+  mode, target, onClose, onDone,
+}: {
+  mode:    null | "credit" | "plan";
+  target:  AdjustTarget | null;
+  onClose: () => void;
+  onDone:  () => void | Promise<void>;
+}) {
+  const visible = mode !== null && target !== null;
+  const isCredit = mode === "credit";
+
+  const [amountStr, setAmountStr] = useState<string>("");
+  const [daysStr,   setDaysStr]   = useState<string>("");
+  const [reason,    setReason]    = useState<string>("");
+  const [sign,      setSign]      = useState<"+" | "−">("+");
+  const [busy,      setBusy]      = useState<boolean>(false);
+
+  // Reset state every time the modal re-opens for a different user / mode.
+  useEffect(() => {
+    if (visible) {
+      setAmountStr("");
+      setDaysStr("");
+      setReason("");
+      setSign("+");
+      setBusy(false);
+    }
+  }, [visible, mode, target?.userId]);
+
+  const CREDIT_PRESETS = [50, 100, 250, 500];
+  const PLAN_PRESETS   = [7, 15, 30, 60];
+
+  const onConfirm = useCallback(async () => {
+    if (!target) return;
+    const trimmedReason = reason.trim();
+    if (trimmedReason.length < 3) {
+      Alert.alert("Reason required", "Please type a short reason (3+ characters) for the audit trail.");
+      return;
+    }
+
+    if (isCredit) {
+      const raw = parseFloat(amountStr.replace(/,/g, "").trim());
+      if (!isFinite(raw) || raw <= 0) {
+        Alert.alert("Invalid amount", "Enter a positive credit amount.");
+        return;
+      }
+      const signedAmount = sign === "−" ? -raw : raw;
+      const verb = signedAmount > 0 ? "ADD" : "DEDUCT";
+
+      Alert.alert(
+        `Confirm ${verb}`,
+        `${verb} ${Math.abs(signedAmount).toFixed(2)} credits ${signedAmount > 0 ? "to" : "from"} ${target.email}?\n\nReason: ${trimmedReason}`,
+        [
+          { text: "Cancel", style: "cancel" },
+          {
+            text: verb,
+            style: signedAmount < 0 ? "destructive" : "default",
+            onPress: async () => {
+              setBusy(true);
+              try {
+                const r = await api.post<{
+                  applied: number;
+                  new_balance: number;
+                }>(`/admin/users/${target.userId}/wallet-credit`, {
+                  amount: signedAmount,
+                  reason: trimmedReason,
+                });
+                Alert.alert(
+                  "Done ✅",
+                  `Applied: ${r.data.applied >= 0 ? "+" : ""}${r.data.applied.toFixed(2)} cr\nNew balance: ${r.data.new_balance.toFixed(2)} cr`,
+                );
+                await onDone();
+              } catch (e: any) {
+                Alert.alert("Failed", e?.response?.data?.detail || e?.message || "Try again");
+              } finally {
+                setBusy(false);
+              }
+            },
+          },
+        ],
+      );
+      return;
+    }
+
+    // Plan extension
+    const days = parseInt(daysStr.trim(), 10);
+    if (!isFinite(days) || days < 1 || days > 730) {
+      Alert.alert("Invalid days", "Enter a number between 1 and 730.");
+      return;
+    }
+    Alert.alert(
+      "Confirm Extension",
+      `Extend ${target.email}'s plan by ${days} day(s)?\n\nReason: ${trimmedReason}`,
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: `Extend +${days}d`,
+          onPress: async () => {
+            setBusy(true);
+            try {
+              const r = await api.post<{
+                previous_expiry: string | null;
+                new_expiry: string;
+                days_added: number;
+              }>(`/admin/users/${target.userId}/extend-plan`, {
+                days,
+                reason: trimmedReason,
+              });
+              const newDate = new Date(r.data.new_expiry).toLocaleDateString();
+              Alert.alert(
+                "Done ✅",
+                `Plan extended by ${r.data.days_added} day(s).\nNew expiry: ${newDate}`,
+              );
+              await onDone();
+            } catch (e: any) {
+              Alert.alert("Failed", e?.response?.data?.detail || e?.message || "Try again");
+            } finally {
+              setBusy(false);
+            }
+          },
+        },
+      ],
+    );
+  }, [target, reason, isCredit, amountStr, sign, daysStr, onDone]);
+
+  if (!visible || !target) return null;
+
+  const currentBalanceTxt =
+    typeof target.current === "number"
+      ? `${target.current.toFixed(2)} cr`
+      : "—";
+  const currentExpiryTxt =
+    typeof target.current === "string" && target.current
+      ? new Date(target.current).toLocaleDateString()
+      : "Not set / expired";
+
+  return (
+    <Modal
+      animationType="slide"
+      presentationStyle="pageSheet"
+      visible={visible}
+      onRequestClose={onClose}
+    >
+      <SafeAreaView style={{ flex: 1, backgroundColor: "#F8FAFC" }}>
+        <View style={modalStyles.header}>
+          <Text style={modalStyles.title}>
+            {isCredit ? "Adjust Credits" : "Extend Plan"}
+          </Text>
+          <TouchableOpacity onPress={onClose} hitSlop={10}>
+            <PhIcon name="close" size={20} color="#0F172A" />
+          </TouchableOpacity>
+        </View>
+
+        <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 60 }}>
+          {/* Target user card */}
+          <View style={modalStyles.targetCard}>
+            <Text style={modalStyles.targetEmail}>{target.email}</Text>
+            <Text style={modalStyles.targetSub}>
+              {isCredit ? `Current balance: ${currentBalanceTxt}` : `Current expiry: ${currentExpiryTxt}`}
+            </Text>
+          </View>
+
+          {isCredit ? (
+            <>
+              {/* Sign toggle */}
+              <Text style={modalStyles.lbl}>Operation</Text>
+              <View style={modalStyles.signRow}>
+                <TouchableOpacity
+                  style={[
+                    modalStyles.signBtn,
+                    sign === "+" && { backgroundColor: "#059669", borderColor: "#059669" },
+                  ]}
+                  onPress={() => setSign("+")}
+                >
+                  <Text style={[modalStyles.signTxt, sign === "+" && { color: "#fff" }]}>
+                    + Add
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[
+                    modalStyles.signBtn,
+                    sign === "−" && { backgroundColor: "#DC2626", borderColor: "#DC2626" },
+                  ]}
+                  onPress={() => setSign("−")}
+                >
+                  <Text style={[modalStyles.signTxt, sign === "−" && { color: "#fff" }]}>
+                    − Deduct
+                  </Text>
+                </TouchableOpacity>
+              </View>
+              {sign === "−" ? (
+                <Text style={modalStyles.warnTxt}>
+                  ⚠ Deduction is super-admin only. Balance will be clamped at 0.
+                </Text>
+              ) : null}
+
+              {/* Quick presets */}
+              <Text style={[modalStyles.lbl, { marginTop: 14 }]}>Quick pick</Text>
+              <View style={modalStyles.pickRow}>
+                {CREDIT_PRESETS.map((p) => (
+                  <TouchableOpacity
+                    key={p}
+                    style={[
+                      modalStyles.pickBtn,
+                      parseFloat(amountStr) === p && { backgroundColor: "#0F172A" },
+                    ]}
+                    onPress={() => setAmountStr(String(p))}
+                  >
+                    <Text style={[
+                      modalStyles.pickTxt,
+                      parseFloat(amountStr) === p && { color: "#fff" },
+                    ]}>
+                      {sign}{p}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+
+              <Text style={[modalStyles.lbl, { marginTop: 14 }]}>Or enter custom amount</Text>
+              <TextInput
+                value={amountStr}
+                onChangeText={setAmountStr}
+                keyboardType="numeric"
+                placeholder="e.g. 175"
+                placeholderTextColor="#94A3B8"
+                style={modalStyles.input}
+              />
+            </>
+          ) : (
+            <>
+              {/* Quick presets */}
+              <Text style={modalStyles.lbl}>Quick pick</Text>
+              <View style={modalStyles.pickRow}>
+                {PLAN_PRESETS.map((p) => (
+                  <TouchableOpacity
+                    key={p}
+                    style={[
+                      modalStyles.pickBtn,
+                      parseInt(daysStr, 10) === p && { backgroundColor: "#0F172A" },
+                    ]}
+                    onPress={() => setDaysStr(String(p))}
+                  >
+                    <Text style={[
+                      modalStyles.pickTxt,
+                      parseInt(daysStr, 10) === p && { color: "#fff" },
+                    ]}>
+                      +{p}d
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+
+              <Text style={[modalStyles.lbl, { marginTop: 14 }]}>Or enter custom days (1–730)</Text>
+              <TextInput
+                value={daysStr}
+                onChangeText={setDaysStr}
+                keyboardType="numeric"
+                placeholder="e.g. 21"
+                placeholderTextColor="#94A3B8"
+                style={modalStyles.input}
+              />
+            </>
+          )}
+
+          <Text style={[modalStyles.lbl, { marginTop: 14 }]}>
+            Reason <Text style={{ color: "#DC2626" }}>*</Text>
+          </Text>
+          <TextInput
+            value={reason}
+            onChangeText={setReason}
+            multiline
+            numberOfLines={3}
+            placeholder={
+              isCredit
+                ? "e.g. Compensation for failed AI processing on 2026-05-25"
+                : "e.g. Service downtime on 2026-05-22 (8 hours)"
+            }
+            placeholderTextColor="#94A3B8"
+            maxLength={200}
+            style={[modalStyles.input, { minHeight: 78, textAlignVertical: "top" }]}
+          />
+          <Text style={modalStyles.helperTxt}>
+            {reason.length}/200 characters
+          </Text>
+
+          <TouchableOpacity
+            style={[
+              modalStyles.applyBtn,
+              busy && { opacity: 0.6 },
+            ]}
+            onPress={onConfirm}
+            disabled={busy}
+          >
+            {busy ? (
+              <ActivityIndicator color="#fff" />
+            ) : (
+              <Text style={modalStyles.applyTxt}>
+                {isCredit
+                  ? `${sign === "+" ? "Grant" : "Deduct"} ${amountStr || "—"} credits`
+                  : `Extend by ${daysStr || "—"} day(s)`
+                }
+              </Text>
+            )}
+          </TouchableOpacity>
+        </ScrollView>
+      </SafeAreaView>
+    </Modal>
+  );
+}
+
+const modalStyles = StyleSheet.create({
+  header: {
+    flexDirection: "row", justifyContent: "space-between", alignItems: "center",
+    paddingHorizontal: 16, paddingVertical: 12,
+    backgroundColor: "#fff",
+    borderBottomWidth: 1, borderBottomColor: "#E5E7EB",
+  },
+  title:       { fontSize: 17, fontWeight: "900", color: "#0F172A" },
+  targetCard:  {
+    backgroundColor: "#fff",
+    borderRadius: 12, padding: 14, marginBottom: 16,
+    borderWidth: 1, borderColor: "#E5E7EB",
+  },
+  targetEmail: { fontSize: 15, fontWeight: "800", color: "#0F172A" },
+  targetSub:   { fontSize: 12, color: "#64748B", marginTop: 4 },
+  lbl:         { fontSize: 12, fontWeight: "700", color: "#475569", marginBottom: 6 },
+  signRow:     { flexDirection: "row", gap: 10 },
+  signBtn:     {
+    flex: 1, paddingVertical: 10,
+    borderRadius: 10,
+    borderWidth: 1, borderColor: "#CBD5E1",
+    backgroundColor: "#fff",
+    alignItems: "center",
+  },
+  signTxt:     { fontSize: 14, fontWeight: "800", color: "#0F172A" },
+  warnTxt:     {
+    fontSize: 11, color: "#B45309", marginTop: 8, marginBottom: 4,
+    fontWeight: "600",
+  },
+  pickRow:     { flexDirection: "row", flexWrap: "wrap", gap: 8 },
+  pickBtn:     {
+    paddingHorizontal: 14, paddingVertical: 8,
+    borderRadius: 999,
+    borderWidth: 1, borderColor: "#CBD5E1",
+    backgroundColor: "#fff",
+  },
+  pickTxt:     { fontSize: 13, fontWeight: "800", color: "#0F172A" },
+  input:       {
+    backgroundColor: "#fff",
+    borderRadius: 10,
+    borderWidth: 1, borderColor: "#CBD5E1",
+    paddingHorizontal: 12, paddingVertical: 10,
+    fontSize: 14, color: "#0F172A",
+  },
+  helperTxt:   { fontSize: 11, color: "#94A3B8", marginTop: 4, textAlign: "right" },
+  applyBtn:    {
+    marginTop: 22,
+    backgroundColor: colors.primary,
+    borderRadius: 12,
+    paddingVertical: 14,
+    alignItems: "center",
+  },
+  applyTxt:    { fontSize: 15, fontWeight: "900", color: "#fff" },
 });

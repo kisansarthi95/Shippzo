@@ -64,7 +64,7 @@ SHIPMENT_OVERAGE: Dict[str, float] = {
     "platinum": 1.0,
 }
 
-CreditType = Literal["ai_processing", "shipment_charge", "purchase", "bonus", "refund"]
+CreditType = Literal["ai_processing", "shipment_charge", "purchase", "bonus", "refund", "admin_grant", "admin_deduct"]
 
 
 @dataclass(frozen=True)
@@ -369,3 +369,58 @@ async def add_credits(
         balance_after=bal,
     )
     return {"wallet": w, "history": entry}
+
+
+# -- Super-admin manual adjustment (allows negative deductions) -----------
+#
+# Distinct from add_credits() because it bypasses the positive-only check
+# and writes a fully-attributed history row (admin email + reason). All
+# negative-amount usage MUST be gated on `is_admin=True` at the caller
+# (admin endpoint) — never expose this from any user-side route.
+async def admin_adjust_credits(
+    db,
+    user_id: str,
+    delta: float,
+    *,
+    admin_email: str,
+    reason: str,
+) -> Dict[str, Any]:
+    """Add (positive) or deduct (negative) credits manually by a super-admin.
+
+    * delta > 0  → ctype="admin_grant"
+    * delta < 0  → ctype="admin_deduct" (clamped so balance never goes below 0)
+
+    Returns {"wallet": <wallet doc>, "history": <history entry>, "applied": <effective delta>}.
+    """
+    if delta == 0:
+        raise HTTPException(status_code=400, detail="Credit delta cannot be zero")
+    if not reason or not reason.strip():
+        raise HTTPException(status_code=400, detail="A reason is required for audit trail")
+
+    # For deductions, clamp so balance never goes negative — banks /
+    # accounting systems behave the same way.
+    if delta < 0:
+        current_bal = await get_balance(db, user_id)
+        if current_bal <= 0:
+            raise HTTPException(status_code=400, detail="Balance is already zero — nothing to deduct")
+        # Deduction can take balance to 0 but not below.
+        effective_delta = max(delta, -current_bal)
+    else:
+        effective_delta = delta
+
+    w = await _apply_delta(db, user_id, total_delta=effective_delta)
+    bal = float(w.get("remaining_credits", 0.0))
+
+    ctype: CreditType = "admin_grant" if effective_delta > 0 else "admin_deduct"
+    sign  = "+" if effective_delta > 0 else "−"
+    desc  = (
+        f"Admin {sign}{abs(effective_delta):.2f} cr by {admin_email}: {reason.strip()}"
+    )
+    entry = await record_history(
+        db, user_id,
+        credits=effective_delta,
+        ctype=ctype,
+        description=desc,
+        balance_after=bal,
+    )
+    return {"wallet": w, "history": entry, "applied": effective_delta}

@@ -37,6 +37,29 @@ class AdminResetPasswordRequest(BaseModel):
     new_password: str = Field(min_length=6, max_length=128)
 
 
+class AdminWalletCreditRequest(BaseModel):
+    """Body for POST /admin/users/{user_id}/wallet-credit.
+
+    Positive `amount` adds credits, negative `amount` deducts (deduction
+    is clamped at the user's current balance so wallet never goes below
+    zero). `reason` is mandatory for audit trail.
+    """
+    amount: float = Field(..., description="Positive to add, negative to deduct")
+    reason: str   = Field(..., min_length=3, max_length=200)
+
+
+class AdminPlanExtendRequest(BaseModel):
+    """Body for POST /admin/users/{user_id}/extend-plan.
+
+    Adds `days` to the user's current `plan_expires_at` (or sets the
+    extension from `now()` if the plan has already expired). Negative
+    values are NOT allowed here — to shorten a plan, admin should use
+    a credit refund + manual support instead.
+    """
+    days:   int = Field(..., ge=1, le=730, description="Days to extend (1..730)")
+    reason: str = Field(..., min_length=3, max_length=200)
+
+
 def init() -> None:
     """Late-binding registration of admin endpoints.
 
@@ -274,4 +297,113 @@ def init() -> None:
             "display_id": target.get("display_id", ""),
             "email": target.get("email", ""),
             "message": "Password reset. Share the new password with the user over the phone.",
+        }
+
+    # -----------------------------------------------------------------
+    # POST /admin/users/{user_id}/wallet-credit
+    #
+    # Super-admin manual wallet adjustment.
+    # Positive `amount` → grants credits (admin_grant).
+    # Negative `amount` → deducts credits (admin_deduct, clamped to 0).
+    # Every adjustment is recorded in wallet_history with the
+    # admin's email + reason. Negative-amount calls require is_admin
+    # to be True (already enforced by _require_admin) — only the
+    # super-admin (first registered user with is_admin=True) can do
+    # any kind of manual adjustment, per product policy.
+    # -----------------------------------------------------------------
+    @admin_router.post("/users/{user_id}/wallet-credit")
+    async def admin_wallet_credit(
+        user_id: str,
+        payload: AdminWalletCreditRequest,
+        current_user: Dict[str, Any] = Depends(_get_current_user),
+    ):
+        _require_admin_helper(current_user)
+        target = await db.users.find_one({"id": user_id}, {"_id": 0})
+        if not target:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        # Late-import to avoid a server.py ↔ admin.py ↔ wallet.py cycle.
+        from wallet import admin_adjust_credits
+
+        result = await admin_adjust_credits(
+            db,
+            user_id,
+            float(payload.amount),
+            admin_email=current_user.get("email", "admin"),
+            reason=payload.reason,
+        )
+        return {
+            "ok": True,
+            "user_id": user_id,
+            "email": target.get("email", ""),
+            "applied": result["applied"],
+            "new_balance": float((result["wallet"] or {}).get("remaining_credits", 0)),
+            "history": result["history"],
+        }
+
+    # -----------------------------------------------------------------
+    # POST /admin/users/{user_id}/extend-plan
+    #
+    # Super-admin extension of `plan_expires_at` by N days.
+    # - If plan already expired (or no expiry), extension starts from now().
+    # - If plan still active,             extension stacks on existing expiry.
+    # - Audit log appended to the user doc as `plan_extensions[]`.
+    # -----------------------------------------------------------------
+    @admin_router.post("/users/{user_id}/extend-plan")
+    async def admin_extend_plan(
+        user_id: str,
+        payload: AdminPlanExtendRequest,
+        current_user: Dict[str, Any] = Depends(_get_current_user),
+    ):
+        _require_admin_helper(current_user)
+        target = await db.users.find_one({"id": user_id})
+        if not target:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        from datetime import timedelta
+
+        # Parse current expiry (may be empty string, None, or ISO date).
+        now = datetime.now(timezone.utc)
+        cur_raw = target.get("plan_expires_at") or ""
+        base_time = now
+        if cur_raw:
+            try:
+                cur = datetime.fromisoformat(str(cur_raw).replace("Z", "+00:00"))
+                if cur.tzinfo is None:
+                    cur = cur.replace(tzinfo=timezone.utc)
+                # Stack on existing expiry if it's still in the future.
+                if cur > now:
+                    base_time = cur
+            except Exception:
+                # Bad ISO string → treat as expired, extend from now().
+                base_time = now
+
+        new_expiry = base_time + timedelta(days=int(payload.days))
+        new_iso = new_expiry.isoformat()
+
+        # Append an audit entry to plan_extensions[] (create if missing).
+        ext_entry = {
+            "days":          int(payload.days),
+            "reason":        payload.reason.strip(),
+            "by_admin":      current_user.get("email", "admin"),
+            "by_admin_id":   current_user.get("id", ""),
+            "previous_expiry": cur_raw or None,
+            "new_expiry":    new_iso,
+            "at":            now.isoformat(),
+        }
+        await db.users.update_one(
+            {"id": user_id},
+            {
+                "$set":  {"plan_expires_at": new_iso},
+                "$push": {"plan_extensions": ext_entry},
+            },
+        )
+
+        return {
+            "ok":           True,
+            "user_id":      user_id,
+            "email":        target.get("email", ""),
+            "previous_expiry": cur_raw or None,
+            "new_expiry":   new_iso,
+            "days_added":   int(payload.days),
         }
