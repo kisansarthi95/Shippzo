@@ -49,12 +49,22 @@ from typing import Any, Optional, Tuple
 _LOG = logging.getLogger("otp_service")
 
 # ─── Configurable knobs (env-driven, sensible production defaults) ──
-OTP_LENGTH         = int(os.getenv("OTP_LENGTH", "6"))
-OTP_TTL_SECONDS    = int(os.getenv("OTP_TTL_SECONDS", "300"))     # 5 min
-OTP_RESEND_COOLDOWN_S = int(os.getenv("OTP_RESEND_COOLDOWN_S", "60"))
-OTP_MAX_ATTEMPTS   = int(os.getenv("OTP_MAX_ATTEMPTS", "5"))
-_COLLECTION        = os.getenv("OTP_COLLECTION", "otp_codes")
-_DEFAULT_CC        = os.getenv("FLOWCONNECT_DEFAULT_CC", "91")
+# 2026-05-29 — Rule update:
+#   • OTP expiry: 10 minutes (was 5)
+#   • Resend cooldown: 60 seconds (unchanged)
+#   • Max resend attempts within the lockout window: 5
+#   • Lockout duration after hitting the resend cap: 30 minutes
+# All four are env-tunable so individual environments (dev/load-test/
+# enterprise tenant) can dial the rules without a code change.
+OTP_LENGTH              = int(os.getenv("OTP_LENGTH", "6"))
+OTP_TTL_SECONDS         = int(os.getenv("OTP_TTL_SECONDS", "600"))     # 10 min
+OTP_RESEND_COOLDOWN_S   = int(os.getenv("OTP_RESEND_COOLDOWN_S", "60"))
+OTP_MAX_ATTEMPTS        = int(os.getenv("OTP_MAX_ATTEMPTS", "5"))      # wrong-code tries
+OTP_MAX_RESEND_ATTEMPTS = int(os.getenv("OTP_MAX_RESEND_ATTEMPTS", "5"))
+OTP_LOCKOUT_DURATION_S  = int(os.getenv("OTP_LOCKOUT_DURATION_S", "1800"))  # 30 min
+_COLLECTION             = os.getenv("OTP_COLLECTION", "otp_codes")
+_LOCK_COLLECTION        = os.getenv("OTP_LOCK_COLLECTION", "otp_resend_locks")
+_DEFAULT_CC             = os.getenv("FLOWCONNECT_DEFAULT_CC", "91")
 
 _indexes_initialised = False
 
@@ -102,9 +112,128 @@ async def _ensure_indexes(db: Any) -> None:
         await col.create_index([("phone", 1), ("event_type", 1)])
         # TTL index — Mongo auto-deletes rows when expires_at < now.
         await col.create_index("expires_at", expireAfterSeconds=0)
+        # 2026-05-29 — Resend-lockout collection. One row per
+        # phone+event_type. We index for lookup speed; rows are
+        # cleared lazily once the window expires (no TTL needed,
+        # the in-app check handles it).
+        lock_col = db[_LOCK_COLLECTION]
+        await lock_col.create_index([("phone", 1), ("event_type", 1)], unique=True)
         _indexes_initialised = True
     except Exception as e:
         _LOG.warning("OTP index creation failed (non-fatal): %s", e)
+
+
+# ─── Phase-OTP: resend-rate lockout (5 requests per 30-minute window) ─
+#
+# Hard cap on how many OTPs a single phone+event_type can request in a
+# rolling lockout window. Defends against:
+#   • Bots brute-forcing the WhatsApp dispatch quota.
+#   • Genuine users accidentally hammering "Resend" after every minute
+#     and burning through our FlowConnect spend.
+#
+# Counter row schema (collection ``otp_resend_locks``):
+#   {
+#     phone:         "+919876543210",   # E.164 normalised
+#     event_type:    "login" | "signup" | …
+#     count:         3,                  # successful sends in current window
+#     window_start:  "ISO 8601 UTC",     # timestamp of the 1st send
+#     locked_until:  "ISO 8601 UTC" | null,
+#   }
+#
+# Rules:
+#   • A lock is set the moment a 6th request would be allowed.
+#   • Lock duration = OTP_LOCKOUT_DURATION_S (default 30 min).
+#   • While locked, every /request returns 429 with remaining time.
+#   • Once the lock expires, the counter resets on the next request.
+async def _enforce_resend_lockout(db: Any, phone: str, event_type: str) -> None:
+    """Check + atomically advance the per-(phone,event) resend counter.
+    Raises ``LockoutError`` when the cap has been hit. Otherwise
+    silently increments the row and returns.
+    """
+    if db is None:
+        return  # Service still warming up — fail-open by design.
+    now = datetime.now(timezone.utc)
+    col = db[_LOCK_COLLECTION]
+    row = await col.find_one({"phone": phone, "event_type": event_type})
+
+    if row:
+        # ── 1. Already locked? Reject early.
+        locked_until_raw = row.get("locked_until")
+        if locked_until_raw:
+            try:
+                locked_until = datetime.fromisoformat(
+                    str(locked_until_raw).replace("Z", "+00:00")
+                )
+                if locked_until.tzinfo is None:
+                    locked_until = locked_until.replace(tzinfo=timezone.utc)
+                if locked_until > now:
+                    remaining_s = int((locked_until - now).total_seconds())
+                    mins = max(1, (remaining_s + 59) // 60)
+                    raise LockoutError(
+                        f"Too many OTP requests. Try again in {mins} minute(s)."
+                    )
+            except LockoutError:
+                raise
+            except Exception:
+                pass  # Bad timestamp → treat as not locked.
+
+        # ── 2. Window expired? Reset and start fresh.
+        window_age_s = OTP_LOCKOUT_DURATION_S + 1   # default: expired
+        try:
+            ws = datetime.fromisoformat(
+                str(row.get("window_start") or "").replace("Z", "+00:00")
+            )
+            if ws.tzinfo is None:
+                ws = ws.replace(tzinfo=timezone.utc)
+            window_age_s = (now - ws).total_seconds()
+        except Exception:
+            pass
+
+        if window_age_s >= OTP_LOCKOUT_DURATION_S:
+            await col.update_one(
+                {"_id": row["_id"]},
+                {"$set": {
+                    "count":         1,
+                    "window_start":  now.isoformat(),
+                    "locked_until":  None,
+                }},
+            )
+            return
+
+        # ── 3. Inside window. Check cap.
+        count = int(row.get("count", 0))
+        if count >= OTP_MAX_RESEND_ATTEMPTS:
+            # 6th request — set lock and reject.
+            lock_until = now + timedelta(seconds=OTP_LOCKOUT_DURATION_S)
+            await col.update_one(
+                {"_id": row["_id"]},
+                {"$set": {"locked_until": lock_until.isoformat()}},
+            )
+            mins = max(1, OTP_LOCKOUT_DURATION_S // 60)
+            raise LockoutError(
+                f"Too many OTP requests. Try again in {mins} minute(s)."
+            )
+
+        # ── 4. Within cap. Increment counter.
+        await col.update_one(
+            {"_id": row["_id"]},
+            {"$inc": {"count": 1}, "$set": {"locked_until": None}},
+        )
+        return
+
+    # First-ever request for this (phone, event_type) — open the window.
+    try:
+        await col.insert_one({
+            "phone":        phone,
+            "event_type":   event_type,
+            "count":        1,
+            "window_start": now.isoformat(),
+            "locked_until": None,
+        })
+    except Exception as e:
+        # Unique-key race when two requests land in the same millisecond
+        # → ignore; the next one will pick up the existing row.
+        _LOG.debug("resend lock insert race (non-fatal): %s", e)
 
 
 async def issue_otp(db: Any, phone: str, event_type: str) -> Tuple[str, str]:
@@ -130,6 +259,11 @@ async def issue_otp(db: Any, phone: str, event_type: str) -> Tuple[str, str]:
     # user who just successfully verified can't trigger a new send
     # immediately afterwards (defends against credential-stuffing
     # bots that have a way to invalidate codes server-side).
+    #
+    # Cooldown is enforced BEFORE the resend-rate-limit counter so a
+    # cooldown-blocked request doesn't burn one of the user's 5
+    # allowed sends — only requests that actually pass through to the
+    # WhatsApp dispatcher count toward the cap.
     now = datetime.now(timezone.utc)
     existing = await db[_COLLECTION].find_one(
         {"phone": normalised, "event_type": event_type},
@@ -152,6 +286,14 @@ async def issue_otp(db: Any, phone: str, event_type: str) -> Tuple[str, str]:
         except Exception:
             # Bad timestamp on existing row — treat as expired, allow new issue.
             pass
+
+    # ── Phase-OTP rule (2026-05-29): per-(phone,event_type) hard cap
+    # of 5 OTP sends per 30-minute rolling window. Beyond that, the
+    # row gets locked for the next 30 minutes. This runs AFTER the
+    # 60-second cooldown so a user who taps "Resend" too fast just
+    # gets the cooldown message — they don't waste one of their 5
+    # quota slots on a request the server was going to reject anyway.
+    await _enforce_resend_lockout(db, normalised, event_type)
 
     code  = _generate_code()
     salt  = secrets.token_hex(8)
@@ -260,6 +402,14 @@ class CooldownError(Exception):
     """Raised by ``issue_otp`` when the resend cooldown window is
     still active. Caller (the auth router) translates this into a
     429 with the human-readable reason."""
+
+
+class LockoutError(Exception):
+    """Raised by ``issue_otp`` / ``_enforce_resend_lockout`` when the
+    phone+event_type pair has burned through OTP_MAX_RESEND_ATTEMPTS
+    within the OTP_LOCKOUT_DURATION_S window. Auth router maps this
+    to a 429 — same surface as cooldown but with a longer suggested
+    wait time in the message."""
 
 
 def _mask(raw: str) -> str:

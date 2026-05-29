@@ -45,6 +45,7 @@ from pydantic import BaseModel, Field
 from auth import make_token, seed_default_courier
 from services.otp_service import (
     CooldownError,
+    LockoutError,
     OTP_TTL_SECONDS,
     issue_otp,
     normalise_phone,
@@ -116,6 +117,13 @@ async def otp_request(payload: OtpRequestBody) -> Dict[str, Any]:
     except CooldownError as ce:
         # 429 lets the mobile client tell the user how long to wait.
         raise HTTPException(status_code=429, detail=str(ce))
+    except LockoutError as le:
+        # 2026-05-29 — Hit the 5-resend-in-30-min hard cap. Same 429
+        # surface as the cooldown but with a much longer suggested
+        # wait window baked into the detail string.
+        _LOG.warning("OTP resend lockout: phone=%s event=%s",
+                     _mask(payload.phone), payload.event_type)
+        raise HTTPException(status_code=429, detail=str(le))
     except ValueError as ve:
         raise HTTPException(status_code=400, detail=str(ve))
     except Exception as e:

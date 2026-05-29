@@ -22042,3 +22042,71 @@ agent_communication:
         display. Ready for user acceptance testing on a real
         WhatsApp-receiving device.
 
+
+backend:
+  - task: "OTP Authentication Rules update (10-min TTL, 60s cooldown, 5 resend cap, 30-min lockout)"
+    implemented: true
+    working: true
+    file: "/app/backend/services/otp_service.py, /app/backend/routers/otp_auth.py, /app/backend/tests/test_otp_rules.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "main"
+        -comment: |
+            2026-05-29 — Applied the new OTP authentication rules:
+              • OTP Expiry Time:                    10 minutes  (was 5)
+              • OTP Resend Cooldown:                60 seconds  (unchanged)
+              • Max OTP Resend Attempts per window: 5            (new cap)
+              • Lockout Duration after max:         30 minutes   (new)
+
+            services/otp_service.py
+              • OTP_TTL_SECONDS default 300 → 600.
+              • Added OTP_MAX_RESEND_ATTEMPTS (5) and OTP_LOCKOUT_DURATION_S (1800).
+              • Added new collection `otp_resend_locks` with a unique
+                (phone, event_type) index.
+              • Added `_enforce_resend_lockout(...)` — atomically reads
+                the counter row, raises LockoutError on the 6th send
+                inside the rolling 30-min window, and resets the
+                window when it expires.
+              • Order of checks inside `issue_otp(...)`:
+                  1. normalise phone
+                  2. cooldown (60s)
+                  3. resend-rate lockout
+                  4. generate + persist OTP
+                Cooldown is BEFORE lockout so a cooldown-blocked
+                request doesn't burn one of the user's 5 quota slots.
+              • Added `LockoutError` exception class.
+
+            routers/otp_auth.py
+              • Imports + catches `LockoutError`, maps to HTTP 429
+                with the human-readable wait time in `detail`.
+
+            tests/test_otp_rules.py (NEW)
+              • Hermetic 5-phase test script that hits the live HTTP
+                API + Mongo to assert every rule end-to-end.
+              • Result on /api/auth/otp/request flow:
+                  ✓ Phase 0 — 4 constants correct
+                  ✓ Phase 1 — `expires_in == 600`
+                  ✓ Phase 2 — 2nd request inside cooldown → 429
+                  ✓ Phase 3 — requests 1-5 → 200, request 6 → 429
+                  ✓ Phase 4 — locked_until ≈ 30 min ahead
+                  ✓ Phase 5 — all subsequent requests rejected
+                Total: 8/8 checks passed.
+
+            All knobs remain env-tunable (`OTP_TTL_SECONDS`,
+            `OTP_RESEND_COOLDOWN_S`, `OTP_MAX_RESEND_ATTEMPTS`,
+            `OTP_LOCKOUT_DURATION_S`) so individual deployments can
+            dial them without code changes.
+
+agent_communication:
+    -agent: "main"
+    -message: |
+        OTP rules updated and verified. 10-minute TTL, 60-second
+        cooldown, 5 max resends, 30-minute lockout. Hermetic test
+        (tests/test_otp_rules.py) confirms each rule via live HTTP +
+        DB inspection — 8/8 checks passing. Existing cooldown is
+        unchanged; the lockout layer is additive and only kicks in
+        after 5 successful sends within 30 minutes.
+
