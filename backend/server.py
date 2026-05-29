@@ -365,17 +365,19 @@ async def auth_signup(payload: SignupRequest):
         claimed = await claim_legacy_data_for_admin(db, uid)
         logger.info(f"Admin {email} claimed legacy rows: {claimed}")
     else:
-        # Fresh user — seed starter courier + 15 demo shipments.
+        # Fresh user — seed starter courier only (no more demo shipments;
+        # 2026-05-25: removed the 15 sample rows so production users see
+        # a clean inbox from day 1).
         cid = await seed_default_courier(db, uid)
-        await seed_demo_shipments(db, uid, cid)
-        # Trial bonus: 10 free credits so new users can try Photo OCR
-        # (~5 calls) and AI text parsing for the first time without
-        # paying. After the bonus is consumed they top up via Wallet.
+        # Trial bonus: 50 free credits so new users can try Photo OCR
+        # and AI text parsing comfortably before topping up via Wallet.
+        # 2026-05-25: bumped from 10 → 50 for a more generous starter
+        # experience.
         try:
             await wallet_add_credits(
-                db, uid, 10.0,
+                db, uid, 50.0,
                 ctype="bonus",
-                description="Welcome bonus — 10 free credits to try AI features",
+                description="Welcome bonus — 50 free credits to try AI features",
                 order_id=f"signup-bonus-{uid[:8]}",
             )
         except Exception:
@@ -773,12 +775,13 @@ async def auth_google_session(payload: GoogleSessionRequest):
             logger.info(f"Google-admin {email} claimed legacy rows: {claimed}")
         else:
             cid = await seed_default_courier(db, uid)
-            await seed_demo_shipments(db, uid, cid)
+            # 2026-05-25 — Removed seed_demo_shipments(); new accounts
+            # now start with a clean shipments inbox.
             try:
                 await wallet_add_credits(
-                    db, uid, 10.0,
+                    db, uid, 50.0,
                     ctype="bonus",
-                    description="Welcome bonus — 10 free credits to try AI features",
+                    description="Welcome bonus — 50 free credits to try AI features",
                     order_id=f"google-bonus-{uid[:8]}",
                 )
             except Exception:

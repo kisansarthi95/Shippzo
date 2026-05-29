@@ -124,13 +124,10 @@ export default function WalletScreen() {
         testID="wallet-scroll"
         contentContainerStyle={{ padding: 16, paddingBottom: 48 }}
       >
-        {/* Razorpay live banner */}
-        <View style={styles.mockBanner}>
-          <PhIcon name="shield-checkmark-outline" size={16} color="#065F46" />
-          <Text style={styles.mockBannerTxt}>
-            Payments are powered by Razorpay (test mode). Use card 4111 1111 1111 1111, any CVV, future expiry to test.
-          </Text>
-        </View>
+        {/* 2026-05-25 — Removed the Razorpay "test mode" banner since
+            the production app now uses LIVE Razorpay keys. The yellow
+            instructional callout (`Use card 4111…`) is no longer
+            relevant for real customers. */}
 
         {/* Balance hero */}
         <View style={styles.balanceCard}>
