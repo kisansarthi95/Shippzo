@@ -105,9 +105,20 @@ async def resolve_pincode(db, pincode: str) -> Optional[Dict[str, str]]:
 
 
 async def enrich_with_pincode(db, fields: Dict[str, Any]) -> Dict[str, Any]:
-    """Mutate-in-place: when PINCODE is known but STATE / CITY are
-    missing, fetch them via resolve_pincode and fill the gaps.
-    Never overwrites a value the model already produced.
+    """Mutate-in-place: when PINCODE is known, fill STATE if missing
+    and ALWAYS override CITY with the pincode-resolved district.
+
+    2026-05-25 — Behaviour change. Previously CITY was only filled
+    when blank, but the operator pastes very often included a
+    *Village* / *Taluka* name in the CITY slot (e.g. "Hansot",
+    "Padra", "Bopal") instead of the actual District. The pincode
+    lookup now acts as a CORRECTION layer for CITY: the value
+    returned by India Post for that pincode wins, because that's the
+    field every courier API actually uses for routing.
+
+    STATE retains the "fill-when-empty" behaviour because the AI
+    already gets state right ~99% of the time and overwriting a
+    legitimately different state would be more harmful than helpful.
 
     Works on the SCHEMA-key dict that _parse_schema_block returns
     (PINCODE, STATE, CITY, etc.).
@@ -120,9 +131,22 @@ async def enrich_with_pincode(db, fields: Dict[str, Any]) -> Dict[str, Any]:
         return fields
     state = info.get("state") or ""
     district = info.get("district") or ""
+
+    # STATE — fill only when empty (preserve AI value otherwise).
     if state and not (fields.get("STATE") or "").strip():
         fields["STATE"] = state
-    if district and not (fields.get("CITY") or "").strip():
+
+    # CITY — override with the pincode district. Log the correction
+    # so support can trace why a paste came out with a different city
+    # than the operator typed.
+    if district:
+        existing_city = (fields.get("CITY") or "").strip()
+        if existing_city and existing_city.lower() != district.lower():
+            _LOG.info(
+                "Smart-paste: CITY overridden via pincode %s — "
+                "AI value %r → district %r",
+                pin, existing_city, district,
+            )
         fields["CITY"] = district
     return fields
 
