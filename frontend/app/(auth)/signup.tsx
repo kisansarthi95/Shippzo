@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from "react";
+import React, { useState, useEffect, useMemo, useRef } from "react";
 import PhIcon from "../../components/PhIcon";
 import {
   View, Text, TextInput, TouchableOpacity, StyleSheet,
@@ -11,12 +11,12 @@ import { useAuth } from "../../lib/auth";
 import { colors } from "../../lib/theme";
 import GoogleSignInButton from "../../components/GoogleSignInButton";
 import BrandHeaderAnimator from "../../components/BrandHeaderAnimator";
-import { Api } from "../../lib/api";
+import { Api, api } from "../../lib/api";
 
 type BusinessCategory = { slug: string; label: string; icon: string };
 
 export default function SignupScreen() {
-  const { signUp } = useAuth();
+  const { signInWithOtp } = useAuth();
   const router = useRouter();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -66,6 +66,52 @@ export default function SignupScreen() {
   // for this flow; backend doesn't need to persist it because signing
   // up is itself the record of consent.
   const [policyAccepted, setPolicyAccepted] = useState(false);
+
+  // ─── Phase-OTP — inline WhatsApp phone verification ──────────────
+  // After the user submits the registration form, we (1) create the
+  // full account via /auth/signup directly (so email + password +
+  // category are all persisted as the form intends) but WITHOUT
+  // persisting the session locally, then (2) immediately fire an OTP
+  // to the supplied mobile number. The user proves they own that
+  // number by entering the 6-digit code in the inline OTP field that
+  // appears below — only after a successful /auth/otp/verify (which
+  // finds the freshly-created user by phone and mints a JWT) is the
+  // session actually persisted by signInWithOtp().
+  //
+  // If the OTP step fails (wrong code / expired) the user can resend
+  // and retry — the underlying account already exists in the DB and
+  // can be reached via the email/password path or a fresh OTP at any
+  // time.
+  const [otpSent, setOtpSent] = useState(false);
+  const [otp, setOtp] = useState("");
+  const [verifyingOtp, setVerifyingOtp] = useState(false);
+  const [maskedPhone, setMaskedPhone] = useState("");
+  const [secondsLeft, setSecondsLeft] = useState(0);
+  const [resending, setResending] = useState(false);
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (timerRef.current) clearInterval(timerRef.current);
+    };
+  }, []);
+
+  const startCountdown = (seconds: number) => {
+    if (timerRef.current) clearInterval(timerRef.current);
+    setSecondsLeft(seconds);
+    timerRef.current = setInterval(() => {
+      setSecondsLeft((s) => {
+        if (s <= 1) {
+          if (timerRef.current) clearInterval(timerRef.current);
+          return 0;
+        }
+        return s - 1;
+      });
+    }, 1000);
+  };
+
+  const normalisePhone = (digits: string) =>
+    digits.length === 10 ? `+91${digits}` : digits.startsWith("91") ? `+${digits}` : `+${digits}`;
 
   // Phase G2 — every field is mandatory; the button stays disabled
   // until the entire form is well-formed AND the policy box is ticked.
@@ -128,29 +174,96 @@ export default function SignupScreen() {
       );
       return;
     }
+
     setBusy(true);
     try {
-      const res = await signUp(
-        e, password, name.trim(), shop.trim(), phoneDigits, businessCategory,
-      );
-      if (res?.trial_denied) {
-        // Phase-2b: friendly notice — signup succeeded, free trial wasn't
-        // granted because this device already used one. We don't reveal
-        // *who* the prior account belongs to.
-        Alert.alert(
-          "Welcome aboard!",
-          "We noticed this device has already used a free trial before, so the trial wasn't started this time. You can subscribe to a paid plan from the Plans screen anytime to continue.",
-        );
-      }
+      // ── Step 1: create the account via the existing /auth/signup
+      // endpoint, but DO NOT use the auth-context signUp() helper —
+      // that one auto-persists the session and AuthGate would redirect
+      // away before the user could enter the OTP. We use a raw
+      // api.post() so the JWT is returned but stays in-memory, gated
+      // behind the OTP verification below.
+      let device_fingerprint = "";
+      try {
+        const { safeGetDeviceFingerprint } = await import("../../lib/deviceFingerprint");
+        device_fingerprint = await safeGetDeviceFingerprint();
+      } catch { /* ignore */ }
+
+      await api.post("/auth/signup", {
+        email: e,
+        password,
+        name: name.trim(),
+        shop_name: shop.trim(),
+        phone: phoneDigits,
+        device_fingerprint,
+        primary_business_category: businessCategory || "",
+      });
+
+      // ── Step 2: dispatch the WhatsApp OTP. The account now exists
+      // in the DB but the client is NOT signed in yet — the user
+      // must prove phone ownership before the session is minted.
+      const normalised = normalisePhone(phoneDigits);
+      const otpRes = await Api.requestPhoneOtp(normalised, "signup");
+      setMaskedPhone(otpRes.phone || normalised);
+      startCountdown(Math.min(otpRes.expires_in || 60, 300));
+      setOtp("");
+      setOtpSent(true);
     } catch (err: any) {
       Alert.alert(
         "Signup failed",
-        err?.response?.data?.detail || err?.message || "Please try again"
+        err?.response?.data?.detail || err?.message || "Please try again",
       );
     } finally {
       setBusy(false);
     }
   };
+
+  // ── Step 3: verify the OTP. signInWithOtp calls /auth/otp/verify
+  // which (via its last-10-digit fallback regex) locates the user we
+  // just created above, returns a JWT, and persists the session.
+  // AuthGate then handles the redirect to the dashboard automatically.
+  const verifyAndComplete = async () => {
+    setVerifyingOtp(true);
+    try {
+      const phoneDigits = phone.replace(/\D/g, "");
+      const normalised = normalisePhone(phoneDigits);
+      await signInWithOtp({
+        phone: normalised,
+        otp: otp.replace(/\D/g, ""),
+        event_type: "signup",
+      });
+      // AuthGate handles redirect to /(tabs).
+    } catch (err: any) {
+      Alert.alert(
+        "Verification failed",
+        err?.response?.data?.detail || err?.message || "Wrong or expired OTP",
+      );
+    } finally {
+      setVerifyingOtp(false);
+    }
+  };
+
+  const resendOtp = async () => {
+    setResending(true);
+    try {
+      const phoneDigits = phone.replace(/\D/g, "");
+      const normalised = normalisePhone(phoneDigits);
+      const otpRes = await Api.requestPhoneOtp(normalised, "signup");
+      setMaskedPhone(otpRes.phone || normalised);
+      startCountdown(Math.min(otpRes.expires_in || 60, 300));
+      Alert.alert("OTP resent", `Sent a fresh OTP to ${otpRes.phone || normalised}.`);
+    } catch (err: any) {
+      const status = err?.response?.status;
+      const detail = err?.response?.data?.detail || err?.message || "Please try again";
+      if (status === 429) Alert.alert("Please wait", detail);
+      else Alert.alert("Could not resend OTP", detail);
+    } finally {
+      setResending(false);
+    }
+  };
+
+  const otpDigits = otp.replace(/\D/g, "");
+  const canVerifyOtp = otpDigits.length >= 4 && !verifyingOtp;
 
   return (
     <SafeAreaView style={styles.safe}>
@@ -294,17 +407,84 @@ export default function SignupScreen() {
 
             <TouchableOpacity
               testID="signup-submit"
-              disabled={busy || !formValid}
+              disabled={busy || !formValid || otpSent}
               onPress={submit}
               style={[
                 styles.primaryBtn,
-                (busy || !formValid) && { opacity: 0.5 },
+                (busy || !formValid || otpSent) && { opacity: 0.5 },
               ]}
             >
               {busy
                 ? <ActivityIndicator color="#fff" />
-                : <Text style={styles.primaryBtnText}>Create account</Text>}
+                : <Text style={styles.primaryBtnText}>
+                    {otpSent ? "Account created — verify OTP below" : "Create account"}
+                  </Text>}
             </TouchableOpacity>
+
+            {/* Phase-OTP — inline OTP verification step. Only renders
+                after the form has been submitted AND the backend has
+                dispatched an OTP to the user's WhatsApp. Locking it
+                inside the same card keeps the user oriented — no
+                surprise navigation. */}
+            {otpSent ? (
+              <View style={styles.otpBox}>
+                <View style={styles.otpHeader}>
+                  <PhIcon name="chatbubble-ellipses" size={16} color="#15803D" />
+                  <Text style={styles.otpHeaderTxt}>
+                    OTP sent on WhatsApp to {maskedPhone}
+                  </Text>
+                </View>
+                <TextInput
+                  testID="signup-otp"
+                  value={otp}
+                  onChangeText={(t) => setOtp(t.replace(/\D/g, "").slice(0, 6))}
+                  placeholder="6-digit code"
+                  keyboardType="number-pad"
+                  maxLength={6}
+                  style={[styles.input, styles.otpInput]}
+                  placeholderTextColor="#94A3B8"
+                  autoFocus
+                />
+                <TouchableOpacity
+                  testID="signup-verify-otp"
+                  disabled={!canVerifyOtp}
+                  onPress={verifyAndComplete}
+                  style={[
+                    styles.primaryBtn,
+                    !canVerifyOtp && { opacity: 0.5 },
+                    { marginTop: 12 },
+                  ]}
+                >
+                  {verifyingOtp
+                    ? <ActivityIndicator color="#fff" />
+                    : <Text style={styles.primaryBtnText}>Verify &amp; Complete signup</Text>}
+                </TouchableOpacity>
+
+                <View style={styles.resendRow}>
+                  {secondsLeft > 0 ? (
+                    <Text style={styles.resendTimer}>
+                      Resend OTP in 0:{String(secondsLeft).padStart(2, "0")}
+                    </Text>
+                  ) : (
+                    <TouchableOpacity
+                      testID="signup-resend-otp"
+                      onPress={resendOtp}
+                      disabled={resending}
+                      style={styles.resendBtn}
+                    >
+                      {resending ? (
+                        <ActivityIndicator size="small" color={colors.primary} />
+                      ) : (
+                        <>
+                          <PhIcon name="arrow-clockwise" size={14} color={colors.primary} />
+                          <Text style={styles.resendTxt}>Resend OTP</Text>
+                        </>
+                      )}
+                    </TouchableOpacity>
+                  )}
+                </View>
+              </View>
+            ) : null}
 
             {/* 2026-04-30 — Terms & Privacy acceptance. Required before
                 signing up. Links open the hosted policy pages in the
@@ -348,22 +528,6 @@ export default function SignupScreen() {
             </View>
 
             <GoogleSignInButton label="Sign up with Google" />
-
-            {/* Phase-OTP — WhatsApp OTP signup entry-point. Identity is
-                proven via OTP on WhatsApp, no email/password collected
-                at this step. Email + password can be added later from
-                Settings if the user wants a backup login. */}
-            <TouchableOpacity
-              testID="signup-whatsapp-otp"
-              style={styles.otpBtn}
-              onPress={() =>
-                router.push("/(auth)/phone-otp?mode=signup" as any)
-              }
-              activeOpacity={0.85}
-            >
-              <PhIcon name="chatbubble-ellipses" size={18} color="#16A34A" />
-              <Text style={styles.otpBtnText}>Sign up with WhatsApp OTP</Text>
-            </TouchableOpacity>
 
             <View style={styles.footerRow}>
               <Text style={styles.footerText}>Already have an account?</Text>
@@ -501,20 +665,48 @@ const styles = StyleSheet.create({
   footerText: { color: colors.textMuted, fontSize: 13 },
   footerLink: { color: colors.primary, fontWeight: "800", fontSize: 13 },
 
-  // Phase-OTP — WhatsApp OTP secondary CTA.
-  otpBtn: {
-    marginTop: 10,
-    height: 48,
-    borderRadius: 12,
+  // Phase-OTP — inline phone-verification panel that appears below
+  // the "Create account" button after a successful form submit.
+  otpBox: {
+    marginTop: 14,
     backgroundColor: "#F0FDF4",
     borderWidth: 2,
     borderColor: "#16A34A",
+    borderRadius: 12,
+    padding: 14,
+  },
+  otpHeader: {
     flexDirection: "row",
+    alignItems: "center",
     gap: 8,
+    marginBottom: 10,
+  },
+  otpHeaderTxt: {
+    flex: 1,
+    color: "#15803D",
+    fontWeight: "700",
+    fontSize: 12.5,
+  },
+  otpInput: {
+    letterSpacing: 6,
+    fontWeight: "800",
+    textAlign: "center",
+    fontSize: 18,
+  },
+  resendRow: {
+    marginTop: 12,
     alignItems: "center",
     justifyContent: "center",
   },
-  otpBtnText: { color: "#15803D", fontWeight: "800", fontSize: 14 },
+  resendBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingVertical: 6,
+    paddingHorizontal: 14,
+  },
+  resendTxt: { color: colors.primary, fontWeight: "800", fontSize: 13 },
+  resendTimer: { color: "#475569", fontSize: 12, fontWeight: "700" },
   // Policy acceptance row
   policyRow: {
     flexDirection: "row", alignItems: "flex-start", gap: 10,
