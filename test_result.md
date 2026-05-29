@@ -21969,3 +21969,76 @@ agent_communication:
         Playwright — request OTP, backend dispatches via FlowConnect,
         UI shows OTP entry with countdown + resend. Ready for user
         acceptance testing on a real WhatsApp-receiving device.
+
+frontend:
+  - task: "WhatsApp OTP — inline UX refactor (single-screen flow)"
+    implemented: true
+    working: true
+    file: "/app/frontend/app/(auth)/login.tsx, /app/frontend/app/(auth)/signup.tsx, /app/frontend/app/(auth)/welcome.tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "main"
+        -comment: |
+            Per user direction, removed the separate /(auth)/phone-otp
+            screen entirely and inlined the WhatsApp-OTP UX into the
+            existing login + signup screens. No new routes/files —
+            backend completely untouched.
+
+            login.tsx — single identifier field "Email or Mobile
+            Number". useMemo-based smart detection: 10+ digits & no @
+            → mobile path (password field hidden, "Send OTP" CTA,
+            inline 6-digit OTP entry with countdown/resend/edit-number
+            below the identifier). Email path → existing password +
+            "Log in" flow untouched. Owner/Team toggle hidden in
+            mobile mode (team login is email-only by design).
+
+            signup.tsx — submit() now (1) creates the full user via
+            a raw api.post("/auth/signup", ...) so email + password +
+            phone + name + shop + business_category all persist as
+            the form intends, but WITHOUT triggering AuthGate's auto-
+            redirect (we don't use the signUp() helper which auto-
+            persists), then (2) immediately POSTs /auth/otp/request.
+            An inline green OTP panel appears under the form. Tapping
+            "Verify & Complete signup" calls signInWithOtp() which
+            hits /auth/otp/verify — the backend's last-10-digit
+            fallback regex finds the freshly-created user, returns a
+            JWT, and the session is finally persisted. Resend works
+            with a 5-min countdown.
+
+            welcome.tsx — removed the green "Continue with WhatsApp
+            OTP" button + its styles. Welcome is back to its previous
+            3-CTA layout (Create / Login / Google).
+
+            Playwright verification:
+              • Login default → "Email or Mobile Number" label
+                visible, password field shown
+              • Login + 10 digits typed → password hides, "Send OTP"
+                renders, hint "We'll send a 6-digit OTP to your
+                WhatsApp" appears, Owner/Team toggle hides
+              • Tap "Send OTP" → POST /api/auth/otp/request → 200
+                → inline OTP UI with masked phone, resend countdown,
+                edit-number link
+              • Signup form submit (full valid form) → POST
+                /api/auth/signup → 200, immediately POST
+                /api/auth/otp/request → 200, inline green OTP panel
+                renders below form, submit button becomes locked
+                "Account created — verify OTP below"
+              • Welcome screen no longer has the WhatsApp OTP button
+              • All TypeScript compile checks pass for modified files
+
+agent_communication:
+    -agent: "main"
+    -message: |
+        WhatsApp OTP UX refactored per user direction. The standalone
+        phone-otp.tsx screen is gone; OTP is inlined into login.tsx
+        (smart email/mobile detection) and signup.tsx (verification
+        gate after Create Account). welcome.tsx restored to original
+        3-button layout. Backend files unchanged. Full Playwright
+        verification confirms POST /auth/signup → POST /auth/otp/
+        request chain, inline UI transitions, and masked-phone
+        display. Ready for user acceptance testing on a real
+        WhatsApp-receiving device.
+
