@@ -10,7 +10,7 @@
  * Only the current user's tickets are returned (server-side filter
  * via /api/support/tickets which scopes to current_user.id).
  */
-import React, { useCallback, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import {
   ActivityIndicator,
   FlatList,
@@ -74,21 +74,32 @@ export default function MyTickets() {
 
   const load = useCallback(async () => {
     try {
-      const r = await Api.supportListMyTickets();
+      // 2026-05-25 — Server-side status filter.
+      // Previously this screen fetched the newest tickets ONCE and
+      // filtered them on-device, which meant any tab whose tickets
+      // sat past the page boundary appeared empty (the per-tab
+      // counts were misleading too). We now mirror the pattern in
+      // admin/support-inbox.tsx — pass the selected tab's status to
+      // /api/support/tickets and refetch on every tab change. The
+      // backend accepts {open, in_progress, resolved, closed}; "all"
+      // is sent as `undefined` so the server returns every ticket.
+      const r = await Api.supportListMyTickets(tab === "all" ? undefined : tab);
       setItems(r.items || []);
     } catch {
       setItems([]);
     }
-  }, []);
+  }, [tab]);
+  // Initial fetch + every-tab-change fetch.
+  useEffect(() => { load(); }, [load]);
+  // Re-fetch when the screen comes back into focus (e.g. after the
+  // user navigated into a ticket detail and resolved it).
   useFocusEffect(useCallback(() => { load(); }, [load]));
 
   const onRefresh = async () => { setR(true); await load(); setR(false); };
 
-  const filtered = useMemo(() => {
-    if (!items) return [] as SupportTicket[];
-    if (tab === "all") return items;
-    return items.filter((t) => t.status === tab);
-  }, [items, tab]);
+  // Server already returned the rows for the current status filter,
+  // so `items` IS the visible list — no second-pass filter needed.
+  const filtered = items || [];
 
   const renderItem = ({ item }: { item: SupportTicket }) => {
     const s = STATUS_STYLE[item.status] || STATUS_STYLE.open;
