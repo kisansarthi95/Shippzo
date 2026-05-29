@@ -2052,7 +2052,8 @@ export const Api = {
         ok: boolean;
         phone: string;       // masked, safe to display
         event_type: string;
-        expires_in: number;  // seconds — drives the resend countdown
+        expires_in: number;       // seconds — total OTP lifetime
+        resend_cooldown: number;  // seconds — drives the resend countdown
         delivery: {
           channel: "whatsapp";
           provider: string;  // "flowconnect" today, may change

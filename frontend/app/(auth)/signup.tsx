@@ -205,7 +205,7 @@ export default function SignupScreen() {
       const normalised = normalisePhone(phoneDigits);
       const otpRes = await Api.requestPhoneOtp(normalised, "signup");
       setMaskedPhone(otpRes.phone || normalised);
-      startCountdown(Math.min(otpRes.expires_in || 60, 300));
+      startCountdown(otpRes.resend_cooldown || 60);
       setOtp("");
       setOtpSent(true);
     } catch (err: any) {
@@ -250,7 +250,7 @@ export default function SignupScreen() {
       const normalised = normalisePhone(phoneDigits);
       const otpRes = await Api.requestPhoneOtp(normalised, "signup");
       setMaskedPhone(otpRes.phone || normalised);
-      startCountdown(Math.min(otpRes.expires_in || 60, 300));
+      startCountdown(otpRes.resend_cooldown || 60);
       Alert.alert("OTP resent", `Sent a fresh OTP to ${otpRes.phone || normalised}.`);
     } catch (err: any) {
       const status = err?.response?.status;

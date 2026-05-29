@@ -127,7 +127,7 @@ export default function LoginScreen() {
       const phone = normalisePhone(detection.digits);
       const res = await Api.requestPhoneOtp(phone, "login");
       setMaskedPhone(res.phone || phone);
-      startCountdown(Math.min(res.expires_in || 60, 300));
+      startCountdown(res.resend_cooldown || 60);
       if (!forResend) {
         setOtp("");
         setOtpSent(true);

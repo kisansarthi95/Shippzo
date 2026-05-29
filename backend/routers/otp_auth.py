@@ -46,6 +46,7 @@ from auth import make_token, seed_default_courier
 from services.otp_service import (
     CooldownError,
     LockoutError,
+    OTP_RESEND_COOLDOWN_S,
     OTP_TTL_SECONDS,
     issue_otp,
     normalise_phone,
@@ -145,10 +146,11 @@ async def otp_request(payload: OtpRequestBody) -> Dict[str, Any]:
     # secondary message ("Sent to +91*****3210 via WhatsApp") without
     # ever exposing the OTP itself.
     return {
-        "ok":          True,
-        "phone":       _mask(normalised_phone),
-        "event_type":  payload.event_type,
-        "expires_in":  OTP_TTL_SECONDS,
+        "ok":              True,
+        "phone":           _mask(normalised_phone),
+        "event_type":      payload.event_type,
+        "expires_in":      OTP_TTL_SECONDS,
+        "resend_cooldown": OTP_RESEND_COOLDOWN_S,
         "delivery":    {
             "channel":  "whatsapp",
             "provider": delivery.get("provider") or "unknown",
