@@ -1481,6 +1481,17 @@ export const Api = {
   deleteShipment: (id: string) =>
     api.delete(`/shipments/${id}`).then((r) => r.data),
   csvUrl: () => `${BASE}/api/shipments/export/csv`,
+  // 2026-05-25 — Authenticated CSV fetch. The old `csvUrl()` was
+  // designed for `Linking.openURL()` which strips the JWT bearer
+  // header, so the browser saw a 401 instead of the file. This
+  // helper uses the axios instance (auth interceptor included)
+  // and returns the raw CSV body — the caller writes it to disk
+  // and opens the OS share sheet.
+  exportShipmentsCsv: () =>
+    api.get<string>("/shipments/export/csv", {
+      responseType: "text",
+      transformResponse: [(d: any) => (typeof d === "string" ? d : String(d || ""))],
+    } as any).then((r) => r.data as string),
 
   // Smart Paste & Pending Orders
   smartPasteParse: (text: string) =>

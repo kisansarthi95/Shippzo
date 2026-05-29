@@ -888,6 +888,72 @@ export default function Shipments() {
     }
   };
 
+  // ────────────────────────────────────────────────────────────────
+  // 2026-05-25 — Authenticated CSV download for the user-side
+  // "Export Shipments" pill (icon-bar). The previous implementation
+  // used `Linking.openURL()` which strips the JWT bearer header,
+  // so the browser tab showed {"detail":"Authentication required"}
+  // instead of saving the file.
+  //
+  // We now pull the CSV body via the auth-aware axios client and
+  // hand the bytes to a platform-appropriate save / share flow:
+  //   • Web:    Blob URL + <a download="…"> click (browser save)
+  //   • Native: write to cacheDirectory + open Share sheet
+  //             (so the user can WhatsApp / e-mail / Drive the file
+  //              just like any normal attachment).
+  // Empty payload is treated as "nothing to export" so the user
+  // doesn't get a 0-byte file silently.
+  // ────────────────────────────────────────────────────────────────
+  const [exportCsvBusy, setExportCsvBusy] = useState<boolean>(false);
+  const handleExportCsv = async () => {
+    if (exportCsvBusy) return;
+    setExportCsvBusy(true);
+    try {
+      const csv = await Api.exportShipmentsCsv();
+      if (!csv || csv.trim().split("\n").length <= 1) {
+        Alert.alert("No data", "You don't have any shipments to export yet.");
+        return;
+      }
+      const stamp = new Date().toISOString().slice(0, 10).replace(/-/g, "");
+      const filename = `shipments_${stamp}.csv`;
+
+      if (Platform.OS === "web") {
+        const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+        const url  = URL.createObjectURL(blob);
+        const a    = document.createElement("a");
+        a.href = url; a.download = filename;
+        document.body.appendChild(a); a.click();
+        a.remove(); URL.revokeObjectURL(url);
+      } else {
+        // Native: write + share. Use the legacy expo-file-system API
+        // (SDK 52+ moved EncodingType under /legacy) so this works
+        // on the current build without a conditional fork.
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const FileSystem = require("expo-file-system/legacy");
+        const path = `${FileSystem.cacheDirectory || ""}${filename}`;
+        await FileSystem.writeAsStringAsync(path, csv, {
+          encoding: FileSystem.EncodingType.UTF8,
+        });
+        if (await Sharing.isAvailableAsync()) {
+          await Sharing.shareAsync(path, {
+            mimeType: "text/csv",
+            dialogTitle: "Export Shipments",
+            UTI: "public.comma-separated-values-text",
+          });
+        } else {
+          Alert.alert("Export ready", `Saved to ${path}`);
+        }
+      }
+    } catch (e: any) {
+      Alert.alert(
+        "Export failed",
+        e?.response?.data?.detail || e?.message || "Try again.",
+      );
+    } finally {
+      setExportCsvBusy(false);
+    }
+  };
+
   return (
     <SafeAreaView style={styles.safe} edges={["top"]}>
       <View style={styles.header}>
@@ -925,7 +991,7 @@ export default function Shipments() {
           {flagCsvExport && (
           <TouchableOpacity
             testID="export-csv-btn" style={styles.iconBtn}
-            onPress={() => Linking.openURL(Api.csvUrl())}
+            onPress={handleExportCsv}
           >
             <PhIcon name="download-outline" size={20} color={colors.text} />
           </TouchableOpacity>
