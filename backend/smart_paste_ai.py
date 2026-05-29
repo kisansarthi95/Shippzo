@@ -64,7 +64,18 @@ PHONE: <primary 10 digits only, strip +91 or 0>
 ALT_PHONE: <second / alternative 10-digit number if message has TWO phones, else ->
 ADDRESS_1: <FULL physical address — house / street / area / landmark / village / taluka / district — all on one line, NEVER split. Keep original script.>
 ADDRESS_2: <ALWAYS leave blank / output `-`. Do NOT use this field.>
-CITY: <city / town — keep original script>
+CITY: <The DISTRICT (post-office level city) — keep original script. STRICT PRIORITY RULES:
+  1. If the input contains an EXPLICIT District label such as "DIS", "DIS:", "DIS :-", "Dist", "Dist.", "District", "જિલ્લો", "જિ.", "जिला", "ज़िला", "जि.", "தாவர்", "जिल्हा", USE THAT DISTRICT VALUE — never the Village.
+  2. If a Taluka / Tehsil ("TA", "Ta:-", "Taluka", "तहसील", "તાલુકો") is present alongside a District, prefer the District; the Taluka stays inside ADDRESS_1.
+  3. If a Village ("Vill", "Village", "ગામ", "गाँव", "गांव") is present alongside a District, prefer the District; the Village stays inside ADDRESS_1.
+  4. ONLY when none of those labels are present, fall back to whatever city / town name is visible after the address lines (just before the State / Pincode).
+  Examples:
+    • "Nanu faliyu chhilodra, Ta:-Hansot, Dis:-Bharuch, Gujarat 393030"
+        → CITY: Bharuch     (NOT Hansot, NOT Chhilodra)
+    • "Vill: Anand Nagar, Ta: Padra, Dis: Vadodara"
+        → CITY: Vadodara    (NOT Padra, NOT Anand Nagar)
+    • "12 MG Road, Surat 395003"
+        → CITY: Surat       (no labels, fall back to last token before pincode)>
 STATE: <state — keep original script>
 PINCODE: <6 digits only>
 ITEMS: <item + quantity like "Saree x 2"; comma-separated for multiple>
