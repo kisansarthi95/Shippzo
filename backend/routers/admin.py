@@ -235,10 +235,12 @@ def init() -> None:
             raise HTTPException(status_code=404, detail="User not found")
 
         wallet = await db.wallets.find_one({"user_id": user_id}, {"_id": 0})
+        # Phase-25c — return FULL shipment doc (sans Mongo _id) so the
+        # admin UI can open an in-place detail panel without making a
+        # second round-trip per shipment. The previous projection only
+        # gave 7 columns and hid `id`, which made the rows un-tappable.
         recent_ships = await db.shipments.find(
-            {"user_id": user_id},
-            {"_id": 0, "tracking_id": 1, "customer_name": 1, "city": 1,
-             "status": 1, "created_at": 1, "amount": 1, "payment_type": 1},
+            {"user_id": user_id}, {"_id": 0},
         ).sort("created_at", -1).limit(20).to_list(length=20)
 
         ship_count = await db.shipments.count_documents({"user_id": user_id})
@@ -407,3 +409,101 @@ def init() -> None:
             "new_expiry":   new_iso,
             "days_added":   int(payload.days),
         }
+
+    # -----------------------------------------------------------------
+    # GET /admin/users/{user_id}/shipments/export
+    #
+    # Returns a CSV with every shipment of the given user, including
+    # ALL business-relevant fields (customer, address, courier, AWB,
+    # amount, status, timestamps). Used by the super-admin to give
+    # the customer a full backup or to investigate a support ticket.
+    #
+    # Wrapped in FastAPI Response so the browser / mobile client gets
+    # the file straight from the response body (no extra round-trip).
+    # -----------------------------------------------------------------
+    @admin_router.get("/users/{user_id}/shipments/export")
+    async def admin_export_shipments(
+        user_id: str,
+        current_user: Dict[str, Any] = Depends(_get_current_user),
+    ):
+        import csv
+        import io
+        from fastapi.responses import Response
+
+        _require_admin_helper(current_user)
+        target = await db.users.find_one({"id": user_id}, {"_id": 0})
+        if not target:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        ships = await db.shipments.find(
+            {"user_id": user_id}, {"_id": 0},
+        ).sort("created_at", -1).to_list(length=10_000)
+
+        # Stable, business-friendly column order. Fields that don't
+        # exist on a particular doc fall back to empty string, so
+        # the CSV is rectangular regardless of schema drift over time.
+        columns = [
+            "id", "tracking_id", "master_order_id", "order_id",
+            "customer_name", "customer_phone", "customer_alt_phone",
+            "customer_email",
+            "address_line1", "address_line2", "city", "state", "pincode",
+            "courier", "courier_service",
+            "items", "weight", "box_dimensions",
+            "amount", "token_amount", "payment_type", "payment_mode",
+            "status",
+            "notes", "shipment_notes",
+            "created_at", "updated_at", "shipped_at", "delivered_at",
+        ]
+
+        buf = io.StringIO()
+        writer = csv.writer(buf, lineterminator="\n")
+        writer.writerow(columns)
+        for s in ships:
+            row = []
+            for col in columns:
+                v = s.get(col, "")
+                # Normalise None / nested dicts / lists for CSV safety.
+                if v is None:
+                    v = ""
+                elif isinstance(v, (dict, list)):
+                    import json as _json
+                    v = _json.dumps(v, ensure_ascii=False)
+                row.append(str(v))
+            writer.writerow(row)
+
+        csv_body = buf.getvalue()
+        # ASCII-safe filename + UTF-8 starred form so non-Latin shop
+        # names survive Content-Disposition encoding.
+        safe_email = re.sub(r"[^A-Za-z0-9_\-\.]", "_", target.get("email", "user"))
+        filename = f"shipments_{safe_email}_{datetime.now(timezone.utc).strftime('%Y%m%d')}.csv"
+        return Response(
+            content=csv_body,
+            media_type="text/csv; charset=utf-8",
+            headers={
+                "Content-Disposition": f'attachment; filename="{filename}"',
+                "X-Total-Shipments":   str(len(ships)),
+            },
+        )
+
+    # -----------------------------------------------------------------
+    # GET /admin/users/{user_id}/shipments/{shipment_id}
+    #
+    # Returns a single shipment (full doc) belonging to the target
+    # user — used by the in-place "shipment detail" panel on the
+    # admin Users screen. Mirrors the user-facing
+    # `GET /shipments/{id}` endpoint but accepts cross-user lookups
+    # because the caller is a verified admin.
+    # -----------------------------------------------------------------
+    @admin_router.get("/users/{user_id}/shipments/{shipment_id}")
+    async def admin_get_shipment(
+        user_id: str,
+        shipment_id: str,
+        current_user: Dict[str, Any] = Depends(_get_current_user),
+    ):
+        _require_admin_helper(current_user)
+        doc = await db.shipments.find_one(
+            {"id": shipment_id, "user_id": user_id}, {"_id": 0},
+        )
+        if not doc:
+            raise HTTPException(status_code=404, detail="Shipment not found for this user")
+        return doc

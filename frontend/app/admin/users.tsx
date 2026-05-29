@@ -261,6 +261,92 @@ export default function AdminUsersScreen() {
     await load();
   }, [closeAdjust, detail, load]);
 
+  // ────────────────────────────────────────────────────────────────
+  // Phase-25c — Per-shipment detail panel + bulk CSV export.
+  //
+  // shipmentDetail keeps the currently-open shipment doc; tapping a
+  // row in the detail panel fetches the full shipment via the admin
+  // endpoint (admins can read any user's shipments). Closing the
+  // panel clears the state.
+  //
+  // exporting tracks the "Download all" button so we can disable
+  // it during the round-trip & show a small spinner.
+  // ────────────────────────────────────────────────────────────────
+  const [shipmentDetail, setShipmentDetail] = useState<any | null>(null);
+  const [shipmentLoading, setShipmentLoading] = useState<boolean>(false);
+  const [exporting, setExporting] = useState<boolean>(false);
+
+  const openShipmentDetail = useCallback(
+    async (userId: string, shipmentId: string) => {
+      setShipmentLoading(true);
+      setShipmentDetail({ __loading: true });
+      try {
+        const r = await api.get<any>(
+          `/admin/users/${userId}/shipments/${shipmentId}`,
+        );
+        setShipmentDetail(r.data);
+      } catch (e: any) {
+        Alert.alert("Failed", e?.response?.data?.detail || "Could not load shipment");
+        setShipmentDetail(null);
+      } finally {
+        setShipmentLoading(false);
+      }
+    }, []);
+
+  const closeShipmentDetail = useCallback(() => setShipmentDetail(null), []);
+
+  const exportAllShipments = useCallback(
+    async (userId: string, email: string) => {
+      if (exporting) return;
+      setExporting(true);
+      try {
+        // Pull CSV body via the admin endpoint then offer Save / Share.
+        const r = await api.get<string>(
+          `/admin/users/${userId}/shipments/export`,
+          { responseType: "text" } as any,
+        );
+        const csv = typeof r.data === "string" ? r.data : String(r.data || "");
+        if (!csv.trim()) {
+          Alert.alert("No data", "This user has no shipments to export.");
+          return;
+        }
+        const safeEmail = email.replace(/[^A-Za-z0-9_\-\.]/g, "_");
+        const filename  = `shipments_${safeEmail}.csv`;
+
+        if (Platform.OS === "web") {
+          // Trigger browser download via blob URL.
+          const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+          const url  = URL.createObjectURL(blob);
+          const a    = document.createElement("a");
+          a.href = url; a.download = filename;
+          document.body.appendChild(a); a.click();
+          a.remove(); URL.revokeObjectURL(url);
+          Alert.alert("Downloaded ✅", `${filename} saved.`);
+        } else {
+          // Native: write to cache + open share sheet.
+          const FileSystem = require("expo-file-system/legacy");
+          const Sharing    = require("expo-sharing");
+          const path = `${FileSystem.cacheDirectory || ""}${filename}`;
+          await FileSystem.writeAsStringAsync(path, csv, {
+            encoding: FileSystem.EncodingType.UTF8,
+          });
+          if (await Sharing.isAvailableAsync()) {
+            await Sharing.shareAsync(path, {
+              mimeType: "text/csv",
+              dialogTitle: "Export Shipments",
+              UTI: "public.comma-separated-values-text",
+            });
+          } else {
+            Alert.alert("Export ready", `Saved to ${path}`);
+          }
+        }
+      } catch (e: any) {
+        Alert.alert("Export failed", e?.response?.data?.detail || e?.message || "Try again");
+      } finally {
+        setExporting(false);
+      }
+    }, [exporting]);
+
   const planChips: Array<{ key: "" | PlanKey; label: string }> = useMemo(() => {
     const counts = summary?.plan_counts || {};
     const all = summary?.total_users || 0;
@@ -410,6 +496,8 @@ export default function AdminUsersScreen() {
               onResetPassword={resetUserPassword}
               onAddCredits={openAddCredits}
               onExtendPlan={openExtendPlan}
+              onShipmentTap={openShipmentDetail}
+              onExportAll={exportAllShipments}
             />
           )}
         </SafeAreaView>
@@ -421,6 +509,14 @@ export default function AdminUsersScreen() {
         target={adjustTarget}
         onClose={closeAdjust}
         onDone={refreshAfterAdjust}
+      />
+
+      {/* ── Per-shipment full-detail panel (admin can read any user's
+              shipment via the dedicated admin endpoint). ── */}
+      <ShipmentDetailModal
+        shipment={shipmentDetail}
+        loading={shipmentLoading}
+        onClose={closeShipmentDetail}
       />
     </SafeAreaView>
   );
@@ -504,11 +600,13 @@ function Stat({ icon, value, label }: { icon: string; value: string; label: stri
   );
 }
 
-function DetailView({ d, onResetPassword, onAddCredits, onExtendPlan }: {
+function DetailView({ d, onResetPassword, onAddCredits, onExtendPlan, onShipmentTap, onExportAll }: {
   d: DetailResponse;
   onResetPassword: (id: string, email: string) => void;
   onAddCredits:    (id: string, email: string, currentBalance: number) => void;
   onExtendPlan:    (id: string, email: string, currentExpiry: string | null) => void;
+  onShipmentTap:   (userId: string, shipmentId: string) => void;
+  onExportAll:     (userId: string, email: string) => void;
 }) {
   const u = d.user;
   const pal = PLAN_COLORS[u.plan] || PLAN_COLORS.free_trial;
@@ -590,23 +688,46 @@ function DetailView({ d, onResetPassword, onAddCredits, onExtendPlan }: {
         <GridItem icon="enter-outline"   label="Last Login"     value={fmtDateTime(u.last_login_at)} />
       </View>
 
-      <Text style={styles.sectionHead}>Recent Shipments</Text>
+      {/* ── Recent Shipments section: tappable rows + bulk export ── */}
+      <View style={styles.sectionHeadRow}>
+        <Text style={styles.sectionHead}>Recent Shipments</Text>
+        {d.shipment_count > 0 ? (
+          <TouchableOpacity
+            onPress={() => onExportAll(u.id, u.email)}
+            style={styles.downloadAllBtn}
+            activeOpacity={0.8}
+          >
+            <PhIcon name="download-outline" size={13} color="#fff" />
+            <Text style={styles.downloadAllTxt}>
+              Download all ({d.shipment_count})
+            </Text>
+          </TouchableOpacity>
+        ) : null}
+      </View>
       {d.recent_shipments.length === 0 ? (
         <Text style={styles.empty}>No shipments yet.</Text>
       ) : (
         d.recent_shipments.map((s: any, i: number) => (
-          <View key={`ship-${i}-${s.tracking_id || ""}`} style={styles.listItem}>
+          <TouchableOpacity
+            key={`ship-${i}-${s.id || s.tracking_id || ""}`}
+            style={styles.listItem}
+            onPress={() => s.id ? onShipmentTap(u.id, s.id) : null}
+            activeOpacity={0.7}
+          >
             <View style={{ flex: 1 }}>
               <Text style={styles.liTitle} numberOfLines={1}>{s.customer_name || "—"}</Text>
               <Text style={styles.liSub}>
                 {s.tracking_id} · {s.city || "—"} · {fmtDate(s.created_at)}
               </Text>
             </View>
-            <Text style={styles.liAmt}>
-              {s.payment_type === "COD" ? "COD " : "PAID "}
-              ₹{Number(s.amount || 0).toFixed(0)}
-            </Text>
-          </View>
+            <View style={{ alignItems: "flex-end" }}>
+              <Text style={styles.liAmt}>
+                {s.payment_type === "COD" ? "COD " : "PAID "}
+                ₹{Number(s.amount || 0).toFixed(0)}
+              </Text>
+              <PhIcon name="chevron-forward" size={14} color="#94A3B8" />
+            </View>
+          </TouchableOpacity>
         ))
       )}
 
@@ -695,14 +816,23 @@ const styles = StyleSheet.create({
     fontSize: 11, fontWeight: "900", color: "#0F172A", letterSpacing: 1,
   },
   adminActions: {
-    flexDirection: "row", gap: 8, marginTop: 14,
+    // Phase-25c — wrap to multi-row on narrow phones so the 3rd
+    // "Extend Plan" button no longer gets clipped on 360-380dp
+    // viewports (e.g. budget Android devices). gap is honoured
+    // both row-wise AND column-wise when flexWrap is set.
+    flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 14,
     paddingTop: 14, borderTopWidth: 1, borderTopColor: "#F1F5F9",
   },
   actionBtn: {
     flexDirection: "row", alignItems: "center", gap: 6,
     backgroundColor: "#0F172A",
-    paddingHorizontal: 12, paddingVertical: 8,
+    paddingHorizontal: 12, paddingVertical: 9,
     borderRadius: 8,
+    // Keep button width predictable so all 3 fit neatly. minWidth
+    // ensures the icon+label combo stays readable even on the
+    // narrowest devices where the row wraps to 2 lines.
+    minWidth: 140,
+    justifyContent: "center",
   },
   actionTxt: {
     color: "#fff", fontSize: 12, fontWeight: "800", letterSpacing: 0.3,
@@ -761,6 +891,19 @@ const styles = StyleSheet.create({
   liSub:   { fontSize: 11, color: "#94A3B8", marginTop: 2 },
   liAmt:   { fontSize: 13, fontWeight: "900", color: "#0F172A" },
   empty:   { color: "#94A3B8", fontSize: 12, textAlign: "center", padding: 12 },
+  // Phase-25c — Recent Shipments section header with right-aligned
+  // "Download all" pill. Replaces the bare <Text> heading.
+  sectionHeadRow: {
+    flexDirection: "row", alignItems: "center", justifyContent: "space-between",
+    marginTop: 16, marginBottom: 6,
+  },
+  downloadAllBtn: {
+    flexDirection: "row", alignItems: "center", gap: 6,
+    backgroundColor: "#0F172A",
+    paddingHorizontal: 10, paddingVertical: 6,
+    borderRadius: 999,
+  },
+  downloadAllTxt: { color: "#fff", fontSize: 11, fontWeight: "800" },
 });
 
 
@@ -1150,4 +1293,139 @@ const modalStyles = StyleSheet.create({
     alignItems: "center",
   },
   applyTxt:    { fontSize: 15, fontWeight: "900", color: "#fff" },
+});
+
+
+// ═══════════════════════════════════════════════════════════════════
+// ShipmentDetailModal — read-only deep dive on a single shipment.
+//
+// Opened when the admin taps a row in the Recent Shipments list of
+// the user detail panel. Backend serves the full shipment doc via
+// GET /admin/users/{userId}/shipments/{shipmentId}.
+//
+// We render the doc as labelled rows ordered by business importance.
+// Long values wrap. JSON-shaped fields (arrays, nested dicts) get
+// pretty-printed so the admin can still inspect them at a glance.
+// ═══════════════════════════════════════════════════════════════════
+function ShipmentDetailModal({
+  shipment, loading, onClose,
+}: {
+  shipment: any | null;
+  loading:  boolean;
+  onClose:  () => void;
+}) {
+  const visible = shipment !== null;
+
+  const fmtVal = (v: any): string => {
+    if (v === null || v === undefined || v === "") return "—";
+    if (typeof v === "object") {
+      try { return JSON.stringify(v, null, 2); } catch { return String(v); }
+    }
+    return String(v);
+  };
+
+  // Ordered field map (label → key on shipment doc).
+  const ROWS: Array<[string, string]> = [
+    ["Tracking ID",      "tracking_id"],
+    ["Master Order ID",  "master_order_id"],
+    ["Order ID",         "order_id"],
+    ["Status",           "status"],
+    ["Customer Name",    "customer_name"],
+    ["Phone",            "customer_phone"],
+    ["Alt Phone",        "customer_alt_phone"],
+    ["Email",            "customer_email"],
+    ["Address 1",        "address_line1"],
+    ["Address 2",        "address_line2"],
+    ["City",             "city"],
+    ["State",            "state"],
+    ["Pincode",          "pincode"],
+    ["Courier",          "courier"],
+    ["Courier Service",  "courier_service"],
+    ["Items",            "items"],
+    ["Weight",           "weight"],
+    ["Box Dimensions",   "box_dimensions"],
+    ["Amount",           "amount"],
+    ["Token Amount",     "token_amount"],
+    ["Payment Type",     "payment_type"],
+    ["Payment Mode",     "payment_mode"],
+    ["Notes",            "notes"],
+    ["Shipment Notes",   "shipment_notes"],
+    ["Created At",       "created_at"],
+    ["Updated At",       "updated_at"],
+    ["Shipped At",       "shipped_at"],
+    ["Delivered At",     "delivered_at"],
+  ];
+
+  return (
+    <Modal
+      animationType="slide"
+      presentationStyle="pageSheet"
+      visible={visible}
+      onRequestClose={onClose}
+    >
+      <SafeAreaView style={{ flex: 1, backgroundColor: "#F8FAFC" }}>
+        <View style={shipStyles.header}>
+          <Text style={shipStyles.title}>Shipment Details</Text>
+          <TouchableOpacity onPress={onClose} hitSlop={10}>
+            <PhIcon name="close" size={20} color="#0F172A" />
+          </TouchableOpacity>
+        </View>
+
+        {loading || shipment?.__loading ? (
+          <View style={{ paddingVertical: 60, alignItems: "center" }}>
+            <ActivityIndicator size="large" color={colors.primary} />
+            <Text style={{ marginTop: 10, color: "#64748B" }}>Loading…</Text>
+          </View>
+        ) : !shipment ? null : (
+          <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 60 }}>
+            <View style={shipStyles.card}>
+              {ROWS.map(([label, key]) => {
+                const val = (shipment as any)[key];
+                if (val === undefined || val === null || val === "") return null;
+                return (
+                  <View key={key} style={shipStyles.row}>
+                    <Text style={shipStyles.rowLbl}>{label}</Text>
+                    <Text style={shipStyles.rowVal}>{fmtVal(val)}</Text>
+                  </View>
+                );
+              })}
+            </View>
+          </ScrollView>
+        )}
+      </SafeAreaView>
+    </Modal>
+  );
+}
+
+const shipStyles = StyleSheet.create({
+  header: {
+    flexDirection: "row", justifyContent: "space-between", alignItems: "center",
+    paddingHorizontal: 16, paddingVertical: 12,
+    backgroundColor: "#fff",
+    borderBottomWidth: 1, borderBottomColor: "#E5E7EB",
+  },
+  title:  { fontSize: 17, fontWeight: "900", color: "#0F172A" },
+  card:   {
+    backgroundColor: "#fff",
+    borderRadius: 12,
+    borderWidth: 1, borderColor: "#E5E7EB",
+    paddingVertical: 4,
+  },
+  row:    {
+    flexDirection: "row",
+    paddingHorizontal: 14, paddingVertical: 10,
+    borderBottomWidth: 1, borderBottomColor: "#F1F5F9",
+  },
+  rowLbl: {
+    width: 130,
+    fontSize: 12,
+    fontWeight: "700",
+    color: "#64748B",
+  },
+  rowVal: {
+    flex: 1,
+    fontSize: 13,
+    color: "#0F172A",
+    fontWeight: "600",
+  },
 });
