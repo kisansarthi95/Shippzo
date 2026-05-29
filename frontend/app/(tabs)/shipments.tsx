@@ -909,13 +909,37 @@ export default function Shipments() {
     if (exportCsvBusy) return;
     setExportCsvBusy(true);
     try {
-      const csv = await Api.exportShipmentsCsv();
+      // 2026-05-25 — Filter-aware export. We send the EXACT ID list
+      // that's currently visible on screen — `dateFilteredItems` is
+      // the result of the compound (status + date) client-side
+      // filter already running in dateFilteredItems useMemo. The
+      // backend is told to export only those rows, so:
+      //
+      //   • Status="All" + Date="all"   → every shipment
+      //   • Status="Pending"            → only Pending rows
+      //   • Date="today" + Status="All" → only last-24h rows
+      //   • Date="custom" 4 days        → only that window
+      //   • Both filters combined       → AND-intersection
+      //
+      // No filters? `ids` is empty → API uses the legacy "all" path
+      // (single bulk SELECT, same behaviour as before).
+      const visibleIds = dateFilteredItems.map((s) => s.id).filter(Boolean);
+
+      const csv = await Api.exportShipmentsCsv(
+        visibleIds.length > 0 ? visibleIds : undefined,
+      );
       if (!csv || csv.trim().split("\n").length <= 1) {
         Alert.alert("No data", "You don't have any shipments to export yet.");
         return;
       }
+      // Filename pattern reflects the filter context so the user can
+      // tell apart "shipments_pending_…" from "shipments_all_…" at a
+      // glance in their Downloads folder.
       const stamp = new Date().toISOString().slice(0, 10).replace(/-/g, "");
-      const filename = `shipments_${stamp}.csv`;
+      const filterTag =
+        (status !== "All" ? `_${status.toLowerCase().replace(/\s+/g, "")}` : "") +
+        (dateFilter !== "all" ? `_${dateFilter}` : "");
+      const filename = `shipments${filterTag}_${stamp}.csv`;
 
       if (Platform.OS === "web") {
         const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
@@ -925,9 +949,6 @@ export default function Shipments() {
         document.body.appendChild(a); a.click();
         a.remove(); URL.revokeObjectURL(url);
       } else {
-        // Native: write + share. Use the legacy expo-file-system API
-        // (SDK 52+ moved EncodingType under /legacy) so this works
-        // on the current build without a conditional fork.
         // eslint-disable-next-line @typescript-eslint/no-require-imports
         const FileSystem = require("expo-file-system/legacy");
         const path = `${FileSystem.cacheDirectory || ""}${filename}`;

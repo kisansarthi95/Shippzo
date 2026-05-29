@@ -1487,11 +1487,28 @@ export const Api = {
   // helper uses the axios instance (auth interceptor included)
   // and returns the raw CSV body — the caller writes it to disk
   // and opens the OS share sheet.
-  exportShipmentsCsv: () =>
-    api.get<string>("/shipments/export/csv", {
+  //
+  // 2026-05-25 — Filter-aware: when `ids` is provided, the backend
+  // POST endpoint exports ONLY those shipment IDs (which the
+  // frontend computes after applying the on-screen status + date
+  // filters). When `ids` is omitted / empty, every shipment owned
+  // by the caller is exported (legacy GET path).
+  exportShipmentsCsv: (ids?: string[]) => {
+    if (ids && ids.length > 0) {
+      return api.post<string>(
+        "/shipments/export/csv",
+        { ids },
+        {
+          responseType: "text",
+          transformResponse: [(d: any) => (typeof d === "string" ? d : String(d || ""))],
+        } as any,
+      ).then((r) => r.data as string);
+    }
+    return api.get<string>("/shipments/export/csv", {
       responseType: "text",
       transformResponse: [(d: any) => (typeof d === "string" ? d : String(d || ""))],
-    } as any).then((r) => r.data as string),
+    } as any).then((r) => r.data as string);
+  },
 
   // Smart Paste & Pending Orders
   smartPasteParse: (text: string) =>

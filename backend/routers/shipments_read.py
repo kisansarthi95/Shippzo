@@ -36,6 +36,8 @@ import csv
 import io
 from typing import Any, Dict, List, Optional
 
+from pydantic import BaseModel
+
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import PlainTextResponse
 
@@ -168,40 +170,131 @@ def init() -> None:
 
     # =================  Shipments — export / single / bulk  ===========
 
+    # 2026-05-25 — POST overload so the frontend can post the EXACT
+    # ID list it has on screen (client-side compound filter combines
+    # status + 24h/today/week/month/custom date range — we don't want
+    # to duplicate that logic server-side and risk drift). When `ids`
+    # is empty / missing, exports EVERY shipment owned by the caller.
+    # The endpoint stays available as a GET for backward compatibility
+    # with older mobile builds — those clients receive all shipments.
+    class _ExportCsvBody(BaseModel):
+        ids: Optional[List[str]] = None
+
+    async def _build_csv_for_user(user_id: str, ids: Optional[List[str]] = None) -> str:
+        mongo_q: Dict[str, Any] = {"user_id": user_id}
+        if ids:
+            # Cap defensively at 10_000 to avoid huge $in queries.
+            mongo_q["id"] = {"$in": list(ids)[:10_000]}
+        docs = await db.shipments.find(mongo_q, {"_id": 0}).sort("created_at", -1).to_list(10_000)
+        buf = io.StringIO()
+        writer = csv.writer(buf)
+        # 2026-05-25 — Expanded column set: every field visible on the
+        # in-app Shipment Details screen is now present in the CSV,
+        # so the user gets a true backup-grade export (Token Amount,
+        # Master Order ID, Shipment ID, AWB, alt phone, email, timestamps,
+        # courier service, payment_type, notes, status sub-fields …).
+        COLUMNS = [
+            "Shipment ID",          "Tracking ID",          "Master Order ID",
+            "Order ID",             "AWB Number",
+            "Status",               "Payment Status",
+            "Customer Name",        "Phone",                "Alt Phone",
+            "Email",
+            "Address Line 1",       "Address Line 2",       "Landmark",
+            "City",                 "State",                "Pincode",        "Country",
+            "Courier",              "Courier Service",      "Courier Tracking URL",
+            "Items",                "Item Description",     "Quantity",
+            "Weight",               "Box Dimensions",
+            "Payment Mode",         "Payment Type",         "Amount",         "Token Amount",
+            "COD Balance",
+            "Discount",             "Tax",                  "Shipping Charges",
+            "Notes",                "Shipment Notes",       "Internal Notes",
+            "Source",
+            "Created At",           "Updated At",
+            "Shipped At",           "Out For Delivery At",  "Delivered At",
+            "Cancelled At",         "Returned At",
+        ]
+        writer.writerow(COLUMNS)
+
+        for d in docs:
+            items = d.get("items") or []
+            items_str = "; ".join(items) if items else d.get("item_description", "")
+            # COD balance = Amount − Token (for COD orders); else empty.
+            amount = float(d.get("amount") or 0)
+            token  = float(d.get("token_amount") or d.get("token") or 0)
+            cod_balance = ""
+            ptype = (d.get("payment_type") or d.get("payment_mode") or "").upper()
+            if ptype == "COD" or ptype == "COD/PARTIAL":
+                cod_balance = f"{max(amount - token, 0):.2f}"
+            writer.writerow([
+                d.get("id", ""),
+                d.get("tracking_id", ""),
+                d.get("master_order_id", ""),
+                d.get("order_id", ""),
+                d.get("awb_number", "") or d.get("awb", ""),
+                d.get("status", ""),
+                d.get("payment_status", ""),
+                d.get("customer_name", ""),
+                d.get("customer_phone", ""),
+                d.get("customer_alt_phone", "") or d.get("alt_phone", ""),
+                d.get("customer_email", ""),
+                d.get("address_line1", ""),
+                d.get("address_line2", ""),
+                d.get("landmark", ""),
+                d.get("city", ""),
+                d.get("state", ""),
+                d.get("pincode", ""),
+                d.get("country", "") or "India",
+                d.get("courier_name", "") or d.get("courier", ""),
+                d.get("courier_service", "") or d.get("service_type", ""),
+                d.get("courier_tracking_url", "") or d.get("tracking_url", ""),
+                items_str,
+                d.get("item_description", ""),
+                d.get("quantity", "") or d.get("qty", ""),
+                d.get("weight", ""),
+                d.get("box_dimensions", "") or d.get("dimensions", ""),
+                d.get("payment_mode", ""),
+                d.get("payment_type", ""),
+                f"{amount:.2f}" if amount else "",
+                f"{token:.2f}"  if token  else "",
+                cod_balance,
+                d.get("discount", ""),
+                d.get("tax", ""),
+                d.get("shipping_charges", "") or d.get("shipping", ""),
+                d.get("notes", ""),
+                d.get("shipment_notes", ""),
+                d.get("internal_notes", ""),
+                d.get("source", "") or d.get("created_via", ""),
+                d.get("created_at", ""),
+                d.get("updated_at", ""),
+                d.get("shipped_at", ""),
+                d.get("out_for_delivery_at", ""),
+                d.get("delivered_at", ""),
+                d.get("cancelled_at", ""),
+                d.get("returned_at", ""),
+            ])
+        return buf.getvalue()
+
     @shipments_read_router.get(
         "/shipments/export/csv", response_class=PlainTextResponse
     )
     async def export_csv(
         current_user: Dict[str, Any] = Depends(_get_current_user),
     ):
-        docs = await db.shipments.find(
-            {"user_id": current_user["id"]}, {"_id": 0},
-        ).sort("created_at", -1).to_list(5000)
-        buf = io.StringIO()
-        writer = csv.writer(buf)
-        writer.writerow([
-            "Tracking ID", "Courier", "Order ID", "Customer", "Phone",
-            "Address Line 1", "Address Line 2", "City", "State", "Pincode",
-            "Payment Mode", "Amount", "Items", "Weight",
-            "Status", "Created At", "Delivered At",
-        ])
-        for d in docs:
-            items = d.get("items") or []
-            items_str = (
-                "; ".join(items) if items else d.get("item_description", "")
-            )
-            writer.writerow([
-                d.get("tracking_id", ""), d.get("courier_name", ""),
-                d.get("order_id", ""),
-                d.get("customer_name", ""), d.get("customer_phone", ""),
-                d.get("address_line1", ""), d.get("address_line2", ""),
-                d.get("city", ""), d.get("state", ""), d.get("pincode", ""),
-                d.get("payment_mode", ""), d.get("amount", 0),
-                items_str, d.get("weight", ""),
-                d.get("status", ""), d.get("created_at", ""),
-                d.get("delivered_at", ""),
-            ])
-        return PlainTextResponse(buf.getvalue(), media_type="text/csv")
+        # Legacy GET → no filter, export everything for the user.
+        body = await _build_csv_for_user(current_user["id"], None)
+        return PlainTextResponse(body, media_type="text/csv")
+
+    @shipments_read_router.post(
+        "/shipments/export/csv", response_class=PlainTextResponse
+    )
+    async def export_csv_filtered(
+        payload: _ExportCsvBody,
+        current_user: Dict[str, Any] = Depends(_get_current_user),
+    ):
+        # POST form lets the frontend send the exact ID list that's
+        # visible on screen (after applying status + date filters).
+        body = await _build_csv_for_user(current_user["id"], payload.ids)
+        return PlainTextResponse(body, media_type="text/csv")
 
     @shipments_read_router.get("/shipments/by-tracking/{tracking_id}")
     async def get_shipment_by_tracking(
