@@ -5206,6 +5206,21 @@ try:
 except Exception as _vt_exc:
     logger.exception(f"Failed to mount video tutorials router: {_vt_exc}")
 
+# Phase-WA1 (2026-05-29) — OTP-based authentication router.
+# Provider-independent: knows only services.otp_service (generation /
+# validation) + services.otp_whatsapp (delivery dispatcher). Swapping
+# FlowConnect for WATI / Interakt / Meta-Cloud requires zero changes
+# here — only an env-var flip (WHATSAPP_OTP_PROVIDER=…).
+try:
+    from routers.otp_auth import (
+        otp_auth_router as _otp_auth_router,
+        init as _init_otp_auth_router,
+    )
+    _init_otp_auth_router()
+    app.include_router(_otp_auth_router)
+except Exception as _otp_exc:
+    logger.exception(f"Failed to mount OTP auth router: {_otp_exc}")
+
 # Phase-1 modular refactor — extracted routers. Each router is wired
 # in *after* server.py has finished defining its helpers + db, so the
 # late-binding `init()` calls inside them can `from server import …`
