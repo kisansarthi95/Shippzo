@@ -2031,6 +2031,74 @@ export const Api = {
         { category },
       )
       .then((r) => r.data),
+
+  // ─── Phase-OTP: WhatsApp-OTP authentication ──────────────────────
+  // Provider-agnostic OTP login/signup. The backend dispatches the OTP
+  // via FlowConnect today but can swap in WATI/Interakt/Meta without
+  // any frontend change. We never see the OTP value in the response —
+  // only delivery metadata + a TTL the UI uses for its countdown.
+  requestPhoneOtp: (
+    phone: string,
+    event_type:
+      | "login"
+      | "signup"
+      | "phone_verification"
+      | "auth"
+      | "password_reset"
+      | "mfa" = "auth",
+  ) =>
+    api
+      .post<{
+        ok: boolean;
+        phone: string;       // masked, safe to display
+        event_type: string;
+        expires_in: number;  // seconds — drives the resend countdown
+        delivery: {
+          channel: "whatsapp";
+          provider: string;  // "flowconnect" today, may change
+          success: boolean;
+        };
+      }>("/auth/otp/request", { phone, event_type })
+      .then((r) => r.data),
+
+  verifyPhoneOtp: (params: {
+    phone: string;
+    otp: string;
+    event_type?:
+      | "login"
+      | "signup"
+      | "phone_verification"
+      | "auth"
+      | "password_reset"
+      | "mfa";
+    name?: string;
+    shop_name?: string;
+  }) =>
+    api
+      .post<{
+        ok: boolean;
+        mode: "login" | "signup";
+        token: string;
+        user: {
+          id: string;
+          display_id?: string;
+          email: string;
+          name: string;
+          shop_name: string;
+          phone?: string;
+          is_admin?: boolean;
+          plan?: string;
+          primary_business_category?: string;
+          created_at: string;
+        };
+      }>("/auth/otp/verify", {
+        phone: params.phone,
+        otp: params.otp,
+        event_type: params.event_type || "auth",
+        name: params.name,
+        shop_name: params.shop_name,
+      })
+      .then((r) => r.data),
   putWebhookMapping: (mapping: Record<string, string>) =>
     api
       .put<{ ok: boolean; mapping: Record<string, string> }>(

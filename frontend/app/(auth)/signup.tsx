@@ -349,6 +349,22 @@ export default function SignupScreen() {
 
             <GoogleSignInButton label="Sign up with Google" />
 
+            {/* Phase-OTP — WhatsApp OTP signup entry-point. Identity is
+                proven via OTP on WhatsApp, no email/password collected
+                at this step. Email + password can be added later from
+                Settings if the user wants a backup login. */}
+            <TouchableOpacity
+              testID="signup-whatsapp-otp"
+              style={styles.otpBtn}
+              onPress={() =>
+                router.push("/(auth)/phone-otp?mode=signup" as any)
+              }
+              activeOpacity={0.85}
+            >
+              <PhIcon name="chatbubble-ellipses" size={18} color="#16A34A" />
+              <Text style={styles.otpBtnText}>Sign up with WhatsApp OTP</Text>
+            </TouchableOpacity>
+
             <View style={styles.footerRow}>
               <Text style={styles.footerText}>Already have an account?</Text>
               <TouchableOpacity onPress={() => router.push("/(auth)/login")}>
@@ -484,6 +500,21 @@ const styles = StyleSheet.create({
   },
   footerText: { color: colors.textMuted, fontSize: 13 },
   footerLink: { color: colors.primary, fontWeight: "800", fontSize: 13 },
+
+  // Phase-OTP — WhatsApp OTP secondary CTA.
+  otpBtn: {
+    marginTop: 10,
+    height: 48,
+    borderRadius: 12,
+    backgroundColor: "#F0FDF4",
+    borderWidth: 2,
+    borderColor: "#16A34A",
+    flexDirection: "row",
+    gap: 8,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  otpBtnText: { color: "#15803D", fontWeight: "800", fontSize: 14 },
   // Policy acceptance row
   policyRow: {
     flexDirection: "row", alignItems: "flex-start", gap: 10,

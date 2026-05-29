@@ -21915,3 +21915,57 @@ agent_communication:
 
         No regressions on smoke endpoints. No 5xx. Main agent can
         summarise & finish.
+
+
+frontend:
+  - task: "WhatsApp OTP Frontend wiring (Login/Signup/Welcome)"
+    implemented: true
+    working: "NA"
+    file: "/app/frontend/app/(auth)/phone-otp.tsx, /app/frontend/lib/auth.tsx, /app/frontend/lib/api.ts, /app/frontend/app/(auth)/login.tsx, /app/frontend/app/(auth)/signup.tsx, /app/frontend/app/(auth)/welcome.tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: |
+            New /(auth)/phone-otp screen built — single 2-step flow
+            (phone → OTP) that powers BOTH login-via-OTP and signup-
+            via-OTP via the backend's existing /api/auth/otp/request
+            and /api/auth/otp/verify endpoints. Mode toggle inside the
+            screen; deep-linkable via ?mode=login|signup. 
+            
+            Auth context exposes a new signInWithOtp() method that
+            wraps the verify call and persists the session identical
+            to email/password login. Existing auth flows (email/pass,
+            Google OAuth, team-member login) are untouched — this is
+            a parallel path.
+            
+            "Continue with WhatsApp OTP" CTAs added to:
+              • /(auth)/welcome.tsx — third primary action.
+              • /(auth)/login.tsx   — below Google sign-in.
+              • /(auth)/signup.tsx  — below Google sign-up.
+            
+            UI flow verified via Playwright screenshots:
+              • Step 1 renders phone input (+ name/shop for signup)
+              • POST /api/auth/otp/request fires with normalised
+                +91 prefix and event_type=login/signup
+              • Backend responds 200, WhatsApp OTP delivered via
+                FlowConnect (logs confirm)
+              • UI transitions to Step 2 with masked phone, 6-digit
+                input, 5-min countdown, resend button, edit-phone link
+            
+            Provider-agnostic — the frontend only knows the "whatsapp"
+            channel exists and reads provider name from the response
+            metadata. No FlowConnect-specific code in the UI.
+
+agent_communication:
+    -agent: "main"
+    -message: |
+        WhatsApp OTP frontend wiring is complete. New /(auth)/phone-
+        otp.tsx screen handles both login and signup via WhatsApp OTP
+        through the existing backend endpoints. Entry-points added to
+        welcome / login / signup screens. End-to-end flow verified via
+        Playwright — request OTP, backend dispatches via FlowConnect,
+        UI shows OTP entry with countdown + resend. Ready for user
+        acceptance testing on a real WhatsApp-receiving device.

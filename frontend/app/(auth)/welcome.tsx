@@ -71,6 +71,21 @@ export default function WelcomeScreen() {
           </View>
 
           <GoogleSignInButton label="Continue with Google" />
+
+          {/* Phase-OTP — WhatsApp OTP entry point. Promoted to the
+              welcome screen so users who prefer a password-less
+              experience can skip the email flow entirely. */}
+          <TouchableOpacity
+            testID="welcome-whatsapp-otp"
+            style={styles.whatsBtn}
+            onPress={() =>
+              router.push("/(auth)/phone-otp?mode=login" as any)
+            }
+            activeOpacity={0.85}
+          >
+            <PhIcon name="chatbubble-ellipses" size={18} color="#16A34A" />
+            <Text style={styles.whatsBtnText}>Continue with WhatsApp OTP</Text>
+          </TouchableOpacity>
         </View>
 
         <Text style={styles.footerNote}>
@@ -130,6 +145,18 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   secondaryBtnText: { color: colors.primary, fontWeight: "800", fontSize: 15 },
+  whatsBtn: {
+    height: 54,
+    borderRadius: 14,
+    backgroundColor: "#F0FDF4",
+    borderWidth: 2,
+    borderColor: "#16A34A",
+    flexDirection: "row",
+    gap: 10,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  whatsBtnText: { color: "#15803D", fontWeight: "800", fontSize: 15 },
   divider: {
     flexDirection: "row",
     alignItems: "center",

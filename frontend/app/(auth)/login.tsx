@@ -144,6 +144,22 @@ export default function LoginScreen() {
 
             <GoogleSignInButton label="Continue with Google" />
 
+            {/* Phase-OTP — WhatsApp OTP entry-point. Tappable below the
+                Google CTA so users who don't want to share their email/
+                password (or whose Google account isn't linked) can sign
+                in with just their phone number. */}
+            <TouchableOpacity
+              testID="login-whatsapp-otp"
+              style={styles.otpBtn}
+              onPress={() =>
+                router.push("/(auth)/phone-otp?mode=login" as any)
+              }
+              activeOpacity={0.85}
+            >
+              <PhIcon name="chatbubble-ellipses" size={18} color="#16A34A" />
+              <Text style={styles.otpBtnText}>Continue with WhatsApp OTP</Text>
+            </TouchableOpacity>
+
             {/* Phase G2 — Make the "Create an account" path clearly
                 tappable for first-touch users who default-landed on
                 login. The outlined button has been promoted from a
@@ -233,6 +249,22 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   signupBtnText: { color: colors.primary, fontWeight: "800", fontSize: 14 },
+
+  // Phase-OTP — WhatsApp OTP secondary CTA. Green accent + WhatsApp
+  // chat icon so users immediately recognise the channel.
+  otpBtn: {
+    marginTop: 10,
+    height: 48,
+    borderRadius: 12,
+    backgroundColor: "#F0FDF4",
+    borderWidth: 2,
+    borderColor: "#16A34A",
+    flexDirection: "row",
+    gap: 8,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  otpBtnText: { color: "#15803D", fontWeight: "800", fontSize: 14 },
 
   // Phase B+C — login mode toggle (owner vs team-member).
   modeRow: {

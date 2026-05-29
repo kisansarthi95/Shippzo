@@ -42,6 +42,31 @@ type AuthState = {
     phone: string, business_category?: string,
   ) => Promise<{ trial_denied: boolean; trial_denied_reason: string }>;
   signInWithGoogleSession: (sessionId: string) => Promise<void>;
+  /**
+   * Phase-OTP — WhatsApp-OTP login OR signup, returned by the backend
+   * as `mode: "login" | "signup"`. The caller doesn't need to know
+   * which one happened; the session is persisted either way and the
+   * UI just routes to the dashboard.
+   *
+   * `name` / `shop_name` are only used when the backend determines a
+   * fresh user record needs to be created (i.e. signup-via-OTP). For
+   * existing users they are ignored server-side, so it's safe to send
+   * them blank when the screen is acting as a "login" rather than a
+   * "signup" form.
+   */
+  signInWithOtp: (params: {
+    phone: string;
+    otp: string;
+    event_type?:
+      | "login"
+      | "signup"
+      | "phone_verification"
+      | "auth"
+      | "password_reset"
+      | "mfa";
+    name?: string;
+    shop_name?: string;
+  }) => Promise<{ mode: "login" | "signup" }>;
   signOut: () => Promise<void>;
   refresh: () => Promise<void>;
 };
@@ -169,6 +194,44 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     await persist(tok, userFields as User);
   }, [persist]);
 
+  /**
+   * Phase-OTP — WhatsApp OTP-based sign-in.
+   *
+   * The backend's /auth/otp/verify endpoint covers BOTH login and
+   * signup transparently: if a user already exists for the verified
+   * phone we get `mode:"login"` with their existing row; otherwise the
+   * server creates a fresh user on the spot and returns
+   * `mode:"signup"`. Either way the response shape is identical
+   * `{ token, user }` so the client just persists and routes.
+   *
+   * `name` / `shop_name` are best-effort — the server uses them only
+   * for the signup branch and silently ignores them for existing
+   * users. Sending them as empty strings on the login screen is fine.
+   */
+  const signInWithOtp = useCallback(async (params: {
+    phone: string;
+    otp: string;
+    event_type?:
+      | "login"
+      | "signup"
+      | "phone_verification"
+      | "auth"
+      | "password_reset"
+      | "mfa";
+    name?: string;
+    shop_name?: string;
+  }) => {
+    const r = await Api.verifyPhoneOtp({
+      phone: params.phone,
+      otp: params.otp,
+      event_type: params.event_type || "auth",
+      name: params.name,
+      shop_name: params.shop_name,
+    });
+    await persist(r.token, r.user as User);
+    return { mode: r.mode };
+  }, [persist]);
+
   const signOut = useCallback(async () => {
     // Phase G6 — drop the cached push token from the backend so this
     // device stops receiving notifications for the previous account.
@@ -202,7 +265,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     <AuthCtx.Provider
       value={{
         user, token, loading,
-        signIn, signInTeam, signUp, signInWithGoogleSession, signOut, refresh,
+        signIn, signInTeam, signUp, signInWithGoogleSession,
+        signInWithOtp,
+        signOut, refresh,
       }}
     >
       {children}
