@@ -1030,6 +1030,21 @@ export default function SettingsScreen() {
                       <PhIcon name="chevron-forward" size={22} color="#9CA3AF" />
                     </TouchableOpacity>
                     <TouchableOpacity
+                      testID="settings-hub-admin-wa-provider"
+                      style={styles.hubRow}
+                      onPress={() => router.push("/admin/whatsapp-provider" as any)}
+                      activeOpacity={0.6}
+                    >
+                      <View style={[styles.hubIconWrap, { backgroundColor: "#FEF3C7" }]}>
+                        <PhIcon name="cloud-upload-outline" size={22} color="#92400E" />
+                      </View>
+                      <Text style={styles.hubTitle}>WhatsApp Provider</Text>
+                      <View style={styles.adminPill}>
+                        <Text style={styles.adminPillTxt}>ADMIN</Text>
+                      </View>
+                      <PhIcon name="chevron-forward" size={22} color="#9CA3AF" />
+                    </TouchableOpacity>
+                    <TouchableOpacity
                       testID="settings-hub-admin-master-sheet"
                       style={[styles.hubRow, styles.hubRowLast]}
                       onPress={() => router.push("/admin/master-sheet" as any)}

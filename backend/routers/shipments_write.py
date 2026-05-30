@@ -416,6 +416,32 @@ def init() -> None:
                     "user-sheet status auto-sync failed (non-fatal)",
                 )
 
+            # Phase-28: WhatsApp event-trigger dispatch on stage change.
+            # Provider-side automation IDs are configured by Super Admin;
+            # this call is best-effort and NEVER raises into the API path.
+            try:
+                from routers.whatsapp_provider import (
+                    dispatch_event as _wpp_dispatch,
+                    STAGE_TO_EVENT_KEY as _STAGE_MAP,
+                    _shipment_to_context as _ship_ctx,
+                )
+                event_key = _STAGE_MAP.get(new_status)
+                if event_key:
+                    ctx = _ship_ctx(
+                        res,
+                        business_name=(current_user.get("shop_name")
+                                       or current_user.get("name") or ""),
+                        business_phone=(current_user.get("phone") or ""),
+                    )
+                    await _wpp_dispatch(
+                        db, event_key, ctx,
+                        phone=ctx.get("customer_phone") or "",
+                    )
+            except Exception:
+                _logger.exception(
+                    "WhatsApp event dispatch failed (non-fatal)",
+                )
+
         return Shipment(**strip_id(res))
 
     # =================  DELETE /shipments/{id}  =====================

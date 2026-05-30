@@ -256,6 +256,83 @@ agent_communication:
 #====================================================================================================
 # Testing Data - Main Agent and testing sub agent both should log testing data below this section
 #====================================================================================================
+## Backend Test Run: Phase-28 Dynamic WhatsApp Provider — Step 7 re-test after bug-fix (2026-05-30)
+
+backend:
+  - task: "Phase-28 WhatsApp Provider — PUT /events/{event_key} blank-name CustomField fix"
+    implemented: true
+    working: true
+    file: "/app/backend/routers/whatsapp_provider.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "testing"
+        -comment: |
+            Re-tested Step 7 of the Phase-28 plan after the bug fix
+            (removed `min_length=1` from CustomField.name so the
+            router's "drop blank-name entries" filter at line ~708
+            can run as designed). All assertions PASS against
+            https://logistics-hub-740.preview.emergentagent.com/api
+            via /app/backend_test.py.
+
+            STEP 7 — PUT /api/admin/whatsapp-provider/events/stage_shipped
+              Body sent (exactly per review):
+                automation_id="test-auto-12345"
+                selected_fields=["customer_name","customer_phone",
+                  "order_id","tracking_id","customer_name"]
+                custom_fields=[
+                  {"name":"template_lang","value":"gu"},
+                  {"name":"","value":"should_be_dropped"}]
+                variable_mapping={"customer_name":"name"}
+                enabled=true
+
+              Response: HTTP 200 (not 422). ✅
+              response.item.automation_id == "test-auto-12345"  ✅
+              response.item.selected_fields == [
+                "customer_name","customer_phone","order_id","tracking_id"]
+                (length 4, dup "customer_name" removed, order preserved)  ✅
+              response.item.custom_fields == [
+                {"name":"template_lang","value":"gu"}]
+                (length 1, blank-name entry dropped server-side)  ✅
+              response.item.variable_mapping == {"customer_name":"name"}  ✅
+
+            SANITY re-verify
+              • Step 1 — GET /config (admin) → 200, provider="flowconnect". PASS.
+              • Step 2 — GET /config (user2)  → 403 Forbidden. PASS.
+              • Step 4 — GET /events (admin) → 200, count=8; keys = [
+                  otp_login, otp_signup, stage_pending, stage_processing,
+                  stage_ready_to_ship, stage_shipped, stage_delivered,
+                  stage_feedback]. PASS.
+              • Step 10 — POST /test (stage_shipped, phone=9999999999) →
+                200 OK envelope returned. result.ok=false because the
+                test automation_id "test-auto-12345" naturally fails
+                DNS resolution against FlowConnect (sandbox value, not
+                a real automation). Endpoint contract holds: it does
+                not raise, returns {ok, result:{...}} as designed. PASS.
+
+            No regressions observed; no 5xx anywhere; sub-second
+            latency on every call. Backend logs show
+            "PUT /api/admin/whatsapp-provider/events/stage_shipped
+            HTTP/1.1 200 OK" after the fix (previous run showed 422
+            for the same body — confirms the fix is live).
+
+agent_communication:
+    -agent: "testing"
+    -message: |
+        Phase-28 WhatsApp Provider Step 7 bug-fix — VERIFIED.
+        PUT /events/stage_shipped now returns HTTP 200 (not 422) for
+        the review-request body. The blank-name CustomField is
+        silently dropped server-side, the duplicate "customer_name"
+        in selected_fields is de-duped (length=4), and
+        variable_mapping is persisted as supplied. Sanity steps 1, 2,
+        4, 10 still pass — no regression introduced by the
+        CustomField schema change.
+
+---
+
+
 ## Backend Test Run: Phase-24 Field-Control System (2026-05-17)
 
 backend:
@@ -22295,3 +22372,156 @@ agent_communication:
         Playwright. Only support-center.tsx + new faq.tsx touched
         plus the new test file — no legal pages or placeholders.
 
+
+
+## Phase-28: Dynamic WhatsApp Provider System (2026-05-30)
+
+backend:
+  - task: "Dynamic WhatsApp Provider — admin config + per-event triggers + dispatch hook"
+    implemented: true
+    working: "NA"
+    file: "/app/backend/routers/whatsapp_provider.py, /app/backend/server.py, /app/backend/routers/shipments_write.py, /app/backend/services/otp_whatsapp.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: |
+            NEW FEATURE — Phase-28: Dynamic WhatsApp Provider System.
+
+            Architecture:
+            - One Super-Admin screen drives every outbound WhatsApp
+              message in the app (auth OTPs + per-stage notifications)
+            - Provider connection (FlowConnect / WATI / Custom) stored
+              in MongoDB (`whatsapp_provider_config` collection)
+            - 8 fixed event triggers (`whatsapp_event_triggers`):
+                otp_login, otp_signup,
+                stage_pending, stage_processing, stage_ready_to_ship,
+                stage_shipped, stage_delivered, stage_feedback
+            - Each event has: enabled toggle, automation_id,
+              template_preview (reference text + Copy button),
+              selected_fields[], custom_fields[], variable_mapping{}
+            - Templates LIVE inside provider; we only push DATA
+              (variables). Copy button helps admin paste template text
+              into FlowConnect.
+
+            New API Endpoints (all admin-gated):
+              GET    /api/admin/whatsapp-provider/config
+              PUT    /api/admin/whatsapp-provider/config
+              GET    /api/admin/whatsapp-provider/events
+              GET    /api/admin/whatsapp-provider/events/{event_key}
+              PUT    /api/admin/whatsapp-provider/events/{event_key}
+              GET    /api/admin/whatsapp-provider/available-fields
+              POST   /api/admin/whatsapp-provider/test
+              GET    /api/admin/whatsapp-provider/logs
+
+            Dispatcher Hooks:
+            - Shipment stage change (routers/shipments_write.py line ~417):
+                Fires dispatch_event(db, "stage_<name>", context) when
+                status flips. Mapped via STAGE_TO_EVENT_KEY constant.
+                Best-effort; non-fatal failures.
+            - OTP send (services/otp_whatsapp.py line ~155):
+                For login/signup/phone_verification, dispatches via the
+                new event-trigger flow first, falling back to the legacy
+                FlowConnect single-endpoint provider if disabled/unset.
+
+            Idempotent boot seeding:
+            - `seed_default_events()` creates the 8 trigger docs if
+              missing + bootstraps provider_config from env vars.
+            - Verified: 8 events seeded on first start (DB confirmed).
+
+            Test Plan:
+            1. GET /api/admin/whatsapp-provider/config (with admin
+               token) returns provider doc with masked api_token.
+            2. PUT /api/admin/whatsapp-provider/config updates fields
+               + bumps updated_at.
+            3. GET /api/admin/whatsapp-provider/events returns exactly
+               8 items, in catalogue order, with correct categories
+               (2 auth + 6 stage).
+            4. PUT /api/admin/whatsapp-provider/events/{event_key}
+               updates automation_id, selected_fields, custom_fields,
+               variable_mapping.
+            5. PUT validates: unknown event_key → 404; selected_fields
+               de-duplicates.
+            6. POST /api/admin/whatsapp-provider/test fires the event
+               with safe defaults and returns a structured outcome.
+            7. Non-admin user gets 403 on every admin endpoint.
+            8. dispatch_event() handles: provider disabled, event
+               disabled, missing automation_id, missing phone — all
+               return skipped=True without raising.
+
+frontend:
+  - task: "Super-Admin WhatsApp Provider UI (one-screen control center)"
+    implemented: true
+    working: "NA"
+    file: "/app/frontend/app/admin/whatsapp-provider.tsx, /app/frontend/lib/api.ts, /app/frontend/app/(tabs)/settings.tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: |
+            New screen at /admin/whatsapp-provider.tsx (~960 lines).
+
+            Components:
+            - ProviderConfigCard (expandable):
+              provider chips (FlowConnect/WATI/Interakt/Gupshup/Custom),
+              base_url, endpoint_template, api_token (masked preview),
+              default country code, enable/disable toggle, Save button
+              (only enabled when dirty).
+            - EventCard (×8): label, sub, category icon, enable Switch,
+              automation_id pill, fields count, Configure + Test Send
+              actions (Test Send disabled until automation_id is set).
+            - EventEditorModal: automation_id field with endpoint hint,
+              Template Preview textarea + Copy-to-clipboard button,
+              field-chip multi-select for available fields, per-field
+              variable_mapping rows (App key → Provider key), unlimited
+              custom_fields list with add/remove, Save/Cancel action bar.
+            - Test Send modal: phone input, fires
+              POST /admin/whatsapp-provider/test, shows status code +
+              reason + duration.
+
+            Navigation:
+            - Added "WhatsApp Provider" admin hub row in
+              /(tabs)/settings.tsx (between WhatsApp Templates and
+              Master Sheet), only visible when user.is_admin.
+
+            Verified visually via screenshot tool (mobile viewport
+            390x844): list renders, modal opens, fields ticked,
+            mapping rows align, custom fields editor functional.
+
+metadata:
+  created_by: "main_agent"
+  version: "phase-28"
+  test_sequence: 0
+  run_ui: false
+
+test_plan:
+  current_focus:
+    - "Dynamic WhatsApp Provider — admin config + per-event triggers + dispatch hook"
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"
+
+agent_communication:
+    -agent: "main"
+    -message: |
+        Phase-28 complete: Dynamic WhatsApp Provider System built end-to-end.
+
+        Backend: New router /api/admin/whatsapp-provider/* with full
+        CRUD over provider config + 8 event triggers, dispatch hooks
+        wired into shipment-stage change AND OTP flows, idempotent
+        seed verified (8 events created in DB on first boot).
+
+        Frontend: One Super-Admin screen at /admin/whatsapp-provider
+        with provider connection editor, 8 event cards (2 auth + 6
+        stage), full event editor modal (automation_id, template
+        preview with Copy button, field multi-select, variable
+        mapping, custom fields), and a Test-Send modal that fires
+        a real provider call.
+
+        Please test backend endpoints listed in the task's status
+        history. Auth: admin@test.com / Admin@12345 (see
+        /app/memory/test_credentials.md).

@@ -153,6 +153,63 @@ async def send_otp_via_whatsapp(
         }
 
     # ── Resolve provider ─────────────────────────────────────────────
+    # Phase-28: First try the new admin-configured event-trigger system
+    # (one automation per event). If that path is unconfigured or
+    # disabled, fall back to the legacy single-endpoint provider so
+    # nothing breaks for existing deployments.
+    if event_type in ("login", "signup", "phone_verification"):
+        try:
+            from routers.whatsapp_provider import dispatch_event as _wpp_dispatch
+            event_key_map = {
+                "login":              "otp_login",
+                "signup":             "otp_signup",
+                "phone_verification": "otp_signup",
+            }
+            ev_key = event_key_map.get(str(event_type)) or "otp_login"
+            ctx = {
+                "customer_name":  user_name or "Customer",
+                "customer_phone": phone,
+                "otp":            str(otp),
+                "event_type":     str(event_type),
+                "business_name":  "Shippzo",
+                "current_stage":  "Auth",
+            }
+            t0 = datetime.now(timezone.utc).timestamp()
+            outcome = await _wpp_dispatch(db, ev_key, ctx, phone=phone)
+            if not outcome.get("skipped"):
+                duration_ms = (datetime.now(timezone.utc).timestamp() - t0) * 1000.0
+                _LOG.info(
+                    "OTP via WhatsApp-provider event=%s phone=%s success=%s",
+                    ev_key, _mask_phone(phone), outcome.get("success"),
+                )
+                # Audit row mirrors legacy shape so dashboards still work.
+                await _write_audit_row(
+                    db,
+                    provider="event_trigger:" + ev_key,
+                    phone=phone, otp=otp,
+                    event_type=str(event_type),
+                    success=bool(outcome.get("success")),
+                    status_code=outcome.get("status_code"),
+                    request_payload={"event_key": ev_key},
+                    response_body=None,
+                    error=outcome.get("reason") if not outcome.get("success") else None,
+                    duration_ms=outcome.get("duration_ms") or duration_ms,
+                )
+                return {
+                    "success":     bool(outcome.get("success")),
+                    "provider":    "event_trigger",
+                    "error":       outcome.get("reason")
+                                    if not outcome.get("success") else None,
+                    "status_code": outcome.get("status_code"),
+                    "duration_ms": outcome.get("duration_ms") or 0,
+                }
+            # else: fall through to legacy single-endpoint path below.
+        except Exception as e:
+            _LOG.warning(
+                "otp_whatsapp: event-trigger dispatch errored, falling "
+                "back to legacy provider: %s", e,
+            )
+
     provider = await get_active_provider(db)
     if provider is None:
         _LOG.warning(

@@ -5255,6 +5255,29 @@ try:
 except Exception as _faq_exc:
     logger.exception(f"Failed to mount FAQ router: {_faq_exc}")
 
+# Phase-28 — Dynamic WhatsApp Provider config: lets a Super Admin
+# control every outbound WhatsApp message (auth OTPs + per-stage
+# customer notifications) from a single UI without touching env files.
+# Mounts /api/admin/whatsapp-provider/* and seeds the 8 default
+# event-trigger docs on first boot. Idempotent.
+try:
+    from routers.whatsapp_provider import (
+        whatsapp_provider_router as _wpp_router,
+        init as _init_wpp_router,
+        seed_default_events as _seed_wpp_events,
+    )
+    _init_wpp_router()
+    app.include_router(_wpp_router)
+
+    @app.on_event("startup")
+    async def _seed_wpp_on_startup():  # noqa: D401
+        try:
+            await _seed_wpp_events(db)
+        except Exception as _seed_exc:
+            logger.warning(f"WhatsApp-provider seed skipped: {_seed_exc}")
+except Exception as _wpp_exc:
+    logger.exception(f"Failed to mount WhatsApp provider router: {_wpp_exc}")
+
 # Phase-24 modular: field-config (per-module field enable/required) admin API.
 try:
     from routers.field_configs import (

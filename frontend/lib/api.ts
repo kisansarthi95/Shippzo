@@ -2083,6 +2083,118 @@ export const Api = {
       )
       .then((r) => r.data),
 
+  // ─── Phase-28: Dynamic WhatsApp Provider (super-admin only) ──────
+  // One screen drives every outbound WhatsApp message in the app:
+  //   • Auth OTPs (login + signup)
+  //   • Each of the 6 canonical shipment stages
+  // Provider connection (FlowConnect / WATI / custom), per-event
+  // automation IDs, ticked fields and custom variable mappings are
+  // all stored in MongoDB so changes go live without a redeploy.
+  adminWppGetConfig: () =>
+    api
+      .get<{
+        config: {
+          provider: string;
+          base_url: string;
+          endpoint_template: string;
+          api_token: string;
+          api_token_masked: string;
+          enabled: boolean;
+          default_country_code: string;
+          updated_at?: string;
+        };
+      }>("/admin/whatsapp-provider/config")
+      .then((r) => r.data),
+
+  adminWppUpdateConfig: (body: {
+    provider?: string;
+    base_url?: string;
+    endpoint_template?: string;
+    api_token?: string;
+    enabled?: boolean;
+    default_country_code?: string;
+  }) =>
+    api
+      .put<{ ok: boolean; config: any }>(
+        "/admin/whatsapp-provider/config",
+        body,
+      )
+      .then((r) => r.data),
+
+  adminWppListEvents: () =>
+    api
+      .get<{
+        items: {
+          event_key: string;
+          label: string;
+          sub: string;
+          category: "auth" | "stage";
+          enabled: boolean;
+          automation_id: string;
+          template_preview: string;
+          selected_fields: string[];
+          custom_fields: { name: string; value: string }[];
+          variable_mapping: Record<string, string>;
+          updated_at?: string;
+        }[];
+        count: number;
+      }>("/admin/whatsapp-provider/events")
+      .then((r) => r.data),
+
+  adminWppUpdateEvent: (
+    event_key: string,
+    body: {
+      enabled?: boolean;
+      automation_id?: string;
+      template_preview?: string;
+      selected_fields?: string[];
+      custom_fields?: { name: string; value: string }[];
+      variable_mapping?: Record<string, string>;
+    },
+  ) =>
+    api
+      .put<{ ok: boolean; item: any }>(
+        `/admin/whatsapp-provider/events/${encodeURIComponent(event_key)}`,
+        body,
+      )
+      .then((r) => r.data),
+
+  adminWppAvailableFields: () =>
+    api
+      .get<{ fields: { key: string; label: string }[] }>(
+        "/admin/whatsapp-provider/available-fields",
+      )
+      .then((r) => r.data),
+
+  adminWppTestSend: (body: {
+    event_key: string;
+    phone: string;
+    sample_context?: Record<string, string>;
+  }) =>
+    api
+      .post<{
+        ok: boolean;
+        result: {
+          success: boolean;
+          event_key: string;
+          skipped: boolean;
+          reason?: string | null;
+          status_code?: number | null;
+          duration_ms?: number;
+        };
+      }>("/admin/whatsapp-provider/test", body)
+      .then((r) => r.data),
+
+  adminWppLogs: (event_key?: string, limit = 20) =>
+    api
+      .get<{
+        items: any[];
+        count: number;
+      }>("/admin/whatsapp-provider/logs", {
+        params: { event_key, limit },
+      })
+      .then((r) => r.data),
+
   // ─── Phase-OTP: WhatsApp-OTP authentication ──────────────────────
   // Provider-agnostic OTP login/signup. The backend dispatches the OTP
   // via FlowConnect today but can swap in WATI/Interakt/Meta without
