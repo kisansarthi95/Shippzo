@@ -108,11 +108,19 @@ except Exception as _sheet_import_err:  # pragma: no cover
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
-# FastAPI app + routers must be declared BEFORE endpoint decorators
-# (auth_router is referenced by the @auth_router.post decorators below).
+# FastAPI app + routers. The auth router used to live inline here
+# (lines 252–804 until Phase-29, 2026-05-30) — it now lives in
+# /app/backend/routers/auth.py. We still hold a reference to the
+# imported instance so the include_router(...) at the bottom of the
+# file (and the legacy debug helpers that introspect `auth_router`)
+# keep working without surgery.
 app = FastAPI()
 api_router = APIRouter(prefix="/api")
-auth_router = APIRouter(prefix="/api/auth", tags=["auth"])
+
+# Late-bound init() is called AFTER `db` and `get_current_user` are
+# defined further down. The actual `app.include_router(auth_router)`
+# happens with the rest of the route mounts.
+from routers.auth import auth_router  # noqa: E402
 
 
 # ------------- Helper: human-readable user display ID ---------------
@@ -144,6 +152,40 @@ async def _backfill_display_ids():
         did = await _next_display_id()
         await db.users.update_one({"id": u["id"]}, {"$set": {"display_id": did}})
     return missing
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Password-reset audit helpers — moved here from the inline auth router
+# block in Phase-29 (2026-05-30) because /app/backend/routers/admin.py
+# still imports _log_pwd_attempt for the admin-initiated reset path.
+# Keeping the public names stable means admin.py needs no change.
+# ─────────────────────────────────────────────────────────────────────
+_PWD_RESET_MAX_ATTEMPTS = 3
+_PWD_RESET_WINDOW_SEC   = 3600  # 1 hour
+
+
+async def _count_recent_pwd_failures(email: str) -> int:
+    cutoff = datetime.utcnow() - timedelta(seconds=_PWD_RESET_WINDOW_SEC)
+    return await db.pwd_reset_attempts.count_documents({
+        "email": email,
+        "ok":    False,
+        "at":    {"$gte": cutoff.isoformat() + "+00:00"},
+    })
+
+
+async def _log_pwd_attempt(email: str, ok: bool, reason: str = "") -> None:
+    """Audit-log every password-reset attempt (success or failure).
+
+    Used by:
+      • routers/auth.py — self-service /api/auth/forgot-password (Phase-29)
+      • routers/admin.py — admin-initiated reset path
+    """
+    await db.pwd_reset_attempts.insert_one({
+        "email":  email,
+        "ok":     bool(ok),
+        "reason": reason[:120] if reason else "",
+        "at":     datetime.utcnow().isoformat() + "+00:00",
+    })
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -247,561 +289,9 @@ async def _legacy_with_pincode_enrich_v2(schema):
     return sm_to_legacy_fields(schema), warnings
 
 
-# --- Auth endpoints ---------------------------------------------------
 
-@auth_router.post("/signup")
-async def auth_signup(payload: SignupRequest):
-    """Create a new account + seed per-user data.
+# --- Auth endpoints moved to /app/backend/routers/auth.py in Phase-29 ---
 
-    The very first signup becomes the `admin` and inherits any existing
-    pre-multi-tenant data (shipments/couriers/settings that have no
-    user_id yet). All subsequent signups get a fresh workspace with 15
-    demo shipments + 1 starter courier.
-    """
-    email = payload.email.lower().strip()
-    if await db.users.find_one({"email": email}):
-        raise HTTPException(status_code=400, detail="Email already registered")
-
-    # Phase G — primary business category. Required on the form, but
-    # we accept blank for backward-compat (older clients) and let the
-    # post-login onboarding gate catch them.
-    pbc = (payload.primary_business_category or "").strip()
-    if pbc:
-        from business_categories import is_valid_category
-        if not is_valid_category(pbc):
-            raise HTTPException(
-                status_code=400,
-                detail="Please pick a valid business category.",
-            )
-
-    # Normalise + validate phone — allow digits + optional leading "+".
-    phone_raw = (payload.phone or "").strip()
-    phone_digits = re.sub(r"\D", "", phone_raw)
-    if len(phone_digits) < 10 or len(phone_digits) > 13:
-        raise HTTPException(
-            status_code=400,
-            detail="Please enter a valid 10-digit mobile number.",
-        )
-    # Store the last 10 digits (drops country code prefixes). This makes
-    # forgot-password lookups forgiving of "+91" variations.
-    phone = phone_digits[-10:]
-
-    now = auth_utcnow_iso()
-    is_first = (await db.users.count_documents({})) == 0
-    uid = str(uuid.uuid4())
-    display_id = await _next_display_id()
-
-    # Phase-2b: Device-fingerprint anti-abuse — block repeated free
-    # trials from the same physical device. We do NOT block the signup
-    # itself (legitimate users may share devices), we just deny the new
-    # account the free trial. Admin can override later via the plan
-    # endpoints if a real customer is affected.
-    fp = (payload.device_fingerprint or "").strip()
-    deny_free_trial = False
-    if fp and not is_first:
-        try:
-            prior = await db.users.count_documents({
-                "device_fingerprint": fp,
-                # only existing free-trial / former-trial accounts count
-                # — paying customers signing up a 2nd account on their
-                # device should still get the trial.
-                "$or": [
-                    {"plan": "free_trial"},
-                    {"trial_consumed": True},
-                ],
-            })
-            if prior >= 1:
-                deny_free_trial = True
-                logger.info(
-                    f"[anti-abuse] Free trial denied for {email} — "
-                    f"device {fp[:12]}… already used by {prior} prior trial signup(s)."
-                )
-        except Exception:
-            logger.exception("device-fingerprint lookup failed (non-fatal)")
-            deny_free_trial = False
-
-    # New users start on the 7-day Free Trial (10 labels one-time) UNLESS
-    # the device already burned a trial — then they start with no plan
-    # (effectively a paywall on the first action).
-    trial_spec = await plan_start_payload(db, "free_trial")
-    if deny_free_trial:
-        # No trial: empty plan + no expiry. The plan-gate middleware
-        # treats this as "needs to subscribe" and shows upgrade prompts.
-        plan_for_user = ""
-        plan_started = ""
-        plan_expires = ""
-    else:
-        plan_for_user = trial_spec["plan"]
-        plan_started = trial_spec["plan_started_at"]
-        plan_expires = trial_spec["plan_expires_at"]
-
-    user_doc = {
-        "id": uid,
-        "display_id": display_id,
-        "email": email,
-        "password_hash": hash_password(payload.password),
-        "name": payload.name.strip(),
-        "shop_name": payload.shop_name.strip(),
-        "phone": phone,
-        "device_fingerprint": fp,         # store for future checks
-        "trial_consumed": not deny_free_trial,  # mark trial as used iff granted
-        "trial_denied_reason": "duplicate_device" if deny_free_trial else "",
-        "is_admin": is_first,
-        "plan": plan_for_user,
-        "plan_started_at": plan_started,
-        "plan_expires_at": plan_expires,
-        # Phase G — primary business category collected on the signup form.
-        # `pbc` is the validated slug (or "" if the older client omitted it).
-        # Persisted alongside a timestamp so analytics can compute "users
-        # who picked a category in the last N days" without joining audit logs.
-        "primary_business_category":    pbc,
-        "primary_business_category_at": (now if pbc else ""),
-        "created_at": now,
-    }
-    await db.users.insert_one(user_doc)
-
-    if is_first:
-        # Developer/admin account — inherits the legacy rows so nothing is orphaned.
-        claimed = await claim_legacy_data_for_admin(db, uid)
-        logger.info(f"Admin {email} claimed legacy rows: {claimed}")
-    else:
-        # Fresh user — seed starter courier only (no more demo shipments;
-        # 2026-05-25: removed the 15 sample rows so production users see
-        # a clean inbox from day 1).
-        cid = await seed_default_courier(db, uid)
-        # Trial bonus: 50 free credits so new users can try Photo OCR
-        # and AI text parsing comfortably before topping up via Wallet.
-        # 2026-05-25: bumped from 10 → 50 for a more generous starter
-        # experience.
-        try:
-            await wallet_add_credits(
-                db, uid, 50.0,
-                ctype="bonus",
-                description="Welcome bonus — 50 free credits to try AI features",
-                order_id=f"signup-bonus-{uid[:8]}",
-            )
-        except Exception:
-            logger.exception("signup bonus credit grant failed (non-fatal)")
-
-    token = make_token(uid, email)
-    out = user_public(user_doc)
-    out["_token"] = token  # stashed for the /signup response
-    response = {**user_public(user_doc), **{"token": token}}
-    if deny_free_trial:
-        # Frontend uses this to show a friendly "device already used a
-        # trial — please subscribe to continue" notice on first login.
-        response["trial_denied"] = True
-        response["trial_denied_reason"] = "duplicate_device"
-    return response  # type: ignore
-
-
-@auth_router.post("/login")
-async def auth_login(payload: LoginRequest):
-    email = payload.email.lower().strip()
-    user = await db.users.find_one({"email": email})
-    if not user or not verify_password(payload.password, user.get("password_hash", "")):
-        raise HTTPException(status_code=401, detail="Invalid email or password")
-    token = make_token(user["id"], email)
-    return {**user_public(user), "token": token}
-
-
-@auth_router.get("/me", response_model=UserPublic)
-async def auth_me(current_user: Dict[str, Any] = Depends(get_current_user)):
-    return user_public(current_user)
-
-
-@auth_router.get("/context")
-async def auth_context(current_user: Dict[str, Any] = Depends(get_current_user)):
-    """Phase B+C — returns whether the active session is an OWNER or a
-    TEAM-MEMBER and, in the latter case, which permission keys are
-    granted. The frontend reads this once at app boot and uses it to
-    drive UI gating (`<Gated permission="...">` / `usePermission`)."""
-    team = current_user.get("_team")
-    # Phase G — surface primary_business_category so the auth gate can
-    # redirect new users to /onboarding/business-category before they
-    # land on the dashboard. Empty string when not set.
-    pbc = (current_user.get("primary_business_category") or "").strip()
-    shop_name = (current_user.get("shop_name") or "").strip()
-    phone     = (current_user.get("phone") or "").strip()
-    # Phase G2 (rev-2) — `needs_profile_completion` is now a STRICT
-    # opt-in flag set only when a brand-new Google-OAuth user is
-    # created (auth_provider="google" + missing the data Google
-    # doesn't provide). It is NOT computed from empty fields, because
-    # legacy / demo accounts created before Phase G2 don't have those
-    # fields populated and shouldn't be re-interrogated on every login.
-    # Once the user submits /auth/complete-profile the flag flips to
-    # False and stays there forever — re-logins will never re-trigger
-    # the gate. Form-based email/password signups (`/auth/signup`)
-    # already collect every mandatory field up-front, so the flag is
-    # always False for that path.
-    needs_profile_completion = (not bool(team)) and bool(
-        current_user.get("needs_profile_completion")
-    )
-    return {
-        "is_team_member":  bool(team),
-        "team_member":     team if team else None,
-        "user": {
-            "id":         current_user.get("id"),
-            "name":       current_user.get("name"),
-            "email":      current_user.get("email"),
-            "is_admin":   bool(current_user.get("is_admin")),
-            "plan":       current_user.get("plan"),
-            "shop_name":  shop_name,
-            "phone":      phone,
-            "primary_business_category": pbc,
-        },
-        # Convenience flag for the splash gate so it doesn't have to
-        # reproduce the same emptiness check on every render.
-        "needs_onboarding_category": (not bool(team)) and (not pbc),
-        # Phase G2 — owner is missing one or more of the mandatory
-        # post-Google-signup fields → frontend redirects to
-        # /(auth)/complete-profile instead of the dashboard.
-        "needs_profile_completion": needs_profile_completion,
-    }
-
-
-# Phase G2 — "Complete your profile" — used by the post-Google-signup
-# gate to capture the data Google doesn't provide. POST is idempotent;
-# it can be re-called to fix typos before the user is unblocked.
-@auth_router.post("/complete-profile")
-async def complete_profile(
-    payload: CompleteProfileRequest,
-    current_user: Dict[str, Any] = Depends(get_current_user),
-):
-    if current_user.get("_team"):
-        raise HTTPException(
-            status_code=403,
-            detail="Team members inherit the owner's profile.",
-        )
-    from business_categories import is_valid_category
-    slug = (payload.primary_business_category or "").strip()
-    if not is_valid_category(slug):
-        raise HTTPException(
-            status_code=400,
-            detail="Please pick a valid business category.",
-        )
-    # Normalise the phone the same way /signup does — strip non-digits,
-    # require 10–13 digits, store the last 10 (drops country-code
-    # prefixes for forgot-password lookup parity).
-    phone_digits = re.sub(r"\D", "", payload.phone or "")
-    if len(phone_digits) < 10 or len(phone_digits) > 13:
-        raise HTTPException(
-            status_code=400,
-            detail="Please enter a valid 10-digit mobile number.",
-        )
-    phone = phone_digits[-10:]
-    shop_name = (payload.shop_name or "").strip()
-    if not shop_name:
-        raise HTTPException(
-            status_code=400,
-            detail="Business name is required.",
-        )
-    now = utcnow_iso()
-    await db.users.update_one(
-        {"id": current_user["id"]},
-        {"$set": {
-            "shop_name":                     shop_name,
-            "phone":                         phone,
-            "primary_business_category":     slug,
-            "primary_business_category_at":  now,
-            "profile_completed_at":          now,
-            # Phase G2 (rev-2) — turn the post-Google-signup gate off
-            # so re-logins land directly on the dashboard. The flag
-            # was set at /auth/google/session for new Google users
-            # only; once cleared here it's never re-raised.
-            "needs_profile_completion":      False,
-        }},
-    )
-    return {
-        "ok": True,
-        "shop_name": shop_name,
-        "phone": phone,
-        "primary_business_category": slug,
-    }
-
-
-# Phase G — "What do you sell?" onboarding category. Lives next to
-# /auth/context above so the gate logic + the writer share a single
-# review surface. POST is idempotent: re-posting the same slug is a
-# no-op; posting a different slug overwrites (so the user can change
-# their mind from Settings later).
-class BusinessCategoryPayload(BaseModel):
-    category: str
-
-
-@auth_router.get("/business-categories")
-async def list_business_categories():
-    """Public list of selectable categories (slug + label + emoji) so
-    the frontend onboarding screen always renders the latest list
-    without bundling a stale duplicate."""
-    from business_categories import BUSINESS_CATEGORIES
-    return {"categories": BUSINESS_CATEGORIES}
-
-
-@auth_router.post("/business-category")
-async def set_business_category(
-    payload: BusinessCategoryPayload,
-    current_user: Dict[str, Any] = Depends(get_current_user),
-):
-    """Persist the user's primary business category. Validated against
-    the canonical slug list so analytics aggregations (top sellers,
-    growth, shipment volume) can JOIN on the slug without worrying
-    about free-text noise."""
-    from business_categories import is_valid_category
-    slug = (payload.category or "").strip()
-    if not is_valid_category(slug):
-        raise HTTPException(
-            status_code=400,
-            detail="Unknown business category. Use one of /api/auth/business-categories.",
-        )
-    # Team-member sessions inherit the owner's category — they can't
-    # set their own. Block the write so analytics stay clean.
-    if current_user.get("_team"):
-        raise HTTPException(
-            status_code=403,
-            detail="Only the account owner can set the primary business category.",
-        )
-    await db.users.update_one(
-        {"id": current_user["id"]},
-        {"$set": {
-            "primary_business_category":     slug,
-            "primary_business_category_at":  utcnow_iso(),
-        }},
-    )
-    return {"ok": True, "category": slug}
-
-
-@auth_router.post("/logout")
-async def auth_logout():
-    # JWT is stateless; the client just drops the token. This endpoint
-    # exists so the frontend has something consistent to call (e.g. for
-    # analytics or future server-side revocation lists).
-    return {"ok": True}
-
-
-# ────────── Forgot-password (no-OTP self-service) ──────────
-#
-# Since we don't have SMTP/SMS infra yet, we gate the reset with TWO
-# factors the user must know: their email AND their registered mobile
-# number. An attacker would need BOTH pieces to forge a reset — which
-# is rare in practice for small-business SaaS. To keep this honest:
-#
-#   1. Rate-limit to 3 failed attempts per email per hour.
-#   2. Log every attempt (success or failure) for audit.
-#   3. Last-10-digit normalisation so "+91" prefixes don't trip users.
-#
-# When SMTP/SMS infra is added later, wrap this behind an OTP step
-# without breaking the API shape.
-
-_PWD_RESET_MAX_ATTEMPTS = 3
-_PWD_RESET_WINDOW_SEC = 3600  # 1 hour
-
-
-async def _count_recent_pwd_failures(email: str) -> int:
-    cutoff = datetime.utcnow() - timedelta(seconds=_PWD_RESET_WINDOW_SEC)
-    return await db.pwd_reset_attempts.count_documents({
-        "email": email,
-        "ok": False,
-        "at": {"$gte": cutoff.isoformat() + "+00:00"},
-    })
-
-
-async def _log_pwd_attempt(email: str, ok: bool, reason: str = ""):
-    await db.pwd_reset_attempts.insert_one({
-        "email": email,
-        "ok": bool(ok),
-        "reason": reason[:120] if reason else "",
-        "at": datetime.utcnow().isoformat() + "+00:00",
-    })
-
-
-@auth_router.post("/forgot-password")
-async def auth_forgot_password(payload: ForgotPasswordRequest):
-    """Reset password using registered email + phone as a 2-factor gate."""
-    email = payload.email.lower().strip()
-    phone_raw = (payload.phone or "").strip()
-    phone_digits = re.sub(r"\D", "", phone_raw)
-    if len(phone_digits) < 10:
-        raise HTTPException(
-            status_code=400,
-            detail="Please enter your registered 10-digit mobile number.",
-        )
-    phone = phone_digits[-10:]
-
-    # Rate limit first — before revealing anything.
-    failures = await _count_recent_pwd_failures(email)
-    if failures >= _PWD_RESET_MAX_ATTEMPTS:
-        raise HTTPException(
-            status_code=429,
-            detail=(
-                "Too many failed attempts. For security, please wait an hour "
-                "and try again, or contact support."
-            ),
-        )
-
-    user = await db.users.find_one({"email": email})
-    if not user:
-        await _log_pwd_attempt(email, False, "no user")
-        raise HTTPException(
-            status_code=404,
-            detail="No account with that email. Check your spelling or sign up.",
-        )
-
-    user_phone = (user.get("phone") or "").strip()
-    user_phone_digits = re.sub(r"\D", "", user_phone)[-10:] if user_phone else ""
-    # Legacy users signed up before phone was required — tell them to
-    # contact support (can't self-reset without phone on file).
-    if not user_phone_digits:
-        await _log_pwd_attempt(email, False, "legacy user, no phone on file")
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "This account was created before we started storing phone "
-                "numbers. Please contact support to reset your password."
-            ),
-        )
-    if user_phone_digits != phone:
-        await _log_pwd_attempt(email, False, "phone mismatch")
-        # Don't hint which field is wrong — just fail generically.
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "The details don't match our records. Double-check your "
-                "registered mobile number and try again."
-            ),
-        )
-
-    # Identity confirmed. Set the new password + issue a fresh token.
-    await db.users.update_one(
-        {"id": user["id"]},
-        {"$set": {
-            "password_hash": hash_password(payload.new_password),
-            "password_changed_at": datetime.utcnow().isoformat() + "+00:00",
-        }},
-    )
-    await _log_pwd_attempt(email, True, "self-reset via phone")
-    token = make_token(user["id"], email)
-    fresh = await db.users.find_one({"id": user["id"]}, {"_id": 0}) or user
-    return {**user_public(fresh), "token": token}
-
-
-# ────────── Admin-initiated password reset ──────────
-# Note: AdminResetPasswordRequest model + the actual handler now live in
-# /app/backend/routers/admin.py (Phase-2 incremental refactor). Kept
-# this comment as a breadcrumb for future code-archaeologists.
-
-
-# --- Google OAuth (Emergent hosted) -----------------------------------
-#
-# Flow (web-only via Emergent Auth):
-#   1. Frontend redirects to https://auth.emergentagent.com/?redirect=<origin>/
-#   2. After Google consent user is sent back to <origin>/#session_id=XXXX
-#   3. Frontend extracts session_id and POSTs it here.
-#   4. We exchange it server-side against Emergent's /session-data endpoint
-#      (NEVER call that from the browser — it leaks the session_token).
-#   5. If the email is new → we create a user, seed demo data (or claim legacy
-#      rows if they're the very first signup). If it exists → we log them in.
-#   6. We respond with the same JWT shape as /auth/login so the client can
-#      stash it identically.
-#
-# REMINDER: DO NOT HARDCODE THE URL, OR ADD ANY FALLBACKS OR REDIRECT URLS,
-# THIS BREAKS THE AUTH — the redirect origin is derived from window.location
-# on the client (see login.tsx).
-class GoogleSessionRequest(BaseModel):
-    session_id: str
-
-
-@auth_router.post("/google/session")
-async def auth_google_session(payload: GoogleSessionRequest):
-    if not payload.session_id or len(payload.session_id) < 8:
-        raise HTTPException(status_code=400, detail="Missing session_id")
-    # 1. Exchange session_id → user profile via Emergent Auth.
-    async with httpx.AsyncClient(timeout=15) as cli:
-        try:
-            r = await cli.get(
-                "https://demobackend.emergentagent.com/auth/v1/env/oauth/session-data",
-                headers={"X-Session-ID": payload.session_id},
-            )
-        except Exception as e:
-            raise HTTPException(status_code=502, detail=f"Emergent Auth unreachable: {e}")
-    if r.status_code != 200:
-        raise HTTPException(
-            status_code=401,
-            detail=f"Google session rejected (status {r.status_code})",
-        )
-    try:
-        prof = r.json()
-    except Exception:
-        raise HTTPException(status_code=502, detail="Invalid response from Emergent Auth")
-    email = (prof.get("email") or "").strip().lower()
-    if not email:
-        raise HTTPException(status_code=400, detail="Google profile missing email")
-
-    # 2. Find-or-create the user. Email is the unique key.
-    user = await db.users.find_one({"email": email})
-    now = auth_utcnow_iso()
-    if user is None:
-        is_first = (await db.users.count_documents({})) == 0
-        uid = str(uuid.uuid4())
-        trial_spec = await plan_start_payload(db, "free_trial")
-        user_doc = {
-            "id": uid,
-            "email": email,
-            # Social users have no password; the email/password login endpoint
-            # will reject this account (empty hash → verify_password = False).
-            "password_hash": "",
-            "name": prof.get("name") or email.split("@")[0],
-            "shop_name": "",
-            "picture": prof.get("picture") or "",
-            "auth_provider": "google",
-            # Phase G2 (rev-2) — Google only gives us email + name.
-            # Mark the user as needing the post-signup "Complete your
-            # profile" gate so they fill in Business Name / Mobile /
-            # Category before the dashboard unlocks. Cleared by
-            # /auth/complete-profile. Existing users that log in via
-            # Google a second time DO NOT pass through this branch
-            # (they're matched by email above), so the flag is never
-            # re-raised once they've completed it.
-            "needs_profile_completion": True,
-            "is_admin": is_first,
-            "plan": trial_spec["plan"],
-            "plan_started_at": trial_spec["plan_started_at"],
-            "plan_expires_at": trial_spec["plan_expires_at"],
-            "created_at": now,
-        }
-        await db.users.insert_one(user_doc)
-        if is_first:
-            claimed = await claim_legacy_data_for_admin(db, uid)
-            logger.info(f"Google-admin {email} claimed legacy rows: {claimed}")
-        else:
-            cid = await seed_default_courier(db, uid)
-            # 2026-05-25 — Removed seed_demo_shipments(); new accounts
-            # now start with a clean shipments inbox.
-            try:
-                await wallet_add_credits(
-                    db, uid, 50.0,
-                    ctype="bonus",
-                    description="Welcome bonus — 50 free credits to try AI features",
-                    order_id=f"google-bonus-{uid[:8]}",
-                )
-            except Exception:
-                logger.exception("google signup bonus failed (non-fatal)")
-        user = user_doc
-    else:
-        # Ensure the existing user is marked as Google-linked (useful later).
-        update: Dict[str, Any] = {}
-        if not user.get("auth_provider"):
-            update["auth_provider"] = "google"
-        if prof.get("picture") and prof.get("picture") != user.get("picture"):
-            update["picture"] = prof["picture"]
-        if prof.get("name") and not user.get("name"):
-            update["name"] = prof["name"]
-        if update:
-            await db.users.update_one({"id": user["id"]}, {"$set": update})
-            user.update(update)
-
-    token = make_token(user["id"], email)
-    return {**user_public(user), "token": token}
 
 
 # --- Demo data clear (per-user) ---------------------------------------
@@ -5176,6 +4666,21 @@ except Exception as _tm_exc:
     logger.exception(f"Failed to mount team_members router: {_tm_exc}")
 
 app.include_router(api_router)
+# Phase-29 — initialise the extracted auth router's handlers now that
+# `db` and `get_current_user` are defined further up. The router
+# instance was imported at the top of the file; init() binds the 10
+# route handlers onto it.
+#
+# This runs BEFORE the module-level `logger` is configured a few lines
+# below, so we use logging.getLogger() inline rather than the global
+# name. Same for any other failure during the auth-router wiring.
+try:
+    from routers.auth import init as _init_auth_router
+    _init_auth_router()
+except Exception as _auth_exc:
+    logging.getLogger("server.auth-bootstrap").exception(
+        f"Failed to initialise auth router: {_auth_exc}",
+    )
 app.include_router(auth_router)
 
 # Phase-21 — Support Tickets router (Support Center backend).

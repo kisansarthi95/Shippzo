@@ -22880,3 +22880,173 @@ agent_communication:
         addition.
 
         Main agent: backend is solid. Please summarise and finish.
+
+
+#====================================================================================================
+## Backend Test Run: Phase-29 Server.py Refactor Regression (2026-05-30)
+#====================================================================================================
+
+backend:
+  - task: "Phase-29 Auth router extraction (10 endpoints under /api/auth/*)"
+    implemented: true
+    working: true
+    file: "/app/backend/routers/auth.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "testing"
+        -comment: |
+            Comprehensive regression sweep of the auth router after extraction from
+            server.py. 18/19 assertions pass; 1 minor deviation is a pre-existing
+            Pydantic schema constraint (NOT a regression).
+
+            PASSED (18):
+              A01  POST /auth/login (admin)           → 200, token len=221
+              A01b POST /auth/login (user2)            → 200
+              A02  POST /auth/login (bad password)     → 401
+              A03  GET  /auth/me                       → 200, email=admin@test.com
+              A04  GET  /auth/context                  → 200, user/is_team_member/needs_profile_completion present
+              A05  POST /auth/signup (valid)           → 200, token returned, new email accepted
+              A06  POST /auth/signup (bogus category)  → 400 "Please pick a valid business category."
+              A08  POST /auth/signup (dup email)       → first 200, second 400 "Email already registered"
+              A09  GET  /auth/business-categories      → 200, 16 categories (no auth required)
+              A10  POST /auth/logout                   → 200 {"ok": true}
+              A11  POST /auth/forgot-password (wrong phone)   → 400 "details don't match"
+              A12  POST /auth/forgot-password (missing phone) → 422 (schema rejection)
+              A13a POST /auth/forgot-password (valid: admin email + correct phone) → 200, new token
+              A13b restore Admin@12345 via same endpoint                            → 200
+              A13c re-login admin after restore                                     → 200 (no lockout)
+              A14  POST /auth/google/session (empty session_id)  → 400
+              A15  POST /auth/google/session (bogus session_id)  → 401 (Emergent Auth rejected as expected)
+              A16  POST /auth/business-category (organic_herbal) → 200, /auth/context reflects new category
+
+            MINOR DEVIATION (not a regression):
+              A07  POST /auth/signup (phone="123") → returned 422 instead of 400.
+                   Reason: SignupRequest.phone has Pydantic Field(min_length=10, max_length=15)
+                   defined in /app/backend/auth.py line 114. Pydantic's request-body
+                   validator fires BEFORE the router handler runs, so the manual
+                   `len(phone_digits) < 10 → HTTPException(400)` check inside the route
+                   never executes. The 422 response still contains a clear
+                   "String should have at least 10 characters" detail.
+                   THIS SCHEMA CONSTRAINT PRE-DATES the Phase-29 refactor — the same
+                   SignupRequest model was imported by server.py before the extraction.
+                   No behavioral regression introduced by the router move.
+
+            ADMIN PASSWORD STATE: Confirmed restored to Admin@12345 at end of run
+            (A13c re-login succeeded). No cleanup needed.
+
+  - task: "Phase-29 Sheet-sync router extraction (4 endpoints under /api/me/sheet-sync/*)"
+    implemented: true
+    working: true
+    file: "/app/backend/routers/sheet_sync.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "testing"
+        -comment: |
+            All 4 endpoints respond identically to the pre-refactor inline version.
+
+            PASSED (4):
+              B17 GET  /api/me/sheet-sync/status (admin) → 200; shape contains
+                  connected, sheet_id, auto_sync_create/status/delete,
+                  shipment_counts, queue_pending. (connected=True, pending=0)
+              B18 PUT  /api/me/sheet-sync/toggles {auto_sync_create:true} → 200,
+                  reflected in returned status payload. Original toggles restored.
+              B19 POST /api/me/sheet-sync/run-now → 200 with
+                  {drained, backfilled, errored} keys (drained nested dict
+                  {drained,failed,examined} — consistent with pre-refactor shape).
+              B20 POST /api/me/sheet-sync/shipment/NONEXISTENT → 404 "Shipment not found"
+
+  - task: "Phase-29 Analytics router extraction (2 endpoints)"
+    implemented: true
+    working: true
+    file: "/app/backend/routers/analytics.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "testing"
+        -comment: |
+            Both endpoints return identical payload shapes to the pre-refactor
+            inline implementation. Admin gating is intact for platform / admin-only
+            views.
+
+            PASSED (5):
+              C21 GET /api/analytics/overview?range=30d&scope=mine (admin)
+                   → 200, body has kpi/shipments/trend_30d. kpi.total=34.
+              C22 GET /api/analytics/overview?range=30d&scope=platform (admin)
+                   → 200, body has admin section (users.total=34, today=3,
+                   top_users, sla_open).
+              C23 GET /api/analytics/overview?range=30d&scope=platform (user2)
+                   → 403 "Platform scope is admin-only."
+              C24 GET /api/admin/analytics/overview?range=7d (admin)
+                   → 200, body has users/shipments/trend_30d/sla.
+              C25 GET /api/admin/analytics/overview (user2)
+                   → 403 (admin-only gate intact)
+
+  - task: "Phase-29 Smoke regression (shipments, articles, faq, whatsapp-provider)"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "testing"
+        -comment: |
+            All untouched endpoints still functional after the refactor.
+
+            PASSED (4):
+              D26 GET /api/shipments (admin)                        → 200, 45 items
+              D27 GET /api/articles (no auth)                       → 200, 6 items
+              D28 GET /api/faq (no auth)                            → 200
+              D29 GET /api/admin/whatsapp-provider/config (admin)   → 200
+
+metadata:
+  test_sequence: 30
+  last_phase: "phase-29-server-refactor"
+
+test_plan:
+  current_focus: []
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"
+
+agent_communication:
+    -agent: "testing"
+    -message: |
+        Phase-29 server.py refactor regression — 31/32 PASS.
+
+        AUTH (the highest-risk extraction) is fully green: all 16 review-
+        plan scenarios behave identically to the pre-refactor implementation.
+        Admin login/logout, /me, /context, signup happy + error paths,
+        forgot-password 2FA (incl. round-trip restore of Admin@12345),
+        Google/session error paths, and business-category mutation all
+        match expected status codes and payload shapes.
+
+        SHEET-SYNC (4/4) and ANALYTICS (5/5) routers — all green, payload
+        shapes unchanged, admin gating intact.
+
+        SMOKE (4/4) — shipments/articles/faq/whatsapp-provider untouched.
+
+        ONLY DEVIATION (pre-existing, NOT a Phase-29 regression):
+          A07: POST /auth/signup with phone="123" returns 422 instead of
+          the review plan's expected 400. Root cause: SignupRequest model
+          (/app/backend/auth.py line 114) declares
+              phone: str = Field(min_length=10, max_length=15)
+          so Pydantic schema validation fires BEFORE the router code can
+          raise the 400. The 422 still carries a meaningful
+          "String should have at least 10 characters" detail. This model
+          was already in place before Phase-29 — server.py used the same
+          import. No behavioral change introduced by the refactor.
+
+        Admin password was restored to Admin@12345 inside the test (A13b
+        + verified by A13c re-login). No manual cleanup required.
+
+        Main agent: refactor is regression-clean. Please summarise and finish.
