@@ -28,6 +28,12 @@ import { usePermissions } from "../../lib/permissions";
 import { colors } from "../../lib/theme";
 import { useAuth } from "../../lib/auth";
 import Constants from "expo-constants";
+import {
+  PACKING_LANG_OPTIONS,
+  getPackingLangPref,
+  setPackingLangPref,
+  type PackingLang,
+} from "../../lib/packingSummary";
 
 // App-level metadata pulled from app.json `extra` block. Used by the
 // About / Help & Support / Legal sections so the published Play Store
@@ -252,6 +258,33 @@ export default function SettingsScreen() {
   });
   const [template, setTemplate] = useState("");
   const [copyTemplate, setCopyTemplate] = useState("");
+
+  // ─── Packing Language preference (Bulk WhatsApp Packing Summary) ──
+  // Persisted via AsyncStorage so it survives app restarts and is
+  // available to the Shipments screen the next time the user opens it
+  // without an API round-trip. Owned by this Settings card; consumed
+  // by /(tabs)/shipments.tsx → bulk-WhatsApp toolbar action.
+  const [packingLang, setPackingLang] = useState<PackingLang>("en");
+  const [packingLangSaving, setPackingLangSaving] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    getPackingLangPref().then((lang) => {
+      if (!cancelled) setPackingLang(lang);
+    });
+    return () => { cancelled = true; };
+  }, []);
+
+  const savePackingLang = useCallback(async (lang: PackingLang) => {
+    setPackingLangSaving(true);
+    try {
+      setPackingLang(lang);
+      await setPackingLangPref(lang);
+    } finally {
+      setPackingLangSaving(false);
+    }
+  }, []);
+
   const [showPreview, setShowPreview] = useState(true);
   const [etaDays, setEtaDays] = useState("7");
   const [couriers, setCouriers] = useState<Courier[]>([]);
@@ -1592,7 +1625,7 @@ export default function SettingsScreen() {
                     }}
                     style={styles.saEmailCopyBtn}
                   >
-                    <PhIcon name="copy-outline" size={14} color="#1E40AF" />
+                    <PhIcon name="copy" size={14} color="#1E40AF" />
                     <Text style={styles.saEmailCopyTxt}>Copy</Text>
                   </TouchableOpacity>
                 </View>
@@ -2835,6 +2868,51 @@ export default function SettingsScreen() {
           </>)}
 
           {section === "whatsapp" && (<>
+          {/* ─── Packing Language (Bulk WhatsApp Packing Summary) ──
+              Drives the DEFAULT language used by the WhatsApp button
+              in Shipments → multi-select toolbar. The picker there
+              still lets the user override per-batch, but this card
+              decides which option is pre-selected. Persisted to
+              AsyncStorage so the preference outlives an app cold start. */}
+          <Section title="Packing Language" icon="cube">
+            <Text style={styles.toggleSub}>
+              Default language used when generating a packing summary
+              from the Shipments → multi-select → WhatsApp action. You
+              can still switch the language per batch from the popup.
+            </Text>
+            <View style={{ marginTop: 12, gap: 8 }}>
+              {PACKING_LANG_OPTIONS.map((opt) => {
+                const active = packingLang === opt.code;
+                return (
+                  <TouchableOpacity
+                    key={opt.code}
+                    testID={`settings-packing-lang-${opt.code}`}
+                    onPress={() => savePackingLang(opt.code)}
+                    disabled={packingLangSaving}
+                    style={[
+                      stylesPackingLang.row,
+                      active && stylesPackingLang.rowActive,
+                    ]}
+                  >
+                    <View style={[
+                      stylesPackingLang.radio,
+                      active && stylesPackingLang.radioActive,
+                    ]}>
+                      {active && <View style={stylesPackingLang.radioDot} />}
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={stylesPackingLang.title}>{opt.label}</Text>
+                      <Text style={stylesPackingLang.native}>{opt.native}</Text>
+                    </View>
+                    {active && (
+                      <Text style={stylesPackingLang.activeTag}>Default</Text>
+                    )}
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+          </Section>
+
           {/* Templates */}
           <Section title="Customer Messages" icon="chatbubbles-outline">
             <View style={styles.infoBox} testID="messages-info-box">
@@ -4543,3 +4621,60 @@ const styles = StyleSheet.create({
     fontSize: 14,
   },
 });
+
+// ─── Local styles for the Packing Language card ─────────────────────
+// Lives outside the main `styles` object so it's easy to lift into
+// its own component file later if we add more languages or a search
+// box to the picker.
+const stylesPackingLang = StyleSheet.create({
+  row: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    paddingVertical: 12,
+    paddingHorizontal: 12,
+    borderRadius: 12,
+    backgroundColor: "#F8FAFC",
+    borderWidth: 1.5,
+    borderColor: "#E2E8F0",
+  },
+  rowActive: {
+    backgroundColor: "#ECFDF5",
+    borderColor: "#10B981",
+  },
+  radio: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    borderWidth: 2,
+    borderColor: "#94A3B8",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  radioActive: {
+    borderColor: "#10B981",
+  },
+  radioDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    backgroundColor: "#10B981",
+  },
+  title: {
+    fontSize: 15,
+    fontWeight: "800",
+    color: colors.text,
+  },
+  native: {
+    fontSize: 12,
+    color: colors.textMuted,
+    marginTop: 2,
+  },
+  activeTag: {
+    color: "#15803D",
+    fontWeight: "800",
+    fontSize: 11,
+    letterSpacing: 0.4,
+  },
+});
+

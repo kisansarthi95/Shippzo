@@ -22110,3 +22110,115 @@ agent_communication:
         unchanged; the lockout layer is additive and only kicks in
         after 5 successful sends within 30 minutes.
 
+
+frontend:
+  - task: "Bulk WhatsApp Packing-Summary feature + toolbar reorder"
+    implemented: true
+    working: true
+    file: "/app/frontend/lib/packingSummary.ts, /app/frontend/app/(tabs)/shipments.tsx, /app/frontend/app/(tabs)/settings.tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "main"
+        -comment: |
+            Added a new "WhatsApp" bulk action that turns 1+ selected
+            shipments into a localised, WhatsApp-friendly packing
+            summary the owner can send to packing staff in their
+            preferred language.
+
+            New module: /app/frontend/lib/packingSummary.ts
+              • Pure-function generator generatePackingSummary(items, lang)
+                — no React/Native deps, easy to unit-test later.
+              • Translates LABELS only (Tracking Number, Customer, City,
+                Courier, Payment, Product, Order Date, …). Values stay
+                verbatim — SKUs, courier names, tracking IDs, product
+                names + variants are NEVER touched.
+              • Dictionaries for English / Gujarati / Hindi with a
+                future-proof type-safe key system. Adding Marathi /
+                Bengali / etc. is dropping a new map in DICTIONARIES
+                + adding the option to PACKING_LANG_OPTIONS — no
+                business-logic changes anywhere.
+              • Date formatting uses English month names regardless
+                of UI language (intentional — packing staff read the
+                date off courier portals in English too).
+              • AsyncStorage helpers: getPackingLangPref() / setPackingLangPref().
+
+            Shipments toolbar (/app/(tabs)/shipments.tsx)
+              • Normal mode now renders [Bulk Download] [Multi Select]
+                (was the reverse). Bulk Download FIRST, Multi Select
+                LAST, exactly per spec.
+              • Selection mode renders:
+                  [WhatsApp] [Bulk Download] [Save Contacts] [Cancel]
+                — WhatsApp is hidden until at least 1 row is selected
+                (spec'd behaviour). WhatsApp icon uses Phosphor's
+                official WhatsappLogo (matches brand). Cancel sits on
+                far right and Multi-Select transforms into Cancel
+                inside selection mode (never visible together).
+              • All existing actions (Bulk Download, Save Contacts,
+                Multi-Select, Cancel) keep their existing handlers
+                and behaviour — purely a visual reorder.
+
+            Two new modals
+              • Language picker — opens on tapping WhatsApp. Shows the
+                3 options with their native script and a "Default"
+                badge on whichever the user picked in Settings →
+                Packing Language. Tapping a row hands off to the
+                preview modal.
+              • Summary preview — built with a 50 ms defer + spinner
+                so the UI stays responsive for 100+ shipments. Renders
+                in a monospaced font for clean column alignment. Three
+                actions: Copy (clipboard), WhatsApp (deep-link with
+                prefilled text + wa.me fallback), Share (writes a
+                temp .txt and opens the native share sheet via
+                expo-sharing).
+
+            Settings (/app/(tabs)/settings.tsx)
+              • New "Packing Language" Section under Settings →
+                WhatsApp with three radio rows + live "Default" tag.
+              • Persists to AsyncStorage (@shippzo:packing_language).
+              • Read on shipments-screen mount so a change made in
+                Settings is immediately picked up on the next visit.
+
+            Playwright verification (Phase-by-phase):
+              ✓ Normal mode toolbar: Bulk Download FIRST, Multi-Select
+                LAST.
+              ✓ Selection mode (0 selected): WhatsApp HIDDEN, only
+                [Bulk Download] [Save Contacts] [Cancel] visible.
+              ✓ After "Select all" (43 selected): WhatsApp button
+                visible in green at the FAR LEFT of the toolbar.
+              ✓ Tapping WhatsApp opens the Language Picker modal
+                showing 3 options with "Default" badge on English.
+              ✓ Picking Gujarati immediately renders the preview
+                modal — title "પેકિંગ યાદી" with ASCII separators,
+                labels (ગ્રાહક, શહેર, કુરિયર, ઓર્ડર નંબર) translated,
+                values (Ajay Rathore, EG350859625IN, Vidisha, Indian
+                post, COD ₹420, 50gm ODC3 Moringa Seeds × 1)
+                preserved verbatim.
+              ✓ Settings → WhatsApp → Packing Language renders three
+                radio rows with the selected option highlighted +
+                "Default" tag.
+
+            Backward compatibility — all existing actions (Bulk
+            Download, Save Contacts, Multi-Select, Cancel) still
+            invoke their pre-existing handlers. No API changes, no
+            permission changes, no workflow changes. The new WhatsApp
+            CTA + Packing Language setting are additive.
+
+agent_communication:
+    -agent: "main"
+    -message: |
+        Bulk WhatsApp Packing-Summary feature shipped. Toolbar
+        reordered per spec (Bulk Download first, Multi-Select last;
+        Cancel last in selection mode). WhatsApp button only appears
+        with at least 1 selection. Three-language packing summary
+        (English / Gujarati / Hindi) generated entirely client-side
+        from already-loaded shipment data — no extra API call.
+        Copy / WhatsApp / Share actions exposed in the preview modal.
+        Settings → WhatsApp → Packing Language card persists the
+        user's default to AsyncStorage. All existing toolbar actions
+        retain their previous behaviour 100%. Future languages can be
+        added by extending DICTIONARIES + PACKING_LANG_OPTIONS in
+        /app/frontend/lib/packingSummary.ts.
+

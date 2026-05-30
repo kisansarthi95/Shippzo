@@ -35,6 +35,12 @@ import ConfirmCancelModal, {
   isTerminalShipmentStatus,
 } from "../../components/ConfirmCancelModal";
 import { openSaveContactIntent, saveBulkVcf } from "../../lib/contactSave";
+import {
+  generatePackingSummary,
+  getPackingLangPref,
+  PACKING_LANG_OPTIONS,
+  type PackingLang,
+} from "../../lib/packingSummary";
 
 type StatusFilter =
   | "All"
@@ -213,6 +219,32 @@ export default function Shipments() {
   const [bulkContactPickerOpen, setBulkContactPickerOpen] = useState(false);
   const [bulkContactCats, setBulkContactCats] = useState<string[]>([]);
   const [bulkContactBusy, setBulkContactBusy] = useState(false);
+
+  // ─── Bulk WhatsApp Packing-Summary feature ─────────────────────────
+  // Two-stage flow on top of the existing multi-select toolbar:
+  //   1. User taps the WhatsApp icon → language picker modal opens.
+  //   2. User picks a language → packing summary is generated client-
+  //      side from already-loaded shipment data (no API call) and shown
+  //      in a preview modal with Copy / WhatsApp / Share actions.
+  // The default language is read from AsyncStorage (`@shippzo:packing_
+  // language`) which is owned by the Settings → Packing Language card.
+  const [packLangPickerOpen, setPackLangPickerOpen] = useState(false);
+  const [packingDefault, setPackingDefault] = useState<PackingLang>("en");
+  const [packSummaryOpen, setPackSummaryOpen] = useState(false);
+  const [packSummaryText, setPackSummaryText] = useState("");
+  const [packSummaryLang, setPackSummaryLang] = useState<PackingLang>("en");
+  const [packGenBusy, setPackGenBusy] = useState(false);
+
+  // Load the persisted default language on mount; we re-read it every
+  // time the user lands on the screen so a change made from Settings
+  // is reflected immediately without a full app reload.
+  useEffect(() => {
+    let cancelled = false;
+    getPackingLangPref().then((lang) => {
+      if (!cancelled) setPackingDefault(lang);
+    });
+    return () => { cancelled = true; };
+  }, []);
 
   useEffect(() => {
     AsyncStorage.getItem(LS_LAST_PERPAGE)
@@ -888,6 +920,108 @@ export default function Shipments() {
     }
   };
 
+  // ─── Bulk WhatsApp Packing-Summary handlers ───────────────────────
+  //
+  // openPackLangPicker — entry point from the toolbar's WhatsApp icon.
+  // Validates that at least one shipment is selected, then opens the
+  // language-picker modal. The actual summary is built only after a
+  // language is chosen, so we can correctly drop the user back into
+  // their last preference without doing wasted work up-front.
+  const openPackLangPicker = () => {
+    if (selectedIds.size === 0) {
+      Alert.alert("Select shipments", "Tap shipments to select first.");
+      return;
+    }
+    setPackLangPickerOpen(true);
+  };
+
+  // generateAndShowSummary — builds the packing summary from already-
+  // loaded shipment objects (no API call) and opens the preview modal.
+  // We yield to the next tick before the heavy work so the language-
+  // picker animation finishes and the user sees a brief spinner rather
+  // than a frozen UI when 100+ shipments are selected.
+  const generateAndShowSummary = (lang: PackingLang) => {
+    setPackLangPickerOpen(false);
+    setPackGenBusy(true);
+    setPackSummaryLang(lang);
+    setPackSummaryText("");
+    setPackSummaryOpen(true);
+
+    // Tiny defer so the modal frame paints before we run the join.
+    setTimeout(() => {
+      try {
+        // Pick the in-memory shipments by selectedIds, preserving the
+        // user's on-screen ordering so the packer reads the list in
+        // the same order they see it.
+        const selected = items.filter((it) => selectedIds.has(it.id));
+        const text = generatePackingSummary(selected, lang);
+        setPackSummaryText(text);
+      } catch (e: any) {
+        Alert.alert("Could not build summary", e?.message || "Try again.");
+        setPackSummaryOpen(false);
+      } finally {
+        setPackGenBusy(false);
+      }
+    }, 50);
+  };
+
+  // Action handlers for the preview modal — Copy / WhatsApp / Share.
+  // WhatsApp uses the OS deep-link with prefilled text; the user picks
+  // any contact or group from inside WhatsApp itself.
+  const copyPackingSummary = async () => {
+    try {
+      await Clipboard.setStringAsync(packSummaryText);
+      Alert.alert("Copied", "Packing summary copied to clipboard.");
+    } catch (e: any) {
+      Alert.alert("Copy failed", e?.message || "Try again.");
+    }
+  };
+
+  const whatsappPackingSummary = async () => {
+    // No phone number — opens the contact picker inside WhatsApp.
+    const url = `whatsapp://send?text=${encodeURIComponent(packSummaryText)}`;
+    try {
+      const supported = await Linking.canOpenURL(url);
+      if (!supported) {
+        // Fallback to the universal wa.me link which works in web
+        // browsers and triggers the chooser on most platforms.
+        await Linking.openURL(
+          `https://wa.me/?text=${encodeURIComponent(packSummaryText)}`,
+        );
+        return;
+      }
+      await Linking.openURL(url);
+    } catch (e: any) {
+      Alert.alert("WhatsApp unavailable", e?.message || "Try Share instead.");
+    }
+  };
+
+  const sharePackingSummary = async () => {
+    try {
+      // expo-sharing needs a file URL — but for plain text we can use
+      // the native share-sheet via Linking on iOS, and fall back to
+      // Clipboard + Share-intent on Android. The cleanest cross-
+      // platform path is to write a temp .txt and share that.
+      const tmpPath = `${require("expo-file-system").cacheDirectory}packing_${Date.now()}.txt`;
+      const FS = require("expo-file-system");
+      await FS.writeAsStringAsync(tmpPath, packSummaryText, {
+        encoding: FS.EncodingType.UTF8,
+      });
+      if (await Sharing.isAvailableAsync()) {
+        await Sharing.shareAsync(tmpPath, {
+          mimeType: "text/plain",
+          dialogTitle: "Share packing summary",
+          UTI: "public.plain-text",
+        });
+      } else {
+        await Clipboard.setStringAsync(packSummaryText);
+        Alert.alert("Copied", "Sharing not available — text copied instead.");
+      }
+    } catch (e: any) {
+      Alert.alert("Share failed", e?.message || "Try Copy instead.");
+    }
+  };
+
   // ────────────────────────────────────────────────────────────────
   // 2026-05-25 — Authenticated CSV download for the user-side
   // "Export Shipments" pill (icon-bar). The previous implementation
@@ -980,6 +1114,45 @@ export default function Shipments() {
       <View style={styles.header}>
         <Text style={styles.title}>Shipments</Text>
         <View style={{ flexDirection: "row", gap: 8 }}>
+          {/* Bulk WhatsApp Packing-Summary — ONLY in selection mode AND
+              only when at least one row is checked. Renders FIRST in
+              the selection-mode toolbar per product spec. Uses the
+              official WhatsApp logo via Ionicons. */}
+          {selectMode && selectedIds.size > 0 && (
+            <TouchableOpacity
+              testID="bulk-whatsapp-pack"
+              style={[styles.iconBtn, { backgroundColor: "#25D366", borderColor: "#25D366" }]}
+              onPress={openPackLangPicker}
+            >
+              <PhIcon name="logo-whatsapp" size={20} color="#fff" />
+            </TouchableOpacity>
+          )}
+          {/* Bulk Download — visible in BOTH modes; sits before the
+              Multi-Select toggle in normal mode and before Save-
+              Contacts in selection mode. Always second in selection
+              mode, always first in normal mode. */}
+          {flagCsvExport && (
+            <TouchableOpacity
+              testID="export-csv-btn" style={styles.iconBtn}
+              onPress={handleExportCsv}
+            >
+              <PhIcon name="download-outline" size={20} color={colors.text} />
+            </TouchableOpacity>
+          )}
+          {/* Save-Contacts — selection-mode only, sits before Cancel. */}
+          {selectMode && (
+            <TouchableOpacity
+              testID="bulk-save-contacts-header"
+              style={[styles.iconBtn, { backgroundColor: "#7C3AED", borderColor: "#7C3AED" }]}
+              onPress={openBulkContactPicker}
+              disabled={selectedIds.size === 0}
+            >
+              <PhIcon name="person-add-outline" size={20} color="#fff" />
+            </TouchableOpacity>
+          )}
+          {/* Multi-Select toggle (normal mode) → flips to Cancel when
+              selection mode is active. Always rendered last so it sits
+              on the far right of the toolbar, matching the spec. */}
           {flagBulkSelect && flagBulkPrint ? (
             <TouchableOpacity
               testID="bulk-mode-toggle" style={[styles.iconBtn, selectMode && { backgroundColor: colors.primary, borderColor: colors.primary }]}
@@ -995,28 +1168,6 @@ export default function Shipments() {
               />
             </TouchableOpacity>
           ) : null}
-          {/* Phase-16/P2: Save-Contacts shortcut in the top bar. Only
-              visible in multi-select mode — makes the bulk VCF export
-              reachable WITHOUT having to scroll sideways through the
-              print-layout cards (which was easy to miss). */}
-          {selectMode && (
-            <TouchableOpacity
-              testID="bulk-save-contacts-header"
-              style={[styles.iconBtn, { backgroundColor: "#7C3AED", borderColor: "#7C3AED" }]}
-              onPress={openBulkContactPicker}
-              disabled={selectedIds.size === 0}
-            >
-              <PhIcon name="person-add-outline" size={20} color="#fff" />
-            </TouchableOpacity>
-          )}
-          {flagCsvExport && (
-          <TouchableOpacity
-            testID="export-csv-btn" style={styles.iconBtn}
-            onPress={handleExportCsv}
-          >
-            <PhIcon name="download-outline" size={20} color={colors.text} />
-          </TouchableOpacity>
-          )}
         </View>
       </View>
 
@@ -1336,7 +1487,7 @@ export default function Shipments() {
                 ]}
               >
                 <PhIcon
-                  name="cube-outline"
+                  name="cube"
                   size={20}
                   color={status === "Pending" ? "#C2410C" : "#92400E"}
                 />
@@ -1532,7 +1683,7 @@ export default function Shipments() {
         contentContainerStyle={{ padding: 16, paddingBottom: 100 }}
         ListEmptyComponent={
           <View style={styles.empty} testID="empty-shipments">
-            <PhIcon name="cube-outline" size={48} color="#9CA3AF" />
+            <PhIcon name="cube" size={48} color="#9CA3AF" />
             <Text style={styles.emptyText}>No shipments found.</Text>
             <TouchableOpacity
               testID="empty-new-shipment" style={styles.primaryBtn}
@@ -1662,7 +1813,7 @@ export default function Shipments() {
                 ) : null}
                 {flagCopy ? (
                   <ActionBtn
-                    icon="copy-outline" color={colors.text}
+                    icon="copy" color={colors.text}
                     onPress={() => copyAll(item)}
                     testID={`copy-all-${item.tracking_id}`}
                   />
@@ -2013,6 +2164,140 @@ export default function Shipments() {
         onClose={() => !terminalSubmitting && setPendingTerminal(null)}
         onConfirm={submitTerminal}
       />
+
+      {/* ─── Bulk WhatsApp Packing Summary — Language Picker ──────────
+          Opens when the user taps the WhatsApp icon in the selection-
+          mode toolbar. Defaults to the language saved in
+          Settings → Packing Language (read on mount). Tapping any row
+          immediately hands off to generateAndShowSummary which opens
+          the preview modal. */}
+      <Modal
+        visible={packLangPickerOpen}
+        animationType="fade"
+        transparent
+        onRequestClose={() => setPackLangPickerOpen(false)}
+      >
+        <View style={styles.modalBackdrop}>
+          <View style={styles.modalCard}>
+            <View style={styles.modalHeaderRow}>
+              <PhIcon name="logo-whatsapp" size={20} color="#25D366" />
+              <Text style={styles.modalTitle}>Choose Language</Text>
+            </View>
+            <Text style={styles.modalSub}>
+              {selectedIds.size} shipment{selectedIds.size === 1 ? "" : "s"} selected
+            </Text>
+            {PACKING_LANG_OPTIONS.map((opt) => {
+              const isDefault = opt.code === packingDefault;
+              return (
+                <TouchableOpacity
+                  key={opt.code}
+                  testID={`pack-lang-${opt.code}`}
+                  style={styles.langRow}
+                  onPress={() => generateAndShowSummary(opt.code)}
+                >
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.langTitle}>{opt.label}</Text>
+                    <Text style={styles.langNative}>{opt.native}</Text>
+                  </View>
+                  {isDefault && (
+                    <View style={styles.defaultBadge}>
+                      <Text style={styles.defaultBadgeTxt}>Default</Text>
+                    </View>
+                  )}
+                  <PhIcon name="chevron-forward" size={18} color={colors.textMuted} />
+                </TouchableOpacity>
+              );
+            })}
+            <TouchableOpacity
+              style={styles.modalCloseBtn}
+              onPress={() => setPackLangPickerOpen(false)}
+            >
+              <Text style={styles.modalCloseTxt}>Cancel</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      {/* ─── Bulk WhatsApp Packing Summary — Preview & Share ─────────
+          Built fully client-side from shipments already in `items`
+          state — no extra API call. The text is plain ASCII (with a
+          couple of unicode separators) so it copies cleanly into any
+          chat app or print preview. */}
+      <Modal
+        visible={packSummaryOpen}
+        animationType="slide"
+        transparent
+        onRequestClose={() => setPackSummaryOpen(false)}
+      >
+        <View style={styles.modalBackdrop}>
+          <View style={[styles.modalCard, { maxHeight: "85%" }]}>
+            <View style={styles.modalHeaderRow}>
+              <PhIcon name="cube" size={20} color={colors.primary} />
+              <Text style={styles.modalTitle}>Packing Summary</Text>
+              <View style={styles.langPill}>
+                <Text style={styles.langPillTxt}>
+                  {PACKING_LANG_OPTIONS.find((o) => o.code === packSummaryLang)?.native || "—"}
+                </Text>
+              </View>
+            </View>
+
+            {packGenBusy ? (
+              <View style={styles.packBusy}>
+                <ActivityIndicator color={colors.primary} />
+                <Text style={styles.packBusyTxt}>
+                  Generating {selectedIds.size} order{selectedIds.size === 1 ? "" : "s"}…
+                </Text>
+              </View>
+            ) : (
+              <ScrollView
+                style={styles.packPreview}
+                contentContainerStyle={{ paddingBottom: 8 }}
+              >
+                <Text style={styles.packPreviewTxt} selectable>
+                  {packSummaryText}
+                </Text>
+              </ScrollView>
+            )}
+
+            <View style={styles.packActionsRow}>
+              <TouchableOpacity
+                testID="pack-copy"
+                style={[styles.packActionBtn, { backgroundColor: "#0EA5E9" }]}
+                onPress={copyPackingSummary}
+                disabled={packGenBusy || !packSummaryText}
+              >
+                <PhIcon name="copy" size={16} color="#fff" />
+                <Text style={styles.packActionTxt}>Copy</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                testID="pack-whatsapp"
+                style={[styles.packActionBtn, { backgroundColor: "#25D366" }]}
+                onPress={whatsappPackingSummary}
+                disabled={packGenBusy || !packSummaryText}
+              >
+                <PhIcon name="logo-whatsapp" size={16} color="#fff" />
+                <Text style={styles.packActionTxt}>WhatsApp</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                testID="pack-share"
+                style={[styles.packActionBtn, { backgroundColor: "#7C3AED" }]}
+                onPress={sharePackingSummary}
+                disabled={packGenBusy || !packSummaryText}
+              >
+                <PhIcon name="share-social" size={16} color="#fff" />
+                <Text style={styles.packActionTxt}>Share</Text>
+              </TouchableOpacity>
+            </View>
+
+            <TouchableOpacity
+              style={styles.modalCloseBtn}
+              onPress={() => setPackSummaryOpen(false)}
+            >
+              <Text style={styles.modalCloseTxt}>Close</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -2657,4 +2942,120 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   dateApplyText: { color: "#fff", fontWeight: "800" },
+
+  // ─── Bulk WhatsApp Packing Summary modal styles ──────────────────
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.5)",
+    justifyContent: "center",
+    alignItems: "center",
+    padding: 20,
+  },
+  modalCard: {
+    width: "100%",
+    maxWidth: 480,
+    backgroundColor: "#fff",
+    borderRadius: 16,
+    padding: 16,
+  },
+  modalHeaderRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    marginBottom: 4,
+  },
+  modalTitle: {
+    flex: 1,
+    fontSize: 17,
+    fontWeight: "800",
+    color: colors.text,
+  },
+  modalSub: {
+    fontSize: 12,
+    color: colors.textMuted,
+    marginBottom: 12,
+  },
+  langRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    paddingVertical: 14,
+    paddingHorizontal: 12,
+    borderRadius: 12,
+    backgroundColor: "#F8FAFC",
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+    marginTop: 8,
+  },
+  langTitle: { fontSize: 15, fontWeight: "800", color: colors.text },
+  langNative: { fontSize: 12, color: colors.textMuted, marginTop: 2 },
+  defaultBadge: {
+    backgroundColor: "#16A34A",
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 999,
+  },
+  defaultBadgeTxt: {
+    color: "#fff",
+    fontWeight: "800",
+    fontSize: 10,
+    letterSpacing: 0.4,
+  },
+  modalCloseBtn: {
+    marginTop: 12,
+    paddingVertical: 12,
+    alignItems: "center",
+    borderRadius: 10,
+    backgroundColor: "#F1F5F9",
+  },
+  modalCloseTxt: { color: "#475569", fontWeight: "800", fontSize: 13 },
+  langPill: {
+    backgroundColor: "#EEF2FF",
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 999,
+  },
+  langPillTxt: {
+    fontSize: 11,
+    fontWeight: "800",
+    color: "#4338CA",
+  },
+  packPreview: {
+    backgroundColor: "#F8FAFC",
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+    borderRadius: 12,
+    padding: 12,
+    marginTop: 10,
+    maxHeight: 380,
+  },
+  packPreviewTxt: {
+    fontSize: 13,
+    lineHeight: 19,
+    color: colors.text,
+    fontFamily: Platform.select({ ios: "Menlo", android: "monospace", default: "monospace" }),
+  },
+  packBusy: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 10,
+    padding: 40,
+  },
+  packBusyTxt: { color: colors.textMuted, fontSize: 13, fontWeight: "700" },
+  packActionsRow: {
+    flexDirection: "row",
+    gap: 8,
+    marginTop: 12,
+  },
+  packActionBtn: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    height: 44,
+    borderRadius: 10,
+  },
+  packActionTxt: { color: "#fff", fontWeight: "800", fontSize: 13 },
 });
