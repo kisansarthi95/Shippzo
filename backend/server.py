@@ -5662,6 +5662,11 @@ _AUTH_EXEMPT_PREFIXES = (
     # education touchpoint; admin CRUD endpoints live under
     # /api/admin/faq which remains bearer-gated.
     "/api/faq",
+    # Phase-29 — Support Articles public-read endpoints.
+    # /api/articles (list) and /api/articles/{id} (detail) are reachable
+    # without a bearer token; the admin CRUD lives under
+    # /api/admin/articles and stays bearer-gated.
+    "/api/articles",
 )
 # Phase 2.5 — Excel report endpoints accept ?token= query param instead
 # of header (browser cannot attach Authorization to <a href> downloads).

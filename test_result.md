@@ -22628,11 +22628,11 @@ frontend:
 backend:
   - task: "Phase-29 Support Articles — public + admin CRUD with visibility toggle"
     implemented: true
-    working: false
+    working: true
     file: "/app/backend/routers/articles.py, /app/backend/server.py"
-    stuck_count: 1
+    stuck_count: 0
     priority: "high"
-    needs_retesting: true
+    needs_retesting: false
     status_history:
         -working: false
         -agent: "testing"
@@ -22781,3 +22781,102 @@ test_plan:
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
+
+
+---
+
+## Backend Test Run: Phase-29 Support Articles — RE-TEST after auth-exempt fix (2026-05-30)
+
+backend:
+  - task: "Phase-29 Support Articles — public + admin CRUD (after _AUTH_EXEMPT_PREFIXES fix)"
+    implemented: true
+    working: true
+    file: "/app/backend/routers/articles.py, /app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "testing"
+        -comment: |
+            41/41 assertions PASSED via /app/backend_test.py against
+            https://logistics-hub-740.preview.emergentagent.com/api.
+
+            Fix verified at /app/backend/server.py line 5669:
+              "/api/articles"  is now part of _AUTH_EXEMPT_PREFIXES.
+            The string-prefix check correctly covers both
+            /api/articles (list) and /api/articles/{id} (detail) and
+            does NOT collide with /api/admin/articles (which still
+            requires bearer + admin role).
+
+            DETAILED RESULTS (review-order):
+
+            1) GET /api/articles (no auth)             → 200 ✅ (was 401)
+               • items.length == 6 ✅
+               • required fields present ✅
+               • sort_order ints, is_visible all True ✅
+               • body NOT in list payload ✅
+               • ordered by sort_order asc [10,20,30,40,50,60] ✅
+            2) GET /api/articles/label (no auth)       → 200 ✅ (was 401)
+               • body field present, len=710 chars ✅
+            3) GET /api/articles/INVALID_ID (no auth)  → 404 ✅ (was 401)
+            4) GET /api/admin/articles (non-admin)     → 403 ✅
+               (still admin-gated — no regression)
+            5) GET /api/admin/articles (admin)         → 200 ✅
+               • items.length == 6, visible=6, hidden=0 ✅
+            6) POST /api/admin/articles (admin)        → 200 ✅
+               • id starts with "admin-" (admin-ae281cdbcc) ✅
+               • is_visible == True by default ✅
+            7) PATCH {is_visible:false} (admin)        → 200 ✅
+            8) GET /api/articles/{NEW_ID} (hidden, no auth)
+                                                       → 404 ✅ (was 401)
+               (middleware now lets request through; router returns
+                404 for hidden article — correct UX)
+            9) PATCH {is_visible:true, title:"Updated"}→ 200 ✅
+            10) GET /api/articles/{NEW_ID} (no auth)   → 200 ✅ (was 401)
+                • title == "Updated test article" ✅
+            11) GET /api/admin/articles/{NEW_ID}       → 200 ✅
+                • body present ✅
+            12) POST /api/admin/articles (non-admin)   → 403 ✅
+            13) PATCH /api/admin/articles/{NEW_ID}     → 403 ✅
+            14) DELETE /api/admin/articles/{NEW_ID}    → 403 ✅
+            15) DELETE /api/admin/articles/{NEW_ID}    → 200 ✅
+                • deleted == 1 ✅
+                • GET /api/articles/{NEW_ID} after     → 404 ✅ (was 401)
+            16) DELETE non-existent id (admin)         → 404 ✅
+            17) POST empty body (admin)                → 422 ✅
+                (Pydantic missing-field detail for title & body)
+            18) GET /api/articles sanity (post-cleanup)→ 200 ✅
+                • items.length == 6 (default seed intact) ✅
+
+            ADMIN GUARD REGRESSION CHECK — confirmed clean:
+              • /api/admin/articles still requires Bearer token
+              • Non-admin token → 403 Forbidden on GET/POST/PATCH/DELETE
+              • Admin token → 200 on all CRUD operations
+              • Visibility toggle still respected on public detail
+              • Seed of 6 default articles intact at end of test
+
+            Backend logs confirm the 200/404 codes (not 401) on
+            every public /api/articles call during this run.
+
+agent_communication:
+    -agent: "testing"
+    -message: |
+        Phase-29 Support Articles backend — FULLY GREEN after fix.
+        41/41 assertions passed across all 18 review-plan steps.
+
+        Critical previously-failing steps now PASS:
+          • Step 1 GET /api/articles (no auth) → 200 (was 401)
+          • Step 2 GET /api/articles/label (no auth) → 200 (was 401)
+          • Step 3 GET /api/articles/INVALID_ID (no auth) → 404 (was 401)
+          • Step 8 hidden article public GET → 404 (was 401)
+          • Step 10 re-enabled article public GET → 200 (was 401)
+          • Step 15 follow-up GET after delete → 404 (was 401)
+          • Step 18 sanity recheck → 200 with 6 default articles
+
+        Admin guard regression check: all /api/admin/articles*
+        endpoints still 403 for non-admin tokens and 200 for the
+        admin token. No regression introduced by the auth-exempt
+        addition.
+
+        Main agent: backend is solid. Please summarise and finish.
