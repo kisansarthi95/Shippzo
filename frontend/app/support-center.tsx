@@ -31,7 +31,7 @@
  * backend lands.
  */
 
-import React, { useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Linking,
   Platform,
@@ -50,6 +50,7 @@ import Constants from "expo-constants";
 import PhIcon from "../components/PhIcon";
 import { colors } from "../lib/theme";
 import { useFeatureFlag } from "../lib/feature_flags";
+import { Api } from "../lib/api";
 
 // App branding inline constants — mirror the lookup used in
 // settings.tsx so the support-center stays consistent if/when the
@@ -59,31 +60,77 @@ const APP_NAME: string = Constants.expoConfig?.name || "Shippzo";
 const SUPPORT_EMAIL: string =
   APP_EXTRA.supportEmail || "shippzo.support@gmail.com";
 
-// ───── Static content (replace with backend feed when available) ────
-const POPULAR_ARTICLES: Array<{ id: string; title: string; url?: string }> = [
-  { id: "label",     title: "How to generate shipping label?" },
-  { id: "recharge",  title: "How to recharge wallet?" },
-  { id: "import",    title: "How to import orders from Excel?" },
-  { id: "whatsapp",  title: "How to connect WhatsApp?" },
-  { id: "sheet",     title: "How to connect Google Sheet?" },
-  { id: "courier",   title: "How to add a courier partner?" },
-];
+// ───── Article type — mirrors the public /api/articles list shape ───
+// `body` is intentionally NOT included here; the list endpoint omits
+// it to keep the payload small. The detail screen (/support-center/
+// articles/[id]) fetches the full body when an article is opened.
+type ArticleRow = {
+  id:         string;
+  title:      string;
+  summary:    string;
+  icon:       string;
+  category:   string;
+  sort_order: number;
+  is_visible: boolean;
+};
 
 export default function SupportCenter() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const [query, setQuery] = useState<string>("");
+  const [query, setQuery]       = useState<string>("");
+  const [articles, setArticles] = useState<ArticleRow[]>([]);
+  const [articlesLoading, setArticlesLoading] = useState<boolean>(true);
+  const [articlesError, setArticlesError]     = useState<string>("");
+
+  // ── Fetch the article list once when the screen mounts. The
+  // backend keeps `body` out of this list response so the payload
+  // stays small even with dozens of articles. The detail screen
+  // fetches the full body on tap.
+  useEffect(() => {
+    let mounted = true;
+    (async () => {
+      try {
+        const r = await Api.listArticles();
+        if (!mounted) return;
+        setArticles(r.items || []);
+      } catch (e: any) {
+        if (!mounted) return;
+        setArticlesError(
+          e?.response?.data?.detail || e?.message || "Could not load articles",
+        );
+      } finally {
+        if (mounted) setArticlesLoading(false);
+      }
+    })();
+    return () => { mounted = false; };
+  }, []);
 
   // Lightweight client-side filter for the Popular Articles list.
-  // Server-side full-text search is a TODO — when the KB is ready,
-  // swap this for a debounced `Api.searchArticles(query)` call.
-  const articles = useMemo(() => {
+  // Server-side full-text search can plug in later via
+  // `Api.searchArticles(query)` without changing this screen.
+  const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
-    if (!q) return POPULAR_ARTICLES;
-    return POPULAR_ARTICLES.filter((a) =>
-      a.title.toLowerCase().includes(q),
+    if (!q) return articles;
+    return articles.filter((a) =>
+      a.title.toLowerCase().includes(q)
+        || (a.summary || "").toLowerCase().includes(q)
+        || (a.category || "").toLowerCase().includes(q),
     );
-  }, [query]);
+  }, [articles, query]);
+
+  // ── In-app article navigation. Replaces the previous
+  // `Linking.openURL("https://shippzo.com/help")` redirects so every
+  // article tap stays inside the app. The reader lives at
+  // /support-center/articles/[id] and the index ("View All") at
+  // /support-center/articles.
+  const openArticle = useCallback(
+    (id: string) => router.push(`/support-center/articles/${id}` as any),
+    [router],
+  );
+  const openArticleList = useCallback(
+    () => router.push("/support-center/articles" as any),
+    [router],
+  );
 
   // Centralised "fall back to email" helper kept for completeness —
   // not used directly anymore (Create Request + My Requests now route
@@ -202,37 +249,45 @@ export default function SupportCenter() {
         {/* ─── 4. Popular Articles list ───────────────────────── */}
         <View style={styles.articlesHeader}>
           <Text style={styles.articlesTitle}>Popular Articles</Text>
-          <TouchableOpacity onPress={() => Linking.openURL("https://shippzo.com/help").catch(() => {})}>
+          <TouchableOpacity
+            testID="sc-articles-view-all"
+            onPress={openArticleList}
+          >
             <Text style={styles.articlesViewAll}>View All</Text>
           </TouchableOpacity>
         </View>
 
         <View style={styles.articlesCard}>
-          {articles.length === 0 ? (
+          {articlesLoading ? (
+            <View style={styles.emptyArticles}>
+              <Text style={styles.emptyArticlesTxt}>Loading articles…</Text>
+            </View>
+          ) : articlesError ? (
+            <View style={styles.emptyArticles}>
+              <Text style={styles.emptyArticlesTxt}>{articlesError}</Text>
+            </View>
+          ) : filtered.length === 0 ? (
             <View style={styles.emptyArticles}>
               <Text style={styles.emptyArticlesTxt}>
-                No articles match "{query}". Try a different search or tap
-                Create Request below.
+                {query.trim()
+                  ? `No articles match "${query}". Try a different search or tap Create Request below.`
+                  : "No articles published yet. An admin can add them from /admin/articles."}
               </Text>
             </View>
           ) : (
-            articles.map((a, i) => (
+            filtered.map((a, i) => (
               <Pressable
                 key={a.id}
                 testID={`sc-article-${a.id}`}
-                onPress={() =>
-                  Linking.openURL(a.url || "https://shippzo.com/help").catch(
-                    () => {},
-                  )
-                }
+                onPress={() => openArticle(a.id)}
                 style={({ pressed }) => [
                   styles.articleRow,
-                  i < articles.length - 1 && styles.articleRowDivider,
+                  i < filtered.length - 1 && styles.articleRowDivider,
                   pressed && { opacity: 0.65 },
                 ]}
               >
                 <PhIcon
-                  name="document-text-outline"
+                  name={(a.icon as any) || "document-text-outline"}
                   size={18}
                   color="#64748B"
                 />

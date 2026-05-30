@@ -2195,6 +2195,81 @@ export const Api = {
       })
       .then((r) => r.data),
 
+  // ─── Phase-29: Native Support-Center Articles ───────────────────
+  // In-app article reader replaces the previous external website
+  // redirect. Public read + Super-Admin CRUD.
+  listArticles: () =>
+    api
+      .get<{
+        items: {
+          id: string; title: string; summary: string; icon: string;
+          category: string; sort_order: number; is_visible: boolean;
+        }[];
+        count: number;
+      }>("/articles")
+      .then((r) => r.data),
+
+  getArticle: (id: string) =>
+    api
+      .get<{
+        item: {
+          id: string; title: string; summary: string; body: string;
+          icon: string; category: string; sort_order: number;
+          is_visible: boolean; updated_at: string;
+        };
+      }>(`/articles/${encodeURIComponent(id)}`)
+      .then((r) => r.data),
+
+  adminArticlesList: () =>
+    api
+      .get<{
+        items: {
+          id: string; title: string; summary: string; icon: string;
+          category: string; sort_order: number; is_visible: boolean;
+          created_at: string; updated_at: string;
+        }[];
+        count: number; visible: number; hidden: number;
+      }>("/admin/articles")
+      .then((r) => r.data),
+
+  adminArticleGet: (id: string) =>
+    api
+      .get<{
+        item: {
+          id: string; title: string; summary: string; body: string;
+          icon: string; category: string; sort_order: number;
+          is_visible: boolean;
+        };
+      }>(`/admin/articles/${encodeURIComponent(id)}`)
+      .then((r) => r.data),
+
+  adminArticleCreate: (body: {
+    id?: string; title: string; summary?: string; body: string;
+    icon?: string; category?: string; sort_order?: number;
+    is_visible?: boolean;
+  }) =>
+    api
+      .post<{ ok: boolean; item: any }>("/admin/articles", body)
+      .then((r) => r.data),
+
+  adminArticleUpdate: (id: string, body: {
+    title?: string; summary?: string; body?: string; icon?: string;
+    category?: string; sort_order?: number; is_visible?: boolean;
+  }) =>
+    api
+      .patch<{ ok: boolean; item: any }>(
+        `/admin/articles/${encodeURIComponent(id)}`,
+        body,
+      )
+      .then((r) => r.data),
+
+  adminArticleDelete: (id: string) =>
+    api
+      .delete<{ ok: boolean; id: string; deleted: number }>(
+        `/admin/articles/${encodeURIComponent(id)}`,
+      )
+      .then((r) => r.data),
+
   // ─── Phase-OTP: WhatsApp-OTP authentication ──────────────────────
   // Provider-agnostic OTP login/signup. The backend dispatches the OTP
   // via FlowConnect today but can swap in WATI/Interakt/Meta without

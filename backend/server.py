@@ -5278,6 +5278,29 @@ try:
 except Exception as _wpp_exc:
     logger.exception(f"Failed to mount WhatsApp provider router: {_wpp_exc}")
 
+# Phase-29 — Native Support-Center Articles: in-app reader replaces
+# the previous external https://shippzo.com/help redirect. Public
+# read endpoints + Super-Admin CRUD live in routers/articles.py.
+try:
+    from routers.articles import (
+        articles_router       as _articles_router,
+        admin_articles_router as _admin_articles_router,
+        init                  as _init_articles_router,
+        seed_default_articles as _seed_default_articles,
+    )
+    _init_articles_router()
+    app.include_router(_articles_router)
+    app.include_router(_admin_articles_router)
+
+    @app.on_event("startup")
+    async def _seed_articles_on_startup():  # noqa: D401
+        try:
+            await _seed_default_articles(db)
+        except Exception as _seed_exc:
+            logger.warning(f"Articles seed skipped: {_seed_exc}")
+except Exception as _articles_exc:
+    logger.exception(f"Failed to mount Articles router: {_articles_exc}")
+
 # Phase-24 modular: field-config (per-module field enable/required) admin API.
 try:
     from routers.field_configs import (

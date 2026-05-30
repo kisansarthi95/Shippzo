@@ -970,6 +970,21 @@ export default function SettingsScreen() {
                       <PhIcon name="chevron-forward" size={22} color="#9CA3AF" />
                     </TouchableOpacity>
                     <TouchableOpacity
+                      testID="settings-hub-admin-articles"
+                      style={styles.hubRow}
+                      onPress={() => router.push("/admin/articles" as any)}
+                      activeOpacity={0.6}
+                    >
+                      <View style={[styles.hubIconWrap, { backgroundColor: "#E0E7FF" }]}>
+                        <PhIcon name="document-text-outline" size={22} color="#3730A3" />
+                      </View>
+                      <Text style={styles.hubTitle}>Manage Articles</Text>
+                      <View style={styles.adminPill}>
+                        <Text style={styles.adminPillTxt}>ADMIN</Text>
+                      </View>
+                      <PhIcon name="chevron-forward" size={22} color="#9CA3AF" />
+                    </TouchableOpacity>
+                    <TouchableOpacity
                       testID="settings-hub-admin-pricing"
                       style={styles.hubRow}
                       onPress={() => router.push("/admin/pricing")}
