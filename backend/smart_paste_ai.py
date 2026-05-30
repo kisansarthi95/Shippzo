@@ -1573,19 +1573,46 @@ def _extract_token_from_raw(raw_text: str, fields: Dict[str, str]) -> None:
     )
     # Phase-43 — Currency word alternation. Used by Pattern B (after
     # the keyword) AND the new Pattern C (between number and keyword).
-    # Covers: ₹ symbol, English short / long forms, Gujarati રૂપિયા,
-    # Hindi रुपये / रुपिया variants. The full word forms ALWAYS need a
-    # word-boundary (\b) on the alpha side so "rsmth" doesn't match
-    # "rs" — handled by surrounding \s* and the explicit alternation
-    # order (longest first).
+    # Phase-43 — Indic currency token regex.
+    #
+    # The full word forms ALWAYS need a word-boundary (\b) on the
+    # alpha side so "rsmth" doesn't match "rs" — handled by surrounding
+    # \s* and the explicit alternation order (longest first).
+    #
+    # Symbols supported:
+    #   ₹  (U+20B9)  Indian Rupee
+    #   ৳  (U+09F3)  Bengali Taka (used in many Bengali shopping notes)
+    #
+    # Long & short forms supported:
+    #   English      rupees / rupee / rs / rs. / inr
+    #   Gujarati     રૂપિયા
+    #   Hindi        रुपये / रुपिया
+    #   Marathi      रु          ← Phase-29 fix (was missing; Marathi
+    #                              shop notes very commonly use the
+    #                              short form, e.g. "टोकन ५०० रु")
+    #   Bengali      টাকা / টা   ← Phase-29 fix (Bengali short/long)
+    #   Tamil        ரூபாய் / ரூ ← Phase-29 fix (Tamil short/long)
+    #
+    # IMPORTANT — alternation order: list LONGER strings before their
+    # prefixes (e.g. रुपये before रु) so the regex engine doesn't
+    # truncate `रुपये` to `रु`. The bare two-char `रु` is at the END
+    # of the Devanagari group so it only matches when the longer
+    # variants don't.
     currency = (
         r"(?:"
         r"rupees|rupee|"                           # English long form
         r"rs\.?|inr|"                              # English short forms
         r"\u20B9|"                                 # ₹ symbol (U+20B9)
+        r"\u09F3|"                                 # ৳ Bengali Taka (U+09F3)
         r"\u0AB0\u0AC2\u0AAA\u0ABF\u0AAF\u0ABE|"   # રૂપિયા (Gujarati)
         r"\u0930\u0941\u092A\u092F\u0947|"          # रुपये  (Hindi)
-        r"\u0930\u0941\u092A\u093F\u092F\u093E"     # रुपिया (Hindi alt)
+        r"\u0930\u0941\u092A\u093F\u092F\u093E|"    # रुपिया (Hindi alt)
+        r"\u09F3\u09BE|"                            # ৳া unusual combo
+        r"\u099F\u09BE\u0995\u09BE|"                # টাকা (Bengali long)
+        r"\u099F\u09BE|"                            # টা   (Bengali short)
+        r"\u0BB0\u0BC2\u0BAA\u0BBE\u0BAF\u0BCD|"    # ரூபாய் (Tamil long)
+        r"\u0BB0\u0BC2|"                            # ரூ   (Tamil short)
+        r"\u0930\u0941"                             # रु   (Marathi/Hindi short — MUST be last)
         r")"
     )
     # Pattern A: NUMBER then keyword (no currency between).
