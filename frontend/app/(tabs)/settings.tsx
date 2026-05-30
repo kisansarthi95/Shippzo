@@ -951,6 +951,24 @@ export default function SettingsScreen() {
                       </View>
                       <PhIcon name="chevron-forward" size={22} color="#9CA3AF" />
                     </TouchableOpacity>
+                    {/* Phase-27 — Super-Admin CMS for the public FAQ
+                        list. Adding here lets ops staff edit/hide
+                        questions without redeploying the app. */}
+                    <TouchableOpacity
+                      testID="settings-hub-admin-faq"
+                      style={styles.hubRow}
+                      onPress={() => router.push("/admin/faq" as any)}
+                      activeOpacity={0.6}
+                    >
+                      <View style={[styles.hubIconWrap, { backgroundColor: "#FFEDD5" }]}>
+                        <PhIcon name="question" size={22} color="#C2410C" />
+                      </View>
+                      <Text style={styles.hubTitle}>Manage FAQs</Text>
+                      <View style={styles.adminPill}>
+                        <Text style={styles.adminPillTxt}>ADMIN</Text>
+                      </View>
+                      <PhIcon name="chevron-forward" size={22} color="#9CA3AF" />
+                    </TouchableOpacity>
                     <TouchableOpacity
                       testID="settings-hub-admin-pricing"
                       style={styles.hubRow}

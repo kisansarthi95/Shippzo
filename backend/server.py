@@ -5232,6 +5232,29 @@ try:
 except Exception as _adm_exc:
     logger.exception(f"Failed to mount admin router: {_adm_exc}")
 
+# Phase-27 — FAQ public + admin CRUD with visibility toggle.
+# Mounts the public /api/faq endpoint and the admin /api/admin/faq
+# CRUD set. Seeds the 25 default Q&As on first boot (idempotent — a
+# re-deploy won't overwrite admin edits).
+try:
+    from routers.faq import (
+        faq_router as _faq_router,
+        admin_faq_router as _admin_faq_router,
+        init as _init_faq_router,
+        seed_default_faqs as _seed_default_faqs,
+    )
+    _init_faq_router()
+    app.include_router(_faq_router)
+    app.include_router(_admin_faq_router)
+    @app.on_event("startup")
+    async def _seed_faq_on_startup():  # noqa: D401
+        try:
+            await _seed_default_faqs(db)
+        except Exception as _seed_exc:
+            logger.warning(f"FAQ seed skipped: {_seed_exc}")
+except Exception as _faq_exc:
+    logger.exception(f"Failed to mount FAQ router: {_faq_exc}")
+
 # Phase-24 modular: field-config (per-module field enable/required) admin API.
 try:
     from routers.field_configs import (
@@ -5589,6 +5612,10 @@ _AUTH_EXEMPT_PREFIXES = (
     # the redirect, by design. POST /api/short-links (creation) is
     # NOT exempt because it stays under the bearer token requirement.
     "/api/s/",
+    # Phase-27 — FAQ public-read endpoint. The list is a marketing /
+    # education touchpoint; admin CRUD endpoints live under
+    # /api/admin/faq which remains bearer-gated.
+    "/api/faq",
 )
 # Phase 2.5 — Excel report endpoints accept ?token= query param instead
 # of header (browser cannot attach Authorization to <a href> downloads).

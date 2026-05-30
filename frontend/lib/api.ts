@@ -2032,6 +2032,57 @@ export const Api = {
       )
       .then((r) => r.data),
 
+  // ─── Phase-27 — FAQ CMS (public read + Super-Admin CRUD) ─────────
+  // Backed by the `faq_items` Mongo collection. Public list endpoint
+  // is auth-exempt so the in-app /support-center/faq accordion can be
+  // viewed without a token (matches its marketing-touchpoint purpose).
+  // Admin endpoints stay bearer-gated and require `is_admin === true`.
+  faqList: () =>
+    api
+      .get<{
+        items: {
+          id: string; category: string; q: string; a: string;
+          sort_order: number; is_visible: boolean;
+        }[];
+        count: number;
+      }>("/faq")
+      .then((r) => r.data),
+
+  adminFaqList: () =>
+    api
+      .get<{
+        items: {
+          id: string; category: string; q: string; a: string;
+          sort_order: number; is_visible: boolean;
+          created_at: string; updated_at: string;
+        }[];
+        count: number; visible: number; hidden: number;
+      }>("/admin/faq")
+      .then((r) => r.data),
+
+  adminFaqCreate: (body: {
+    id?: string; category: string; q: string; a: string;
+    sort_order?: number; is_visible?: boolean;
+  }) =>
+    api
+      .post<{ ok: boolean; item: any }>("/admin/faq", body)
+      .then((r) => r.data),
+
+  adminFaqUpdate: (id: string, body: {
+    category?: string; q?: string; a?: string;
+    sort_order?: number; is_visible?: boolean;
+  }) =>
+    api
+      .patch<{ ok: boolean; item: any }>(`/admin/faq/${encodeURIComponent(id)}`, body)
+      .then((r) => r.data),
+
+  adminFaqDelete: (id: string) =>
+    api
+      .delete<{ ok: boolean; id: string; deleted: number }>(
+        `/admin/faq/${encodeURIComponent(id)}`,
+      )
+      .then((r) => r.data),
+
   // ─── Phase-OTP: WhatsApp-OTP authentication ──────────────────────
   // Provider-agnostic OTP login/signup. The backend dispatches the OTP
   // via FlowConnect today but can swap in WATI/Interakt/Meta without

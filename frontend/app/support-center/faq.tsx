@@ -26,12 +26,14 @@
  *   • Each entry has a stable `id` so screenshots / tests can target
  *     rows reliably.
  */
-import React, { useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
+  ActivityIndicator,
   LayoutAnimation,
   Linking,
   Platform,
   Pressable,
+  RefreshControl,
   ScrollView,
   StyleSheet,
   Text,
@@ -46,6 +48,7 @@ import Constants from "expo-constants";
 
 import PhIcon from "../../components/PhIcon";
 import { colors } from "../../lib/theme";
+import { Api } from "../../lib/api";
 
 const APP_NAME: string = Constants.expoConfig?.name || "Shippzo";
 
@@ -55,190 +58,19 @@ if (Platform.OS === "android" && UIManager.setLayoutAnimationEnabledExperimental
   UIManager.setLayoutAnimationEnabledExperimental(true);
 }
 
-// ─── FAQ content (curated for Shippzo) ──────────────────────────────
-// 25 questions across 7 categories. Each answer is intentionally
-// concise (2-4 sentences) — the goal is "answer in 5 seconds", not
-// a knowledge-base novella. Long-form how-tos belong in the future
-// Knowledge Base; the FAQ is for quick orientation.
+// ─── FAQ entry shape ────────────────────────────────────────────────
+// Items now come from the /api/faq backend (admin-managed). The
+// shape matches the FAQCreate Pydantic schema. We render them
+// dynamically with categories grouped + colour-coded.
 type FAQItem = {
-  id:       string;
-  category: string;
-  q:        string;
-  a:        string;
+  id:          string;
+  category:    string;
+  q:           string;
+  a:           string;
+  is_visible?: boolean;
+  sort_order?: number;
 };
 
-const FAQS: FAQItem[] = [
-  // ─── Getting started ──────────────────────────────────────────
-  {
-    id: "gs-signup",
-    category: "Getting started",
-    q: "How do I create my Shippzo account?",
-    a: "Tap Sign up on the welcome screen and pick either email + password or WhatsApp OTP. WhatsApp OTP only needs your 10-digit mobile number — we'll send a 6-digit code on WhatsApp to verify it. Your shop name + business category is asked on the same screen so we can pre-tune the app for your business.",
-  },
-  {
-    id: "gs-first-shipment",
-    category: "Getting started",
-    q: "How do I add my first shipment?",
-    a: "From the Shipments tab, tap the Add button (top-right) and either fill the form manually, paste a customer message into Smart Paste, or import an Excel/CSV. Smart Paste auto-extracts name, phone, address, pincode, product, COD amount and more from messy text in 9 Indian languages.",
-  },
-  {
-    id: "gs-import",
-    category: "Getting started",
-    q: "How do I import orders from Excel or Google Sheets?",
-    a: "Tap Add → Import. Drag in a .xlsx/.csv file or paste a Google Sheets link. The first row should contain headers (name, phone, address, pincode, etc.) — Shippzo auto-detects the mapping for the standard column names and lets you fix any unmapped ones before committing the import.",
-  },
-
-  // ─── Shipping labels & couriers ───────────────────────────────
-  {
-    id: "lbl-generate",
-    category: "Shipping labels & couriers",
-    q: "How do I generate a shipping label?",
-    a: "Open any shipment row and tap Generate label. Pick the courier from your configured list, confirm the tracking ID (auto-pulled if you added the courier's API key), and the PDF will be ready to download or print. Bulk-print up to 100 labels at once from the multi-select toolbar.",
-  },
-  {
-    id: "lbl-courier-add",
-    category: "Shipping labels & couriers",
-    q: "How do I add a new courier partner?",
-    a: "Settings → Couriers → Add Courier. Pick from the built-in list (Delhivery, DTDC, India Post, etc.) or add a custom one. For tracking-ID auto-fetch, paste the courier's API key in the same screen. The same courier can be reused across all shipments.",
-  },
-  {
-    id: "lbl-tracking",
-    category: "Shipping labels & couriers",
-    q: "Can Shippzo auto-fetch tracking IDs from courier APIs?",
-    a: "Yes — for couriers that publish a label-generation API (Delhivery, Shiprocket, Bluedart, etc.). Add your API key under Settings → Couriers and the tracking ID is auto-populated when you tap Generate Label. For couriers without an API, paste the tracking ID manually.",
-  },
-  {
-    id: "lbl-bulk",
-    category: "Shipping labels & couriers",
-    q: "How do I print labels in bulk?",
-    a: "Switch the Shipments tab into Multi-Select mode (top-right toggle), pick the rows you want, then tap Bulk Download from the toolbar. The labels are stitched into a single multi-page PDF in the order you selected.",
-  },
-
-  // ─── Wallet, plans & payments ─────────────────────────────────
-  {
-    id: "pay-recharge",
-    category: "Wallet, plans & payments",
-    q: "How do I recharge my wallet?",
-    a: "Profile → Wallet → Recharge. Pick an amount (or enter a custom amount) and pay via UPI / cards / netbanking through Razorpay. The credit reflects in your wallet within a few seconds. Your transaction history shows every recharge and deduction.",
-  },
-  {
-    id: "pay-plan",
-    category: "Wallet, plans & payments",
-    q: "What's the difference between the Free, Starter, and Pro plans?",
-    a: "Free is for 1 user with up to 25 shipments per month and basic features. Starter unlocks WhatsApp templates, bulk import, and 500 shipments. Pro adds Smart Paste AI, multi-user accounts, advanced exports, and unlimited shipments. See Profile → Plans for the full feature matrix.",
-  },
-  {
-    id: "pay-deduction",
-    category: "Wallet, plans & payments",
-    q: "When does Shippzo deduct credits from my wallet?",
-    a: "Credits are only deducted when you actually generate a shipping label or send a WhatsApp message — never for adding a shipment, importing data, or viewing reports. Every deduction is logged in Profile → Wallet → History so you can verify it line by line.",
-  },
-  {
-    id: "pay-refund",
-    category: "Wallet, plans & payments",
-    q: "Can I get a refund for unused wallet credit?",
-    a: "Wallet credits are non-refundable once recharged, but they never expire and can be used for any chargeable action in the app. For special cases please contact support via Support Center → Create Request.",
-  },
-
-  // ─── WhatsApp & messaging ─────────────────────────────────────
-  {
-    id: "wa-connect",
-    category: "WhatsApp & messaging",
-    q: "How do I connect WhatsApp to send order updates?",
-    a: "Settings → WhatsApp Message Templates. WhatsApp messaging works out-of-the-box via our hosted provider (no separate WhatsApp Business API key needed). Pick your default language (Gujarati / Hindi / English) and customize the 4 standard templates: Booked, Dispatched, Delivered, Thanks.",
-  },
-  {
-    id: "wa-otp",
-    category: "WhatsApp & messaging",
-    q: "Why am I getting login OTPs on WhatsApp?",
-    a: "WhatsApp is one of the supported login channels — you can opt in by signing in with your mobile number on the Login screen. OTPs expire in 10 minutes; up to 5 OTP resends are allowed per 30-minute window before a temporary lockout kicks in.",
-  },
-  {
-    id: "wa-pack",
-    category: "WhatsApp & messaging",
-    q: "How do I send a packing list to my staff via WhatsApp?",
-    a: "Shipments tab → Multi-Select → pick rows → tap the green WhatsApp icon. Choose Gujarati / Hindi / English in the language popup; the packing summary opens with Copy / WhatsApp / Share actions. Default language is set in Settings → Packing Language.",
-  },
-
-  // ─── Smart Paste & AI ─────────────────────────────────────────
-  {
-    id: "ai-paste",
-    category: "Smart Paste & AI",
-    q: "What is Smart Paste and how does it work?",
-    a: "Smart Paste turns a raw customer message (WhatsApp text, email body, screenshot OCR) into a fully-filled shipment form. It extracts name, phone, address, pincode, product, COD amount, even tokens — across 9 Indian scripts (Hindi, Gujarati, Marathi, Bengali, Tamil, Telugu, Kannada, Malayalam, Punjabi) plus English. Paste, review the highlighted fields, then save.",
-  },
-  {
-    id: "ai-langs",
-    category: "Smart Paste & AI",
-    q: "Which Indian languages does Smart Paste understand?",
-    a: "Hindi, Gujarati, Marathi, Bengali, Tamil, Telugu, Kannada, Malayalam and Punjabi — plus mixed Hinglish/Gujlish text where addresses and city names are typed in Roman script. Currency and quantity keywords are recognised in every supported script.",
-  },
-  {
-    id: "ai-pincode",
-    category: "Smart Paste & AI",
-    q: "Why does the city change after I paste an address?",
-    a: "Whenever a 6-digit pincode is detected, Shippzo cross-checks it with the official India Post database and overrides the city to the canonical district name. This avoids spelling typos (e.g. \"Ahemedabad\" → \"Ahmedabad\") that would otherwise reject the label at the courier's end.",
-  },
-
-  // ─── Reports & data ───────────────────────────────────────────
-  {
-    id: "rep-csv",
-    category: "Reports & data",
-    q: "How do I export my shipments to Excel/CSV?",
-    a: "Shipments tab → tap the Bulk Download icon (top-right). The CSV honours any filters currently applied (status, date range, courier, etc.) and includes 44 columns including customer details, tracking, dispatch dates, COD amounts and payment status. Multi-select first if you only want specific rows.",
-  },
-  {
-    id: "rep-sheet",
-    category: "Reports & data",
-    q: "How do I connect a Google Sheet for live sync?",
-    a: "Settings → Sheets → Connect. Share your sheet with the service-account email shown on screen and paste the sheet URL. Shipments are mirrored to your sheet in near-real-time — status changes flow back so your team can view dispatches without opening the app.",
-  },
-  {
-    id: "rep-privacy",
-    category: "Reports & data",
-    q: "Can other Shippzo users see my shipments?",
-    a: "No. Every shop has a fully isolated dataset — your shipments, customers, couriers, wallet, settings and reports are scoped to your account. Even Shippzo admin staff need an explicit support-ticket trail before they can view your data.",
-  },
-
-  // ─── Account & troubleshooting ────────────────────────────────
-  {
-    id: "ac-team",
-    category: "Account & troubleshooting",
-    q: "How do I invite team members?",
-    a: "Available on Starter and Pro plans. Settings → Team → Invite. Send an email/phone invite; the invitee logs in via Email + Password or WhatsApp OTP. Roles are configurable: Owner (full access), Staff (no billing), or Read-only.",
-  },
-  {
-    id: "ac-pwd",
-    category: "Account & troubleshooting",
-    q: "I forgot my password — what now?",
-    a: "Tap \"Forgot password?\" on the Login screen. We'll email a reset link valid for 30 minutes. Alternatively, log in with your registered mobile number via WhatsApp OTP and set a new password from Settings → Account.",
-  },
-  {
-    id: "ac-logout",
-    category: "Account & troubleshooting",
-    q: "How do I log out of all devices?",
-    a: "Settings → Account → Log out everywhere. This invalidates every JWT we've issued for your account; the next login on any device starts a fresh session. Useful if you suspect a lost phone or shared device.",
-  },
-  {
-    id: "ac-delete",
-    category: "Account & troubleshooting",
-    q: "Can I delete my account and data?",
-    a: "Yes — Support Center → Create Request and pick \"Account deletion\". We confirm the request with you, export any data you want, then erase your shop's records within 7 working days as required by our privacy policy.",
-  },
-  {
-    id: "ac-bug",
-    category: "Account & troubleshooting",
-    q: "Something looks broken — how do I report a bug?",
-    a: "Support Center → Create Request → pick the \"Bug / Issue\" category. Attach a screenshot or a screen recording (the form supports both) — that gets us 90% of the way to a fix on the first reply. Most reports are triaged within 24 hours.",
-  },
-];
-
-// All unique categories in declaration order — used for the colour
-// chip on each card. Keeping the array small and hand-tuned lets us
-// pick a coherent palette below.
-const CATEGORIES = Array.from(
-  FAQS.reduce((set, f) => set.add(f.category), new Set<string>()),
-);
 
 // Subtle, on-brand pastel chips. Index lookup keeps the colour bound
 // to the category position so the same chip always renders the same
@@ -256,22 +88,61 @@ const CATEGORY_COLORS: Array<{ bg: string; fg: string }> = [
 export default function FAQScreen() {
   const router  = useRouter();
   const insets  = useSafeAreaInsets();
-  const [query, setQuery]   = useState<string>("");
-  const [openId, setOpenId] = useState<string | null>(null);
+  const [query, setQuery]     = useState<string>("");
+  const [openId, setOpenId]   = useState<string | null>(null);
+  // Phase-27 — items now come from /api/faq (admin-managed). The
+  // backend filter pre-strips hidden rows, so the client only ever
+  // sees what the admin has flagged visible.
+  const [items, setItems]     = useState<FAQItem[]>([]);
+  const [loading, setLoading] = useState<boolean>(true);
+  const [error, setError]     = useState<string>("");
+  const [refreshing, setRefreshing] = useState<boolean>(false);
+
+  // Derive the unique category order from whatever the server sent
+  // (instead of a hard-coded const list). This lets admins add brand
+  // new categories on the fly without a frontend deploy.
+  const categories = useMemo<string[]>(() => {
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const it of items) {
+      if (!seen.has(it.category)) { seen.add(it.category); out.push(it.category); }
+    }
+    return out;
+  }, [items]);
+
+  const load = useCallback(async () => {
+    try {
+      setError("");
+      const r = await Api.faqList();
+      setItems(r.items || []);
+    } catch (e: any) {
+      setError(e?.response?.data?.detail || e?.message || "Could not load FAQs");
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
+    }
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  const onRefresh = useCallback(() => {
+    setRefreshing(true);
+    load();
+  }, [load]);
 
   // Filter by question OR answer text — gives the user a single
   // search box that surfaces relevant rows regardless of which side
   // matched (e.g. searching "Razorpay" only matches answers).
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
-    if (!q) return FAQS;
-    return FAQS.filter(
+    if (!q) return items;
+    return items.filter(
       (f) =>
         f.q.toLowerCase().includes(q) ||
         f.a.toLowerCase().includes(q) ||
         f.category.toLowerCase().includes(q),
     );
-  }, [query]);
+  }, [items, query]);
 
   const toggle = (id: string) => {
     LayoutAnimation.configureNext(
@@ -283,7 +154,7 @@ export default function FAQScreen() {
   // Index → colour helper. New categories beyond the palette length
   // fall back to a neutral slate so we never blow up at runtime.
   const chipFor = (cat: string) => {
-    const i = CATEGORIES.indexOf(cat);
+    const i = categories.indexOf(cat);
     return CATEGORY_COLORS[i % CATEGORY_COLORS.length] || { bg: "#E2E8F0", fg: "#475569" };
   };
 
@@ -300,6 +171,13 @@ export default function FAQScreen() {
         style={{ flex: 1 }}
         contentContainerStyle={{ paddingBottom: 32 }}
         keyboardShouldPersistTaps="handled"
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={onRefresh}
+            tintColor={colors.primary}
+          />
+        }
       >
         {/* ── Heading + search ─────────────────────────────────── */}
         <View style={styles.hero}>
@@ -338,13 +216,27 @@ export default function FAQScreen() {
             ) : null}
           </View>
           <Text style={styles.searchCount}>
-            {filtered.length} of {FAQS.length} questions
+            {filtered.length} of {items.length} questions
           </Text>
         </View>
 
         {/* ── Q&A accordion list ───────────────────────────────── */}
         <View style={styles.list}>
-          {filtered.length === 0 ? (
+          {loading ? (
+            <View style={styles.empty} testID="faq-loading">
+              <ActivityIndicator color={colors.primary} />
+              <Text style={[styles.emptyTitle, { fontSize: 13 }]}>Loading FAQs…</Text>
+            </View>
+          ) : error ? (
+            <View style={styles.empty} testID="faq-error">
+              <PhIcon name="warning" size={28} color="#DC2626" />
+              <Text style={styles.emptyTitle}>Could not load FAQs</Text>
+              <Text style={styles.emptySub}>{error}</Text>
+              <TouchableOpacity onPress={load} style={styles.emptyBtn}>
+                <Text style={styles.emptyBtnTxt}>Retry</Text>
+              </TouchableOpacity>
+            </View>
+          ) : filtered.length === 0 ? (
             <View style={styles.empty}>
               <PhIcon name="search" size={28} color="#CBD5E1" />
               <Text style={styles.emptyTitle}>
