@@ -99,12 +99,14 @@ export default function SupportCenter() {
   };
 
   // Card press handlers. Phase-21 — Video Tutorials, Create Request,
-  // and My Requests all route to dedicated screens. FAQs stays as a
-  // fallback until the KB ships.
+  // and My Requests all route to dedicated screens. FAQs now opens
+  // the in-app /support-center/faq accordion (Phase-26, 2026-05-30) —
+  // previously this incorrectly opened the legal Privacy/Refund
+  // policy page, which had nothing to do with FAQs.
   const onVideoTutorials = () => router.push("/support-center/tutorials" as any);
-  const onFAQs        = () => router.push("/refund-policy?tab=privacy" as any);
-  const onCreateRequest = () => router.push("/support-center/create" as any);
-  const onMyRequests  = () => router.push("/support-center/my-tickets" as any);
+  const onFAQs           = () => router.push("/support-center/faq" as any);
+  const onCreateRequest  = () => router.push("/support-center/create" as any);
+  const onMyRequests     = () => router.push("/support-center/my-tickets" as any);
 
   // 2026-05-25 — Plan-gated Video Tutorials card. Defaults ON for
   // every plan; admin can untick per-plan in the admin Plan
