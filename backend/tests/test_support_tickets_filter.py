@@ -50,12 +50,18 @@ async def signup_throwaway_user(cli: httpx.AsyncClient) -> Dict[str, str]:
     unique = uuid.uuid4().hex[:8]
     email  = f"qa-tickets-{unique}@example.com"
     pwd    = "qaTestP@ss1!"
+    # Generate a 10-digit phone (all digits) — the signup endpoint
+    # validates the digit count, so we cannot include hex characters
+    # from `uuid.hex` in the phone string. We use the high 7 digits of
+    # `uuid.int` plus a fixed 9-prefix triplet to stay inside the
+    # Indian mobile range (which the validator enforces).
+    phone_tail = str(uuid.uuid4().int)[:7]
     r = await cli.post("/api/auth/signup", json={
         "email":     email,
         "password":  pwd,
         "name":      "QA Tickets",
         "shop_name": "QA Tickets Shop",
-        "phone":     f"+91999{unique[:7]}",
+        "phone":     f"999{phone_tail}",
     })
     assert r.status_code in (200, 201), f"signup failed: {r.status_code} {r.text}"
     body  = r.json()
