@@ -31,6 +31,14 @@ import { Stack } from "expo-router";
 import { Api } from "../../lib/api";
 import AiTemplateGenerator from "../../components/AiTemplateGenerator";
 import { useFeatureFlag } from "../../lib/feature_flags";
+// Phase-29 — single source of truth for ALL template placeholders.
+// Drives both the editor's variable-chip strip AND the live preview's
+// sample substitutions (was only 5 hardcoded vars before).
+import {
+  TEMPLATE_VARIABLES,
+  VARIABLE_GROUPS,
+  previewWithSamples,
+} from "../../lib/templateVariables";
 
 const TYPE_META: Record<string, { label: string; sub: string; icon: any; tone: string }> = {
   shipment_sent: {
@@ -71,22 +79,11 @@ const LANG_META: Record<string, { label: string; emoji: string }> = {
   en: { label: "English", emoji: "🇬🇧" },
 };
 
-const VARIABLE_HINTS = [
-  "{customer_name}",
-  "{order_id}",
-  "{tracking_id}",
-  "{courier}",
-  "{eta_days}",
-];
-
-// Phase-12: business-link variables — substituted server-side from
-// settings.business_links. Surfaced as a separate chip group so the
-// editor signals "these need their URLs set above before they'll
-// expand to anything useful".
-const BUSINESS_LINK_HINTS = [
-  "{google_review_url}",
-  "{website_url}",
-];
+// Phase-29 — the previous `VARIABLE_HINTS` / `BUSINESS_LINK_HINTS`
+// arrays only listed 5 + 2 placeholders. Both are now sourced from
+// /app/frontend/lib/templateVariables.ts via TEMPLATE_VARIABLES so
+// adding a new variable shows up automatically in the editor without
+// touching this file.
 
 type ServerData = {
   admin_templates: Record<string, Record<string, string>>;
@@ -547,65 +544,77 @@ export default function WhatsAppTemplatesSettings() {
                 </Text>
                 <View style={styles.previewBox}>
                   <Text style={styles.previewText}>
-                    {(currentValue(activeType, activeLang) ||
+                    {previewWithSamples(
+                      currentValue(activeType, activeLang) ||
                       placeholderFor(activeType, activeLang) ||
-                      "—")
-                      .replace(/\{customer_name\}/g, "Ramesh")
-                      .replace(/\{order_id\}/g, "ORD-1234")
-                      .replace(/\{tracking_id\}/g, "ND00056")
-                      .replace(/\{courier\}/g, "Demo Courier")
-                      .replace(/\{eta_days\}/g, "5")}
+                      "—",
+                    )}
                   </Text>
                 </View>
 
                 {/* Variable chips — Phase-32: hidden in read-only mode */}
                 {editorEnabled && (
                 <>
-                <Text style={styles.varLabel}>Available variables (tap to insert):</Text>
-                <View style={styles.varChipsRow}>
-                  {VARIABLE_HINTS.map((v) => (
-                    <TouchableOpacity
-                      key={v}
-                      style={styles.varChip}
-                      onPress={() => {
-                        const current = currentValue(activeType, activeLang) ||
-                                        placeholderFor(activeType, activeLang);
-                        setEdit(activeType, activeLang, current + v);
-                      }}
-                    >
-                      <Text style={styles.varChipText}>{v}</Text>
-                    </TouchableOpacity>
-                  ))}
-                </View>
-                {/* Phase-12: Business-link chips. Highlighted gold so
-                    operators notice they auto-fill from the URLs at
-                    the top of the screen. */}
-                <Text style={[styles.varLabel, { marginTop: 10 }]}>
-                  Business links (auto-filled from URLs above):
+                {/*
+                  Phase-29 — grouped variable picker.
+                  Old code only surfaced 5 hardcoded placeholders; we
+                  now iterate the master `TEMPLATE_VARIABLES` list
+                  grouped by `VARIABLE_GROUPS` so every supported
+                  variable (30+) is one tap away. The "links" group
+                  keeps its gold highlight from before so operators
+                  notice the URLs at the top of the screen still need
+                  to be set for those to render anything.
+                */}
+                <Text style={styles.varLabel}>
+                  Available variables (tap to insert):
                 </Text>
-                <View style={styles.varChipsRow}>
-                  {BUSINESS_LINK_HINTS.map((v) => (
-                    <TouchableOpacity
-                      key={v}
-                      style={[
-                        styles.varChip,
-                        {
-                          backgroundColor: "#FEF3C7",
-                          borderColor: "#FCD34D",
-                        },
-                      ]}
-                      onPress={() => {
-                        const current = currentValue(activeType, activeLang) ||
-                                        placeholderFor(activeType, activeLang);
-                        setEdit(activeType, activeLang, current + v);
-                      }}
-                    >
-                      <Text style={[styles.varChipText, { color: "#92400E" }]}>
-                        {v}
+                {VARIABLE_GROUPS.map((g) => {
+                  const vars = TEMPLATE_VARIABLES.filter((v) => v.group === g.key);
+                  if (vars.length === 0) return null;
+                  const isLinks = g.key === "links";
+                  return (
+                    <View key={g.key} style={{ marginTop: 10 }}>
+                      <Text style={styles.varGroupLabel}>
+                        {g.emoji} {g.label}
                       </Text>
-                    </TouchableOpacity>
-                  ))}
-                </View>
+                      <View style={styles.varChipsRow}>
+                        {vars.map((v) => {
+                          const placeholder = `{${v.key}}`;
+                          return (
+                            <TouchableOpacity
+                              key={v.key}
+                              style={[
+                                styles.varChip,
+                                isLinks && {
+                                  backgroundColor: "#FEF3C7",
+                                  borderColor:     "#FCD34D",
+                                },
+                              ]}
+                              onPress={() => {
+                                const current =
+                                  currentValue(activeType, activeLang) ||
+                                  placeholderFor(activeType, activeLang);
+                                setEdit(
+                                  activeType, activeLang,
+                                  current + placeholder,
+                                );
+                              }}
+                            >
+                              <Text
+                                style={[
+                                  styles.varChipText,
+                                  isLinks && { color: "#92400E" },
+                                ]}
+                              >
+                                {v.emoji} {v.label}
+                              </Text>
+                            </TouchableOpacity>
+                          );
+                        })}
+                      </View>
+                    </View>
+                  );
+                })}
                 </>
                 )}
               </View>
@@ -802,6 +811,12 @@ const styles = StyleSheet.create({
   varLabel: {
     fontSize: 11, fontWeight: "700", color: "#6B7280",
     marginTop: 12, marginBottom: 6,
+  },
+  // Phase-29 — group header inside the variable-chip picker.
+  varGroupLabel: {
+    fontSize: 11, fontWeight: "700", color: "#374151",
+    textTransform: "uppercase", letterSpacing: 0.4,
+    marginBottom: 4,
   },
   varChipsRow: { flexDirection: "row", flexWrap: "wrap", gap: 6 },
   varChip: {

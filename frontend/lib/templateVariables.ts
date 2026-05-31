@@ -331,3 +331,24 @@ export function fillFromShipment(
   out = stripEmptyEtaLine(out, vars);
   return out;
 }
+
+/**
+ * Phase-29 — render a template with REALISTIC sample values for every
+ * single registered variable. Used by the WhatsApp template editor's
+ * "Live preview" so the admin/user sees exactly what the customer
+ * will get, with all 30+ variables substituted (not just the 5
+ * historically hardcoded ones).
+ *
+ * Pulls each sample from `TEMPLATE_VARIABLES[i].example`, so adding
+ * a new variable + example to the master list above is enough — the
+ * preview picks it up automatically.
+ */
+export function previewWithSamples(template: string): string {
+  if (!template) return "";
+  const samples: Record<string, string> = {};
+  for (const v of TEMPLATE_VARIABLES) {
+    samples[v.key] = v.example || "";
+  }
+  return fillTemplate(template, samples);
+}
+

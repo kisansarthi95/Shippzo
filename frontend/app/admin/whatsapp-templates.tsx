@@ -25,6 +25,13 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Stack } from "expo-router";
 import { Api } from "../../lib/api";
+// Phase-29 — shared template-variable catalogue (replaces the 5-var
+// hardcoded list that used to live in this file).
+import {
+  TEMPLATE_VARIABLES,
+  VARIABLE_GROUPS,
+  previewWithSamples,
+} from "../../lib/templateVariables";
 
 const TYPE_META: Record<string, { label: string; sub: string; icon: any; tone: string }> = {
   shipment_sent: {
@@ -65,9 +72,11 @@ const LANG_META: Record<string, { label: string }> = {
   en: { label: "English" },
 };
 
-const VARIABLE_HINTS = [
-  "{customer_name}", "{order_id}", "{tracking_id}", "{courier}", "{eta_days}",
-];
+// Phase-29 — the previous `VARIABLE_HINTS` array hardcoded only 5
+// placeholders. The picker now iterates `TEMPLATE_VARIABLES` from
+// /app/frontend/lib/templateVariables.ts, so all 30+ supported
+// variables show up automatically and stay in sync with both the
+// per-user editor and the send-time substitution pipeline.
 
 type ServerData = {
   templates: Record<string, Record<string, string>>;
@@ -310,33 +319,73 @@ export default function AdminWhatsAppTemplates() {
                 </Text>
                 <View style={styles.previewBox}>
                   <Text style={styles.previewText}>
-                    {(currentValue(activeType, activeLang) ||
+                    {previewWithSamples(
+                      currentValue(activeType, activeLang) ||
                       placeholderFor(activeType, activeLang) ||
-                      "—")
-                      .replace(/\{customer_name\}/g, "Ramesh")
-                      .replace(/\{order_id\}/g, "ORD-1234")
-                      .replace(/\{tracking_id\}/g, "ND00056")
-                      .replace(/\{courier\}/g, "Demo Courier")
-                      .replace(/\{eta_days\}/g, "5")}
+                      "—",
+                    )}
                   </Text>
                 </View>
 
-                <Text style={styles.varLabel}>Available variables (tap to insert):</Text>
-                <View style={styles.varChipsRow}>
-                  {VARIABLE_HINTS.map((v) => (
-                    <TouchableOpacity
-                      key={v}
-                      style={styles.varChip}
-                      onPress={() => {
-                        const current = currentValue(activeType, activeLang) ||
-                                        placeholderFor(activeType, activeLang);
-                        setEdit(activeType, activeLang, current + v);
-                      }}
-                    >
-                      <Text style={styles.varChipText}>{v}</Text>
-                    </TouchableOpacity>
-                  ))}
-                </View>
+                {/*
+                  Phase-29 — grouped variable picker.
+                  Was a 5-element hardcoded chip strip; now iterates
+                  the shared `TEMPLATE_VARIABLES` catalogue grouped by
+                  `VARIABLE_GROUPS` so all 30+ supported placeholders
+                  are one tap away. The "links" group keeps its gold
+                  highlight as a visual cue that those auto-fill from
+                  business_links in settings.
+                */}
+                <Text style={styles.varLabel}>
+                  Available variables (tap to insert):
+                </Text>
+                {VARIABLE_GROUPS.map((g) => {
+                  const vars = TEMPLATE_VARIABLES.filter((v) => v.group === g.key);
+                  if (vars.length === 0) return null;
+                  const isLinks = g.key === "links";
+                  return (
+                    <View key={g.key} style={{ marginTop: 10 }}>
+                      <Text style={styles.varGroupLabel}>
+                        {g.emoji} {g.label}
+                      </Text>
+                      <View style={styles.varChipsRow}>
+                        {vars.map((v) => {
+                          const placeholder = `{${v.key}}`;
+                          return (
+                            <TouchableOpacity
+                              key={v.key}
+                              style={[
+                                styles.varChip,
+                                isLinks && {
+                                  backgroundColor: "#FEF3C7",
+                                  borderColor:     "#FCD34D",
+                                },
+                              ]}
+                              onPress={() => {
+                                const current =
+                                  currentValue(activeType, activeLang) ||
+                                  placeholderFor(activeType, activeLang);
+                                setEdit(
+                                  activeType, activeLang,
+                                  current + placeholder,
+                                );
+                              }}
+                            >
+                              <Text
+                                style={[
+                                  styles.varChipText,
+                                  isLinks && { color: "#92400E" },
+                                ]}
+                              >
+                                {v.emoji} {v.label}
+                              </Text>
+                            </TouchableOpacity>
+                          );
+                        })}
+                      </View>
+                    </View>
+                  );
+                })}
               </View>
             </>
           )}
@@ -430,6 +479,12 @@ const styles = StyleSheet.create({
   varLabel: {
     fontSize: 11, fontWeight: "700", color: "#6B7280",
     marginTop: 12, marginBottom: 6,
+  },
+  // Phase-29 — group header inside the variable-chip picker.
+  varGroupLabel: {
+    fontSize: 11, fontWeight: "700", color: "#374151",
+    textTransform: "uppercase", letterSpacing: 0.4,
+    marginBottom: 4,
   },
   varChipsRow: { flexDirection: "row", flexWrap: "wrap", gap: 6 },
   varChip: {

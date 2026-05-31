@@ -24,7 +24,8 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Stack, useLocalSearchParams, router } from "expo-router";
-import { Api, Shipment } from "../../lib/api";
+import { Api, Shipment, Courier, Settings } from "../../lib/api";
+import { useAuth } from "../../lib/auth";
 import { errMsg } from "../../lib/errMsg";
 import { usePermissions, Gated } from "../../lib/permissions";
 import {
@@ -67,6 +68,7 @@ export default function BulkMessageScreen() {
   const { hasPerm, isTeamMember, loading: permLoading } = usePermissions();
   const allowed = hasPerm("bulk_message_send");
 
+  const { user } = useAuth();
   const [loading, setLoading]       = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [busy, setBusy]             = useState(false);
@@ -78,13 +80,42 @@ export default function BulkMessageScreen() {
   const [defaultLang, setLang]      = useState("gu");
   const [tplCache, setTplCache]     = useState<Record<string, string>>({});
 
+  // Phase-29: bulk-message now uses the SAME 30+ variable substitution
+  // that the per-shipment messages on the Shipments tab do. To do that
+  // we need three extra pieces of data alongside the eligible-rows list:
+  //   • settings — for shop-wide fallbacks (business name, support phone…)
+  //   • user     — for owner name + plan
+  //   • couriers — to resolve a row's courier_id into a Courier object
+  //                (`fillFromShipment` reads name + tracking_url_template
+  //                from it).
+  // All three are loaded together with the eligible list so a single
+  // refresh cycle keeps them in sync.
+  const [settings, setSettings]   = useState<Settings | null>(null);
+  const [couriers, setCouriers]   = useState<Courier[]>([]);
+
+  // Helper mirrors the one in /(tabs)/shipments.tsx so the placeholder
+  // substitution is byte-for-byte identical between the two screens.
+  const findCourier = useCallback(
+    (s: Row): Courier | null =>
+      couriers.find((c) => c.id === s.courier_id) || null,
+    [couriers],
+  );
+
   const load = useCallback(async () => {
     if (!isValid) return;
     setLoading(true);
     try {
-      const [res, tplMeta] = await Promise.all([
+      // Phase-29: fetch settings + couriers in the same round-trip
+      // burst so the placeholder substitution has everything it needs
+      // by the time the user taps Send. `.catch(() => null/[])` keeps
+      // a transient failure on one of these auxiliaries from blocking
+      // the screen — fillFromShipment falls back gracefully when its
+      // settings/user/courier args are missing.
+      const [res, tplMeta, settingsRes, couriersRes] = await Promise.all([
         Api.bulkMsgEligible(ttype),
         Api.meWhatsAppTemplates().catch(() => null),
+        Api.getSettings().catch(() => null),
+        Api.listCouriers().catch(() => [] as Courier[]),
       ]);
       setMeta({
         label:    res.label,
@@ -94,6 +125,8 @@ export default function BulkMessageScreen() {
       });
       setRows(res.shipments as Row[]);
       setCounts(res.counts);
+      setSettings(settingsRes);
+      setCouriers(Array.isArray(couriersRes) ? couriersRes : []);
       if (tplMeta) setLang(tplMeta.default_language || "gu");
       setSelected((prev) => {
         const ids = new Set((res.shipments || []).map((r: any) => r.id));
@@ -153,7 +186,12 @@ export default function BulkMessageScreen() {
     }
   }, [ttype, tplCache]);
 
-  const fillTpl = (template: string, s: Row) => fillFromShipment(template, s);
+  // Phase-29: pass settings/user/courier so the FULL 30+ variable set
+  // gets substituted (tracking_url, courier_name, estimated_delivery,
+  // order_items, etc.) — matching the per-shipment send pipeline on
+  // /(tabs)/shipments.tsx line 745.
+  const fillTpl = (template: string, s: Row) =>
+    fillFromShipment(template, s, settings, user, findCourier(s));
 
   const handleSend = async () => {
     if (selectedIds.length === 0) {
