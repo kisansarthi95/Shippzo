@@ -2796,9 +2796,29 @@ async def smart_paste_create(
 
     if auto_gen:
         master_oid = await generate_master_order_id()
+        # Phase-29 TOCTOU fix — snapshot the user_order_id BEFORE the
+        # collision retry loop. The Smart Paste flow occasionally hits
+        # a text whose AI-extracted `order_id` happens to look like a
+        # master id (e.g. user pasted "ord 26060802575"). If we then
+        # bump master_oid on collision and blindly preserve the
+        # AI-extracted value, the resulting row would carry an
+        # order_id that points at someone else's master — exactly the
+        # bug that produced our 6 duplicate pairs in May/June.
+        #
+        # Treat user_order_id as EXPLICIT only when it is non-empty
+        # AND differs from the FIRST master_oid candidate. Anything
+        # else (empty, equal to the initial master, or equal to a
+        # bumped retry value) gets overwritten with the final
+        # `master_oid` after the retry loop completes.
+        initial_master_oid = master_oid
         # Best-effort uniqueness guard — counter is atomic but defensive.
+        # Phase-29 — the uniqueness check is now GLOBAL (no `user_id`
+        # filter) so cross-user counter collisions are caught and
+        # retried too.
         retries = 0
-        while await db.pending_orders.find_one({"master_order_id": master_oid}, {"_id": 1}):
+        while await db.pending_orders.find_one(
+            {"master_order_id": master_oid}, {"_id": 1},
+        ):
             master_oid = await generate_master_order_id()
             retries += 1
             if retries > 5:
@@ -2806,10 +2826,15 @@ async def smart_paste_create(
                     status_code=500,
                     detail="Could not allocate a unique Master Order ID — retry.",
                 )
+        order_id_explicit = bool(user_order_id) and (
+            user_order_id != initial_master_oid
+            and user_order_id != master_oid
+        )
         fields["master_order_id"] = master_oid
-        if not user_order_id:
-            user_order_id = master_oid
-        fields["order_id"] = user_order_id
+        if order_id_explicit:
+            fields["order_id"] = user_order_id
+        else:
+            fields["order_id"] = master_oid
     else:
         if not user_order_id:
             raise HTTPException(

@@ -212,7 +212,12 @@ def init() -> None:
             "imported_status": "",
             "imported_at":     "",
             "master_order_id": master_oid,
-            "order_id":        master_oid,
+            # Phase-29 — prefer the storefront's external cart ID as the
+            # user-facing order_id when present (Shopify / WooCommerce /
+            # other carts often carry their own customer-visible code).
+            # Falling back to `master_oid` keeps the legacy behaviour for
+            # carts that have no external id at all.
+            "order_id":        (c.get("external_cart_id") or "").strip() or master_oid,
             "external_order_id": c.get("external_cart_id") or "",
             "customer_name":   c.get("customer_name") or "",
             "customer_phone":  c.get("customer_phone") or "",

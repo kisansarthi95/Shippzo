@@ -193,6 +193,26 @@ def init() -> None:
         auto_gen = bool(settings_doc.get("order_id_auto_generate", True))
         incoming_master = str(data.get("master_order_id") or "").strip()
         user_order_id = str(data.get("order_id") or "").strip()
+
+        # Phase-29 TOCTOU fix
+        # ------------------------------------------------------------
+        # The Add-Shipment form pre-fills `order_id` from the
+        # /api/orders/master-id-counter peek endpoint with the SAME
+        # value as `master_order_id`. If our collision-retry loop below
+        # has to bump `master_oid` to a fresh value, the stale prefill
+        # in `order_id` would survive untouched and the two columns
+        # would diverge for the row we're about to insert.
+        #
+        # Detect whether `order_id` is genuine (typed by the user, or
+        # supplied by an external import / webhook) vs. an auto-prefill
+        # that mirrors the peek master. We treat the value as PREFILL
+        # iff it equals `incoming_master` byte-for-byte; in every other
+        # case (empty, different number, alphanumeric custom code) we
+        # preserve it verbatim.
+        order_id_explicit = bool(user_order_id) and (
+            user_order_id != incoming_master
+        )
+
         if auto_gen:
             if incoming_master and re.match(r"^\d{6}\d{5,}$", incoming_master):
                 # Frontend sent a pre-allocated master ID — trust it
@@ -202,8 +222,7 @@ def init() -> None:
                 master_oid = await generate_master_order_id()
             retries = 0
             while await db.shipments.find_one(
-                {"master_order_id": master_oid,
-                 "user_id": current_user["id"]}, {"_id": 1},
+                {"master_order_id": master_oid}, {"_id": 1},
             ):
                 master_oid = await generate_master_order_id()
                 retries += 1
@@ -216,9 +235,13 @@ def init() -> None:
                         ),
                     )
             data["master_order_id"] = master_oid
-            if not user_order_id:
-                user_order_id = master_oid
-            data["order_id"] = user_order_id
+            if order_id_explicit:
+                # User typed / external source — leave their value alone.
+                data["order_id"] = user_order_id
+            else:
+                # Auto-prefill (or empty) — sync to the FINAL master id
+                # so the two columns never diverge after retry.
+                data["order_id"] = master_oid
         else:
             if not user_order_id:
                 raise HTTPException(
