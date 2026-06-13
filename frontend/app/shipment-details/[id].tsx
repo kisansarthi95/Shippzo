@@ -323,11 +323,51 @@ export default function ShipmentDetailsScreen() {
           <Row label="Courier"          value={ship.courier_name} />
           <Row label="Payment Mode"     value={ship.payment_mode} />
           {ship.payment_mode === "COD" ? (
-            <Row label="COD Amount"     value={fmtMoney(ship.cod_amount || ship.amount)} />
+            // Phase-30 — when a token / advance was collected, split
+            // the COD figure into three explicit rows so the operator
+            // can see at a glance what the courier will collect vs.
+            // what was already paid online. The math is exactly what
+            // the prompt specified:
+            //   Total Order Value = cod_amount
+            //   Token / Advance   = token_amount
+            //   COD to Collect    = cod_amount − token_amount
+            // (No token? Keep the existing one-line summary.)
+            Number(ship.token_amount || 0) > 0 ? (
+              <>
+                <Row
+                  label="Total Order Value"
+                  value={fmtMoney(ship.cod_amount || 0)}
+                />
+                <Row
+                  label="Token / Advance"
+                  value={fmtMoney(ship.token_amount || 0)}
+                />
+                <Row
+                  label="COD to Collect"
+                  value={fmtMoney(
+                    Math.max(0,
+                      Number(ship.cod_amount || 0)
+                      - Number(ship.token_amount || 0),
+                    ),
+                  )}
+                />
+              </>
+            ) : (
+              <Row
+                label="COD Amount"
+                value={fmtMoney(ship.cod_amount || ship.amount)}
+              />
+            )
           ) : (
             <Row label="Amount"         value={fmtMoney(ship.amount)} />
           )}
-          {!!ship.token_amount && (
+          {/*
+            Standalone Token / Advance row — kept for non-COD orders
+            (e.g. Prepaid with a partial advance). For COD orders the
+            token is shown above inside the 3-row breakdown so we omit
+            the standalone copy to avoid duplication.
+          */}
+          {!!ship.token_amount && ship.payment_mode !== "COD" && (
             <Row label="Token / Advance" value={fmtMoney(ship.token_amount)} />
           )}
           <Row label="Items"            value={itemsTxt} />

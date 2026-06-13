@@ -168,7 +168,14 @@ function receiverBlock(s: Shipment) {
 }
 
 function singleLabel(s: Shipment, sender: SenderAddress, opts: LabelOptions) {
-  const amt = s.amount || s.cod_amount || 0;
+  // Phase-30 — print labels MUST show the actual collectable COD
+  // (`cod_amount`), not the gross order total (`amount`). After the
+  // Phase-30 backend fix, `cod_amount` carries what the courier will
+  // collect at delivery and `amount` carries the gross order value
+  // (cod + token). Preferring `cod_amount` ensures the figure on
+  // the printed label matches what the operator typed in the form
+  // and what the customer is expected to hand over to the rider.
+  const amt = s.cod_amount || s.amount || 0;
   const brandName = opts.brand?.name?.trim() || sender.name || "Courier Label Manager";
   const logo = opts.brand?.logo_base64?.trim();
   const logoImg = logo
@@ -240,8 +247,14 @@ function singleLabel(s: Shipment, sender: SenderAddress, opts: LabelOptions) {
 
   // Token / advance info (only if toggled on AND COD with real advance).
   // For PAID/Prepaid orders we never show this box (no confusion possible).
+  //
+  // Phase-30 — fall back to `amount` only if `cod_amount` is unset
+  // (legacy rows from before the field was introduced). On any row
+  // saved by the current backend, `cod_amount` is the value the
+  // operator typed and is what should appear on every customer-facing
+  // surface — including this advance-confirmation strip.
   const tokenAmt = Number((s as any).token_amount || 0);
-  const amtNum = Number(s.amount || 0);
+  const amtNum = Number(s.cod_amount || s.amount || 0);
   const tokenFooterBlock = (lf.token_info && tokenAmt > 0 && s.payment_mode === "COD")
     ? `<div class="token-box">
          <span class="tk-label">💰 Paid Advance:</span>
