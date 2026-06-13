@@ -23009,14 +23009,58 @@ backend:
               D29 GET /api/admin/whatsapp-provider/config (admin)   → 200
 
 metadata:
-  test_sequence: 30
-  last_phase: "phase-29-server-refactor"
+  test_sequence: 31
+  last_phase: "phase-31-sheet-extended-columns"
 
 test_plan:
-  current_focus: []
+  current_focus:
+    - "Phase-31 Google Sheets extended columns (16+ new fields)"
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
+
+backend:
+  - task: "Phase-31 Google Sheets Extended Columns (35 total)"
+    implemented: true
+    working: "NA"
+    file: "/app/backend/sheet_writer.py, /app/backend/server.py, /app/backend/user_sheet_sync.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: |
+            Extended sheet_writer.COLUMNS from 19 to 35 to include the
+            16 new shipment-fidelity fields:
+              courier_name, courier_id, tracking_id, customer_email,
+              customer_gstin, address_line2, box_dimensions,
+              shipment_notes, category, variant_name, package_type,
+              dispatched_at, shipped_at, delivered_at, imported_status,
+              custom_values.
+
+            Updated function signatures + row_values builders in:
+              - sheet_writer.append_order_row()
+              - sheet_writer.append_order_row_to_user_sheet()
+              - server._row_to_master_payload()
+              - server._backup_shipment_to_master_sheet()
+              - server smart-paste sheet_append_order_row call (line ~2910)
+              - server smart-paste user-sheet sheet_append_user call
+              - user_sheet_sync._row_payload_from_shipment()
+
+            custom_values dict is serialized as "k1=v1; k2=v2" string
+            so it fits in one sheet cell.
+
+            Header row range for user-sheet auto-create updated from
+            "A1:S1" to dynamic last-col letter (now AI1 for 35 cols).
+
+            Existing call-sites pass full shipment.model_dump() / fields
+            dict, so they automatically include the new keys with empty
+            defaults. Smoke test should confirm:
+              1. POST /api/shipments (Add) — succeeds, sheet append OK.
+              2. POST /api/orders/pending/{id}/ship — sheet append OK.
+              3. POST /api/orders/paste (Smart Paste) — sheet append OK.
+              4. GET /api/admin/master-sheet/header — returns 35-cell array.
 
 agent_communication:
     -agent: "testing"

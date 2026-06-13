@@ -1,0 +1,52 @@
+{
+  "summary": "Phase-31 Google Sheets payload mapping update — backend testing complete. 7/7 tests passed (100%). All 5 call-sites of sheet_writer.append_order_row now correctly thread the 16 new Phase-31 kwargs (courier_name, courier_id, tracking_id, customer_email, customer_gstin, address_line2, box_dimensions, shipment_notes, category, variant_name, package_type, dispatched_at, shipped_at, delivered_at, imported_status, custom_values) without TypeError. Verified real Master Sheet writes hit columns A→AI (35 columns) successfully: 'All Master Data'!A269:AI269 (smart-paste) and A271:AI271 (add-shipment). Regression endpoints (articles, whatsapp-provider config, analytics overview) all green.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_phase31_sheet_payload.py",
+    "/app/test_reports/pytest/pytest_iteration_4.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "sheet_writer.COLUMNS now has 35 entries — column letter for last column is AI (verified by real append updated_range A269:AI269).",
+    "append_order_row() and append_order_row_to_user_sheet() signatures both extended with the same 16 Phase-31 kwargs (defaulting to '') — backward-compatible with old callers.",
+    "_backup_shipment_to_master_sheet (server.py:1763) builds phase31_kwargs dict and forwards via **kwargs.",
+    "Smart Paste path (server.py:2911) builds phase31_smartpaste dict and forwards via **kwargs.",
+    "Background retry worker (server.py:5501) calls sheet_append_order_row(**payload) — payload now naturally includes the new keys when shipments are deferred.",
+    "_row_to_master_payload (server.py:1443) extracts new fields from user-sheet rows when mapped.",
+    "user_sheet_sync._row_payload_from_shipment passes all 16 Phase-31 fields when mirroring to the user's personal sheet.",
+    "custom_values dict serialization: sheet_writer.append_order_row correctly serializes dict→'k=v; k=v' string for sheet display."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_phase31_sheet_payload.py (NEW — Phase-31 regression suite)"
+  ],
+  "success_rate": {
+    "backend": "100% (7/7 tests passed)",
+    "frontend": "n/a (testing_type=backend only)"
+  },
+  "seed_data_creation": "Created 1 shipment per run (TEST_P31_<uuid>) and 1 pending-order → ship promotion per run (TEST_P31_PASTE_<uuid>). Each test write generated real Master Sheet rows in 'All Master Data' tab at columns A→AI (35 columns).",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Phase-31 column extension verified end-to-end. Master Sheet writes confirmed at column AI (35 cols). All 5 call-sites pass new kwargs correctly: (1) POST /api/shipments via _backup_shipment_to_master_sheet, (2) POST /api/smart-paste direct call, (3) POST /api/orders/pending/{id}/ship via _backup_shipment_to_master_sheet, (4) background _sync_user_sheet_to_master_bg via _row_to_master_payload, (5) deferred retry worker via stored payload dict. No regressions in /api/shipments, /api/articles, /api/admin/whatsapp-provider/config, /api/analytics/overview.",
+  "phase31_verification": {
+    "shipments_post_status": 200,
+    "smart_paste_post_status": 200,
+    "ship_pending_post_status": 200,
+    "shipments_get_status": 200,
+    "articles_get_status": 200,
+    "whatsapp_provider_config_get_status": 200,
+    "analytics_overview_get_status": 200,
+    "sheet_append_evidence": [
+      "'All Master Data'!A269:AI269 (smart-paste in test run)",
+      "'All Master Data'!A271:AI271 (add-shipment in test run)"
+    ]
+  }
+}

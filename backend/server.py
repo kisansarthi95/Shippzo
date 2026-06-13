@@ -1445,6 +1445,9 @@ def _row_to_master_payload(
 ) -> Dict[str, str]:
     """Translate a user-sheet row + column mapping into the kwargs that
     `sheet_writer.append_order_row` expects. Missing fields become "".
+
+    Phase-31: now also extracts courier/tracking/dimension/timestamp/
+    misc columns when the user has mapped them in their sheet config.
     """
     def m(key: str) -> str:
         col = mapping.get(key)
@@ -1466,6 +1469,22 @@ def _row_to_master_payload(
         "weight": m("weight"),
         "alt_phone": m("alt_phone"),
         "token_amount": m("token_amount"),
+        # ── Phase-31 extensions ──
+        "courier_name": m("courier_name"),
+        "courier_id": m("courier_id"),
+        "tracking_id": m("tracking_id"),
+        "customer_email": m("customer_email"),
+        "customer_gstin": m("customer_gstin"),
+        "address_line2": m("address_line2"),
+        "box_dimensions": m("box_dimensions"),
+        "shipment_notes": m("shipment_notes"),
+        "category": m("category"),
+        "variant_name": m("variant_name"),
+        "package_type": m("package_type"),
+        "dispatched_at": m("dispatched_at"),
+        "shipped_at": m("shipped_at"),
+        "delivered_at": m("delivered_at"),
+        "imported_status": m("imported_status"),
     }
 
 
@@ -1776,6 +1795,29 @@ async def _backup_shipment_to_master_sheet(
         or (current_user.get("email", "").split("@")[0])
         or current_user.get("id", "")[:8]
     )
+
+    # ── Phase-31 extension snapshot ──
+    # Pull through the shipment-fidelity columns for the Master Sheet.
+    # Empty strings preserve column alignment when a field is unset.
+    phase31_kwargs: Dict[str, Any] = {
+        "courier_name":    str(data.get("courier_name") or ""),
+        "courier_id":      str(data.get("courier_id") or ""),
+        "tracking_id":     str(data.get("tracking_id") or ""),
+        "customer_email":  str(data.get("customer_email") or ""),
+        "customer_gstin":  str(data.get("customer_gstin") or ""),
+        "address_line2":   str(data.get("address_line2") or ""),
+        "box_dimensions":  str(data.get("box_dimensions") or ""),
+        "shipment_notes":  str(data.get("shipment_notes") or ""),
+        "category":        str(data.get("category") or ""),
+        "variant_name":    str(data.get("variant_name") or ""),
+        "package_type":    str(data.get("package_type") or ""),
+        "dispatched_at":   str(data.get("dispatched_at") or ""),
+        "shipped_at":      str(data.get("shipped_at") or ""),
+        "delivered_at":    str(data.get("delivered_at") or ""),
+        "imported_status": str(data.get("imported_status") or ""),
+        "custom_values":   data.get("custom_values") or {},
+    }
+
     try:
         return sheet_append_order_row(
             user_id=current_user["id"],
@@ -1796,6 +1838,7 @@ async def _backup_shipment_to_master_sheet(
             payment_mode=str(data.get("payment_mode") or "") or "",
             status=str(data.get("status") or "Pending") or "Pending",
             notice=notice,
+            **phase31_kwargs,
         )
     except Exception as e:
         if _is_transient_sheet_error(e):
@@ -1828,6 +1871,7 @@ async def _backup_shipment_to_master_sheet(
                     "payment_mode": str(data.get("payment_mode") or "") or "",
                     "status": str(data.get("status") or "Pending") or "Pending",
                     "notice": notice,
+                    **phase31_kwargs,
                 },
             }
         # Permanent failure — auth, missing sheet, etc. Surface to caller.
@@ -2858,11 +2902,30 @@ async def smart_paste_create(
             )
             # Phase-B: pass the new columns (user_name, master_order_id,
             # alt_phone, token_amount, weight) for the extended Master Sheet.
+            # Phase-31: also pass courier/tracking/dimension/timestamp fields.
             user_name_val = (
                 current_user.get("full_name")
                 or current_user.get("email", "").split("@")[0]
                 or current_user.get("id", "")[:8]
             )
+            phase31_smartpaste: Dict[str, Any] = {
+                "courier_name":    str(fields.get("courier_name") or ""),
+                "courier_id":      str(fields.get("courier_id") or ""),
+                "tracking_id":     str(fields.get("tracking_id") or ""),
+                "customer_email":  str(fields.get("customer_email") or ""),
+                "customer_gstin":  str(fields.get("customer_gstin") or ""),
+                "address_line2":   str(fields.get("address_line2") or ""),
+                "box_dimensions":  str(fields.get("box_dimensions") or ""),
+                "shipment_notes":  str(fields.get("shipment_notes") or ""),
+                "category":        str(fields.get("category") or ""),
+                "variant_name":    str(fields.get("variant_name") or ""),
+                "package_type":    str(fields.get("package_type") or ""),
+                "dispatched_at":   str(fields.get("dispatched_at") or ""),
+                "shipped_at":      str(fields.get("shipped_at") or ""),
+                "delivered_at":    str(fields.get("delivered_at") or ""),
+                "imported_status": str(fields.get("imported_status") or ""),
+                "custom_values":   fields.get("custom_values") or {},
+            }
             sheet_meta = sheet_append_order_row(
                 user_id=current_user["id"],
                 user_name=user_name_val,
@@ -2882,6 +2945,7 @@ async def smart_paste_create(
                 payment_mode=fields.get("payment_mode", "") or "",
                 status="Pending",
                 notice="via Smart Paste",
+                **phase31_smartpaste,
             )
             logger.info(f"Sheet append OK: {sheet_meta.get('updated_range')}")
         except Exception as e:
@@ -2946,6 +3010,7 @@ async def smart_paste_create(
                     payment_mode=fields.get("payment_mode", "") or "",
                     status="Pending",
                     notice="via Smart Paste",
+                    **phase31_smartpaste,
                 )
                 logger.info(
                     f"User-sheet append OK: {user_sheet_meta.get('updated_range')}"

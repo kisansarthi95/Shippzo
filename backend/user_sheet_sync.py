@@ -56,7 +56,12 @@ async def _load_user_sheet_cfg(db, user_id: str) -> Dict[str, Any]:
 
 def _row_payload_from_shipment(s: Dict[str, Any], user: Dict[str, Any]) -> Dict[str, Any]:
     """Build the keyword-arg dict expected by
-    `append_order_row_to_user_sheet`."""
+    `append_order_row_to_user_sheet`.
+
+    Phase-31: now passes courier/tracking/dimension/timestamp/misc
+    columns so the user's own sheet mirrors the full Master Sheet
+    schema (35 columns).
+    """
     return dict(
         user_id=user.get("id", "") or "",
         user_name=user.get("name") or user.get("email", "") or "",
@@ -76,6 +81,23 @@ def _row_payload_from_shipment(s: Dict[str, Any], user: Dict[str, Any]) -> Dict[
         payment_mode=s.get("payment_mode") or "",
         status=s.get("status") or "Pending",
         notice="auto-sync",
+        # ── Phase-31 extensions ──
+        courier_name=str(s.get("courier_name") or ""),
+        courier_id=str(s.get("courier_id") or ""),
+        tracking_id=str(s.get("tracking_id") or ""),
+        customer_email=str(s.get("customer_email") or ""),
+        customer_gstin=str(s.get("customer_gstin") or ""),
+        address_line2=str(s.get("address_line2") or ""),
+        box_dimensions=str(s.get("box_dimensions") or ""),
+        shipment_notes=str(s.get("shipment_notes") or ""),
+        category=str(s.get("category") or ""),
+        variant_name=str(s.get("variant_name") or ""),
+        package_type=str(s.get("package_type") or ""),
+        dispatched_at=str(s.get("dispatched_at") or ""),
+        shipped_at=str(s.get("shipped_at") or ""),
+        delivered_at=str(s.get("delivered_at") or ""),
+        imported_status=str(s.get("imported_status") or ""),
+        custom_values=s.get("custom_values") or {},
     )
 
 

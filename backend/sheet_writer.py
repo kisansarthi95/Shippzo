@@ -88,16 +88,40 @@ def _with_retry(fn: Callable, *args, attempts: int = 4, base: float = 1.0, **kwa
 
 # Column order MUST match the Master Sheet headers exactly (left → right).
 # Phase-B (2026-04) — extended schema with user_name, master_order_id,
-# alt_phone, token_amount, weight. Existing columns kept in original
-# positions for backward compatibility; new columns appended at END so
-# admins can safely add the new header cells without shifting old data.
+# alt_phone, token_amount, weight.
+# Phase-31 (2026-06) — additional 16 columns appended for full shipment
+# fidelity in Sheets exports / Master backups:
+#   courier_name, courier_id, tracking_id, customer_email,
+#   customer_gstin, address_line2, box_dimensions, shipment_notes,
+#   category, variant_name, package_type, dispatched_at, shipped_at,
+#   delivered_at, imported_status, custom_values.
+# All new columns appended at END so existing rows / Master Sheet
+# headers don't shift positions; admins extend the header row by
+# pasting `get_master_sheet_header_row()`'s output into row 1.
 COLUMNS = [
     "timestamp", "user_id", "order_id", "name", "phone", "address",
     "city", "state", "pincode", "item_type", "amount",
     "payment_mode", "status", "notice",
     # ── Phase-B extensions ──
     "user_name", "master_order_id", "alt_phone", "token_amount", "weight",
+    # ── Phase-31 extensions ──
+    "courier_name", "courier_id", "tracking_id", "customer_email",
+    "customer_gstin", "address_line2", "box_dimensions",
+    "shipment_notes", "category", "variant_name", "package_type",
+    "dispatched_at", "shipped_at", "delivered_at", "imported_status",
+    "custom_values",
 ]
+
+
+def get_master_sheet_header_row() -> List[str]:
+    """Return the header row admins should paste into the Master Sheet's
+    row 1 so column headings match the Phase-31 extended schema.
+
+    Title-cases each `COLUMNS` entry and converts underscores to
+    spaces (e.g. `master_order_id` → `Master Order Id`). Idempotent —
+    pasting it again is a no-op.
+    """
+    return [c.replace("_", " ").title() for c in COLUMNS]
 
 
 def _get_worksheet():
@@ -738,6 +762,23 @@ def append_order_row(
     alt_phone: str = "",
     token_amount: Any = "",
     weight: str = "",
+    # ── Phase-31 extensions ──
+    courier_name: str = "",
+    courier_id: str = "",
+    tracking_id: str = "",
+    customer_email: str = "",
+    customer_gstin: str = "",
+    address_line2: str = "",
+    box_dimensions: str = "",
+    shipment_notes: str = "",
+    category: str = "",
+    variant_name: str = "",
+    package_type: str = "",
+    dispatched_at: str = "",
+    shipped_at: str = "",
+    delivered_at: str = "",
+    imported_status: str = "",
+    custom_values: Any = "",
 ) -> Dict[str, Any]:
     """
     Append one row to the Master Sheet at the first guaranteed-empty row.
@@ -745,15 +786,25 @@ def append_order_row(
     Unlike gspread's `append_row`, this writes to an explicit row index
     computed via `_find_next_empty_row`, so rows that were previously
     soft-deleted (Status="DELETED") are preserved forever — no accidental
-    overwrite. Returns {"ok": True, "updated_range": "'Tab'!A<n>:S<n>",
+    overwrite. Returns {"ok": True, "updated_range": "'Tab'!A<n>:AI<n>",
     "tab": ..., "sheet_id": ...} on success. Raises on failure.
 
-    Phase-B note: 19 columns total. New columns (user_name, master_order_id,
-    alt_phone, token_amount, weight) are appended at the END so existing
-    rows / headers don't shift positions.
+    Phase-31 note: 35 columns total. New columns (courier_name, courier_id,
+    tracking_id, customer_email, customer_gstin, address_line2,
+    box_dimensions, shipment_notes, category, variant_name, package_type,
+    dispatched_at, shipped_at, delivered_at, imported_status, custom_values)
+    are appended at the END so existing rows / headers don't shift.
     """
     ws = _get_worksheet()
     ts = datetime.now(timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M:%S")
+
+    # Serialize custom_values dict → "k1=v1; k2=v2" for sheet display.
+    if isinstance(custom_values, dict):
+        custom_values_str = "; ".join(
+            f"{k}={v}" for k, v in custom_values.items() if v not in (None, "")
+        )
+    else:
+        custom_values_str = str(custom_values) if custom_values not in (None, "") else ""
 
     row_values = [
         ts, user_id, order_id, name, phone, address,
@@ -766,6 +817,23 @@ def append_order_row(
         alt_phone,
         str(token_amount) if token_amount not in (None, "") else "",
         weight,
+        # ── Phase-31 extensions (positions 20–35) ──
+        courier_name,
+        courier_id,
+        tracking_id,
+        customer_email,
+        customer_gstin,
+        address_line2,
+        box_dimensions,
+        shipment_notes,
+        category,
+        variant_name,
+        package_type,
+        dispatched_at,
+        shipped_at,
+        delivered_at,
+        imported_status,
+        custom_values_str,
     ]
 
     # Use a cached "next free row" counter to skip the expensive
@@ -841,6 +909,23 @@ def append_order_row_to_user_sheet(
     alt_phone: str = "",
     token_amount: Any = "",
     weight: str = "",
+    # ── Phase-31 extensions ──
+    courier_name: str = "",
+    courier_id: str = "",
+    tracking_id: str = "",
+    customer_email: str = "",
+    customer_gstin: str = "",
+    address_line2: str = "",
+    box_dimensions: str = "",
+    shipment_notes: str = "",
+    category: str = "",
+    variant_name: str = "",
+    package_type: str = "",
+    dispatched_at: str = "",
+    shipped_at: str = "",
+    delivered_at: str = "",
+    imported_status: str = "",
+    custom_values: Any = "",
 ) -> Dict[str, Any]:
     """Phase-B: Write the SAME row to the user's own (per-user) sheet so
     they have a personal copy without admin / cross-tenant leakage.
@@ -856,6 +941,14 @@ def append_order_row_to_user_sheet(
         return {"ok": False, "skipped": True, "reason": "no sheet_id"}
     ws = _open_user_sheet(sheet_id, tab_name or "0")
     ts = datetime.now(timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M:%S")
+
+    if isinstance(custom_values, dict):
+        custom_values_str = "; ".join(
+            f"{k}={v}" for k, v in custom_values.items() if v not in (None, "")
+        )
+    else:
+        custom_values_str = str(custom_values) if custom_values not in (None, "") else ""
+
     row_values = [
         ts, user_id, order_id, name, phone, address,
         city, state, pincode, item_type,
@@ -866,6 +959,23 @@ def append_order_row_to_user_sheet(
         alt_phone,
         str(token_amount) if token_amount not in (None, "") else "",
         weight,
+        # ── Phase-31 extensions ──
+        courier_name,
+        courier_id,
+        tracking_id,
+        customer_email,
+        customer_gstin,
+        address_line2,
+        box_dimensions,
+        shipment_notes,
+        category,
+        variant_name,
+        package_type,
+        dispatched_at,
+        shipped_at,
+        delivered_at,
+        imported_status,
+        custom_values_str,
     ]
     # Auto-create header row if the sheet appears empty (no header yet).
     try:
@@ -875,7 +985,8 @@ def append_order_row_to_user_sheet(
     if not first_row:
         try:
             header = [c.replace("_", " ").title() for c in COLUMNS]
-            ws.update("A1:S1", [header], value_input_option="USER_ENTERED")
+            last_col = _col_letter(len(COLUMNS))
+            ws.update(f"A1:{last_col}1", [header], value_input_option="USER_ENTERED")
         except Exception:
             log.warning("Could not write header row to user sheet — appending anyway")
 
