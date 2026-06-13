@@ -160,26 +160,34 @@ def init() -> None:
             if c:
                 data["courier_name"] = c.get("name", "")
         if data.get("payment_mode") == "COD":
-            # Phase-42 — COD balance = total order amount − token / advance
-            # already paid online. The customer hands the courier the
-            # REMAINING balance on delivery, not the full order amount.
-            # Storing `cod_amount = total` (the previous behaviour) caused
-            # couriers to collect the full order amount even when the
-            # customer had pre-paid a token, which was a real-money
-            # collection bug.
+            # Phase-30 (2026-06-10) — semantics of the `cod_amount` field
+            # CORRECTED.
             #
-            # Defensive max(0, …) keeps cod_amount non-negative if a
-            # token equal-or-greater-than the total ever slips through
-            # (rare, but possible when a "fully prepaid" order is
-            # mis-tagged as COD by upstream sync).
-            _amt   = float(data.get("amount")        or 0)
-            _token = float(data.get("token_amount")  or 0)
-            data["cod_amount"] = max(0.0, _amt - _token)
+            # The previous Phase-42 implementation treated the "Amount"
+            # input on the New-Shipment form as the *total order value*
+            # and subtracted any token / advance to derive what the
+            # courier would collect at delivery. That math was wrong
+            # because the form's "COD Amount" field ALREADY represents
+            # what the courier will collect — operators enter the
+            # post-advance balance directly. Subtracting `token_amount`
+            # a second time double-discounted the order and shipped
+            # under-billed labels.
+            #
+            # New rule:
+            #   cod_amount = the value the operator typed verbatim (no
+            #                math).
+            #   amount     = total order value = cod_amount + token_amount
+            #                (so the receipt / accounting reports still
+            #                show the gross order value).
+            _typed = float(data.get("amount")       or 0)
+            _token = float(data.get("token_amount") or 0)
+            data["cod_amount"] = _typed
+            data["amount"]     = _typed + _token
         else:
+            # Prepaid / other modes — keep the entered amount as the
+            # total, no COD collection.
             data["cod_amount"] = 0.0
-        data["amount"] = float(
-            data.get("amount") or data.get("cod_amount") or 0,
-        )
+            data["amount"] = float(data.get("amount") or 0)
         if data.get("items") is None:
             data["items"] = []
         if data.get("custom_values") is None:

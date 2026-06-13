@@ -1213,10 +1213,18 @@ export default function AddShipment() {
           state: state.trim(),
           pincode: pincode.trim(),
           payment_mode: paymentMode,
-          amount: Number(amount) || 0,
-          cod_amount: paymentMode === "COD"
-            ? Math.max(0, (Number(amount) || 0) - (Number(tokenAmount) || 0))
-            : 0,
+          // Phase-30 — `amount` is the gross order value (COD + token).
+          // The "Amount" input on the form represents what the courier
+          // will collect at delivery; the token is added back here so
+          // accounting reports & receipts still show the full order
+          // value. The backend mirrors this math in shipments_write.py.
+          amount: paymentMode === "COD"
+            ? (Number(amount) || 0) + (Number(tokenAmount) || 0)
+            : (Number(amount) || 0),
+          // The entered value goes through to cod_amount verbatim —
+          // operators type the post-advance balance directly, so any
+          // extra subtraction here would double-discount the order.
+          cod_amount: paymentMode === "COD" ? (Number(amount) || 0) : 0,
           token_amount: Number(tokenAmount) || 0,
           box_dimensions: boxDimensions.trim(),
           shipment_notes: shipmentNotes.trim(),
@@ -2412,7 +2420,13 @@ export default function AddShipment() {
                 </View>
                 <View style={{ flex: 1 }}>
                   {(() => {
-                    const total = Number(amount) || 0;
+                    // Phase-30 — the "Amount" field IS the COD value
+                    // the operator wants the courier to collect (no
+                    // longer the gross order total minus token). The
+                    // preview now mirrors the typed value verbatim
+                    // so what the operator sees in this chip is
+                    // exactly what shows up on the printed label.
+                    const cod = Number(amount) || 0;
                     const tok = Number(tokenAmount) || 0;
                     if (paymentMode === "Prepaid") {
                       return (
@@ -2423,7 +2437,6 @@ export default function AddShipment() {
                         </View>
                       );
                     }
-                    const cod = Math.max(0, total - tok);
                     return (
                       <View style={[styles.input, { justifyContent: "center", backgroundColor: "#F9FAFB" }]}>
                         <Text style={{ color: tok > 0 ? colors.primary : "#9CA3AF", fontWeight: "700" }}>
