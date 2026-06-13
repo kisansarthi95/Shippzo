@@ -471,7 +471,10 @@ def init() -> None:
                 row.append(str(v))
             writer.writerow(row)
 
-        csv_body = buf.getvalue()
+        # Prepend a UTF-8 BOM so Excel / Numbers / LibreOffice open the
+        # download with the correct encoding and Indic / accented
+        # characters render right out of the box.
+        csv_body = "\ufeff" + buf.getvalue()
         # ASCII-safe filename + UTF-8 starred form so non-Latin shop
         # names survive Content-Disposition encoding.
         safe_email = re.sub(r"[^A-Za-z0-9_\-\.]", "_", target.get("email", "user"))

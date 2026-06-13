@@ -272,7 +272,10 @@ def init() -> None:
                 d.get("cancelled_at", ""),
                 d.get("returned_at", ""),
             ])
-        return buf.getvalue()
+        # Prepend a UTF-8 BOM so Excel / Numbers / LibreOffice open the
+        # download with the correct encoding and Indic / accented
+        # characters render right out of the box.
+        return "\ufeff" + buf.getvalue()
 
     @shipments_read_router.get(
         "/shipments/export/csv", response_class=PlainTextResponse
