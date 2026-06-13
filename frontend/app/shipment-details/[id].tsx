@@ -323,20 +323,27 @@ export default function ShipmentDetailsScreen() {
           <Row label="Courier"          value={ship.courier_name} />
           <Row label="Payment Mode"     value={ship.payment_mode} />
           {ship.payment_mode === "COD" ? (
-            // Phase-30 — when a token / advance was collected, split
-            // the COD figure into three explicit rows so the operator
-            // can see at a glance what the courier will collect vs.
-            // what was already paid online. The math is exactly what
-            // the prompt specified:
-            //   Total Order Value = cod_amount
-            //   Token / Advance   = token_amount
-            //   COD to Collect    = cod_amount − token_amount
-            // (No token? Keep the existing one-line summary.)
+            // Phase-30 (rev-2) — operators type the Token and the COD
+            // amount as TWO INDEPENDENT values; we never subtract one
+            // from the other. So when a token was collected the
+            // breakdown reads:
+            //   Total Order Value = cod_amount + token_amount  (= `amount`
+            //                       on the row, the gross value kept for
+            //                       accounting / receipts).
+            //   Token / Advance   = token_amount (already paid online).
+            //   COD to Collect    = cod_amount  (verbatim — exactly what
+            //                       the courier will collect at delivery,
+            //                       same number as printed on the label).
+            // When no token was collected we just show the single legacy
+            // "COD Amount" row.
             Number(ship.token_amount || 0) > 0 ? (
               <>
                 <Row
                   label="Total Order Value"
-                  value={fmtMoney(ship.cod_amount || 0)}
+                  value={fmtMoney(
+                    Number(ship.cod_amount || 0)
+                    + Number(ship.token_amount || 0),
+                  )}
                 />
                 <Row
                   label="Token / Advance"
@@ -344,12 +351,7 @@ export default function ShipmentDetailsScreen() {
                 />
                 <Row
                   label="COD to Collect"
-                  value={fmtMoney(
-                    Math.max(0,
-                      Number(ship.cod_amount || 0)
-                      - Number(ship.token_amount || 0),
-                    ),
-                  )}
+                  value={fmtMoney(ship.cod_amount || 0)}
                 />
               </>
             ) : (
