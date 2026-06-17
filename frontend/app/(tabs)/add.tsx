@@ -25,6 +25,8 @@ import { validateTrackingId } from "../../lib/trackingValidator";
 import { colors } from "../../lib/theme";
 import { useFeatureFlag } from "../../lib/feature_flags";
 import { useFieldConfig } from "../../lib/fieldConfig";
+// Phase-31 shared helper — canonical (amount, cod_amount, token) math.
+import { computeOrderAmounts } from "../../lib/orderAmounts";
 
 // AsyncStorage keys for "last used" memory — shown as hints (not defaults).
 const LS_LAST_COURIER = "@csm/lastCourierId";
@@ -1213,19 +1215,28 @@ export default function AddShipment() {
           state: state.trim(),
           pincode: pincode.trim(),
           payment_mode: paymentMode,
-          // Phase-30 — `amount` is the gross order value (COD + token).
-          // The "Amount" input on the form represents what the courier
-          // will collect at delivery; the token is added back here so
-          // accounting reports & receipts still show the full order
-          // value. The backend mirrors this math in shipments_write.py.
-          amount: paymentMode === "COD"
-            ? (Number(amount) || 0) + (Number(tokenAmount) || 0)
-            : (Number(amount) || 0),
-          // The entered value goes through to cod_amount verbatim —
-          // operators type the post-advance balance directly, so any
-          // extra subtraction here would double-discount the order.
-          cod_amount: paymentMode === "COD" ? (Number(amount) || 0) : 0,
-          token_amount: Number(tokenAmount) || 0,
+          // Phase-31 canonical math (computeOrderAmounts helper):
+          //   amount       = Total Order Value (verbatim from form).
+          //   cod_amount   = max(0, amount − token_amount) for COD,
+          //                  0 for prepaid / non-COD modes.
+          //   token_amount = advance already paid online (independent).
+          // The Phase-30 trick of adding the token into `amount`
+          // double-counted advances in downstream reports, so we
+          // now keep `amount` as the gross total and derive `cod_amount`
+          // from a single helper that every surface (form, list,
+          // details, label, WhatsApp, CSV) shares.
+          ...(() => {
+            const a = computeOrderAmounts({
+              amount,
+              token: tokenAmount,
+              paymentMode,
+            });
+            return {
+              amount: a.amount,
+              cod_amount: a.codAmount,
+              token_amount: a.tokenAmount,
+            };
+          })(),
           box_dimensions: boxDimensions.trim(),
           shipment_notes: shipmentNotes.trim(),
           items,
@@ -2352,12 +2363,12 @@ export default function AddShipment() {
                 </Text>
               </TouchableOpacity>
             </View>
-            <Field label={paymentMode === "COD" ? "COD Amount (₹)" : "Order Amount (₹)"}>
+            <Field label="Order Amount (₹)">
               <TextInput
                 testID="amount-input"
                 value={amount}
                 onChangeText={setAmount}
-                placeholder={paymentMode === "COD" ? "Amount to collect" : "Order value"}
+                placeholder={paymentMode === "COD" ? "Total order value" : "Order value"}
                 placeholderTextColor="#9CA3AF"
                 keyboardType="decimal-pad"
                 style={styles.input}
@@ -2420,14 +2431,19 @@ export default function AddShipment() {
                 </View>
                 <View style={{ flex: 1 }}>
                   {(() => {
-                    // Phase-30 — the "Amount" field IS the COD value
-                    // the operator wants the courier to collect (no
-                    // longer the gross order total minus token). The
-                    // preview now mirrors the typed value verbatim
-                    // so what the operator sees in this chip is
-                    // exactly what shows up on the printed label.
-                    const cod = Number(amount) || 0;
-                    const tok = Number(tokenAmount) || 0;
+                    // Phase-31 — the "Order Amount" field is now the
+                    // Total Order Value (not the post-advance COD).
+                    // The preview chip derives what the courier will
+                    // actually collect via the canonical helper:
+                    //   COD to collect = max(0, amount − token).
+                    // Mirrors the math in shipments_write.py and
+                    // computeOrderAmounts() so the preview, the
+                    // payload, and the printed label all agree.
+                    const a = computeOrderAmounts({
+                      amount,
+                      token: tokenAmount,
+                      paymentMode,
+                    });
                     if (paymentMode === "Prepaid") {
                       return (
                         <View style={[styles.input, { justifyContent: "center", backgroundColor: "#ECFDF5", borderColor: "#A7F3D0" }]}>
@@ -2439,8 +2455,8 @@ export default function AddShipment() {
                     }
                     return (
                       <View style={[styles.input, { justifyContent: "center", backgroundColor: "#F9FAFB" }]}>
-                        <Text style={{ color: tok > 0 ? colors.primary : "#9CA3AF", fontWeight: "700" }}>
-                          COD to collect: ₹{cod.toFixed(0)}
+                        <Text style={{ color: a.tokenAmount > 0 ? colors.primary : "#9CA3AF", fontWeight: "700" }}>
+                          COD to collect: ₹{a.codAmount.toFixed(0)}
                         </Text>
                       </View>
                     );

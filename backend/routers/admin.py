@@ -510,3 +510,43 @@ def init() -> None:
         if not doc:
             raise HTTPException(status_code=404, detail="Shipment not found for this user")
         return doc
+
+    # -----------------------------------------------------------------
+    # GET /admin/master-sheet/header
+    #
+    # Phase-31 (2026-06): Returns the 35-cell header row that the admin
+    # should paste into row 1 of the Master Sheet. Generated from
+    # sheet_writer.COLUMNS so it always reflects the current schema.
+    # Idempotent — pasting it again is a no-op.
+    #
+    # Response shape:
+    #   { "headers": [...], "count": 35, "last_column_letter": "AI" }
+    # -----------------------------------------------------------------
+    @admin_router.get("/master-sheet/header")
+    async def admin_master_sheet_header(
+        current_user: Dict[str, Any] = Depends(_get_current_user),
+    ):
+        _require_admin_helper(current_user)
+        try:
+            from sheet_writer import (
+                get_master_sheet_header_row,
+                COLUMNS as _COLUMNS,
+                _col_letter as _col_letter_helper,
+            )
+        except ImportError:
+            raise HTTPException(
+                status_code=503,
+                detail="Google Sheets integration not available on server.",
+            )
+        headers = get_master_sheet_header_row()
+        return {
+            "headers":            headers,
+            "count":              len(headers),
+            "last_column_letter": _col_letter_helper(len(_COLUMNS)),
+            "paste_range":        f"A1:{_col_letter_helper(len(_COLUMNS))}1",
+            "note":               (
+                "Paste this row into row 1 of your Master Sheet. "
+                "The 16 new columns at the end (Courier Name → Custom "
+                "Values) capture full shipment fidelity for Phase-31."
+            ),
+        }

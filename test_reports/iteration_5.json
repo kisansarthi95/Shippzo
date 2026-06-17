@@ -1,0 +1,46 @@
+{
+  "summary": "Phase-31 token/advance double-counting fix — backend math verified. All 7 mandated scenarios pass (POST COD with token/no-token/token>amount, POST Prepaid, PUT amount recompute, CSV COD Balance column, smart-paste→ship). Regression test (omit cod_amount from payload) also passes — no KeyError/NaN. 8/9 tests green. The 9th test is an extra edge-case I added that exposes a partial-update bug in PUT /api/shipments/{id}: when the client PUTs only `amount` (without re-sending payment_mode) on an existing COD shipment, cod_amount silently flips to 0.0 instead of recomputing as max(0, new_amount − token).",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "PUT /api/shipments/{id}",
+        "issue": "Partial-update with only `amount` (no payment_mode in payload) collapses cod_amount to 0 on existing COD shipments. routers/shipments_write.py:373-376 reads `update.get('payment_mode', '')` only — should fall back to the existing doc's payment_mode. The mandated PATCH scenario in the request passes because the test sends payment_mode='COD' alongside amount; real frontend edit-amount-only call will hit this bug.",
+        "priority": "MEDIUM"
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_phase31_cod_math.py",
+    "/app/test_reports/pytest/pytest_iteration_5.xml"
+  ],
+  "action_items": [
+    "Fix routers/shipments_write.py:357-377 — when 'amount' is in update but 'payment_mode' is NOT, read the existing shipment's payment_mode (already fetched once at line 334 in the terminal-state check, can be returned in the projection) and use it to decide the COD math branch. Otherwise PUT {amount: X} on a COD row will zero out cod_amount.",
+    "Note: the original problem statement mentions PATCH /api/shipments/{id} but the server only exposes PUT (routers/shipments_write.py:317). If a PATCH endpoint is intended, it needs to be added; otherwise update the spec/frontend to use PUT.",
+    "Optional: also project payment_mode + token_amount in the same single find_one() call at the top of update_shipment to avoid two round-trips when the amount path is taken."
+  ],
+  "critical_code_review_comments": [
+    "Canonical math is correctly applied in 3 places — POST (routers/shipments_write.py:179-187), ship-from-pending (lines 728-740), PUT (lines 357-377) — but the PUT branch only honors payment_mode coming through the update payload, not the existing row. This is a latent partial-update bug.",
+    "CSV export logic in routers/shipments_read.py:222-232 correctly prefers stored cod_amount over recomputing amount−token. Verified with row Amount=1000.00 Token=200.00 COD Balance=800.00.",
+    "Smart-paste regex parser correctly extracts 'Token: 150' via server.py:2102-2103 (TOKEN/TOKEN_AMOUNT/ADVANCE mappings). Pending order persists token_amount=150 → ship endpoint computes cod_amount=450 as expected.",
+    "Negative-clamp guard `max(0.0, _amount - _token)` confirmed for the amount=300/token=400 case → cod_amount=0 (not −100)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_phase31_cod_math.py (NEW — Phase-31 math regression suite, 9 tests)"
+  ],
+  "success_rate": {
+    "backend": "100% on mandated scenarios (8/8 required) — 89% overall (8/9 including extra edge-case)",
+    "frontend": "n/a (testing_type=backend only)"
+  },
+  "seed_data_creation": "Created ~8 TEST_P31MATH_* shipments (COD/Prepaid mix) plus 1 TEST_P31MATH_PASTE_* pending order promoted to a shipment in user2@test.com's workspace. Each is uniquely tagged with a TESTM<uuid> tracking id for easy cleanup. Master sheet rows were also written as side-effect.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Phase-31 canonical math (amount stored verbatim; cod_amount=max(0, amount-token)) is fully verified for POST /api/shipments, PUT /api/shipments/{id} (when payload includes payment_mode), POST /api/smart-paste→POST /api/orders/pending/{id}/ship, and the CSV export's 'COD Balance' column. Known latent bug: PUT with only `amount` zeros cod_amount on existing COD rows — see action_items.",
+  "rca_of_issue": "PUT /api/shipments/{id} update path at routers/shipments_write.py:373-376 evaluates `update.get('payment_mode', '') == 'COD'`. When the frontend issues a partial update containing only amount (the common 'edit just the amount' flow), payment_mode is absent from the payload, the ternary takes the else branch, and cod_amount is set to 0.0 — wiping the leftover balance for COD orders. Mitigation: also consult the previously-loaded `existing` doc (already fetched at line 334) for payment_mode when the update payload omits it."
+}

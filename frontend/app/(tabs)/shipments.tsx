@@ -1781,8 +1781,12 @@ export default function Shipments() {
               )}
               <Text style={styles.sub} numberOfLines={1}>
                 {item.courier_name} · {item.city || "—"} · {
+                  // Phase-31 — COD list subtitle shows what the courier
+                  // will collect (cod_amount = max(0, amount − token)),
+                  // not the gross total. Prepaid rows still show
+                  // `amount` since there's no COD balance to derive.
                   item.payment_mode === "COD"
-                    ? `COD ₹${item.amount || item.cod_amount}`
+                    ? `COD ₹${item.cod_amount ?? item.amount ?? 0}`
                     : `Prepaid ₹${item.amount}`
                 }
               </Text>

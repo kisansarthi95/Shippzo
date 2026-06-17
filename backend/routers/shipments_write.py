@@ -160,29 +160,26 @@ def init() -> None:
             if c:
                 data["courier_name"] = c.get("name", "")
         if data.get("payment_mode") == "COD":
-            # Phase-30 (2026-06-10) — semantics of the `cod_amount` field
-            # CORRECTED.
+            # Phase-31 (2026-06) — canonical Order-Amount math.
             #
-            # The previous Phase-42 implementation treated the "Amount"
-            # input on the New-Shipment form as the *total order value*
-            # and subtracted any token / advance to derive what the
-            # courier would collect at delivery. That math was wrong
-            # because the form's "COD Amount" field ALREADY represents
-            # what the courier will collect — operators enter the
-            # post-advance balance directly. Subtracting `token_amount`
-            # a second time double-discounted the order and shipped
-            # under-billed labels.
+            # The form's "Order Amount" field is now the Total Order
+            # Value as typed by the operator. Any advance / token is
+            # tracked separately in `token_amount`. What the courier
+            # collects at delivery is the leftover balance:
             #
-            # New rule:
-            #   cod_amount = the value the operator typed verbatim (no
-            #                math).
-            #   amount     = total order value = cod_amount + token_amount
-            #                (so the receipt / accounting reports still
-            #                show the gross order value).
-            _typed = float(data.get("amount")       or 0)
-            _token = float(data.get("token_amount") or 0)
-            data["cod_amount"] = _typed
-            data["amount"]     = _typed + _token
+            #   amount       = entered Total Order Value (verbatim)
+            #   token_amount = advance already paid online
+            #   cod_amount   = max(0, amount − token_amount)
+            #
+            # This kills the Phase-30 double-counting bug where we
+            # used to ADD the token back into `amount` AND let
+            # downstream code re-subtract it (CSV export, print
+            # label, bulk WhatsApp), inflating reports by the token
+            # amount on every COD row that had an advance.
+            _amount = float(data.get("amount")       or 0)
+            _token  = float(data.get("token_amount") or 0)
+            data["amount"]     = _amount
+            data["cod_amount"] = max(0.0, _amount - _token)
         else:
             # Prepaid / other modes — keep the entered amount as the
             # total, no COD collection.
@@ -358,8 +355,23 @@ def init() -> None:
             update.setdefault("cancelled_at", utcnow_iso())
             update.setdefault("cancel_reason", "user_action")
         if "amount" in update:
+            # Phase-31 canonical math (single source of truth):
+            #   cod_amount = max(0, amount − token_amount) for COD, else 0.
+            # When the admin edits `amount`, we also need to re-derive
+            # `cod_amount` so the leftover-balance figure stays in sync
+            # with the new total. The token may come from this same
+            # update payload OR from the existing DB row.
+            _amt = float(update["amount"] or 0)
+            _tok = float(
+                update.get("token_amount")
+                if "token_amount" in update
+                else (await db.shipments.find_one(
+                    {"id": shipment_id, "user_id": current_user["id"]},
+                    {"_id": 0, "token_amount": 1},
+                ) or {}).get("token_amount") or 0,
+            )
             update["cod_amount"] = (
-                float(update["amount"])
+                max(0.0, _amt - _tok)
                 if update.get("payment_mode", "") == "COD" else 0.0
             )
         if not update:
@@ -714,10 +726,18 @@ def init() -> None:
             "items":              items_list,
             "item_description":   items_str,
             "amount":             float(_get("amount", 0) or 0),
+            # Phase-31 canonical math: cod_amount = max(0, amount − token).
+            # The Pending row already carries the *total* `amount` and any
+            # `token_amount` separately, so we just derive the balance.
             "cod_amount": (
-                float(_get("amount", 0) or 0)
+                max(
+                    0.0,
+                    float(_get("amount", 0) or 0)
+                    - float(_get("token_amount", 0) or 0),
+                )
                 if _get("payment_mode") == "COD" else 0
             ),
+            "token_amount":       float(_get("token_amount", 0) or 0),
             "weight":             _get("weight"),
             "payment_mode":       _get("payment_mode", "COD"),
             # Phase-21 — Order-ID priority chain on shipments:
@@ -802,6 +822,21 @@ def init() -> None:
                     pass
 
         await db.shipments.insert_one(ship_doc)
+
+        # Phase H + Phase-31: User personal-sheet auto-sync (best-effort).
+        # When a pending order is shipped, also append the full row to
+        # the user's own connected Google Sheet (if they have one).
+        # The user's sheet gets ONLY their data; the central Master Sheet
+        # is the cross-tenant backup. `sync_create` reads the user's
+        # `settings.sheet.sheet_id` + `auto_sync_create` flag and skips
+        # cleanly when no sheet is connected.
+        try:
+            import user_sheet_sync as _uss
+            await _uss.sync_create(db, current_user, ship_doc)
+        except Exception:
+            _logger.exception(
+                "user-sheet auto-sync (ship-from-pending) failed (non-fatal)",
+            )
 
         # Best-effort: custom-field values to user's personal sheet.
         custom_vals = order.get("custom_values") or {}

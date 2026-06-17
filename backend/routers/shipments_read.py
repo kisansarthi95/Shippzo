@@ -218,13 +218,20 @@ def init() -> None:
         for d in docs:
             items = d.get("items") or []
             items_str = "; ".join(items) if items else d.get("item_description", "")
-            # COD balance = Amount − Token (for COD orders); else empty.
+            # Phase-31 — `cod_amount` is now the canonical "balance the
+            # courier collects" (= max(0, amount − token) on the
+            # backend). Prefer it directly; fall back to the legacy
+            # amount−token math only for ancient rows that pre-date
+            # the cod_amount field.
             amount = float(d.get("amount") or 0)
             token  = float(d.get("token_amount") or d.get("token") or 0)
             cod_balance = ""
             ptype = (d.get("payment_type") or d.get("payment_mode") or "").upper()
             if ptype == "COD" or ptype == "COD/PARTIAL":
-                cod_balance = f"{max(amount - token, 0):.2f}"
+                if "cod_amount" in d and d.get("cod_amount") is not None:
+                    cod_balance = f"{float(d['cod_amount'] or 0):.2f}"
+                else:
+                    cod_balance = f"{max(amount - token, 0):.2f}"
             writer.writerow([
                 d.get("id", ""),
                 d.get("tracking_id", ""),

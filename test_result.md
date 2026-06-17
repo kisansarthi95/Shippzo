@@ -23009,39 +23009,63 @@ backend:
               D29 GET /api/admin/whatsapp-provider/config (admin)   → 200
 
 metadata:
-  test_sequence: 31
-  last_phase: "phase-31-sheet-extended-columns"
+  test_sequence: 32
+  last_phase: "phase-31-canonical-order-amount"
 
 test_plan:
   current_focus:
-    - "Phase-31 Google Sheets extended columns (16+ new fields)"
+    - "Phase-31 Token/Advance double-counting bug fix — canonical order-amount math"
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
 
 backend:
-  - task: "Phase-31 Google Sheets Extended Columns (35 total)"
+  - task: "Phase-31 Canonical Order-Amount Math (cod = max(0, amount − token))"
     implemented: true
-    working: true
-    file: "/app/backend/sheet_writer.py, /app/backend/server.py, /app/backend/user_sheet_sync.py"
+    working: "NA"
+    file: "/app/backend/routers/shipments_write.py, /app/backend/routers/shipments_read.py"
     stuck_count: 0
     priority: "high"
-    needs_retesting: false
+    needs_retesting: true
     status_history:
         -working: "NA"
         -agent: "main"
         -comment: |
-            Extended sheet_writer.COLUMNS from 19 to 35 to include the
-            16 new shipment-fidelity fields.
-        -working: true
-        -agent: "testing"
-        -comment: |
-            7/7 Phase-31 tests PASSED. Real Sheet writes confirmed at
-            columns A→AI: 'All Master Data'!A269:AI269 (smart-paste) and
-            A271:AI271 (add-shipment). No TypeError on any of the 5
-            call-sites. All 16 new kwargs flow through cleanly.
-            Reusable suite saved at
-            /app/backend/tests/test_phase31_sheet_payload.py.
+            Reverted Phase-30 trick of adding token back into `amount`.
+
+            New canonical contract (locked in):
+              • amount       = Total Order Value (verbatim from form).
+              • token_amount = advance already paid online.
+              • cod_amount   = max(0, amount − token) for COD,
+                               0 for prepaid / other modes.
+
+            Backend changes:
+              1. shipments_write.py POST /shipments (lines 162–185):
+                 cod_amount = max(0, amount − token_amount).
+                 `amount` left untouched.
+              2. shipments_write.py PATCH /shipments/{id}: when admin
+                 edits `amount`, cod_amount auto-recomputed via the
+                 same formula (reads token from update or DB row).
+              3. shipments_write.py Ship-from-pending path (line 728):
+                 ship_doc.cod_amount = max(0, amount − token),
+                 explicitly carries token_amount onto the Shipment.
+              4. shipments_read.py CSV export: prefer the stored
+                 cod_amount; fall back to (amount − token) only for
+                 pre-Phase-31 legacy rows.
+              5. whatsapp_provider.py (line 394) unchanged — already
+                 reads {total_amount: amount, cod_amount: cod_amount,
+                 token_amount: token_amount} which are all now
+                 correct since the DB carries the canonical values.
+
+            Smoke test expectations:
+              • Create COD shipment with amount=1000, token=200
+                → amount=1000, cod_amount=800, token_amount=200.
+              • Create COD with amount=500, no token
+                → amount=500, cod_amount=500.
+              • Create Prepaid with amount=750
+                → amount=750, cod_amount=0.
+              • Edit existing COD: PATCH amount=1500
+                → cod_amount = max(0, 1500 − existing_token).
 
 agent_communication:
     -agent: "testing"
