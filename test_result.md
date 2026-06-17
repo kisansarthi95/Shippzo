@@ -23020,26 +23020,69 @@ test_plan:
   test_priority: "high_first"
 
 backend:
-  - task: "Phase-31 Canonical Order-Amount Math (cod = max(0, amount − token))"
+  - task: "Phase-31 rev-2 REVERSED Canonical Order-Amount Math (cod = entered, total = cod + token)"
     implemented: true
-    working: true
-    file: "/app/backend/routers/shipments_write.py, /app/backend/routers/shipments_read.py"
+    working: "NA"
+    file: "/app/backend/routers/shipments_write.py, /app/frontend/lib/orderAmounts.ts, /app/frontend/lib/label.ts, /app/frontend/app/(tabs)/add.tsx"
     stuck_count: 0
     priority: "high"
-    needs_retesting: false
+    needs_retesting: true
     status_history:
         -working: "NA"
         -agent: "main"
         -comment: |
-            Reverted Phase-30 trick of adding token back into `amount`.
-        -working: true
-        -agent: "testing"
-        -comment: |
-            9/9 tests PASSED. Canonical math holds across POST, PUT,
-            CSV export, and smart-paste→ship paths. Edge case where
-            PUT carries only {amount} (no payment_mode) now falls
-            back to existing doc's payment_mode and token_amount.
-            Test suite at /app/backend/tests/test_phase31_cod_math.py
+            REVERSED semantics again per business owner request.
+
+            NEW canonical contract (no subtraction anywhere):
+              • cod_amount   = entered "COD to Collect" verbatim
+                               (what the courier physically takes
+                               at delivery).
+              • token_amount = advance already paid online.
+              • amount       = Total Order Value
+                               = cod_amount + token_amount for COD.
+                               = entered value for prepaid.
+
+            Form label renamed: "Order Amount (₹)" → "COD to Collect (₹)"
+            so the field name matches what it stores.
+
+            Backend changes (shipments_write.py):
+              1. POST /shipments lines 162-185: amount = cod + token,
+                 cod_amount = entered (verbatim). No max(0, …) clamp.
+              2. PUT /shipments/{id} lines 357-380: when admin edits
+                 cod_amount OR amount, derive Total = cod + token
+                 from the row + update payload.
+              3. Ship-from-pending lines 732-744: pending.amount is
+                 treated as COD-to-collect; ship_doc.amount = cod + token.
+
+            Frontend changes:
+              4. lib/orderAmounts.ts — computeOrderAmounts returns
+                 { amount: cod + token, codAmount: cod, tokenAmount }.
+              5. lib/label.ts:194 — collectAmt = isCod ? amtPreview : 0
+                 (NO max(0, amt − token)). Print label shows COD
+                 verbatim from cod_amount.
+              6. lib/label.ts:256-264 — token footer "Order Total"
+                 now uses s.amount (= Total = COD+Token) instead of
+                 s.cod_amount.
+              7. (tabs)/add.tsx:2366 — form label renamed
+                 "Order Amount (₹)" → "COD to Collect (₹)".
+
+            READ surfaces (NOT MODIFIED — verified correct):
+              • shipment-details/[id].tsx: Total = ship.amount,
+                COD = ship.cod_amount, Token = ship.token_amount.
+              • shipments.tsx list: shows cod_amount.
+              • whatsapp_provider.py:394: {total_amount: amount,
+                cod_amount, token_amount} — all from DB.
+              • shipments_read.py CSV: prefers stored cod_amount.
+
+            Expected test cases:
+              • COD amount=1000, token=200 → response.amount=1200,
+                cod_amount=1000, token_amount=200.
+              • COD amount=500, no token → amount=500, cod=500.
+              • COD amount=300, token=400 → amount=700, cod=300
+                (NO clamp; token > cod is allowed).
+              • Prepaid amount=750 → amount=750, cod=0.
+              • PUT cod_amount=2000 on COD shipment with token=200
+                → amount=2200, cod=2000.
 
 agent_communication:
     -agent: "testing"

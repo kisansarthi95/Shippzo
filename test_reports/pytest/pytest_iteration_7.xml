@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="0" failures="5" skipped="0" tests="9" time="11.165" timestamp="2026-06-17T19:01:10.489513+00:00" hostname="agent-env-36ddfdb9-e4d3-40a3-8a0d-82977140af50"><testcase classname="backend.tests.test_phase31_cod_math.TestCreateShipmentMath" name="test_cod_amount_with_token_legacy_payload" time="4.629"><failure message="AssertionError: cod_amount=0.0 expected 1000 (verbatim)&#10;assert 0.0 == 1000">backend/tests/test_phase31_cod_math.py:126: in test_cod_amount_with_token_legacy_payload
+    assert body["cod_amount"] == 1000, (
+E   AssertionError: cod_amount=0.0 expected 1000 (verbatim)
+E   assert 0.0 == 1000</failure></testcase><testcase classname="backend.tests.test_phase31_cod_math.TestCreateShipmentMath" name="test_cod_with_explicit_cod_amount" time="0.743" /><testcase classname="backend.tests.test_phase31_cod_math.TestCreateShipmentMath" name="test_cod_no_token" time="0.610"><failure message="assert 0.0 == 500">backend/tests/test_phase31_cod_math.py:171: in test_cod_no_token
+    assert body["amount"] == 500
+E   assert 0.0 == 500</failure></testcase><testcase classname="backend.tests.test_phase31_cod_math.TestCreateShipmentMath" name="test_cod_token_exceeds_cod_no_clamp" time="0.674"><failure message="AssertionError: cod_amount=0.0 expected 300 (verbatim, no clamp)&#10;assert 0.0 == 300">backend/tests/test_phase31_cod_math.py:193: in test_cod_token_exceeds_cod_no_clamp
+    assert body["cod_amount"] == 300, (
+E   AssertionError: cod_amount=0.0 expected 300 (verbatim, no clamp)
+E   assert 0.0 == 300</failure></testcase><testcase classname="backend.tests.test_phase31_cod_math.TestCreateShipmentMath" name="test_prepaid_amount_no_cod" time="0.666" /><testcase classname="backend.tests.test_phase31_cod_math.TestUpdateShipmentMath" name="test_put_amount_treated_as_new_cod" time="1.055"><failure message="assert 0.0 == 1000">backend/tests/test_phase31_cod_math.py:246: in test_put_amount_treated_as_new_cod
+    assert ship["cod_amount"] == 1000
+E   assert 0.0 == 1000</failure></testcase><testcase classname="backend.tests.test_phase31_cod_math.TestUpdateShipmentMath" name="test_put_cod_amount_recomputes_total" time="0.686" /><testcase classname="backend.tests.test_phase31_cod_math.TestSmartPasteShipMath" name="test_ship_from_pending_amount_is_cod_plus_token" time="1.293" /><testcase classname="backend.tests.test_phase31_cod_math.TestCsvExportCodBalance" name="test_cod_balance_uses_verbatim_cod" time="0.681"><failure message="AssertionError: Amount col='200.00' expected '1200.00'&#10;assert '200.00' == '1200.00'&#10;  &#10;  - 1200.00&#10;  ? -&#10;  + 200.00">backend/tests/test_phase31_cod_math.py:407: in test_cod_balance_uses_verbatim_cod
+    assert row["Amount"] == "1200.00", (
+E   AssertionError: Amount col='200.00' expected '1200.00'
+E   assert '200.00' == '1200.00'
+E     
+E     - 1200.00
+E     ? -
+E     + 200.00</failure></testcase></testsuite></testsuites>

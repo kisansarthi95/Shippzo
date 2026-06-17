@@ -160,26 +160,31 @@ def init() -> None:
             if c:
                 data["courier_name"] = c.get("name", "")
         if data.get("payment_mode") == "COD":
-            # Phase-31 (2026-06) — canonical Order-Amount math.
+            # Phase-31 rev-2 (2026-06) — REVERSED semantic.
             #
-            # The form's "Order Amount" field is now the Total Order
-            # Value as typed by the operator. Any advance / token is
-            # tracked separately in `token_amount`. What the courier
-            # collects at delivery is the leftover balance:
+            # The form's "COD to Collect" field is the value the
+            # courier will physically take at delivery — it is the
+            # cod_amount, full stop. The Total Order Value is derived
+            # upward (= COD + Token), never downward. No subtraction
+            # is ever performed; the values flow through verbatim.
             #
-            #   amount       = entered Total Order Value (verbatim)
-            #   token_amount = advance already paid online
-            #   cod_amount   = max(0, amount − token_amount)
+            #   cod_amount = entered "COD to Collect" verbatim
+            #                (defaults to `amount` for legacy clients
+            #                that don't send a separate cod_amount).
+            #   amount     = cod_amount + token_amount (Total).
+            #   token_amount = advance already paid online.
             #
-            # This kills the Phase-30 double-counting bug where we
-            # used to ADD the token back into `amount` AND let
-            # downstream code re-subtract it (CSV export, print
-            # label, bulk WhatsApp), inflating reports by the token
-            # amount on every COD row that had an advance.
-            _amount = float(data.get("amount")       or 0)
-            _token  = float(data.get("token_amount") or 0)
-            data["amount"]     = _amount
-            data["cod_amount"] = max(0.0, _amount - _token)
+            # This matches what the operator types and what the
+            # printed label shows — no double-counting in either
+            # direction.
+            _token = float(data.get("token_amount") or 0)
+            _cod = (
+                float(data["cod_amount"])
+                if data.get("cod_amount") is not None
+                else float(data.get("amount") or 0)
+            )
+            data["cod_amount"] = _cod
+            data["amount"]     = _cod + _token
         else:
             # Prepaid / other modes — keep the entered amount as the
             # total, no COD collection.
@@ -354,30 +359,34 @@ def init() -> None:
         if "status" in update and is_terminal_shipment_status(update["status"]):
             update.setdefault("cancelled_at", utcnow_iso())
             update.setdefault("cancel_reason", "user_action")
-        if "amount" in update:
-            # Phase-31 canonical math (single source of truth):
-            #   cod_amount = max(0, amount − token_amount) for COD, else 0.
-            # When the admin edits `amount`, we also need to re-derive
-            # `cod_amount` so the leftover-balance figure stays in sync
-            # with the new total. Token AND payment_mode may come from
-            # this same update payload OR from the existing DB row —
-            # we fall back to the row so an "edit amount only" PATCH
-            # doesn't accidentally zero out cod_amount.
-            _amt = float(update["amount"] or 0)
-            _tok = float(
-                update["token_amount"]
-                if "token_amount" in update and update["token_amount"] is not None
-                else (existing.get("token_amount") or 0),
-            )
+        if "amount" in update or "cod_amount" in update:
+            # Phase-31 rev-2 — REVERSED canonical math.
+            # The frontend sends `cod_amount` as the COD-to-Collect
+            # (verbatim). We trust it and derive Total = COD + Token.
+            # Legacy clients that send only `amount` for a COD row
+            # are handled by treating that field as the COD-to-collect.
             _pmode = (
                 update.get("payment_mode")
                 or existing.get("payment_mode")
                 or ""
             )
-            update["cod_amount"] = (
-                max(0.0, _amt - _tok)
-                if _pmode == "COD" else 0.0
+            _tok = float(
+                update["token_amount"]
+                if "token_amount" in update and update["token_amount"] is not None
+                else (existing.get("token_amount") or 0),
             )
+            if _pmode == "COD":
+                _cod = float(
+                    update["cod_amount"]
+                    if "cod_amount" in update and update["cod_amount"] is not None
+                    else update.get("amount", 0) or 0,
+                )
+                update["cod_amount"] = _cod
+                update["amount"]     = _cod + _tok
+            else:
+                update["cod_amount"] = 0.0
+                if "amount" in update:
+                    update["amount"] = float(update["amount"] or 0)
         if not update:
             raise HTTPException(status_code=400, detail="No fields to update")
 
@@ -729,16 +738,18 @@ def init() -> None:
             "pincode":            _get("pincode"),
             "items":              items_list,
             "item_description":   items_str,
-            "amount":             float(_get("amount", 0) or 0),
-            # Phase-31 canonical math: cod_amount = max(0, amount − token).
-            # The Pending row already carries the *total* `amount` and any
-            # `token_amount` separately, so we just derive the balance.
+            # Phase-31 rev-2 — REVERSED canonical math.
+            # The Pending row stores `amount` as the COD-to-Collect
+            # value (frontend bulk-paste & smart-paste flows write
+            # the typed COD into `amount`). Total = COD + Token; no
+            # subtraction is ever done.
+            "amount": (
+                float(_get("amount", 0) or 0) + float(_get("token_amount", 0) or 0)
+                if _get("payment_mode") == "COD"
+                else float(_get("amount", 0) or 0)
+            ),
             "cod_amount": (
-                max(
-                    0.0,
-                    float(_get("amount", 0) or 0)
-                    - float(_get("token_amount", 0) or 0),
-                )
+                float(_get("amount", 0) or 0)
                 if _get("payment_mode") == "COD" else 0
             ),
             "token_amount":       float(_get("token_amount", 0) or 0),

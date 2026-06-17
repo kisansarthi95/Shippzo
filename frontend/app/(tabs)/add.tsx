@@ -2363,12 +2363,12 @@ export default function AddShipment() {
                 </Text>
               </TouchableOpacity>
             </View>
-            <Field label="Order Amount (₹)">
+            <Field label="COD to Collect (₹)">
               <TextInput
                 testID="amount-input"
                 value={amount}
                 onChangeText={setAmount}
-                placeholder={paymentMode === "COD" ? "Total order value" : "Order value"}
+                placeholder={paymentMode === "COD" ? "What courier collects" : "Order value"}
                 placeholderTextColor="#9CA3AF"
                 keyboardType="decimal-pad"
                 style={styles.input}

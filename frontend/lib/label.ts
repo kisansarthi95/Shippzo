@@ -189,9 +189,11 @@ function singleLabel(s: Shipment, sender: SenderAddress, opts: LabelOptions) {
     : `<div class="brand-name">${escape(brandName)}</div>`;
 
   const isCod = s.payment_mode === "COD";
-  const tokenAmtPreview = Number((s as any).token_amount || 0);
   const amtPreview = Number(amt) || 0;
-  const collectAmt = isCod ? Math.max(0, amtPreview - tokenAmtPreview) : 0;
+  // Phase-31 rev-2 — `cod_amount` is the COD-to-Collect verbatim
+  // (no subtraction). The `amt` helper already prefers cod_amount
+  // over the gross `amount`, so we just use it as-is here.
+  const collectAmt = isCod ? amtPreview : 0;
   // Pill shows ONLY what the delivery boy should collect.
   // If Token was paid upfront (e.g., 300 total, 50 token) → COD ₹250.
   // Token info (Total + Advance) appears in the small footer token-box.
@@ -248,20 +250,21 @@ function singleLabel(s: Shipment, sender: SenderAddress, opts: LabelOptions) {
   // Token / advance info (only if toggled on AND COD with real advance).
   // For PAID/Prepaid orders we never show this box (no confusion possible).
   //
-  // Phase-30 — fall back to `amount` only if `cod_amount` is unset
-  // (legacy rows from before the field was introduced). On any row
-  // saved by the current backend, `cod_amount` is the value the
-  // operator typed and is what should appear on every customer-facing
-  // surface — including this advance-confirmation strip.
+  // Phase-31 rev-2 — `amount` is the Gross Total Order Value
+  // (= cod_amount + token_amount on the backend), and `cod_amount`
+  // is what the courier collects. The footer here shows the GROSS
+  // total so the customer sees the full price they were billed,
+  // with the upfront advance broken out separately for clarity.
   const tokenAmt = Number((s as any).token_amount || 0);
-  const amtNum = Number(s.cod_amount || s.amount || 0);
+  const orderTotal = Number(s.amount || 0)
+    || (Number(s.cod_amount || 0) + tokenAmt);
   const tokenFooterBlock = (lf.token_info && tokenAmt > 0 && s.payment_mode === "COD")
     ? `<div class="token-box">
          <span class="tk-label">💰 Paid Advance:</span>
          <span class="tk-val">₹${tokenAmt.toFixed(0)}</span>
          <span class="tk-sep">·</span>
          <span class="tk-label">Order Total:</span>
-         <span class="tk-val">₹${amtNum.toFixed(0)}</span>
+         <span class="tk-val">₹${orderTotal.toFixed(0)}</span>
        </div>`
     : "";
 

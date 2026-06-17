@@ -1,0 +1,62 @@
+{
+  "summary": "Phase-31 rev-2 (REVERSED COD math) backend testing. Created fresh /app/backend/tests/test_phase31_cod_math.py with 9 tests covering POST /api/shipments, PUT /api/shipments/{id}, smart-paste→ship, and CSV export. Result: 4 passed / 5 failed. ROOT CAUSE of the 5 failures is a Pydantic model default — `ShipmentCreate.cod_amount: Optional[float] = 0.0` (server.py:669). Every legacy payload that sends only `amount` (no `cod_amount`) hits the fallback in routers/shipments_write.py:182 `if data.get('cod_amount') is not None` — which is TRUE because Pydantic filled it with 0.0, not None — so `_cod = 0.0` instead of falling back to `amount`. Net result: amount=cod+token=0+token, cod_amount=0. Frontend-modern path (sending explicit cod_amount) works correctly. PUT cod_amount=X path works. Prepaid path works. Smart-paste→ship works (uses Pending order's `amount`, not the Pydantic model). 4 of 5 failures are the SAME root-cause; only fix needed is one of: (a) change model default to None, or (b) treat data.get('cod_amount') in (None, 0, 0.0) as 'missing' when payment_mode==COD and amount>0.",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "POST /api/shipments (legacy payload: amount only, no cod_amount)",
+        "issue": "When frontend/legacy client sends only `amount` for a COD shipment, response has cod_amount=0 and amount=token. Pydantic ShipmentCreate model defaults cod_amount to 0.0 (not None) so the `is not None` fallback in routers/shipments_write.py:181-186 never fires. Reference: backend/server.py:669 + backend/routers/shipments_write.py:181-186. Fix: change ShipmentCreate.cod_amount default to None, OR change the check to `data.get('cod_amount')` (truthy) when COD.",
+        "priority": "CRITICAL"
+      },
+      {
+        "endpoint": "POST /api/shipments COD amount=500 token=0",
+        "issue": "Returns amount=0, cod_amount=0 instead of amount=500, cod_amount=500. Same root cause as above.",
+        "priority": "CRITICAL"
+      },
+      {
+        "endpoint": "POST /api/shipments COD amount=300 token=400 (token>cod)",
+        "issue": "Returns cod_amount=0, amount=400 instead of cod_amount=300, amount=700. Same root cause.",
+        "priority": "CRITICAL"
+      },
+      {
+        "endpoint": "PUT /api/shipments/{id} (after create with legacy payload)",
+        "issue": "Test failed at the *create* baseline step, not the PUT step. Root cause is the same POST bug above — the test couldn't reach the PUT assertion because the baseline create returned cod_amount=0. The PUT-only test (test_put_cod_amount_recomputes_total) which sends explicit cod_amount on PUT PASSES, confirming PUT logic itself is correct.",
+        "priority": "HIGH"
+      },
+      {
+        "endpoint": "GET /api/shipments/export/csv",
+        "issue": "CSV regression test failed for the same upstream POST reason — the seed shipment had wrong amount/cod_amount. CSV reader correctly emits stored values; fix the POST and CSV passes automatically.",
+        "priority": "HIGH"
+      }
+    ],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_phase31_cod_math.py",
+    "/app/test_reports/pytest/pytest_iteration_7.xml"
+  ],
+  "action_items": [
+    "Fix ShipmentCreate Pydantic model in /app/backend/server.py:669 — change `cod_amount: Optional[float] = 0.0` to `cod_amount: Optional[float] = None` so the legacy fallback in routers/shipments_write.py:181-186 fires when no cod_amount is sent.",
+    "ALTERNATIVELY: in routers/shipments_write.py:181-186, treat `0` as 'unset' when payment_mode==COD and amount>0. The current `is not None` check is too strict because Pydantic defaults 0.0.",
+    "Verify the same defaulting issue does NOT affect PUT (server.py:704 already correctly defaults cod_amount=None for ShipmentUpdate — that path was correct).",
+    "After fix, re-run /app/backend/tests/test_phase31_cod_math.py — expect 9/9 to pass."
+  ],
+  "critical_code_review_comments": [
+    "Pydantic default 0.0 vs None matters when downstream code uses `is not None` to detect 'caller omitted this field'. The newer ShipmentUpdate model (server.py:704) correctly uses None; ShipmentCreate (server.py:669) still uses 0.0 from before the rev-2 refactor — this is the regression.",
+    "The POST and PUT branches in shipments_write.py reuse near-identical math (lines 162-192 vs 362-389). Consider extracting a `_resolve_cod_total(payment_mode, amount, cod_amount, token_amount, existing=None)` helper to make the semantic single-sourced and the legacy-fallback rule explicit in one place."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_phase31_cod_math.py (new — fresh suite for rev-2 reversed semantic)"
+  ],
+  "success_rate": {"backend": "44%", "frontend": "not tested (backend-only request)"},
+  "seed_data_creation": "Each test creates ephemeral shipments / pending orders prefixed TEST_P31R2_* under user2@test.com. No cleanup performed; rows remain in the user's workspace.",
+  "retest_needed": true,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Re-run pytest /app/backend/tests/test_phase31_cod_math.py after the Pydantic-default fix. The 4 currently-passing tests (modern explicit-cod_amount POST, prepaid POST, PUT cod_amount, smart-paste ship) should stay green. The fix should also make 4 currently-failing POST/CSV tests green, and the PUT-amount-as-new-cod test green (its create baseline depends on POST behaviour).",
+  "rca_of_issue": "ShipmentCreate.cod_amount defaults to 0.0 (server.py:669). In create_shipment (shipments_write.py:181) the rev-2 fallback `_cod = float(data['cod_amount']) if data.get('cod_amount') is not None else float(data.get('amount') or 0)` reads 0.0 as 'explicit' and skips fallback. Mitigation: change default to None (matches ShipmentUpdate model), or change condition to `if data.get('cod_amount')` (truthy). Reproduction: `POST /api/shipments {payment_mode:'COD', amount:1000, token_amount:200}` returns cod_amount=0, amount=200 instead of cod_amount=1000, amount=1200."
+}

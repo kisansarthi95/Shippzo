@@ -1,20 +1,18 @@
 /**
  * Canonical Order-Amount math — single source of truth.
  *
- * Phase-31 (2026-06): The Phase-30 model treated the typed "Amount"
- * field as the post-advance COD value and ADDED the token back into
- * `amount` to fake a total. That double-counted advances in
- * downstream reports + receipts whenever upstream code (CSV export,
- * print label, shipment list, WhatsApp templates) ran its own
- * `amount - token` subtraction.
+ * Phase-31 (rev-2, 2026-06): The form's "amount" field is now the
+ * **COD-to-Collect** value — what the courier will physically take
+ * from the customer at delivery. The Total Order Value is derived
+ * upward (= COD + Token), never downward. No subtraction is ever
+ * performed in app code; the values flow through verbatim.
  *
  * The new contract:
- *   • `amount`       — Total Order Value (exactly what the operator
- *                       types into the form, no math applied).
- *   • `token_amount` — Advance already collected online (independent).
- *   • `cod_amount`   — What the courier will collect on delivery
- *                       = max(0, amount − token_amount) for COD,
- *                       0 for prepaid / non-COD modes.
+ *   • amount       — Total Order Value = codInput + tokenAmount.
+ *   • token_amount — Advance already paid online (independent).
+ *   • cod_amount   — What the courier will collect on delivery
+ *                     = codInput verbatim for COD,
+ *                     0 for prepaid / non-COD modes.
  *
  * Surfaces that must use this helper:
  *   • add.tsx           (form submit payload)
@@ -29,16 +27,23 @@
 export type PaymentMode = "COD" | "Prepaid" | string;
 
 export interface OrderAmountInput {
-  /** Total order value typed by the operator (₹). */
+  /**
+   * COD-to-Collect entered by the operator (₹).
+   * For COD orders this is exactly what the courier collects at
+   * delivery; for prepaid orders it represents the paid order value.
+   */
   amount: number | string | null | undefined;
   /** Advance already paid online (₹). */
   token: number | string | null | undefined;
-  /** "COD" → cod_amount = max(0, amount − token); else cod_amount = 0. */
+  /** "COD" → codAmount = input; total = input + token. Else codAmount = 0. */
   paymentMode: PaymentMode;
 }
 
 export interface OrderAmountsResult {
-  /** Gross order value — same as input.amount, just normalised. */
+  /**
+   * Gross Total Order Value (₹) = codAmount + tokenAmount for COD,
+   * = the entered value for prepaid.
+   */
   amount: number;
   /** Token / advance already paid online. */
   tokenAmount: number;
@@ -56,15 +61,16 @@ function toNum(v: number | string | null | undefined): number {
 /**
  * Compute the canonical {amount, tokenAmount, codAmount} triple.
  *
- * The token is NOT clamped against the total — if the operator
- * accidentally typed a token greater than the amount we still
- * floor `cod_amount` at 0 (negative COD would be nonsensical) but
- * leave `token_amount` untouched so a downstream alert can flag it.
+ * The entered value IS the final COD to Collect (no math applied);
+ * the Total is derived by ADDING the token back so receipts /
+ * accounting reports still see the full order value.
  */
 export function computeOrderAmounts(input: OrderAmountInput): OrderAmountsResult {
-  const amount = toNum(input.amount);
+  const codInput = toNum(input.amount);
   const tokenAmount = toNum(input.token);
   const isCod = String(input.paymentMode || "").toUpperCase() === "COD";
-  const codAmount = isCod ? Math.max(0, amount - tokenAmount) : 0;
+  const codAmount = isCod ? codInput : 0;
+  // Total Order Value = COD + Token (no subtraction ever).
+  const amount = isCod ? codInput + tokenAmount : codInput;
   return { amount, tokenAmount, codAmount };
 }
