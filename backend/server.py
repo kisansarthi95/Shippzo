@@ -666,7 +666,12 @@ class ShipmentCreate(BaseModel):
     pincode: Optional[str] = ""
     payment_mode: Optional[str] = "Prepaid"
     amount: Optional[float] = 0.0
-    cod_amount: Optional[float] = 0.0
+    # Phase-31 rev-2 — default to None so the backend's "frontend
+    # sent us a cod_amount?" check (`data.get('cod_amount') is not
+    # None`) can reliably tell the difference between a legacy
+    # payload (only `amount` sent) and a modern payload (cod_amount
+    # supplied explicitly, possibly as 0.0 for prepaid).
+    cod_amount: Optional[float] = None
     items: Optional[List[str]] = None
     item_description: Optional[str] = ""
     weight: Optional[str] = ""
