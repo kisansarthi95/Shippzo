@@ -333,7 +333,7 @@ def init() -> None:
         )
         existing = await db.shipments.find_one(
             {"id": shipment_id, "user_id": current_user["id"]},
-            {"_id": 0, "status": 1},
+            {"_id": 0, "status": 1, "payment_mode": 1, "token_amount": 1},
         )
         if not existing:
             raise HTTPException(status_code=404, detail="Shipment not found")
@@ -359,20 +359,24 @@ def init() -> None:
             #   cod_amount = max(0, amount − token_amount) for COD, else 0.
             # When the admin edits `amount`, we also need to re-derive
             # `cod_amount` so the leftover-balance figure stays in sync
-            # with the new total. The token may come from this same
-            # update payload OR from the existing DB row.
+            # with the new total. Token AND payment_mode may come from
+            # this same update payload OR from the existing DB row —
+            # we fall back to the row so an "edit amount only" PATCH
+            # doesn't accidentally zero out cod_amount.
             _amt = float(update["amount"] or 0)
             _tok = float(
-                update.get("token_amount")
-                if "token_amount" in update
-                else (await db.shipments.find_one(
-                    {"id": shipment_id, "user_id": current_user["id"]},
-                    {"_id": 0, "token_amount": 1},
-                ) or {}).get("token_amount") or 0,
+                update["token_amount"]
+                if "token_amount" in update and update["token_amount"] is not None
+                else (existing.get("token_amount") or 0),
+            )
+            _pmode = (
+                update.get("payment_mode")
+                or existing.get("payment_mode")
+                or ""
             )
             update["cod_amount"] = (
                 max(0.0, _amt - _tok)
-                if update.get("payment_mode", "") == "COD" else 0.0
+                if _pmode == "COD" else 0.0
             )
         if not update:
             raise HTTPException(status_code=400, detail="No fields to update")

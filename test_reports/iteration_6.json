@@ -1,0 +1,29 @@
+{
+  "summary": "Phase-31 follow-up re-test: PUT edge-case (amount only, no payment_mode) on a COD shipment is now FIXED. All 9 Phase-31 cod-math tests pass (9/9, 100%). The existing-doc projection in routers/shipments_write.py:334-337 now includes payment_mode + token_amount, and the fallback chain at lines 366-380 correctly derives cod_amount from the existing row when the update payload omits payment_mode/token_amount. No regressions in the full suite (create math, clamp-to-zero, prepaid, smart-paste→ship, CSV export).",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_phase31_cod_math.py",
+    "/app/test_reports/pytest/pytest_iteration_6.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "Fix is sound: db.shipments.find_one() projection at line 336 now fetches payment_mode + token_amount alongside status. Fallback chain at lines 366-380 correctly prefers update payload values when present, falls back to existing-doc values when missing, and clamps cod_amount to max(0, amount-token) for COD or 0 otherwise.",
+    "Note: The shipments_write.py file is now 924 lines — exceeds the 700-line guideline and could benefit from further extraction (write/update/delete/ship into separate sub-modules), but that is a refactor, not a bug."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "100%", "frontend": "n/a (backend-only request)"},
+  "seed_data_creation": "Tests create TEST_P31MATH_* shipments via API (not cleaned up — tracked by unique tracking_id prefix TESTM*). No DB seed scripts run.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Phase-31 cod-math suite is green at 9/9. The PUT-amount-only-on-COD edge case is the one to watch for any future refactors of update_shipment() — keep payment_mode + token_amount in the existing-doc projection at routers/shipments_write.py:334-337.",
+  "rca_of_issue": "Previously update_shipment() projected only {status} from the existing doc and computed cod_amount using update.get('payment_mode','') which was '' when the client sent only {amount}, so the COD branch was skipped and cod_amount silently became 0. Fix extends the projection to include payment_mode + token_amount and uses them as fallbacks (lines 366-380). Verified by test_update_amount_without_payment_mode which sends {amount: 1500} only on a COD shipment with token=200 and asserts cod_amount=1300."
+}
