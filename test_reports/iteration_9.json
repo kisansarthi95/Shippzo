@@ -1,0 +1,34 @@
+{
+  "summary": "Phase-31 rev-2 follow-up validation + migration sanity — ALL GREEN. New 5-case validation suite (test_phase31_cod_validation.py) passes 5/5. Existing rev-2 canonical-math suite (test_phase31_cod_math.py) still passes 9/9. Combined: 14/14 in ~14s. Migration sanity: 135/135 COD shipments in db.shipments satisfy amount == cod_amount + token_amount; ZERO violators. Target row order_id=26061302662 now reads amount=2949, cod_amount=2849, token_amount=100 (cod+token=2949, INVARIANT PASS). Backend logs show the token>cod soft-warn firing as expected without rejecting.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_phase31_cod_validation.py",
+    "/app/backend/tests/test_phase31_cod_math.py",
+    "/app/backend/tests/check_phase31_migration.py",
+    "/app/test_reports/pytest/pytest_iteration_9.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "routers/shipments_write.py:162-219 — validation block is clean, narrowly scoped to POST /shipments create path. Note: the same three rules (cod>0 for COD, token>=0, token>cod soft-warn) are NOT enforced in update_shipment (PUT, lines 389-416) nor in ship_pending_order (lines 768-782). If the product intent is to block bad COD values on EVERY write path, consider extracting the rule block into a helper and reusing it in PUT + Pending→Ship paths. Currently a user could PUT cod_amount=0 or token=-10 onto an existing COD shipment without 422.",
+    "Smart-paste / pending-order ship path (lines 773-782) silently uses float(... or 0) for amount and token, so a pending row with amount=0 promoted to COD would result in cod_amount=0 with no rejection. Same hardening would help there."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_phase31_cod_validation.py (new)",
+    "/app/backend/tests/check_phase31_migration.py (new)"
+  ],
+  "success_rate": {"backend": "100% (14/14)", "frontend": "N/A (backend-only test request)"},
+  "seed_data_creation": "Test shipments created via POST /api/shipments with TEST_P31R2V_ prefix on customer_name (user2 tenant). 6-7 COD shipments added to user2's workspace during the validation run; harmless test data.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Phase-31 rev-2 follow-up is fully green: (1) new validation rules enforced on POST /shipments (cod>0 for COD → 422, token<0 → 422, token>cod → 200 + warn-log); (2) original 9-case canonical-math suite still passes; (3) migration applied successfully — 0 violators across 135 COD rows, target 26061302662 reads correctly. Code-review note left for main agent: the new validation only runs on the POST create path; PUT/PendingShip paths bypass it. Not currently flagged as a bug because main agent's review_request only listed POST cases as in-scope.",
+  "rca_of_issue": "N/A — no regression. Validation block at routers/shipments_write.py:186-212 reproduces 422 on (cod<=0) and (token<0) and a log-warning (no reject) on token>cod, exactly as the review_request asked."
+}

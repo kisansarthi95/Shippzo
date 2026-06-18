@@ -183,6 +183,33 @@ def init() -> None:
                 if data.get("cod_amount") is not None
                 else float(data.get("amount") or 0)
             )
+            # Phase-31 rev-2 validation (Task 6):
+            #   • Require cod_amount > 0 for COD-mode (the order
+            #     wouldn't be COD if there's nothing to collect).
+            #   • Allow token_amount = 0 (no advance is fine).
+            #   • Allow token > cod silently — refund / overpay
+            #     edge case. We log a warning so the operator can
+            #     audit later, but never reject the save.
+            if _cod <= 0:
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        "COD to Collect must be greater than zero for "
+                        "COD-mode shipments. Use Prepaid mode if the "
+                        "courier has nothing to collect at delivery."
+                    ),
+                )
+            if _token < 0:
+                raise HTTPException(
+                    status_code=422,
+                    detail="Token / Advance amount cannot be negative.",
+                )
+            if _token > _cod:
+                _logger.warning(
+                    "shipment.create — Token (%.2f) exceeds COD (%.2f) "
+                    "for user %s; accepting but flagging for audit.",
+                    _token, _cod, current_user.get("id", "?")[:8],
+                )
             data["cod_amount"] = _cod
             data["amount"]     = _cod + _token
         else:

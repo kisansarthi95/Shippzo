@@ -89,7 +89,7 @@ const FIELD_GROUPS: { title: string; fields: FieldDef[] }[] = [
     fields: [
       { key: "order_id",     label: "Order ID" },
       { key: "items",        label: "Items / Products", multiline: true },
-      { key: "amount",       label: "Amount (₹)",       keyboardType: "numeric" },
+      { key: "amount",       label: "COD to Collect (₹)", keyboardType: "numeric" },
       { key: "token_amount", label: "Token / Advance",  keyboardType: "numeric" },
       { key: "payment_mode", label: "Payment Mode (COD / PAID)" },
       { key: "weight",       label: "Weight" },

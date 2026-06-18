@@ -46,8 +46,13 @@ const FIELD_LABEL: Record<string, string> = {
   city:               "City",
   state:              "State",
   pincode:            "Pincode",
-  // Payment
-  amount:             "Order Amount (₹)",
+  // Payment — Phase-31 rev-2: `amount` is the COD-to-Collect (verbatim,
+  // what the courier physically takes at delivery). NOT the Gross
+  // Total Order Value. If your source spreadsheet has both a Total
+  // and a Token / Advance, map TOTAL → amount and we'll subtract the
+  // Token on save; or split your source so `amount` already contains
+  // the post-advance COD figure.
+  amount:             "COD to Collect (₹) — NOT the gross total",
   token_amount:       "Order Token / Advance (₹)",
   payment_mode:       "Payment Mode (COD / PAID)",
   // Items / parcel

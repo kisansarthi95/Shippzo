@@ -37,7 +37,7 @@ const FIELD_LABEL: Record<string, string> = {
   city:                "City",
   state:               "State",
   pincode:             "Pincode",
-  amount:              "Order Amount (₹)",
+  amount:              "COD to Collect (₹) — NOT the gross total",
   token_amount:        "Order Token / Advance (₹)",
   payment_mode:        "Payment Mode (COD / PAID)",
   items:               "Items / Products",

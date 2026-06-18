@@ -730,9 +730,22 @@ export default function AddShipment() {
         setCity(s.city || "");
         setState(s.state || "");
         setPincode(s.pincode || "");
+        // Phase-31 rev-2 — `amount` on the DB row is the Gross Total
+        // (= cod_amount + token_amount for COD). The form field stores
+        // the COD-to-Collect verbatim, so for COD shipments we MUST
+        // pre-fill from `cod_amount` (not `amount`); otherwise the
+        // operator would see the token rolled in twice when they save.
+        // For prepaid we fall back to `amount` (which equals the
+        // entered value verbatim because prepaid has no token math).
+        const isCodShip =
+          s.payment_mode === "COD" || (s.payment_mode as any) === "COD/Partial";
+        const codField = (s as any).cod_amount;
+        const srcAmt = isCodShip
+          ? (codField != null && codField !== "" ? codField : s.amount)
+          : s.amount;
         const amt =
-          s.amount != null && (s.amount as any) !== ""
-            ? String(s.amount)
+          srcAmt != null && (srcAmt as any) !== ""
+            ? String(srcAmt)
             : "";
         setAmount(amt);
         // Items can be array or string.
