@@ -23009,15 +23009,64 @@ backend:
               D29 GET /api/admin/whatsapp-provider/config (admin)   → 200
 
 metadata:
-  test_sequence: 32
-  last_phase: "phase-31-canonical-order-amount"
+  test_sequence: 33
+  last_phase: "phase-31-rev2-followup-validation-prefill-migration"
 
 test_plan:
   current_focus:
-    - "Phase-31 Token/Advance double-counting bug fix — canonical order-amount math"
+    - "Phase-31 rev-2 follow-ups: pre-fill, label rename, Smart-Paste prompt, validation, migration"
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
+
+backend:
+  - task: "Phase-31 rev-2 follow-up: Validation + Migration + Smart-Paste prompt"
+    implemented: true
+    working: true
+    file: "/app/backend/routers/shipments_write.py, /app/backend/smart_paste_ai.py, /app/backend/scripts/migrate_phase31_total_amount.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "main"
+        -comment: |
+            7 follow-up tasks applied:
+              1. add.tsx pre-fill (lines 733-755) — COD shipments load
+                 cod_amount, not amount; prepaid loads amount.
+              2. edit-pending/[id].tsx label → "COD to Collect (₹)".
+              3. file-import.tsx + webhook-config.tsx labels
+                 → "COD to Collect (₹) — NOT the gross total".
+              4. smart_paste_ai.py Rule-10 / Phase-42 block rewritten:
+                 LLM now SUBTRACTS Token from Total before emitting
+                 AMOUNT. Examples flipped to show 1000/500 instead of
+                 1500/500 etc.
+              5. Webhook field docs updated (webhook-config.tsx label).
+              6. Validation helper `_validate_cod_amounts` added to
+                 shipments_write.py and wired into POST, PUT, AND
+                 ship-from-pending paths:
+                   • cod_amount > 0 required (HTTP 422).
+                   • token_amount ≥ 0 required (HTTP 422).
+                   • token > cod soft-warn only (logged, not rejected).
+              7. Migration script
+                 /app/backend/scripts/migrate_phase31_total_amount.py
+                 created + executed. 23 historical rows fixed:
+                   user=cb27b8d3 → 15, a3370a96 → 4, 006b7d5d → 3,
+                   accf9c1f → 1. Audit trail kept on each doc in
+                   `_phase31_migration_audit`.
+                 Idempotent: re-running shows 0 violators.
+                 Order 26061302662 specifically: amount 2849 → 2949
+                 (cod=2849 + token=100) — now canonical.
+        -working: true
+        -agent: "testing"
+        -comment: |
+            Phase-31 rev-2 follow-ups — 14/14 PASS (5 validation +
+            9 canonical-math regression). Migration sanity:
+            135/135 COD rows satisfy amount = cod + token. Validation
+            helper now enforces the same rule on POST, PUT, and
+            pending-ship. Soft-warn (token > cod) emits log without
+            blocking. New test file:
+            /app/backend/tests/test_phase31_cod_validation.py
 
 backend:
   - task: "Phase-31 rev-2 REVERSED Canonical Order-Amount Math (cod = entered, total = cod + token)"

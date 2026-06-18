@@ -74,6 +74,42 @@ def init() -> None:
 
     # =================  POST /shipments  ============================
 
+    def _validate_cod_amounts(
+        *, cod: float, token: float, user_id: str = "",
+    ) -> None:
+        """Phase-31 rev-2 validation helper — shared by POST, PUT, and
+        the Smart-Paste → ship-from-pending path.
+
+        Rules (matches the canonical contract):
+          • cod_amount   MUST be > 0 for COD-mode shipments.
+          • token_amount MUST be ≥ 0 (negative advance is meaningless).
+          • token > cod  is allowed (refund / overpay edge case) but
+                          logged for audit.
+
+        Raises HTTPException(422) on the hard rules; emits a warning
+        but does NOT raise for the soft rule.
+        """
+        if cod <= 0:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "COD to Collect must be greater than zero for "
+                    "COD-mode shipments. Use Prepaid mode if the "
+                    "courier has nothing to collect at delivery."
+                ),
+            )
+        if token < 0:
+            raise HTTPException(
+                status_code=422,
+                detail="Token / Advance amount cannot be negative.",
+            )
+        if token > cod:
+            _logger.warning(
+                "shipment.write — Token (%.2f) exceeds COD (%.2f) "
+                "for user %s; accepting but flagging for audit.",
+                token, cod, (user_id or "?")[:8],
+            )
+
     @shipments_write_router.post("/shipments", response_model=Shipment)
     async def create_shipment(
         payload: ShipmentCreate,
@@ -183,33 +219,15 @@ def init() -> None:
                 if data.get("cod_amount") is not None
                 else float(data.get("amount") or 0)
             )
-            # Phase-31 rev-2 validation (Task 6):
-            #   • Require cod_amount > 0 for COD-mode (the order
-            #     wouldn't be COD if there's nothing to collect).
+            # Phase-31 rev-2 validation (Task 6) — shared helper:
+            #   • Require cod_amount > 0 for COD-mode.
             #   • Allow token_amount = 0 (no advance is fine).
-            #   • Allow token > cod silently — refund / overpay
-            #     edge case. We log a warning so the operator can
-            #     audit later, but never reject the save.
-            if _cod <= 0:
-                raise HTTPException(
-                    status_code=422,
-                    detail=(
-                        "COD to Collect must be greater than zero for "
-                        "COD-mode shipments. Use Prepaid mode if the "
-                        "courier has nothing to collect at delivery."
-                    ),
-                )
-            if _token < 0:
-                raise HTTPException(
-                    status_code=422,
-                    detail="Token / Advance amount cannot be negative.",
-                )
-            if _token > _cod:
-                _logger.warning(
-                    "shipment.create — Token (%.2f) exceeds COD (%.2f) "
-                    "for user %s; accepting but flagging for audit.",
-                    _token, _cod, current_user.get("id", "?")[:8],
-                )
+            #   • Allow token > cod (refund / overpay edge case);
+            #     logged but not blocked.
+            _validate_cod_amounts(
+                cod=_cod, token=_token,
+                user_id=current_user.get("id", ""),
+            )
             data["cod_amount"] = _cod
             data["amount"]     = _cod + _token
         else:
@@ -407,6 +425,11 @@ def init() -> None:
                     update["cod_amount"]
                     if "cod_amount" in update and update["cod_amount"] is not None
                     else update.get("amount", 0) or 0,
+                )
+                # Phase-31 rev-2 validation — same rules as POST.
+                _validate_cod_amounts(
+                    cod=_cod, token=_tok,
+                    user_id=current_user.get("id", ""),
                 )
                 update["cod_amount"] = _cod
                 update["amount"]     = _cod + _tok
@@ -747,6 +770,17 @@ def init() -> None:
         _imp_at     = (order.get("imported_at") or "").strip()
         _ship_status = _imp_status if _imp_status else "Pending"
         _ship_created_at = _imp_at if _imp_at else utcnow_iso()
+
+        # Phase-31 rev-2 validation — also gate the ship-from-pending
+        # path. The Pending row stores `amount` as the COD-to-Collect
+        # (frontend bulk-paste & smart-paste flows write it that way),
+        # so validate the same way we do on direct POST.
+        if _get("payment_mode") == "COD":
+            _validate_cod_amounts(
+                cod=float(_get("amount", 0) or 0),
+                token=float(_get("token_amount", 0) or 0),
+                user_id=current_user.get("id", ""),
+            )
 
         ship_doc = {
             "id":                 str(uuid.uuid4()),
