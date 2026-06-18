@@ -15,6 +15,7 @@ import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity, TextInput,
   ActivityIndicator, Alert, Platform,
 } from "react-native";
+import * as Clipboard from "expo-clipboard";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
 import { api } from "../../lib/api";
@@ -140,6 +141,53 @@ export default function AdminMasterSheetScreen() {
     }
   };
 
+  // ──────────────────────────────────────────────────────────────────
+  // Copy Master Sheet header row to clipboard.
+  //
+  // Phase-31 (rev-2): the Master Sheet schema grew from 19 to 35
+  // columns to cover full shipment fidelity (courier_name, tracking_id,
+  // box_dimensions, dispatched_at, custom_values, … 16 new fields).
+  // The admin pastes the freshly-fetched row into A1 of the Master
+  // Sheet so column ordering matches what `sheet_writer.py` writes.
+  //
+  // We fetch from /api/admin/master-sheet/header (returns the 35-cell
+  // array generated from sheet_writer.COLUMNS — always reflects the
+  // CURRENT schema), join with tabs for direct Excel/Sheets paste,
+  // and dump to the clipboard. Idempotent: re-pasting the same row
+  // is a no-op.
+  // ──────────────────────────────────────────────────────────────────
+  const [copyingHeaders, setCopyingHeaders] = useState(false);
+  const onCopyHeaders = async () => {
+    setCopyingHeaders(true);
+    try {
+      const r = await api.get<{
+        headers: string[];
+        count: number;
+        last_column_letter: string;
+        paste_range: string;
+        note: string;
+      }>("/admin/master-sheet/header");
+      const rowTsv = (r.data.headers || []).join("\t");
+      await Clipboard.setStringAsync(rowTsv);
+      Alert.alert(
+        `📋 ${r.data.count} headers copied`,
+        `Paste into row 1 of your Master Sheet (${r.data.paste_range}).\n\n` +
+        `Tip: in Google Sheets click cell A1 and press Ctrl/Cmd+V — the ` +
+        `${r.data.count} columns will fill across in one shot.\n\n` +
+        `Schema: 19 base columns + 16 Phase-31 shipment-fidelity columns ` +
+        `(Courier Name → Custom Values).`,
+      );
+    } catch (e: any) {
+      Alert.alert(
+        "Copy failed",
+        e?.response?.data?.detail || e?.message ||
+        "Could not fetch the header row. Please try again.",
+      );
+    } finally {
+      setCopyingHeaders(false);
+    }
+  };
+
   if (loading) {
     return (
       <SafeAreaView style={styles.wrap}>
@@ -244,6 +292,34 @@ export default function AdminMasterSheetScreen() {
           </TouchableOpacity>
         </View>
 
+        {/* Phase-31 — Copy Master Sheet header row.
+            Sits below the primary action row so the admin only sees
+            it AFTER the sheet is configured + tested. Pasting the
+            row is a one-time setup per sheet (or whenever the schema
+            grows again). */}
+        <TouchableOpacity
+          testID="admin-master-sheet-copy-headers"
+          onPress={onCopyHeaders}
+          disabled={copyingHeaders}
+          style={[styles.btnWide, copyingHeaders && { opacity: 0.6 }]}
+          activeOpacity={0.8}
+        >
+          {copyingHeaders ? (
+            <ActivityIndicator size="small" color="#0F766E" />
+          ) : (
+            <>
+              <PhIcon name="copy-outline" size={16} color="#0F766E" />
+              <Text style={styles.btnWideTxt}>
+                Copy 35-Column Header Row
+              </Text>
+            </>
+          )}
+        </TouchableOpacity>
+        <Text style={styles.hintCenter}>
+          Tap to copy the canonical header row, then paste into{" "}
+          <Text style={{ fontWeight: "700" }}>row 1</Text> of your Master Sheet.
+        </Text>
+
         {/* Info card */}
         <View style={styles.infoCard}>
           <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
@@ -252,7 +328,7 @@ export default function AdminMasterSheetScreen() {
           </View>
           <Text style={styles.infoBody}>
             • Every user's order writes to THIS Master Sheet AND their own personal sheet (Settings → Google Sheet).{"\n"}
-            • Master Sheet has 19 columns including User ID, User Name, Master Order ID — so you can filter / sort by user.{"\n"}
+            • Master Sheet now has 35 columns (Phase-31): the original 19 + 16 shipment-fidelity columns (Courier Name, Tracking ID, Box Dimensions, Dispatched At, etc.). Tap "Copy 35-Column Header Row" above to paste the canonical headers into row 1.{"\n"}
             • Per-user sheets only show that user's own rows (no cross-tenant leakage).{"\n"}
             • If a user hasn't linked their own sheet, only the Master Sheet receives writes — that's fine.
           </Text>
@@ -329,6 +405,27 @@ const styles = StyleSheet.create({
   btnGhostTxt: { color: "#7C3AED", fontWeight: "800", fontSize: 13 },
   btnPrimary: { backgroundColor: "#7C3AED" },
   btnPrimaryTxt: { color: "#fff", fontWeight: "800", fontSize: 13 },
+  // Phase-31 — full-width secondary button (Copy Headers).
+  btnWide: {
+    marginTop: 12,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    paddingVertical: 12,
+    borderRadius: 10,
+    backgroundColor: "#CCFBF1",
+    borderWidth: 1,
+    borderColor: "#5EEAD4",
+  },
+  btnWideTxt: { color: "#0F766E", fontWeight: "800", fontSize: 13 },
+  hintCenter: {
+    fontSize: 11,
+    color: "#6B7280",
+    marginTop: 6,
+    textAlign: "center",
+    lineHeight: 15,
+  },
   infoCard: {
     marginTop: 24,
     backgroundColor: "#EFF6FF",
