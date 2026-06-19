@@ -34,6 +34,7 @@ import ConfirmCancelModal, {
   TerminalAction,
   isTerminalShipmentStatus,
 } from "../../components/ConfirmCancelModal";
+import SearchBar from "../../components/SearchBar";
 import { openSaveContactIntent, saveBulkVcf } from "../../lib/contactSave";
 import {
   generatePackingSummary,
@@ -1171,19 +1172,25 @@ export default function Shipments() {
         </View>
       </View>
 
-      <View style={styles.searchWrap}>
-        <PhIcon name="search" size={18} color={colors.textMuted} />
-        <TextInput
-          testID="search-input"
-          placeholder="Search tracking, name, city, order..."
-          placeholderTextColor="#9CA3AF"
-          value={search}
-          onChangeText={setSearch}
-          onSubmitEditing={load}
-          style={styles.searchInput}
-          returnKeyType="search"
-        />
-      </View>
+      <SearchBar
+        testID="search"
+        placeholder="Search tracking, name, city, order..."
+        value={search}
+        onChangeText={setSearch}
+        onClear={() => {
+          // Phase-32 one-tap clear UX:
+          //   • wipe the search box (handled by SearchBar)
+          //   • reset Status filter back to "All"
+          //   • reset Date filter back to "all"
+          //   • drop any custom-date window
+          // List reloads automatically via the existing effect-on-state.
+          setStatus("All");
+          setDateFilter("all");
+          setCustomFrom(null);
+          setCustomTo(null);
+        }}
+        onSubmitEditing={load}
+      />
 
       <View style={styles.filterRowWrap}>
         <ScrollView horizontal showsHorizontalScrollIndicator={false}

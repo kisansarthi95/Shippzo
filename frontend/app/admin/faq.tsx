@@ -42,6 +42,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { Stack, useRouter } from "expo-router";
 
 import PhIcon from "../../components/PhIcon";
+import SearchBar from "../../components/SearchBar";
 import { colors } from "../../lib/theme";
 import { Api } from "../../lib/api";
 import { useAuth } from "../../lib/auth";
@@ -270,15 +271,14 @@ export default function AdminFAQScreen() {
           </View>
         </View>
         <View style={styles.searchRow}>
-          <View style={styles.searchInner}>
-            <PhIcon name="search" size={16} color="#94A3B8" />
-            <TextInput
+          <View style={{ flex: 1 }}>
+            <SearchBar
               testID="admin-faq-search"
               value={query}
               onChangeText={setQuery}
+              onClear={() => {/* no extra filters here */}}
               placeholder="Search by question, answer or category…"
-              placeholderTextColor="#9CA3AF"
-              style={styles.searchInput}
+              containerStyle={{ marginHorizontal: 0, marginTop: 0 }}
             />
           </View>
           <TouchableOpacity

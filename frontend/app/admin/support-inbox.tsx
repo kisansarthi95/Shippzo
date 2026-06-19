@@ -27,6 +27,7 @@ import { Stack, useFocusEffect, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import PhIcon from "../../components/PhIcon";
+import SearchBar from "../../components/SearchBar";
 import { colors } from "../../lib/theme";
 import { Api, SupportTicket } from "../../lib/api";
 import { useAuth } from "../../lib/auth";
@@ -183,20 +184,15 @@ export default function AdminSupportInbox() {
         </View>
       </View>
 
-      {/* Search */}
-      <View style={styles.searchWrap}>
-        <PhIcon name="search" size={16} color="#94A3B8" />
-        <TextInput
-          value={query}
-          onChangeText={setQuery}
-          placeholder="Search ticket #, title, or user…"
-          placeholderTextColor="#94A3B8"
-          style={styles.searchInput}
-          autoCapitalize="none"
-          autoCorrect={false}
-          returnKeyType="search"
-        />
-      </View>
+      {/* Search — Phase-32: one-tap clear also resets the status
+          tab back to "all" for a true default-state reset. */}
+      <SearchBar
+        value={query}
+        onChangeText={setQuery}
+        onClear={() => setTab("all")}
+        placeholder="Search ticket #, title, or user…"
+        testID="admin-support-search"
+      />
 
       {/* Status filter tabs */}
       <View style={styles.tabsRow}>

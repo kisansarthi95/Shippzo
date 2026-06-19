@@ -26,6 +26,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { Stack, useRouter } from "expo-router";
 
 import PhIcon from "../../components/PhIcon";
+import SearchBar from "../../components/SearchBar";
 import { colors } from "../../lib/theme";
 import { Api } from "../../lib/api";
 import { useAuth } from "../../lib/auth";
@@ -251,16 +252,12 @@ export default function AdminArticlesScreen() {
         </TouchableOpacity>
       </View>
 
-      <View style={styles.searchWrap}>
-        <PhIcon name="search" size={16} color="#94A3B8" />
-        <TextInput
-          value={query}
-          onChangeText={setQuery}
-          placeholder="Search by title / category / id…"
-          style={styles.searchInput}
-          autoCapitalize="none"
-        />
-      </View>
+      <SearchBar
+        value={query}
+        onChangeText={setQuery}
+        placeholder="Search by title / category / id…"
+        testID="admin-articles-search"
+      />
 
       {error ? (
         <View style={styles.errorBox}>

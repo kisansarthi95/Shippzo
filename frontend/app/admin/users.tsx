@@ -19,6 +19,7 @@
  */
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import PhIcon from "../../components/PhIcon";
+import SearchBar from "../../components/SearchBar";
 import {
   View, Text, StyleSheet, TextInput, TouchableOpacity, FlatList,
   ActivityIndicator, RefreshControl, Modal, ScrollView, Platform, Alert,
@@ -403,25 +404,16 @@ export default function AdminUsersScreen() {
         </View>
       ) : null}
 
-      {/* Search */}
-      <View style={styles.searchBox}>
-        <PhIcon name="search" size={16} color="#94A3B8" />
-        <TextInput
-          value={q}
-          onChangeText={setQ}
-          placeholder="Search by email, name, shop…"
-          placeholderTextColor="#94A3B8"
-          style={styles.searchInp}
-          returnKeyType="search"
-          autoCorrect={false}
-          autoCapitalize="none"
-        />
-        {q ? (
-          <TouchableOpacity onPress={() => setQ("")} hitSlop={10}>
-            <PhIcon name="close-circle" size={18} color="#94A3B8" />
-          </TouchableOpacity>
-        ) : null}
-      </View>
+      {/* Search — Phase-32 SearchBar with one-tap clear that also
+          resets the plan filter back to "All Plans". */}
+      <SearchBar
+        value={q}
+        onChangeText={setQ}
+        onClear={() => setPlanFilter("")}
+        placeholder="Search by email, name, shop…"
+        testID="admin-users-search"
+        containerStyle={{ marginHorizontal: 0, marginTop: 10 }}
+      />
 
       {/* Plan filter chips */}
       <ScrollView

@@ -47,6 +47,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import Constants from "expo-constants";
 
 import PhIcon from "../../components/PhIcon";
+import SearchBar from "../../components/SearchBar";
 import { colors } from "../../lib/theme";
 import { Api } from "../../lib/api";
 
@@ -194,27 +195,13 @@ export default function FAQScreen() {
         </View>
 
         <View style={styles.searchWrap}>
-          <View style={styles.searchInner}>
-            <PhIcon name="search" size={16} color="#94A3B8" />
-            <TextInput
-              testID="faq-search"
-              value={query}
-              onChangeText={setQuery}
-              placeholder="Search FAQs..."
-              placeholderTextColor="#9CA3AF"
-              style={styles.searchInput}
-              returnKeyType="search"
-            />
-            {query.length > 0 ? (
-              <TouchableOpacity
-                testID="faq-clear-search"
-                onPress={() => setQuery("")}
-                hitSlop={8}
-              >
-                <PhIcon name="close-circle" size={16} color="#94A3B8" />
-              </TouchableOpacity>
-            ) : null}
-          </View>
+          <SearchBar
+            testID="faq-search"
+            value={query}
+            onChangeText={setQuery}
+            placeholder="Search FAQs..."
+            containerStyle={{ marginTop: 0, marginHorizontal: 0 }}
+          />
           <Text style={styles.searchCount}>
             {filtered.length} of {items.length} questions
           </Text>

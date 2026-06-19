@@ -12,6 +12,7 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useRouter, Stack } from "expo-router";
 import PhIcon from "../components/PhIcon";
+import SearchBar from "../components/SearchBar";
 import { Api, Customer } from "../lib/api";
 import { colors } from "../lib/theme";
 
@@ -153,15 +154,18 @@ export default function CustomersScreen() {
           </ScrollView>
 
           {/* Search */}
-          <TextInput
+          <SearchBar
             testID="search-customers"
             value={search}
             onChangeText={setSearch}
+            onClear={() => {
+              // Phase-32 — clear search ALSO drops the source filter
+              // so customers list reverts to "All Sources".
+              setSourceFilter("");
+            }}
             placeholder="Search by name, phone, email"
-            placeholderTextColor="#94A3B8"
-            style={styles.search}
-            returnKeyType="search"
             onSubmitEditing={() => load()}
+            containerStyle={{ marginHorizontal: 0 }}
           />
 
           {customers.length === 0 ? (

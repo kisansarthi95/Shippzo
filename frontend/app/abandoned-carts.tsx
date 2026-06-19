@@ -17,6 +17,7 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useRouter, Stack } from "expo-router";
 import PhIcon from "../components/PhIcon";
+import SearchBar from "../components/SearchBar";
 import { Api, AbandonedCart } from "../lib/api";
 import { colors } from "../lib/theme";
 
@@ -254,15 +255,18 @@ export default function AbandonedCartsScreen() {
           </ScrollView>
 
           {/* Search */}
-          <TextInput
+          <SearchBar
             testID="search-carts"
             value={search}
             onChangeText={setSearch}
+            onClear={() => {
+              // Phase-32 one-tap clear UX: reset status tab to
+              // the default "abandoned" and any future filters.
+              setFilter("abandoned");
+            }}
             placeholder="Search by name, phone, email"
-            placeholderTextColor="#94A3B8"
-            style={styles.search}
-            returnKeyType="search"
             onSubmitEditing={() => load()}
+            containerStyle={{ marginHorizontal: 0 }}
           />
 
           {carts.length === 0 ? (

@@ -22,6 +22,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { Stack, useRouter } from "expo-router";
 
 import PhIcon from "../../../components/PhIcon";
+import SearchBar from "../../../components/SearchBar";
 import { colors } from "../../../lib/theme";
 import { Api } from "../../../lib/api";
 
@@ -93,17 +94,12 @@ export default function ArticlesIndexScreen() {
         </View>
       </View>
 
-      <View style={styles.searchWrap}>
-        <PhIcon name="search" size={16} color="#94A3B8" />
-        <TextInput
-          testID="articles-search"
-          value={query}
-          onChangeText={setQuery}
-          placeholder="Search articles…"
-          style={styles.searchInput}
-          autoCapitalize="none"
-        />
-      </View>
+      <SearchBar
+        testID="articles-search"
+        value={query}
+        onChangeText={setQuery}
+        placeholder="Search articles…"
+      />
 
       {loading ? (
         <View style={styles.center}>

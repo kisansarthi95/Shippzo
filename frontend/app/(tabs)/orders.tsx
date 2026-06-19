@@ -13,6 +13,7 @@ import { useFeatureFlag } from "../../lib/feature_flags";
 import ConfirmCancelModal, {
   TerminalAction,
 } from "../../components/ConfirmCancelModal";
+import SearchBar from "../../components/SearchBar";
 
 type Filter = "pending" | "shipped" | "all";   // legacy — retained for type-import compat
 
@@ -944,17 +945,18 @@ export default function OrdersFromSheet() {
           Webhook, Google Sheet). Each card carries a colour-coded
           source badge and the list is sorted newest-first.
           Sheet rows that are already shipped are filtered out. */}
-      <View style={styles.searchWrap}>
-        <PhIcon name="search" size={18} color={colors.textMuted} />
-        <TextInput
-          testID="orders-search"
-          value={search}
-          onChangeText={setSearch}
-          placeholder="Search order, name, phone, city"
-          placeholderTextColor="#9CA3AF"
-          style={styles.searchInput}
-        />
-      </View>
+      <SearchBar
+        testID="orders-search"
+        value={search}
+        onChangeText={setSearch}
+        onClear={() => {
+          // Phase-32 one-tap clear UX: wipe search AND reset the
+          // source-filter chip back to "all" so the list returns
+          // to its default state in a single tap.
+          setSourceFilter("all");
+        }}
+        placeholder="Search order, name, phone, city"
+      />
 
       {/* Source filter chips — horizontal scroll. Phase F3.9 fix:
           removed `maxHeight: 52` because on Android with system font

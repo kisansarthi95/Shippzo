@@ -48,6 +48,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import Constants from "expo-constants";
 
 import PhIcon from "../components/PhIcon";
+import SearchBar from "../components/SearchBar";
 import { colors } from "../lib/theme";
 import { useFeatureFlag } from "../lib/feature_flags";
 import { Api } from "../lib/api";
@@ -190,18 +191,13 @@ export default function SupportCenter() {
 
         {/* ─── 2. Search bar (overlaps the banner footer) ─────── */}
         <View style={styles.searchWrap}>
-          <View style={styles.searchInner}>
-            <TextInput
-              testID="support-search"
-              value={query}
-              onChangeText={setQuery}
-              placeholder="Search for articles, topics..."
-              placeholderTextColor="#9CA3AF"
-              style={styles.searchInput}
-              returnKeyType="search"
-            />
-            <PhIcon name="search" size={18} color="#94A3B8" />
-          </View>
+          <SearchBar
+            testID="support-search"
+            value={query}
+            onChangeText={setQuery}
+            placeholder="Search for articles, topics..."
+            containerStyle={{ marginTop: 0, marginHorizontal: 0 }}
+          />
         </View>
 
         {/* ─── 3. 2×2 action card grid ────────────────────────── */}
