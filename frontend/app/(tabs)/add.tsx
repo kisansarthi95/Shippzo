@@ -145,6 +145,10 @@ export default function AddShipment() {
   const [weightUnit, setWeightUnit] = useState<"g" | "kg">("g");
   const [sheetRowKey, setSheetRowKey] = useState("");
   const [pendingOrderId, setPendingOrderId] = useState("");
+  // Phase-32 — Capture the upstream `source` of the prefill so we can
+  // auto-trigger label generation for Smart-Paste rows (source="paste")
+  // without bothering users who came in from CSV / Sheet / Webhook.
+  const [pendingOrderSource, setPendingOrderSource] = useState("");
   const [saving, setSaving] = useState(false);
 
   // Phase B Part 2 — per-shipment custom fields (definitions come from Settings)
@@ -854,6 +858,11 @@ export default function AddShipment() {
           }
         }
         if (o.pending_order_id) setPendingOrderId(String(o.pending_order_id));
+        // Phase-32 — Remember which upstream source this pending row
+        // came from so the save-flow can auto-trigger label generation
+        // for Smart-Paste rows (source="paste") only. CSV / Sheet /
+        // Webhook rows still get the regular Saved-toast.
+        if (o.source) setPendingOrderSource(String(o.source));
         // Auto-fill optional fields the AI/regex captured.
         if (o.box_dimensions) {
           const bd = String(o.box_dimensions).trim();
@@ -1010,6 +1019,10 @@ export default function AddShipment() {
     setAutoTracking(null);
     setTrackingId("");
     setCustomValues({});
+    // Phase-32 — clear pending-order linkage so the next manual entry
+    // doesn't accidentally re-target the same pending row.
+    setPendingOrderId("");
+    setPendingOrderSource("");
   };
 
   // Does form have unsaved content? Used by Cancel confirmation.
@@ -1296,10 +1309,36 @@ export default function AddShipment() {
             return out;
           })(),
         };
-        // Edit mode → PUT existing shipment, otherwise POST a new one.
-        const created = editingShipmentId
-          ? await Api.updateShipment(editingShipmentId, payload as any)
-          : await Api.createShipment(payload as any);
+        // Phase-32 rewrite:
+        // For pending orders (Smart Paste / CSV / Webhook queue), use
+        // the dedicated atomic endpoint `POST /orders/pending/{id}/ship`.
+        // This single call:
+        //   • Creates the shipment.
+        //   • Marks the pending row as shipped (status, shipment_id,
+        //     tracking_id, processed_at) — in the SAME transaction.
+        //   • Avoids the old race where the shipment was created but
+        //     the pending-update silently failed in a `catch {}`,
+        //     leaving the row to re-appear on the next refresh.
+        //
+        // Edit-mode (editingShipmentId) still routes to PUT
+        // /shipments/{id}. Plain (non-pending) creates fall back to
+        // POST /shipments.
+        let created: any;
+        if (editingShipmentId) {
+          created = await Api.updateShipment(editingShipmentId, payload as any);
+        } else if (pendingOrderId) {
+          // Auto-tracking couriers ignore `manual_tracking_id`; pass it
+          // only when the operator chose manual mode AND typed a value.
+          const manualTid = !autoTracking ? (trackingId || "").trim() : "";
+          created = await Api.shipPendingOrder(
+            pendingOrderId,
+            selectedCourier.id,
+            payload as any,
+            manualTid || undefined,
+          );
+        } else {
+          created = await Api.createShipment(payload as any);
+        }
         // Persist last-used choices (hints for next entry, never defaults).
         try {
           await Promise.all([
@@ -1308,19 +1347,16 @@ export default function AddShipment() {
             AsyncStorage.setItem(LS_LAST_TRACK_MODE, autoTracking ? "auto" : "manual"),
           ]);
         } catch {/* non-critical */}
-        // If shipment came from a pending order (Smart Paste queue), mark it shipped
-        if (pendingOrderId) {
-          try {
-            await Api.updatePendingOrder(pendingOrderId, {
-              status: "shipped",
-              shipment_id: created.id,
-              tracking_id: created.tracking_id,
-              processed_at: new Date().toISOString(),
-            } as any);
-          } catch {/* ignore */}
-        }
+        // Phase-32 — Auto-trigger label generation for Smart Paste.
+        // Operators paste a customer message and almost always want
+        // the label next; saving them the extra "Save & Print" tap
+        // makes the AI-paste flow feel like one-shot dispatch.
+        // We pass the explicit `pendingOrderSource === "paste"` check
+        // (vs. just pending-id != "") so CSV / Sheet imports still
+        // land on the Saved toast.
+        const cameFromSmartPaste = pendingOrderSource === "paste";
         resetForm();
-        if (thenPrint) {
+        if (thenPrint || cameFromSmartPaste) {
           router.replace(`/label/${created.id}`);
         } else {
           Alert.alert("Saved", `Shipment ${created.tracking_id} saved.`, [
@@ -1378,6 +1414,11 @@ export default function AddShipment() {
       itemsText,
       weight,
       sheetRowKey,
+      // Phase-32 — also re-bind when the pending-order link or its
+      // upstream source changes, so the ship path picks up the right
+      // POST endpoint and the auto-label trigger.
+      pendingOrderId,
+      pendingOrderSource,
       router,
     ]
   );

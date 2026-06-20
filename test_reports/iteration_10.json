@@ -1,0 +1,37 @@
+{
+  "summary": "Phase-32 backend testing — ALL GREEN. New test_phase32_schema_ship.py passes 11/11 (7 schema-constant assertions + 2 atomic ship-from-pending regression cases + 2 column_mapping persistence cases). Phase-31 cod-math regression suite still passes 9/9. Combined: 20/20 in ~7.4s. Verified: (a) tracking_id + master_order_id are in SCHEMA_FIELDS; (b) HEADER_ALIASES maps awb/docket/lr_no → tracking_id and mo_id/master_order_id → master_order_id; (c) POST /api/smart-paste → POST /api/orders/pending/{id}/ship atomically promotes pending row to shipment (status=shipped, shipment_id linked, tracking_id set, processed_at populated) and 2nd-ship call is rejected with 400; (d) PUT /api/settings persists sheet.column_mapping with {'AWB':'tracking_id','Master ID':'master_order_id'} and survives GET round-trip; (e) GET /api/sheets/orders does NOT 422 with the new mapping (returned 400 'no sheet linked' which is correct — proves validate_mapping_field accepts the new schema fields).",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "wallet (test fixture concern, not product bug)",
+        "issue": "user2@test.com wallet ran into negative remaining_credits (-4.0) before Phase-31 test rerun, causing every POST /api/shipments to return 402. Topped up to total=1000/used=0 via mongo direct write to unblock the suite. Long-running tests on the user2 tenant should top-up the wallet in conftest, OR the seed migration should refill on each test session."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_phase32_schema_ship.py",
+    "/app/backend/tests/test_phase31_cod_math.py",
+    "/app/test_reports/pytest/pytest_iteration_10.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "import_schema.py:282-317 — Phase-32 added a thorough alias table for tracking_id (16 variants) and master_order_id (9 variants). Coverage is good. Suggestion: consider also adding 'consignment_id' and 'ship_doc_no' which some Indian 3PL CSVs export, but not blocking.",
+    "routers/shipments_write.py:769-783 — ship_pending_order still uses imported_status/imported_at from the source row but does NOT consult the new tracking_id/master_order_id fields from the pending row. If a sheet-imported pending row already has a tracking_id, it gets overwritten by the series_prefix+next_number allocation. Confirm with product whether sheet-imported tracking_id should be preserved on ship (today it's discarded)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_phase32_schema_ship.py (new)"
+  ],
+  "success_rate": {"backend": "100% (20/20)", "frontend": "N/A (backend-only test request)"},
+  "seed_data_creation": "Test pending orders + shipments created via /api/smart-paste and /api/orders/pending/{id}/ship under user2 tenant. Prefixed TEST_P32_/TEST_P32_DUP_ for cleanup identification. Also topped up user2 wallet to total_credits=1000/used_credits=0 via direct mongo write to unblock the existing Phase-31 suite that was failing on 402 from prior runs.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Phase-32 schema additions verified end-to-end: SCHEMA_FIELDS and HEADER_ALIASES new entries are present in code AND honored by both the write path (PUT /api/settings persists mappings) and the read path (GET /api/sheets/orders does not 422). The atomic ship-from-pending endpoint POST /api/orders/pending/{id}/ship correctly populates status='shipped', shipment_id, tracking_id, processed_at on the pending row and rejects double-ship with 400. Phase-31 cod-math regression is fully green after wallet top-up. Note for future runs: user2 wallet is now at 1000 credits; long suites may drain it again — top-up in conftest if you see cascading 402s.",
+  "rca_of_issue": "N/A — no production bug found. The only mid-run failures (5 of Phase-31 tests) were caused by user2 wallet credit exhaustion from cumulative test runs and are unrelated to Phase-32 changes. Resolved by direct mongo top-up of wallets.{total_credits,used_credits,remaining_credits} for user2."
+}
