@@ -585,6 +585,14 @@ class Shipment(BaseModel):
     items: List[str] = Field(default_factory=list)
     item_description: str = ""  # fallback text
     weight: str = ""
+    # Phase-33 (2026-06) — Structured weight fields derived from `weight`.
+    # The backend `_apply_weight_parse` helper in routers/shipments_write.py
+    # populates these on POST/PUT/ship-from-pending so reports + rate-calc
+    # can work with numbers without re-parsing the display string every time.
+    #   weight_value : numeric, in the unit recorded in weight_unit
+    #   weight_unit  : "g" | "kg" | ""  (empty when weight is unset)
+    weight_value: float = 0.0
+    weight_unit: str = ""
     # Token / advance payment tracking (for COD split)
     token_amount: float = 0.0   # advance already collected (prepaid portion)
     box_dimensions: str = ""    # e.g. "30×20×10 cm"
@@ -675,6 +683,9 @@ class ShipmentCreate(BaseModel):
     items: Optional[List[str]] = None
     item_description: Optional[str] = ""
     weight: Optional[str] = ""
+    # Phase-33 — Structured weight (parsed server-side from `weight`).
+    weight_value: Optional[float] = 0.0
+    weight_unit: Optional[str] = ""
     token_amount: Optional[float] = 0.0
     box_dimensions: Optional[str] = ""
     shipment_notes: Optional[str] = ""
@@ -710,6 +721,9 @@ class ShipmentUpdate(BaseModel):
     items: Optional[List[str]] = None
     item_description: Optional[str] = None
     weight: Optional[str] = None
+    # Phase-33 — Structured weight for partial edits.
+    weight_value: Optional[float] = None
+    weight_unit: Optional[str] = None
     token_amount: Optional[float] = None
     box_dimensions: Optional[str] = None
     shipment_notes: Optional[str] = None

@@ -1,0 +1,39 @@
+{
+  "summary": "Phase-33 Weight Parser verification — ALL GREEN (16/16 in 24.03s). Validated _parse_weight + _apply_weight_parse helpers via POST /api/shipments and PUT /api/shipments/{id}. All 9 happy-path normalisations correct: '250gm'→'250 g'/250.0/'g'; '500 gm'→'500 g'/500/'g'; '1kg'→'1 kg'/1.0/'kg'; '2 kg'→'2 kg'/2.0/'kg'; '1.5 kg'→'1.5 kg'/1.5/'kg'; '250g'→'250 g'/250/'g'; '3 grams'→'3 g'/3.0/'g'; bare '500'→'500 g'/500/'g' (>50 heuristic); bare '1.5'→'1.5 kg'/1.5/'kg' (≤50 heuristic). All 3 rejection cases ('abc', '10x20', 'heavy') return HTTP 422 with 'Couldn\\'t parse weight' detail. Blank pass-through verified for empty string, missing key, and explicit None — all return 200 with weight='', value=0.0, unit=''. PUT path: existing shipment with weight='1 kg' edited to '750gm' → response shows '750 g'/750.0/'g' and persists across GET. Regression: Phase-31 cod-math suite (9 tests) and Phase-32 items-normalization suite (6 tests) both still pass — total 31/31 across all three phases.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_phase33_weight_parser.py",
+    "/app/backend/tests/test_phase31_cod_math.py",
+    "/app/backend/tests/test_phase32_items_normalization.py",
+    "/app/test_reports/pytest/pytest_iteration_12.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "routers/shipments_write.py:93-105 — _WEIGHT_RE is well-crafted: anchored ^...$, optional unit, IGNORECASE+VERBOSE. Covers kg/kgs/kilograms/kilos/kilo and gm/gms/grams/gram/gm/g. Decimal support via \\d+(?:\\.\\d+)? handles '1.5 kg' correctly.",
+    "routers/shipments_write.py:113-122 — _parse_weight numeric branch uses '≤50 implies kg, else g' heuristic for bare numbers. Correct call for Indian courier market norms. Note: numeric branch uses f-string display 'f\"{n} {unit}\"' which would render 500.0 → '500.0 g' for floats. The string branch uses f\"{num:g} {unit}\" which trims trailing zeros. Minor consistency issue — for PendingOrder rows that store weight as a float (e.g. 500.0), the ship-from-pending path would produce display '500.0 g' instead of '500 g'. Not tested here as no Pending row was found carrying numeric weight in the smart-paste flow (parser treats Item: ... lines as strings). Consider unifying both branches to use ':g' formatting.",
+    "routers/shipments_write.py:148-166 — _apply_weight_parse mutates `data` dict in place. On PUT it's called only when 'weight' OR 'weight_value' OR 'weight_unit' is in update. This means clients sending only weight_value (without raw weight) trigger re-parse of an empty/None weight → blanks out the field. Acceptable as the spec says raw weight is the source of truth and the frontend always passes it together, but worth a comment.",
+    "routers/shipments_write.py:539 — PUT guard `if 'weight' in update or 'weight_value' in update or 'weight_unit' in update` correctly fires _apply_weight_parse so a server-trusted display is always re-derived. Good.",
+    "PendingOrder ship path at line 905 also calls _parse_weight(_get('weight', '')) and stamps weight/weight_value/weight_unit before insert — symmetry with POST/PUT verified by code review."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_phase33_weight_parser.py (new — 16 tests across 4 classes: happy paths × 9, rejection × 3, blank pass-through × 3, PUT edit × 1)"
+  ],
+  "success_rate": {
+    "backend": "100% (16/16 Phase-33 + 15/15 regression = 31/31)",
+    "frontend": "N/A (backend-only test request)"
+  },
+  "seed_data_creation": "16 Prepaid shipments created under user2 tenant with TEST_P33_WT_ prefix for cleanup identification. Each exercises a different weight input path. No pending orders or COD rows were needed for the Phase-33 surface; weight parsing is independent of payment_mode.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Phase-33 weight parser is fully covered by /app/backend/tests/test_phase33_weight_parser.py — 16 tests covering happy paths, rejection, blank pass-through, and PUT edit. Re-run with: pytest /app/backend/tests/test_phase33_weight_parser.py -v. Tests rely on user2@test.com credentials and the first auto-tracking courier available for that tenant. Full regression: pytest backend/tests/test_phase31_cod_math.py backend/tests/test_phase32_items_normalization.py backend/tests/test_phase33_weight_parser.py — confirmed 31/31 green. Note: ship-from-pending weight parsing was NOT separately tested (smart-paste's `Weight:` line isn't surfaced through the test fixture); this path is covered by code review. If a future change touches _parse_weight numeric branch, add a Pending-row-with-numeric-weight test to lock in the float display format.",
+  "rca_of_issue": "Not applicable — this iteration verifies a new feature (Phase-33 weight parser), not a bug-fix. All assertions met spec exactly. The only minor concern surfaced during review is the cosmetic difference between the numeric-branch display ('500.0 g') and the string-branch display ('500 g') when a bare numeric (Pending-row originated) value flows through — documented in critical_code_review_comments."
+}

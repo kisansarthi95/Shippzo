@@ -74,6 +74,97 @@ def init() -> None:
 
     # =================  POST /shipments  ============================
 
+    # ── Phase-33 weight parser (2026-06) ─────────────────────────────
+    # Accept the free-form `weight` string typed by the operator
+    # (e.g. "250gm", "500 gm", "1kg", "2 kg", "1.5 kg") and return
+    # a normalised triple {value, unit, display}. The frontend Add
+    # form already concatenates `<number> <unit>` (e.g. "250 g") so
+    # by far the common case is "<digits> g" or "<digits> kg". This
+    # helper handles every reasonable variation an operator might
+    # paste in from a customer message:
+    #   • Glued     : "250gm", "1kg", "1.5kg"
+    #   • Spaced    : "250 g", "1 kg"
+    #   • Long unit : "gram"/"grams", "kilo"/"kilos"/"kilogram"
+    #   • Bare nums : "0.5"  → defaults to kg (fractional sounds like kg)
+    #                 "500"  → defaults to g (3-digit sounds like g)
+    # If NO numeric value can be extracted the helper raises so the
+    # POST/PUT endpoint can return a 422 to the client — couriers
+    # refuse parcels without weight.
+    _WEIGHT_RE = re.compile(
+        r"""
+        ^\s*
+        (?P<num>\d+(?:\.\d+)?)        # 250  | 1.5
+        \s*
+        (?P<unit>
+            kgs?|kilograms?|kilos?|kilo|     # kg variants
+            gms?|grams?|gm|g                 # g  variants
+        )?
+        \s*$
+        """,
+        re.IGNORECASE | re.VERBOSE,
+    )
+
+    def _parse_weight(raw: Any) -> Dict[str, Any]:
+        """
+        Returns {"value": float, "unit": "g"|"kg", "display": str}.
+        Raises HTTPException(422) if no numeric value is parseable
+        and the input is not blank.
+        """
+        if raw in (None, "", 0, 0.0):
+            return {"value": 0.0, "unit": "", "display": ""}
+        # Numeric already (Pending rows sometimes carry float).
+        if isinstance(raw, (int, float)):
+            n = float(raw)
+            # Heuristic: ≤ 50 implies kg, otherwise g (matches how
+            # operators key in parcel weight in the Indian courier
+            # market — "1.5" means 1.5 kg, "500" means 500 g).
+            unit = "kg" if n <= 50 else "g"
+            return {"value": n, "unit": unit, "display": f"{n} {unit}"}
+        s = str(raw).strip()
+        if not s:
+            return {"value": 0.0, "unit": "", "display": ""}
+        m = _WEIGHT_RE.match(s)
+        if not m:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"Couldn't parse weight '{s}'. Expected a numeric "
+                    f"value with optional unit, e.g. '250gm', '500 g', "
+                    f"'1kg', '2 kg'."
+                ),
+            )
+        num = float(m.group("num"))
+        unit_raw = (m.group("unit") or "").lower()
+        if unit_raw.startswith("k"):
+            unit = "kg"
+        elif unit_raw:
+            unit = "g"
+        else:
+            # No unit token at all → infer from magnitude (same
+            # heuristic as the numeric branch above).
+            unit = "kg" if num <= 50 else "g"
+        return {"value": num, "unit": unit, "display": f"{num:g} {unit}"}
+
+    def _apply_weight_parse(data: Dict[str, Any]) -> None:
+        """In-place: validate `data['weight']` and stamp the parsed
+        `weight_value` + `weight_unit` fields. No-op when weight is
+        blank (the field is optional unless field-controls require it,
+        which the frontend enforces). Centralised so POST, PUT, and
+        ship-from-pending all use identical parsing rules.
+        """
+        # `weight_value` / `weight_unit` may already be present from
+        # newer clients — trust them but always re-derive the display
+        # string so the DB doesn't end up with "1 kg" + value=500.
+        parsed = _parse_weight(data.get("weight", ""))
+        if parsed["unit"]:
+            data["weight"]       = parsed["display"]
+            data["weight_value"] = parsed["value"]
+            data["weight_unit"]  = parsed["unit"]
+        else:
+            data["weight"]       = ""
+            data["weight_value"] = 0.0
+            data["weight_unit"]  = ""
+
     def _validate_cod_amounts(
         *, cod: float, token: float, user_id: str = "",
     ) -> None:
@@ -239,6 +330,10 @@ def init() -> None:
             data["items"] = []
         if data.get("custom_values") is None:
             data["custom_values"] = {}
+        # Phase-33 — Parse + validate weight. Stamps weight,
+        # weight_value, weight_unit so reports / rate calc can
+        # work with numeric values without re-parsing every time.
+        _apply_weight_parse(data)
 
         # ── Phase-7d/e Master Order ID + User Order ID for manual create ──
         settings_doc = await db.settings.find_one(
@@ -437,6 +532,12 @@ def init() -> None:
                 update["cod_amount"] = 0.0
                 if "amount" in update:
                     update["amount"] = float(update["amount"] or 0)
+        # Phase-33 — Parse + validate weight when it's part of the
+        # update payload. Re-derives weight_value + weight_unit so
+        # the row stays self-consistent even when the operator
+        # edits only the weight field.
+        if "weight" in update or "weight_value" in update or "weight_unit" in update:
+            _apply_weight_parse(update)
         if not update:
             raise HTTPException(status_code=400, detail="No fields to update")
 
@@ -798,6 +899,11 @@ def init() -> None:
                 user_id=current_user.get("id", ""),
             )
 
+        # Phase-33 — Parse + validate weight on the ship-from-pending
+        # path too. The pending row may have weight from CSV / paste,
+        # so normalise it here before constructing the shipment doc.
+        _w_parsed = _parse_weight(_get("weight", ""))
+
         ship_doc = {
             "id":                 str(uuid.uuid4()),
             "tracking_id":        tracking_id,
@@ -833,7 +939,9 @@ def init() -> None:
                 if _get("payment_mode") == "COD" else 0
             ),
             "token_amount":       float(_get("token_amount", 0) or 0),
-            "weight":             _get("weight"),
+            "weight":             _w_parsed["display"],
+            "weight_value":       _w_parsed["value"],
+            "weight_unit":        _w_parsed["unit"],
             "payment_mode":       _get("payment_mode", "COD"),
             # Phase-21 — Order-ID priority chain on shipments:
             #   1. PendingOrder.order_id (already resolved at ingest:

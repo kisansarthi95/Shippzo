@@ -21,7 +21,7 @@
  *       Continue      → close dialog, stay on form
  */
 import { Stack, useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator, Alert, BackHandler, KeyboardAvoidingView, Linking,
   Platform, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View,
@@ -54,6 +54,102 @@ function unifiedAddressFrom(o: any): string {
   const l2 = String(o?.address_line2 || "").trim();
   if (l1 && l2 && l2 !== "-") return `${l1}, ${l2}`.slice(0, 300);
   return (l1 || l2).slice(0, 300);
+}
+
+/**
+ * WeightRow — Phase-33 (2026-06).
+ *
+ * Numeric weight input + g / kg unit pill picker — same UX as the
+ * Add form on /(tabs)/add.tsx. The DB row carries `weight_value`
+ * (float) and `weight_unit` ("g" | "kg") in addition to the
+ * legacy `weight` display string (e.g. "250 g"). On first render
+ * we hydrate from whichever shape is present:
+ *   1. weight_value + weight_unit (modern)
+ *   2. "<num> <unit>" parsed out of weight_str (legacy)
+ * onChange fires every keystroke / pill tap so the parent's draft
+ * stays in sync without an explicit save.
+ */
+const _WEIGHT_PARSE_RE = /^\s*(\d+(?:\.\d+)?)\s*(kg|kgs|kilograms?|g|gm|gms|grams?)?\s*$/i;
+function parseWeightString(s: string): { num: string; unit: "g" | "kg" } {
+  const m = (s || "").match(_WEIGHT_PARSE_RE);
+  if (!m) return { num: "", unit: "g" };
+  const num = m[1] || "";
+  const unitRaw = (m[2] || "").toLowerCase();
+  const unit: "g" | "kg" = unitRaw.startsWith("k") ? "kg" : "g";
+  return { num, unit };
+}
+
+function WeightRow({
+  valueStr,
+  initialNumber,
+  initialUnit,
+  onChange,
+}: {
+  valueStr: string;
+  initialNumber?: number;
+  initialUnit?: string;
+  onChange: (num: string, unit: "g" | "kg") => void;
+}) {
+  // Hydrate once from whichever shape the doc has.
+  const seed = useMemo(() => {
+    if (initialNumber && initialNumber > 0) {
+      const u: "g" | "kg" =
+        initialUnit === "kg" || initialUnit === "g"
+          ? (initialUnit as "g" | "kg")
+          : "g";
+      return { num: String(initialNumber), unit: u };
+    }
+    return parseWeightString(valueStr || "");
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  const [num, setNum]   = useState<string>(seed.num);
+  const [unit, setUnit] = useState<"g" | "kg">(seed.unit);
+
+  // Lifted state — push every change to the parent immediately.
+  const push = useCallback((nextNum: string, nextUnit: "g" | "kg") => {
+    setNum(nextNum);
+    setUnit(nextUnit);
+    onChange(nextNum, nextUnit);
+  }, [onChange]);
+
+  return (
+    <View style={styles.fieldRow}>
+      <Text style={styles.fieldLabel}>Weight</Text>
+      <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+        <TextInput
+          value={num}
+          onChangeText={(t) => push(t.replace(/[^0-9.]/g, ""), unit)}
+          placeholder="e.g. 250"
+          placeholderTextColor="#94A3B8"
+          keyboardType="decimal-pad"
+          style={[styles.fieldInput, { flex: 1 }]}
+        />
+        <View style={styles.unitPickerWrap}>
+          {(["g", "kg"] as const).map((u) => {
+            const active = u === unit;
+            return (
+              <TouchableOpacity
+                key={u}
+                onPress={() => push(num, u)}
+                activeOpacity={0.85}
+                style={[
+                  styles.unitPill,
+                  active && styles.unitPillActive,
+                ]}
+              >
+                <Text style={[
+                  styles.unitPillTxt,
+                  active && styles.unitPillTxtActive,
+                ]}>
+                  {u}
+                </Text>
+              </TouchableOpacity>
+            );
+          })}
+        </View>
+      </View>
+    </View>
+  );
 }
 
 const FIELD_GROUPS: { title: string; fields: FieldDef[] }[] = [
@@ -92,7 +188,12 @@ const FIELD_GROUPS: { title: string; fields: FieldDef[] }[] = [
       { key: "amount",       label: "COD to Collect (₹)", keyboardType: "numeric" },
       { key: "token_amount", label: "Token / Advance",  keyboardType: "numeric" },
       { key: "payment_mode", label: "Payment Mode (COD / PAID)" },
-      { key: "weight",       label: "Weight" },
+      // Phase-33 — weight is rendered as a CUSTOM ROW below (number
+      // input + g / kg unit picker) to mirror the Add form. We REMOVE
+      // it from this generic field list and inject the dedicated row
+      // after the loop. The numeric value goes to `weight_value` and
+      // the unit picker stores into `weight_unit`; backend `_apply_weight_parse`
+      // re-derives the display string.
       { key: "category",     label: "Category" },
       { key: "notes",        label: "Notes / Remarks", multiline: true },
     ],
@@ -342,6 +443,33 @@ export default function EditPendingScreen() {
                   </View>
                 );
               })}
+
+              {/* Phase-33 — Custom Weight row injected into the
+                  "Order" group. Mirrors the Add form pattern:
+                  numeric TextInput + g/kg unit pill picker.
+                  We split the display string `"250 g"` into a
+                  number + unit on first render, then store the
+                  edited values straight into `weight_value` /
+                  `weight_unit` on the draft. The backend
+                  re-derives the `weight` display string via
+                  `_apply_weight_parse`. */}
+              {g.title === "Order" && (
+                <WeightRow
+                  valueStr={valueOf("weight")}
+                  initialNumber={(original as any)?.weight_value}
+                  initialUnit={(original as any)?.weight_unit}
+                  onChange={(num, unit) => {
+                    // Touch dirty flag so the unsaved-back dialog fires.
+                    dirtyRef.current = true;
+                    setDraft((d) => ({
+                      ...d,
+                      weight: num ? `${num} ${unit}` : "",
+                      weight_value: num ? Number(num) : 0,
+                      weight_unit: num ? unit : "",
+                    } as any));
+                  }}
+                />
+              )}
             </View>
           ))}
 
@@ -701,5 +829,32 @@ const styles = StyleSheet.create({
     color: "#64748B",
     lineHeight: 17,
     textAlign: "center",
+  },
+  // Phase-33 — Unit-pill picker for the Weight field (g / kg).
+  unitPickerWrap: {
+    flexDirection: "row",
+    backgroundColor: "#F1F5F9",
+    borderRadius: 10,
+    padding: 2,
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+  },
+  unitPill: {
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 8,
+    minWidth: 42,
+    alignItems: "center",
+  },
+  unitPillActive: {
+    backgroundColor: "#7C3AED",
+  },
+  unitPillTxt: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: "#64748B",
+  },
+  unitPillTxtActive: {
+    color: "#fff",
   },
 });
