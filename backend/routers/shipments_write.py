@@ -752,13 +752,29 @@ def init() -> None:
         def _get(k, default=""):
             return overrides.get(k, order.get(k, default))
 
-        # items as list (stored as comma separated in pending_orders)
-        items_str = _get("items", "")
-        items_list = [
-            s.strip()
-            for s in (items_str.split(",") if items_str else [])
-            if s.strip()
-        ]
+        # items as list — Phase-32 hardening (2026-06-20):
+        # Frontend overrides now pass `items` as a real Python list
+        # (the form keeps multiple items as an array), but the
+        # PendingOrder rows still store it as a comma-separated string.
+        # The old `items_str.split(",")` blew up with AttributeError 500
+        # the moment overrides delivered a list. Accept both shapes:
+        items_raw = _get("items", "")
+        if isinstance(items_raw, list):
+            # Already a list — just normalise whitespace + drop empties.
+            items_list = [
+                str(s).strip()
+                for s in items_raw
+                if str(s).strip()
+            ]
+        elif isinstance(items_raw, str):
+            items_list = [
+                s.strip()
+                for s in (items_raw.split(",") if items_raw else [])
+                if s.strip()
+            ]
+        else:
+            # Defensive: any other type (e.g. None, dict) → empty list.
+            items_list = []
 
         # Phase F2.1 — Status + Timestamp from imported sources.
         # When the source row already carried a real-world status
@@ -798,7 +814,10 @@ def init() -> None:
             "state":              _get("state"),
             "pincode":            _get("pincode"),
             "items":              items_list,
-            "item_description":   items_str,
+            # `item_description` is the legacy flat string used by old
+            # WhatsApp templates / CSV exports — derive it from the
+            # normalised list so both shapes stay in sync.
+            "item_description":   ", ".join(items_list),
             # Phase-31 rev-2 — REVERSED canonical math.
             # The Pending row stores `amount` as the COD-to-Collect
             # value (frontend bulk-paste & smart-paste flows write

@@ -102,6 +102,12 @@ FEATURE_REGISTRY: Dict[str, Dict[str, str]] = {
     # parses Bengali, Marathi, Punjabi, Tamil, Telugu, Kannada, Malayalam
     # alongside the existing Hindi & Gujarati digit / keyword tables.
     "smart_paste_indic_extended": {"label": "Smart Paste — 9 Indic regional languages", "category": "Smart Paste"},
+    # NEW (2026-06-20 — Phase-32) — When a paste-sourced pending order
+    # is shipped, automatically navigate to the Label screen for that
+    # shipment (skip the Saved-toast tap). Quality-of-life feature for
+    # high-volume operators; default ON for every plan since Smart
+    # Paste itself is universal.
+    "smart_paste_auto_label":    {"label": "Auto-open label after Smart-Paste ship", "category": "Smart Paste"},
 
     # ── File Import (NEW category, 2026-05-09 — Phase G3) ────────
     # CSV / Excel imports with dynamic column mapping. Already shipped
@@ -312,6 +318,11 @@ FEATURE_REGISTRY: Dict[str, Dict[str, str]] = {
     # or restrict ticket creation on trial accounts).
     "support_tickets":           {"label": "Support Center & ticket creation",   "category": "Help & Support"},
     "video_tutorials":           {"label": "Video Tutorials library",            "category": "Help & Support"},
+    # NEW (2026-06-20 — Phase-32) — In-App Articles Library replaces
+    # the old external https://shippzo.com/help link. Articles are
+    # admin-curated via the Articles CMS, then surfaced in the user's
+    # Support Center. Default ON for every plan — basic help affordance.
+    "support_articles_reader":   {"label": "In-App Help Articles library (reader)", "category": "Help & Support"},
 }
 
 ALL_KEYS: List[str] = list(FEATURE_REGISTRY.keys())
@@ -368,6 +379,11 @@ DEFAULT_PLAN_FEATURES: Dict[str, List[str]] = {
         "video_tutorials",
         "smart_paste_indic_extended",
         "smart_paste_multi_address",
+        # NEW (2026-06-20 — Phase-32) — Universal QoL flags: in-app
+        # articles reader + auto-label-after-Smart-Paste-ship. Both
+        # default ON for every plan per business owner's call.
+        "support_articles_reader",
+        "smart_paste_auto_label",
     ],
     "silver": [
         "smart_paste_ai", "smart_paste_voice", "smart_paste_image_ocr",
@@ -427,6 +443,9 @@ DEFAULT_PLAN_FEATURES: Dict[str, List[str]] = {
         "video_tutorials",
         "smart_paste_indic_extended",
         "smart_paste_multi_address",
+        # NEW (Phase-32) — Universal QoL flags.
+        "support_articles_reader",
+        "smart_paste_auto_label",
     ],
     "gold": [
         "smart_paste_ai", "smart_paste_voice", "smart_paste_image_ocr",
@@ -502,6 +521,9 @@ DEFAULT_PLAN_FEATURES: Dict[str, List[str]] = {
         "video_tutorials",
         "smart_paste_indic_extended",
         "smart_paste_multi_address",
+        # NEW (Phase-32) — Universal QoL flags.
+        "support_articles_reader",
+        "smart_paste_auto_label",
     ],
     # Platinum gets EVERYTHING — also captures new features auto-added later
     # by referencing ALL_KEYS at runtime in the seeder.

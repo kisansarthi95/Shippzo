@@ -1,0 +1,32 @@
+{
+  "summary": "Phase-32 items-normalization bug-fix verification — ALL GREEN (6/6 passed in 8.94s). Confirmed the AttributeError 500 on POST /api/orders/pending/{id}/ship is fully resolved. All 5 input shapes for overrides.items behave correctly: (1) LIST ['Shirt','Cap'] → items=['Shirt','Cap'], item_description='Shirt, Cap'; (2) STRING 'Shirt, Cap' (legacy) → same result; (3) empty list [] → items=[], item_description=''; (4) None → items=[] (defensive else-branch); (5) ['  ','Cap',''] → items=['Cap'] (whitespace+empties stripped). Regression test #6 (no overrides at all) still uses pending row's stored items correctly. The fix at routers/shipments_write.py:755-783 (isinstance check) plus the derived item_description at line 820 (\", \".join(items_list)) both verified end-to-end.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_phase32_items_normalization.py",
+    "/app/test_reports/pytest/pytest_iteration_11.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "routers/shipments_write.py:761-777 — isinstance ladder is clean (list→strip+drop empties, str→split+strip, else→[]). Defensive fallback prevents future crashes from any unexpected shape (dict, int, etc.).",
+    "routers/shipments_write.py:820 — item_description = ', '.join(items_list) cleanly derives the legacy flat-string field from the normalised list, keeping both shapes in sync for WhatsApp templates and CSV exports.",
+    "Minor: the `_get('items', '')` default is an empty string while items_raw could legitimately be None when the override explicitly sets items=None. The else-branch on line 776 handles this correctly today but a future refactor that drops the else would re-introduce the crash for None. Add an inline comment or unit test in the module to guard."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_phase32_items_normalization.py (new)"
+  ],
+  "success_rate": {"backend": "100% (6/6)", "frontend": "N/A (backend-only test request)"},
+  "seed_data_creation": "6 fresh pending orders created via /api/smart-paste under user2 tenant, prefixed TEST_P32_ITM_ for cleanup identification. Each promoted to a shipment to exercise the items-normalization branches.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "The items-normalization fix on routers/shipments_write.py is fully covered by /app/backend/tests/test_phase32_items_normalization.py — 6 tests covering list/string/empty/None/whitespace + a no-override regression. Re-run with: pytest /app/backend/tests/test_phase32_items_normalization.py -v. Tests rely on user2@test.com credentials and the standard demo Courier seeded for that tenant. user2 wallet was topped up to 1000 credits in iteration_10 and remains sufficient for these 6 tests.",
+  "rca_of_issue": "Root cause: routers/shipments_write.py previously called `items_str.split(',')` unconditionally on whatever shape arrived in overrides['items']. The Phase-32 frontend form changed from a single comma-separated text input to a multi-row array, so the field is now a real Python list when it comes through JSON. The list has no .split() method → AttributeError → 500. Fix applied by main agent (verified): isinstance(items_raw, list) branch normalises directly; isinstance(items_raw, str) preserves legacy split; else→[] as defensive fallback for None/dict/int/etc. Then item_description is rebuilt from items_list via ', '.join() so both legacy-string and new-list consumers see consistent values. All 5 input shapes from the bug report + 1 regression case confirmed passing."
+}

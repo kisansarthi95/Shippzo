@@ -161,6 +161,12 @@ export default function SupportCenter() {
   // Features panel. The 2×2 grid below renders the tutorial card
   // only when this flag is ON — the other 3 cards stay visible.
   const flagVideoTutorials = useFeatureFlag("video_tutorials");
+  // Phase-32 — In-App Help Articles library. Default ON for every
+  // plan, but admin can untick per-plan in the Plan Features panel
+  // (e.g. dial back a trial-tier flooded with how-to volume). When
+  // OFF, the "Help Articles" card + "View all articles" CTA both
+  // hide and the Support Center collapses gracefully.
+  const flagArticlesReader = useFeatureFlag("support_articles_reader");
 
   return (
     <View style={[styles.root, { paddingBottom: insets.bottom + 16 }]}>
