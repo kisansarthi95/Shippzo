@@ -99,7 +99,7 @@ ADDRESS_2: -
 CITY: Aravalli
 STATE: Gujarat
 PINCODE: 383246
-ITEMS: ODC3 x 1
+ITEMS: 250gm ODC3 x 1
 AMOUNT: 1500
 PAYMENT: COD
 TOKEN: -
@@ -236,8 +236,13 @@ in ITEMS — NEVER in ADDRESS_1 or ADDRESS_2.
   * "2 saree" → "Saree x 2"
   * "Saree" (no qty mentioned) → "Saree x 1"
   * Multiple items: "Saree x 2, Kurti x 1"
-  * A weight-only product code like "20gm ODC3" → "ODC3 x 1"
-    (KEEP the weight as part of the item name, e.g. "ODC3 20gm x 1")
+  * If a product weight / pack-size is baked INTO the item name
+    (e.g. "20gm ODC3", "250gm ODC3", "500g pack", "3 Kg Natural
+    Honey"), KEEP IT VERBATIM inside ITEMS. Examples:
+        "20gm ODC3"          → ITEMS: 20gm ODC3 x 1
+        "250gm ODC3"         → ITEMS: 250gm ODC3 x 1
+        "3 Kg Natural Honey" → ITEMS: 3 Kg Natural Honey x 1
+    The pack-size IS part of the product description — never strip it.
   * IMPORTANT: a product weight like "20gm", "500g", "3 kg" baked
     into the item name is the PRODUCT'S OWN weight. It is NOT the
     parcel's shipping weight. Do NOT copy it into WEIGHT.
@@ -403,23 +408,42 @@ PAID only if "Paid/Online/UPI/Prepaid" is mentioned;
 LEAVE BLANK (`-`) if no payment info is present in the input.
 DO NOT guess. The user will set it later if needed.
 
-**Rule 12 — ITEMS: capture FULL product description verbatim:**
-  * Include quantity, weight, size, colour, material — DO NOT
-    shorten to a single word.
-  * Examples:
+**Rule 12 — ITEMS: capture FULL product description VERBATIM:**
+ITEMS is a VERBATIM CAPTURE field. Whatever the customer wrote
+to describe the product goes in — exactly as written — with ONLY
+the quantity suffix appended. No paraphrasing, no shortening, no
+re-ordering of words, no translation.
+  * MUST preserve EVERY descriptive word: pack-size / weight /
+    volume ("250gm", "500g", "3 Kg", "1 L", "750ml"), colour
+    ("Red", "Sky Blue"), material ("Cotton", "Silk", "MDF"),
+    size ("XL", "Free-size", "Large"), variant ("Premium",
+    "Combo Pack", "Natural"), and brand / model codes
+    ("ODC3", "M40 Pro").
+  * MUST NOT drop, abbreviate, or substitute any of those.
+    Removing the pack-size ("250gm ODC3" → "ODC3") is FORBIDDEN.
+    Removing the colour ("Red Saree" → "Saree") is FORBIDDEN.
+  * Examples (the ONLY correct shape):
       Input  : "તમારો ઓર્ડર: 3 Kg Natural Honey"
-      WRONG  : ITEMS: Honey
-      RIGHT  : ITEMS: 3 Kg Natural Honey
+      WRONG  : ITEMS: Honey                  (dropped weight+adjective)
+      WRONG  : ITEMS: 3 Kg Honey             (dropped "Natural")
+      RIGHT  : ITEMS: 3 Kg Natural Honey x 1
       Input  : "Order: 2 Cotton Sarees Red Free-size"
-      WRONG  : ITEMS: Saree
-      RIGHT  : ITEMS: 2 Cotton Sarees Red Free-size x 2
+      WRONG  : ITEMS: Saree                  (dropped 4 descriptors)
+      WRONG  : ITEMS: Cotton Saree x 2       (dropped "Red Free-size")
+      RIGHT  : ITEMS: Cotton Sarees Red Free-size x 2
+      Input  : "250gm ODC3"
+      WRONG  : ITEMS: ODC3 x 1               (dropped pack size)
+      WRONG  : ITEMS: ODC3 250gm x 1         (re-ordered the words)
+      RIGHT  : ITEMS: 250gm ODC3 x 1
       Input  : "1 ODC3 Drone Kit + 5 spare batteries"
       RIGHT  : ITEMS: ODC3 Drone Kit x 1, Spare Battery x 5
   * Multiple distinct products → comma-separate, each with its own
     "x QTY" suffix when quantity is known.
   * If the input has a label like "ઓર્ડર / Order / Items / Product",
     copy EVERYTHING after that label (until you hit a different
-    field) into ITEMS.
+    field) into ITEMS — VERBATIM.
+  * Order Details must be stored EXACTLY as entered by the customer.
+    When in doubt, prefer keeping MORE words rather than fewer.
 
 **Rule 13 — MOVE the trailing city/state/pincode OUT of ADDRESS_1:**
 There is a SINGLE address line (ADDRESS_1). Capacity is up to
