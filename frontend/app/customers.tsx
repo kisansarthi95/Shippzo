@@ -13,6 +13,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { useRouter, Stack } from "expo-router";
 import PhIcon from "../components/PhIcon";
 import SearchBar from "../components/SearchBar";
+import FilterChipRow from "../components/FilterChipRow";
 import { Api, Customer } from "../lib/api";
 import { colors } from "../lib/theme";
 
@@ -120,38 +121,20 @@ export default function CustomersScreen() {
             </View>
           ) : null}
 
-          {/* Source filter chips — Phase F3.9 Android-large-font fix:
-              extra marginBottom + vertical padding so chips don't get
-              clipped at >=1.3x system font scale. */}
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
+          {/* Source filter chips — Phase F3.9 (now via shared
+              `FilterChipRow` so this pattern can never drift again). */}
+          <FilterChipRow
+            testIDPrefix="source-filter"
+            selected={sourceFilter || ""}
+            onSelect={(k) => setSourceFilter(k)}
             style={{ marginBottom: 16 }}
-            contentContainerStyle={{ gap: 8, paddingRight: 8, paddingVertical: 4, alignItems: "center" }}
-          >
-            {sources.map((s) => {
-              const sel = sourceFilter === s.key;
-              return (
-                <TouchableOpacity
-                  key={s.key || "_all"}
-                  testID={`source-filter-${s.key || "all"}`}
-                  style={[styles.filterChip, sel && styles.filterChipSel]}
-                  onPress={() => setSourceFilter(s.key)}
-                  activeOpacity={0.75}
-                >
-                  <Text
-                    style={[
-                      styles.filterChipTxt,
-                      sel && styles.filterChipTxtSel,
-                    ]}
-                  >
-                    {s.label}
-                    {typeof s.count === "number" ? ` · ${s.count}` : ""}
-                  </Text>
-                </TouchableOpacity>
-              );
-            })}
-          </ScrollView>
+            items={sources.map((s) => ({
+              key: s.key || "",
+              label: s.label,
+              count: typeof s.count === "number" ? s.count : undefined,
+              testID: `source-filter-${s.key || "all"}`,
+            }))}
+          />
 
           {/* Search */}
           <SearchBar

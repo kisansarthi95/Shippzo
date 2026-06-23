@@ -170,7 +170,11 @@ export default function AnalyticsScreen() {
         )}
 
         {/* Range chips */}
-        <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={{ gap: 8, paddingRight: 8, paddingVertical: 4, alignItems: "center" }}
+        >
           <View style={{ flexDirection: "row", gap: 6 }}>
             {RANGES.map(([key, label]) => {
               const active = range === key;
@@ -627,13 +631,23 @@ const styles = StyleSheet.create({
   scopeTxt:       { fontSize: 12, fontWeight: "800", color: "#1F4FBF" },
   scopeTxtActive: { color: "#fff" },
 
+  // Phase F3.9 — Android-large-font fix: minHeight + paddingVertical
+  // prevent chip clipping at ≥1.3× system font scale; chipText
+  // lineHeight + includeFontPadding=false keep glyphs vertically
+  // centred. Matches the canonical pattern in components/FilterChipRow.tsx.
   chip: {
-    paddingHorizontal: 14, paddingVertical: 7, borderRadius: 20,
+    paddingHorizontal: 14, paddingVertical: 10, borderRadius: 20,
+    minHeight: 40,
+    justifyContent: "center",
     flexShrink: 0,
     backgroundColor: "#fff", borderWidth: 1, borderColor: "#E5E7EB",
   },
   chipActive: { backgroundColor: "#1F4FBF", borderColor: "#1F4FBF" },
-  chipText:   { fontSize: 12, fontWeight: "700", color: "#374151" },
+  chipText:   {
+    fontSize: 12, fontWeight: "700", color: "#374151",
+    lineHeight: 18,
+    includeFontPadding: false,
+  },
 
   filterRow: {
     flexDirection: "row", flexWrap: "wrap", gap: 8, overflow: "visible", marginTop: 10,

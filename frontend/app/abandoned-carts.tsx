@@ -18,6 +18,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { useRouter, Stack } from "expo-router";
 import PhIcon from "../components/PhIcon";
 import SearchBar from "../components/SearchBar";
+import FilterChipRow from "../components/FilterChipRow";
 import { Api, AbandonedCart } from "../lib/api";
 import { colors } from "../lib/theme";
 
@@ -224,35 +225,18 @@ export default function AbandonedCartsScreen() {
           {/* Filter tabs — Phase F3.9 Android-large-font fix:
               generous marginBottom prevents the cards below from
               clipping the chips at >=1.3x font scale. */}
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
+          {/* Status filter chips — Phase F3.9 via shared FilterChipRow. */}
+          <FilterChipRow
+            testIDPrefix="filter"
+            selected={filter}
+            onSelect={(k) => setFilter(k as any)}
             style={{ marginBottom: 16 }}
-            contentContainerStyle={{ gap: 8, paddingRight: 8, paddingVertical: 4, alignItems: "center" }}
-          >
-            {tabs.map((t) => {
-              const sel = filter === t.key;
-              return (
-                <TouchableOpacity
-                  key={t.key}
-                  testID={`filter-${t.key}`}
-                  style={[styles.filterChip, sel && styles.filterChipSel]}
-                  onPress={() => setFilter(t.key)}
-                  activeOpacity={0.75}
-                >
-                  <Text
-                    style={[
-                      styles.filterChipTxt,
-                      sel && styles.filterChipTxtSel,
-                    ]}
-                  >
-                    {t.label}
-                    {typeof t.count === "number" ? ` · ${t.count}` : ""}
-                  </Text>
-                </TouchableOpacity>
-              );
-            })}
-          </ScrollView>
+            items={tabs.map((t) => ({
+              key: t.key,
+              label: t.label,
+              count: typeof t.count === "number" ? t.count : undefined,
+            }))}
+          />
 
           {/* Search */}
           <SearchBar

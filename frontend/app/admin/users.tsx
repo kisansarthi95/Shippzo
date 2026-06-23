@@ -20,6 +20,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import PhIcon from "../../components/PhIcon";
 import SearchBar from "../../components/SearchBar";
+import FilterChipRow from "../../components/FilterChipRow";
 import {
   View, Text, StyleSheet, TextInput, TouchableOpacity, FlatList,
   ActivityIndicator, RefreshControl, Modal, ScrollView, Platform, Alert,
@@ -416,28 +417,14 @@ export default function AdminUsersScreen() {
       />
 
       {/* Plan filter chips */}
-      <ScrollView
-        horizontal
-        showsHorizontalScrollIndicator={false}
+      {/* Phase F3.9 — plan-filter chip row via shared FilterChipRow. */}
+      <FilterChipRow
+        testIDPrefix="admin-plan-filter"
+        selected={planFilter || ""}
+        onSelect={(k) => setPlanFilter(k as any)}
         style={styles.chipsRow}
-        contentContainerStyle={{ paddingHorizontal: 14, gap: 8 }}
-      >
-        {planChips.map((c) => (
-          <TouchableOpacity
-            key={c.key || "all"}
-            onPress={() => setPlanFilter(c.key)}
-            style={[
-              styles.chip,
-              planFilter === c.key && styles.chipActive,
-            ]}
-          >
-            <Text style={[
-              styles.chipTxt,
-              planFilter === c.key && styles.chipTxtActive,
-            ]}>{c.label}</Text>
-          </TouchableOpacity>
-        ))}
-      </ScrollView>
+        items={planChips.map((c) => ({ key: c.key || "", label: c.label }))}
+      />
 
       {loading ? (
         <View style={{ flex: 1, alignItems: "center", justifyContent: "center" }}>
