@@ -119,7 +119,9 @@ def init() -> None:
             # operators key in parcel weight in the Indian courier
             # market — "1.5" means 1.5 kg, "500" means 500 g).
             unit = "kg" if n <= 50 else "g"
-            return {"value": n, "unit": unit, "display": f"{n} {unit}"}
+            # Use `:g` formatting (same as the string branch) so
+            # 500.0 renders as "500 g" not "500.0 g".
+            return {"value": n, "unit": unit, "display": f"{n:g} {unit}"}
         s = str(raw).strip()
         if not s:
             return {"value": 0.0, "unit": "", "display": ""}
