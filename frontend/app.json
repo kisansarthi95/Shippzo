@@ -91,13 +91,10 @@
     },
     "extra": {
       "storeListingName": "Shippzo - Courier Labels",
-      "privacyPolicyUrl": "https://logistics-hub-740.preview.emergentagent.com/api/legal/privacy",
-      "termsUrl": "https://logistics-hub-740.preview.emergentagent.com/api/legal/terms",
-      "refundPolicyUrl": "https://logistics-hub-740.preview.emergentagent.com/api/legal/refund",
       "supportEmail": "shippzo.support@gmail.com",
       "supportPhone": "",
       "appCategory": "BUSINESS",
-      "_note_about_urls": "These point to backend-hosted HTML so Play/App Store reviewers always see live policies. Once shippzo.com/privacy is published, replace with shippzo.com URLs."
+      "_legal_pages": "Legal policy URLs are constructed at runtime via process.env.EXPO_PUBLIC_BACKEND_URL + '/api/legal/{privacy|terms|refund}' so each environment (preview, prod) hits its own backend. See app/legal/[slug].tsx and the dynamic helper in lib/legal.ts."
     }
   }
 }

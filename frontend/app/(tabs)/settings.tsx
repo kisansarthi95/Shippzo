@@ -49,8 +49,17 @@ const APP_EXTRA = (Constants.expoConfig?.extra || {}) as {
 const APP_NAME    = Constants.expoConfig?.name || "Shippzo";
 const APP_VERSION = Constants.expoConfig?.version || "1.0.0";
 const SUPPORT_EMAIL = APP_EXTRA.supportEmail || "shippzo.support@gmail.com";
-const PRIVACY_URL   = APP_EXTRA.privacyPolicyUrl || "https://shippzo.com/privacy";
-const TERMS_URL     = APP_EXTRA.termsUrl || "https://shippzo.com/terms";
+// Phase-32 — Legal URLs are constructed at runtime from the backend
+// host so each environment (preview vs prod) hits its own /api/legal
+// endpoint. Hardcoded URLs in app.json broke prod deployment. The
+// fallback `shippzo.com/...` only kicks in when EXPO_PUBLIC_BACKEND_URL
+// is somehow unset (which would already prevent the app from talking
+// to its own API, so this is mostly a defensive guard).
+const _BACKEND = (process.env.EXPO_PUBLIC_BACKEND_URL || "").replace(/\/$/, "");
+const PRIVACY_URL = APP_EXTRA.privacyPolicyUrl
+  || (_BACKEND ? `${_BACKEND}/api/legal/privacy` : "https://shippzo.com/privacy");
+const TERMS_URL   = APP_EXTRA.termsUrl
+  || (_BACKEND ? `${_BACKEND}/api/legal/terms`   : "https://shippzo.com/terms");
 
 /**
  * CONTENT BUDGET SYSTEM

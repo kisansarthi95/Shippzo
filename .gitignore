@@ -34,6 +34,16 @@ dist
 
 *token.json*
 *credentials.json*
+# Phase-32 — Google Service Account JSON contains a private key.
+# It MUST live on the deployment host as a mounted secret / file
+# (Kubernetes Secret, EAS env file, etc.), NEVER in version control.
+# `*credentials.json*` above doesn't catch the actual filename used
+# by the backend (`google_service_account.json`), so list it
+# explicitly. The runtime path is configured via
+# `GOOGLE_SA_JSON_PATH` in backend/.env.
+google_service_account.json
+backend/google_service_account.json
+/app/backend/google_service_account.json
 
 # Logs and debug files
 npm-debug.log*
