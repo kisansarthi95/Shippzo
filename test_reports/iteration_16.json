@@ -1,0 +1,30 @@
+{
+  "summary": "Phase-32 rev-3 duplicate-order_id → 409 surface VERIFIED. All 5 tests in test_phase32_rev3_duplicate_order_id.py PASS: (1) unique order_id happy-path 200; (2) duplicate same-user POST /api/shipments returns 409 (NOT 500), detail mentions the colliding order_id verbatim; (3) cross-user same order_id allowed → both 200 (compound unique is per-user); (4) POST /api/orders/pending/{id}/ship with a forced-collision order_id returns 409 (NOT 500); (5) ship-pending happy path 200. Backend logs confirm both new WARNING lines fire ('shipment.create — duplicate order_id ...' and 'ship_pending_order — duplicate order_id ...'). No regressions on either insert path.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_phase32_rev3_duplicate_order_id.py",
+    "/app/test_reports/pytest/pytest_iteration_16.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "The try/except wraps catch every Exception and string-match 'duplicate key'/'E11000' to decide between 409 and re-raise. This is intentional per the docstring (avoids importing pymongo at module top), but a future cleanup could `from pymongo.errors import DuplicateKeyError` and `except DuplicateKeyError` for a type-safe match. Not blocking.",
+    "shipments_write.py is now 1242 lines (was 1191 in iteration 15) — exceeds the 700-line soft cap. Both new try/except blocks are tight (~20 lines each), so the bulk is still the pre-existing ship_pending_order body. Same recommendation as iteration 15: consider splitting ship_pending_order into a sibling module.",
+    "Both 409 detail messages are user-friendly and mention the colliding order_id verbatim, which is exactly what the bug report asked for."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "100% (5/5)", "frontend": "not tested (backend-only request)"},
+  "seed_data_creation": "Topped up wallets for both user2 and admin to total_credits=100000 / used_credits=0 / remaining_credits=100000 via the autouse `topup_wallets` fixture (direct Mongo upsert on `wallets` collection). Required to avoid 402 'Insufficient credits' masking the 409 we want to assert — same precaution noted in iteration_15.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "The duplicate-order_id 409 fix is now covered by `/app/backend/tests/test_phase32_rev3_duplicate_order_id.py` (5 tests). The pending-ship duplicate path is exercised by directly patching `pending_orders.order_id` in Mongo to force a collision with an already-inserted shipment (smart-paste regex parser doesn't extract an explicit Order ID without an LLM round-trip). Keep the wallet top-up fixture if you fork these tests — drained credits would silently turn duplicate inserts into 402s. Backend WARNING logs to grep for: 'shipment.create — duplicate order_id' and 'ship_pending_order — duplicate order_id'.",
+  "rca_of_issue": "Pre-fix: pymongo raised DuplicateKeyError on the (order_id, user_id) compound unique index introduced in Phase-32; FastAPI surfaced this as a generic HTTP 500 ('Request failed with status code 500') with no actionable detail. Post-fix (Phase-32 rev-3): both insert_one call sites in routers/shipments_write.py (line ~448 in create_shipment and line ~1128 in ship_pending_order) are wrapped in try/except that string-matches 'duplicate key' / 'E11000' on the exception text and raises HTTPException(409, detail=...) with the colliding order_id and a remediation hint. Verified end-to-end against the public preview URL with 5 tests covering the 4 scenarios from the review request plus a ship-pending happy-path regression. Pre-fix backend log evidence of the bug is still present in /var/log/supervisor/backend.out.log (two 500s on POST /api/orders/pending/cf4a2bf3-.../ship before the reload)."
+}

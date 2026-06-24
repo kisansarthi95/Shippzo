@@ -437,7 +437,33 @@ def init() -> None:
             except Exception:
                 pass
 
-        await db.shipments.insert_one(doc)
+        # Phase-32 rev-3 (2026-06-24) — Catch DuplicateKeyError from the
+        # compound unique index `(order_id, user_id)` and return a clean
+        # 409 instead of letting it bubble up as a generic 500. The
+        # index was added in Phase-32 as a TOCTOU guard; we just never
+        # wrapped this insert (POST /shipments path). Operators kept
+        # seeing "Request failed with status code 500" when their
+        # auto-generated order_id collided with an existing row.
+        try:
+            await db.shipments.insert_one(doc)
+        except Exception as e:
+            # Avoid importing pymongo at module top to keep this file
+            # decoupled from the driver type when running tests.
+            if "duplicate key" in str(e).lower() or "E11000" in str(e):
+                _logger.warning(
+                    "shipment.create — duplicate order_id %r for user %s; "
+                    "rejecting with 409.",
+                    doc.get("order_id"), current_user.get("id", "?")[:8],
+                )
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"Order ID '{doc.get('order_id')}' already exists. "
+                        "Please use a different Order ID or auto-generate "
+                        "a fresh one."
+                    ),
+                )
+            raise
 
         # Phase H: User personal-sheet auto-sync (best-effort).
         try:
@@ -1092,7 +1118,32 @@ def init() -> None:
                 except Exception:
                     pass
 
-        await db.shipments.insert_one(ship_doc)
+        # Phase-32 rev-3 — Catch DuplicateKeyError on the ship-from-pending
+        # path too. If a pending row carries an order_id that already
+        # exists on a Shipment (e.g. operator manually shipped the
+        # order earlier via direct POST then accidentally re-tapped
+        # Ship on the lingering pending row), surface a clean 409
+        # with a helpful Gujarati/English message instead of a 500.
+        try:
+            await db.shipments.insert_one(ship_doc)
+        except Exception as e:
+            if "duplicate key" in str(e).lower() or "E11000" in str(e):
+                _logger.warning(
+                    "ship_pending_order — duplicate order_id %r for user %s; "
+                    "rejecting with 409.",
+                    ship_doc.get("order_id"),
+                    current_user.get("id", "?")[:8],
+                )
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"Order ID '{ship_doc.get('order_id')}' is already "
+                        "shipped. This pending row was likely created from "
+                        "a duplicate paste — please cancel it from Orders, "
+                        "or change the Order ID before shipping."
+                    ),
+                )
+            raise
 
         # Phase H + Phase-31: User personal-sheet auto-sync (best-effort).
         # When a pending order is shipped, also append the full row to
