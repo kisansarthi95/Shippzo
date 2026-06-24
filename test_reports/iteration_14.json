@@ -1,0 +1,48 @@
+{
+  "summary": "Phase-31 rev-3 ship_pending_order overrides.cod_amount fix VERIFIED for the 3 primary bug scenarios + the Smart-Paste regression + the Prepaid regression (4/5 new tests pass). The 35-test regression suite (9 cod_math + 6 items normalization + 16 weight parser + 4 manual_tracking precedence) is 35/35 GREEN — no behaviour drift. ONE rev-3 issue remains: when overrides.cod_amount=0 is supplied for a COD-mode pending row, the 422 validator does NOT fire because the gate at shipments_write.py L921-930 still reads `_get('amount', 0)` (= pending.amount=500) instead of the effective cod (= overrides.cod_amount when present). Shipment is created with cod_amount=0 and amount=100 — silently invalid COD row. Direct POST /shipments correctly rejects cod=0; ship-from-pending needs the same precedence in the validator.",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "POST /api/orders/pending/{id}/ship",
+        "issue": "Validator gate at shipments_write.py L925-930 ignores overrides.cod_amount. When overrides={cod_amount: 0, token_amount: 100, payment_mode: 'COD'} on a pending row with amount>0, the validator sees cod=pending.amount and passes, then the math block correctly stores cod_amount=0. Result: a COD shipment with cod_amount=0 is created (HTTP 200) instead of returning HTTP 422 like direct POST /shipments does. Same root cause as the original rev-3 bug — precedence drift between validator-input and math-block-input.",
+        "priority": "HIGH"
+      }
+    ],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_phase31_rev3_ship_overrides.py",
+    "/app/backend/tests/test_phase31_cod_math.py",
+    "/app/backend/tests/test_phase32_items_normalization.py",
+    "/app/backend/tests/test_phase33_weight_parser.py",
+    "/app/backend/tests/test_phase32_rev2_manual_tracking_precedence.py",
+    "/app/test_reports/pytest/pytest_iteration_14.xml"
+  ],
+  "action_items": [
+    "Fix the validator-input precedence in ship_pending_order. Replace the cod arg at shipments_write.py L926-927 with the same precedence used by the math block (L1044-L1048): `cod = float(overrides['cod_amount']) if overrides.get('cod_amount') is not None else float(_get('amount', 0) or 0)`. After the fix, re-run /app/backend/tests/test_phase31_rev3_ship_overrides.py — all 5 tests must pass."
+  ],
+  "critical_code_review_comments": [
+    "shipments_write.py L1044-1055 (rev-3 math block) is correct: cod_amount = overrides.cod_amount when present, else _get('amount'); amount = cod + token for COD; amount = _get('amount') for Prepaid. Verified by the 3 happy-path tests (override honoured, override > pending.amount, no-override fallback) and the Prepaid regression.",
+    "shipments_write.py L921-930 (validator gate) was NOT updated alongside the math block. It still feeds `_get('amount')` into _validate_cod_amounts, so when overrides.cod_amount=0 the validator looks at the wrong number and lets an invalid COD row through. This is the SAME class of bug rev-3 was meant to fix.",
+    "Suggestion: derive `effective_cod` once (overrides.cod_amount if present else pending.amount) and reuse it for both validation AND ship_doc assignment, to eliminate any future precedence drift."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_phase31_rev3_ship_overrides.py (new — 5 tests targeting rev-3 fix and surrounding regressions)",
+    "/app/test_reports/pytest/pytest_iteration_14.xml (new — junit results)"
+  ],
+  "success_rate": {
+    "backend": "97.5% (39/40) — 35/35 regression + 4/5 rev-3",
+    "frontend": "not tested (backend-only per request)"
+  },
+  "seed_data_creation": "Created ephemeral pending orders via /api/smart-paste with skip_llm=true, prefixed TEST_P31R3_. Each test creates its own row; no shared state. Tests do not delete the resulting shipments (existing test files behave the same way).",
+  "retest_needed": true,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "If the validator gate fix lands, just re-run `pytest backend/tests/test_phase31_rev3_ship_overrides.py backend/tests/test_phase31_cod_math.py backend/tests/test_phase32_items_normalization.py backend/tests/test_phase33_weight_parser.py backend/tests/test_phase32_rev2_manual_tracking_precedence.py -v`. NOTE: running ALL five files in a single pytest invocation occasionally hits the ingress with 502 Bad Gateway due to back-to-back smart-paste calls — splitting into two invocations (rev3+cod_math+items+weight, then manual_tracking) avoids it. Each file passes cleanly when run individually.",
+  "rca_of_issue": "Phase-31 rev-3 fix updated the math block (L1044-1055) to honour overrides.cod_amount but missed the validator gate (L925-930) above it. The validator still uses `_get('amount')` which only resolves overrides.amount → pending.amount, never overrides.cod_amount. Reproduce: smart-paste a COD row with amount=500, then POST /api/orders/pending/{id}/ship with overrides={cod_amount:0, token_amount:100, payment_mode:'COD'} — current behaviour returns 200 with cod_amount=0 (invalid); expected behaviour is 422 'COD to Collect must be greater than zero…'. Mitigation: change L926-927 to feed _validate_cod_amounts with the EFFECTIVE cod, i.e. `cod = float(overrides['cod_amount']) if overrides.get('cod_amount') is not None else float(_get('amount', 0) or 0)`. Optionally factor `effective_cod` into a single local var and reuse it at L1051 to eliminate future drift."
+}

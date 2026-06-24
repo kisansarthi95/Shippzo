@@ -954,20 +954,31 @@ def init() -> None:
             # WhatsApp templates / CSV exports — derive it from the
             # normalised list so both shapes stay in sync.
             "item_description":   ", ".join(items_list),
-            # Phase-31 rev-2 — REVERSED canonical math.
-            # The Pending row stores `amount` as the COD-to-Collect
-            # value (frontend bulk-paste & smart-paste flows write
-            # the typed COD into `amount`). Total = COD + Token; no
-            # subtraction is ever done.
-            "amount": (
-                float(_get("amount", 0) or 0) + float(_get("token_amount", 0) or 0)
-                if _get("payment_mode") == "COD"
-                else float(_get("amount", 0) or 0)
-            ),
-            "cod_amount": (
-                float(_get("amount", 0) or 0)
-                if _get("payment_mode") == "COD" else 0
-            ),
+            # Phase-31 rev-3 (2026-06-24) — CANONICAL COD math.
+            # Bug: the ship-from-pending path was using `amount`
+            # from the overrides for BOTH `cod_amount` AND the
+            # downstream total computation. When the frontend
+            # actually sent `cod_amount` explicitly in overrides
+            # (e.g. operator edited COD-to-Collect on the form
+            # right before tapping Ship), we silently discarded
+            # it and used the stale pending.amount instead, then
+            # added token a second time inside `amount`. Net
+            # effect: total inflated by token whenever the
+            # operator nudged the COD value.
+            #
+            # New precedence — matches POST /shipments behaviour:
+            #   • cod_amount = overrides.cod_amount when present;
+            #                  else fallback to overrides.amount /
+            #                  pending.amount (Smart-Paste case).
+            #   • amount     = cod_amount + token_amount (Total).
+            #   • token_amount = overrides/pending verbatim.
+            #
+            # Legacy rows that don't carry cod_amount on the
+            # pending doc keep the same behaviour they had before
+            # this fix (pending.amount is treated as COD-to-Collect
+            # because that's how smart-paste ingests it).
+            "amount":             0.0,   # placeholder; replaced below
+            "cod_amount":         0.0,   # placeholder; replaced below
             "token_amount":       float(_get("token_amount", 0) or 0),
             "weight":             _w_parsed["display"],
             "weight_value":       _w_parsed["value"],
@@ -1020,6 +1031,29 @@ def init() -> None:
             "sheet_row_num":      order.get("sheet_row_num"),
             "user_id":            current_user["id"],
         }
+        # Phase-31 rev-3 — Compute COD math now that ship_doc keys are
+        # built. Precedence (overrides → pending row, then validate):
+        #   • cod_amount: overrides.cod_amount if present (frontend
+        #     edit-mode); else _get("amount") (Smart-Paste case where
+        #     pending.amount IS the COD-to-Collect).
+        #   • amount    : cod_amount + token_amount for COD; else
+        #     just _get("amount") for prepaid (no token math).
+        # When the override key IS present but the value is None /
+        # empty-string the operator's intent is "0", so we honour it
+        # rather than silently falling back.
+        if overrides.get("cod_amount") is not None:
+            _cod_in = float(overrides.get("cod_amount") or 0)
+        else:
+            # Legacy / Smart-Paste path: pending.amount IS the COD.
+            _cod_in = float(_get("amount", 0) or 0)
+        _tok_in = ship_doc["token_amount"]   # already a float
+        if _get("payment_mode") == "COD":
+            ship_doc["cod_amount"] = _cod_in
+            ship_doc["amount"]     = _cod_in + _tok_in
+        else:
+            ship_doc["cod_amount"] = 0.0
+            ship_doc["amount"]     = float(_get("amount", 0) or 0)
+
         # Phase F2.1 — when the import landed an already-Delivered row,
         # also stamp delivered_at so analytics + the Detail page show
         # the same timestamp the user saw in their source file.
