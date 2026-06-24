@@ -470,16 +470,62 @@ def init() -> None:
         # wrapped this insert (POST /shipments path). Operators kept
         # seeing "Request failed with status code 500" when their
         # auto-generated order_id collided with an existing row.
-        try:
-            await db.shipments.insert_one(doc)
-        except Exception as e:
-            # Avoid importing pymongo at module top to keep this file
-            # decoupled from the driver type when running tests.
-            if "duplicate key" in str(e).lower() or "E11000" in str(e):
+        #
+        # Phase-32 rev-4 (2026-06-26) — When the order_id was an
+        # AUTO-GENERATED prefill (matches master_order_id), silently
+        # regenerate a fresh master_order_id + order_id and retry the
+        # insert (up to 5 times). This converts the user-visible
+        # "Order ID already exists" 409 into a transparent retry —
+        # the symptom only ever happens for auto-generated IDs due to
+        # a TOCTOU race against another concurrent insert. User-typed
+        # / external order_ids still surface the 409 cleanly so the
+        # operator can pick a new value.
+        _autogen_id = (
+            auto_gen
+            and not order_id_explicit
+            and doc.get("order_id") == doc.get("master_order_id")
+        )
+        _retry_attempts = 0
+        _max_retries = 5
+        while True:
+            try:
+                await db.shipments.insert_one(doc)
+                break
+            except Exception as e:
+                # Avoid importing pymongo at module top to keep this
+                # file decoupled from the driver type when running tests.
+                _is_dup = (
+                    "duplicate key" in str(e).lower()
+                    or "E11000" in str(e)
+                )
+                if not _is_dup:
+                    raise
+                if _autogen_id and _retry_attempts < _max_retries:
+                    _retry_attempts += 1
+                    _new_master = await generate_master_order_id()
+                    _logger.warning(
+                        "shipment.create — auto-gen order_id %r collided "
+                        "for user %s; retry %d/%d with fresh id %r.",
+                        doc.get("order_id"),
+                        current_user.get("id", "?")[:8],
+                        _retry_attempts, _max_retries, _new_master,
+                    )
+                    doc["master_order_id"] = _new_master
+                    doc["order_id"] = _new_master
+                    # Bump the in-memory Shipment instance too so
+                    # downstream code sees the new id.
+                    try:
+                        shipment.master_order_id = _new_master
+                        shipment.order_id = _new_master
+                    except Exception:
+                        pass
+                    continue
                 _logger.warning(
                     "shipment.create — duplicate order_id %r for user %s; "
-                    "rejecting with 409.",
-                    doc.get("order_id"), current_user.get("id", "?")[:8],
+                    "rejecting with 409 (autogen=%s, retries=%d).",
+                    doc.get("order_id"),
+                    current_user.get("id", "?")[:8],
+                    _autogen_id, _retry_attempts,
                 )
                 raise HTTPException(
                     status_code=409,
@@ -489,7 +535,6 @@ def init() -> None:
                         "a fresh one."
                     ),
                 )
-            raise
 
         # Phase H: User personal-sheet auto-sync (best-effort).
         try:
@@ -997,6 +1042,64 @@ def init() -> None:
         # so normalise it here before constructing the shipment doc.
         _w_parsed = _parse_weight(_get("weight", ""))
 
+        # Phase-32 rev-4 (2026-06-26) — Pre-allocate a unique order_id
+        # BEFORE we build ship_doc / write to Master Sheet. This
+        # converts the "Order ID already exists" 409 into a transparent
+        # retry — the symptom only ever happens for auto-generated IDs
+        # (Smart-Paste / webhook ingest assigns master_order_id as the
+        # order_id), so we can safely regenerate. User-typed / external
+        # order_ids stay untouched and still surface the 409 cleanly
+        # below if they actually collide.
+        _resolved_order_id = (
+            _get("order_id")
+            or _get("order_id_hint")
+            or _get("master_order_id")
+        )
+        _resolved_master_id = str(order.get("master_order_id") or "")
+        # Auto-gen iff the resolved order_id matches the pending's
+        # master_order_id (i.e. it was assigned by our counter, not
+        # typed by the operator or supplied by an upstream system).
+        _was_autogen_oid = bool(
+            _resolved_master_id
+            and _resolved_order_id == _resolved_master_id
+        )
+        if _was_autogen_oid:
+            _alloc_retries = 0
+            while await db.shipments.find_one(
+                {"order_id": _resolved_order_id, "user_id": current_user["id"]},
+                {"_id": 1},
+            ):
+                _alloc_retries += 1
+                if _alloc_retries > 5:
+                    break
+                _new_id = await generate_master_order_id()
+                _logger.warning(
+                    "ship_pending_order — pre-alloc collision on order_id "
+                    "%r (user %s); regenerating with %r (try %d/5).",
+                    _resolved_order_id,
+                    current_user.get("id", "?")[:8],
+                    _new_id, _alloc_retries,
+                )
+                _resolved_order_id = _new_id
+                _resolved_master_id = _new_id
+            # Persist the updated ids back onto the pending order so
+            # the row stays consistent with the eventual shipment.
+            if _alloc_retries > 0:
+                try:
+                    await db.pending_orders.update_one(
+                        {"id": order_id, "user_id": current_user["id"]},
+                        {"$set": {
+                            "order_id": _resolved_order_id,
+                            "master_order_id": _resolved_master_id,
+                            "updated_at": utcnow_iso(),
+                        }},
+                    )
+                except Exception:
+                    _logger.exception(
+                        "ship_pending_order — failed to update pending row "
+                        "with regenerated order_id (non-fatal)."
+                    )
+
         ship_doc = {
             "id":                 str(uuid.uuid4()),
             "tracking_id":        tracking_id,
@@ -1064,13 +1167,8 @@ def init() -> None:
             #      id; the master id is the right thing to surface
             #      since it's what we already wrote to the Master Sheet
             #      and what the Order-ID counter assigned to this row.
-            "order_id":           (
-                _get("order_id")
-                or _get("order_id_hint")
-                or _get("master_order_id")
-            ),
-            "master_order_id":    str(order.get("master_order_id") or ""),
-            "notes":              _get("notes"),
+            "order_id":           _resolved_order_id,
+            "master_order_id":    _resolved_master_id,
             "status":             _ship_status,
             "created_at":         _ship_created_at,
             "updated_at":         utcnow_iso(),
@@ -1153,15 +1251,57 @@ def init() -> None:
         # order earlier via direct POST then accidentally re-tapped
         # Ship on the lingering pending row), surface a clean 409
         # with a helpful Gujarati/English message instead of a 500.
-        try:
-            await db.shipments.insert_one(ship_doc)
-        except Exception as e:
-            if "duplicate key" in str(e).lower() or "E11000" in str(e):
+        #
+        # Phase-32 rev-4 (2026-06-26) — Final TOCTOU safety net for
+        # auto-generated IDs. The pre-alloc check above closes the
+        # common-case window (the id was already in DB before we
+        # started). The rare remaining race — another concurrent
+        # request inserts a row with the same id between our pre-check
+        # and this insert — is handled here: regenerate and retry up
+        # to 5 times when the id was auto-generated, otherwise surface
+        # the 409 cleanly so the operator can pick a new value.
+        _final_retries = 0
+        while True:
+            try:
+                await db.shipments.insert_one(ship_doc)
+                break
+            except Exception as e:
+                _is_dup = (
+                    "duplicate key" in str(e).lower()
+                    or "E11000" in str(e)
+                )
+                if not _is_dup:
+                    raise
+                if _was_autogen_oid and _final_retries < 5:
+                    _final_retries += 1
+                    _new_id = await generate_master_order_id()
+                    _logger.warning(
+                        "ship_pending_order — TOCTOU race on order_id %r "
+                        "(user %s); regenerating with %r (try %d/5).",
+                        ship_doc.get("order_id"),
+                        current_user.get("id", "?")[:8],
+                        _new_id, _final_retries,
+                    )
+                    ship_doc["order_id"]        = _new_id
+                    ship_doc["master_order_id"] = _new_id
+                    try:
+                        await db.pending_orders.update_one(
+                            {"id": order_id, "user_id": current_user["id"]},
+                            {"$set": {
+                                "order_id": _new_id,
+                                "master_order_id": _new_id,
+                                "updated_at": utcnow_iso(),
+                            }},
+                        )
+                    except Exception:
+                        pass
+                    continue
                 _logger.warning(
                     "ship_pending_order — duplicate order_id %r for user %s; "
-                    "rejecting with 409.",
+                    "rejecting with 409 (autogen=%s, retries=%d).",
                     ship_doc.get("order_id"),
                     current_user.get("id", "?")[:8],
+                    _was_autogen_oid, _final_retries,
                 )
                 raise HTTPException(
                     status_code=409,
@@ -1172,7 +1312,6 @@ def init() -> None:
                         "or change the Order ID before shipping."
                     ),
                 )
-            raise
 
         # Phase H + Phase-31: User personal-sheet auto-sync (best-effort).
         # When a pending order is shipped, also append the full row to
