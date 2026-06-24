@@ -903,15 +903,13 @@ def init() -> None:
             # No counter bump — the supplied AWB is by definition
             # outside our sequential series.
         elif manual_mode:
-            # Manual-only courier but operator didn't supply an AWB
-            # → still an error.
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    f"Courier '{courier.get('name')}' uses manual tracking. "
-                    "Please enter the tracking number from the courier sticker."
-                ),
-            )
+            # Phase-35 — Manual-only courier + no AWB yet.
+            # Save the shipment with an EMPTY tracking_id so the
+            # operator can come back and fill it in via Edit once they
+            # actually visit the courier counter. This unblocks the
+            # India Post workflow where operators batch-prep shipments
+            # at home and walk to the post office later.
+            tracking_id = ""
         else:
             # Auto-mode courier with no override → original sequential
             # path runs verbatim, counter is incremented atomically.

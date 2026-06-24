@@ -311,11 +311,18 @@ class TestManualTrackingIdPrecedence:
             f"(expected {before_num + 1})"
         )
 
-    def test_manual_courier_no_manual_id_returns_400(
+    def test_manual_courier_no_manual_id_saves_empty(
         self, api_client, user_headers,
     ):
-        """REGRESSION: MANUAL-mode + no manual_id → HTTP 400 with the
-        'uses manual tracking' guidance message.
+        """Phase-35 (2026-06) — CONTRACT CHANGE.
+        MANUAL-mode + no manual_id → HTTP 200 with `tracking_id=""`.
+        Operators (esp. India Post users) often save the shipment first,
+        then visit the post-office counter later to get the AWB. Forcing
+        tracking-ID at save broke that real-world workflow. The shipment
+        now persists with an empty tracking_id; user fills it in via
+        Edit when they have the receipt sticker.
+
+        Previously this asserted 400 — that guard was the bug.
         """
         courier = _ensure_manual_courier(api_client, user_headers)
         courier_id = courier.get("id") or courier.get("_id")
@@ -324,15 +331,14 @@ class TestManualTrackingIdPrecedence:
             pid = _create_pending(
                 api_client, user_headers, uuid.uuid4().hex[:6],
             )
-            # Both branches: missing AND empty string should 400.
             r = _ship(api_client, user_headers, pid, courier_id, None)
-            assert r.status_code == 400, (
-                f"MANUAL+no manual_id: expected 400, got {r.status_code} "
+            assert r.status_code == 200, (
+                f"MANUAL+no manual_id: expected 200, got {r.status_code} "
                 f"{r.text[:300]}"
             )
-            detail = str(r.json().get("detail", ""))
-            assert "manual tracking" in detail.lower(), (
-                f"expected guidance message, got {detail!r}"
+            body = r.json()
+            assert body.get("tracking_id", "<missing>") == "", (
+                f"expected empty tracking_id, got {body.get('tracking_id')!r}"
             )
         finally:
             _restore_auto(api_client, user_headers, courier_id)

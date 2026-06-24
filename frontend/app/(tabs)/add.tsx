@@ -1193,12 +1193,22 @@ export default function AddShipment() {
         );
         return;
       }
-      if (!autoTracking && !trackingId.trim() && fcShipment.isRequired("tracking_id")) {
+      // Phase-35 — Manual-courier tracking_id is now OPTIONAL at save.
+      // Operators (especially India Post users) often save the shipment
+      // first WITHOUT a tracking number and add the AWB later — once
+      // they actually visit the post office and get the receipt
+      // sticker. Forcing tracking-ID at save blocked that real-world
+      // workflow. Auto-series couriers still require either a value
+      // or the Auto-Series toggle on; we only relax for manual mode.
+      if (
+        !autoTracking
+        && !trackingId.trim()
+        && fcShipment.isRequired("tracking_id")
+        && !courierIsManual
+      ) {
         Alert.alert(
           "Tracking ID required",
-          courierIsManual
-            ? "Please type the AWB from the courier's printed sticker before saving."
-            : "Enter a tracking ID or switch to Auto Series.",
+          "Enter a tracking ID or switch to Auto Series.",
           [{ text: "OK" }]
         );
         return;
