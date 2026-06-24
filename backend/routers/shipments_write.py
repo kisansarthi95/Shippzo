@@ -203,6 +203,54 @@ def init() -> None:
                 token, cod, (user_id or "?")[:8],
             )
 
+    # ── Phase-34 (2026-06-24) — CANONICAL Order-Value calculator ──────
+    # Single source of truth for the rule:
+    #
+    #   Total Order Value (amount) = cod_amount + token_amount   (COD)
+    #   Total Order Value (amount) = entered amount              (Prepaid)
+    #
+    # Every write path (POST /shipments, PUT /shipments/{id},
+    # ship_pending_order) MUST call this helper instead of computing
+    # `cod + token` inline. The frontend's `lib/orderAmounts.ts`
+    # `computeOrderAmounts()` mirrors this contract exactly so the
+    # client preview and the persisted document never disagree.
+    #
+    # Validation policy:
+    #   • If `validate=True` (default), raises HTTP 422 on COD ≤ 0
+    #     (COD-mode only) and on token < 0.
+    #   • Soft-warn when token > cod (refund / overpay) — logged,
+    #     not rejected.
+    def compute_order_amounts(
+        *,
+        cod: Any,
+        token: Any,
+        payment_mode: str,
+        validate: bool = True,
+        user_id: str = "",
+    ) -> Dict[str, float]:
+        """Return the canonical {amount, cod_amount, token_amount}
+        triple for a shipment write. `amount` is ALWAYS derived —
+        never stored independently."""
+        _cod = float(cod or 0)
+        _tok = float(token or 0)
+        is_cod = str(payment_mode or "").upper() == "COD"
+        if is_cod:
+            if validate:
+                _validate_cod_amounts(cod=_cod, token=_tok, user_id=user_id)
+            return {
+                "amount":       _cod + _tok,
+                "cod_amount":   _cod,
+                "token_amount": _tok,
+            }
+        # Prepaid / other modes — entered value IS the total; no COD.
+        # We still accept the typed value as `amount` so admin reports
+        # show the right gross figure.
+        return {
+            "amount":       _cod,   # operators type the gross into "amount" for prepaid
+            "cod_amount":   0.0,
+            "token_amount": _tok,
+        }
+
     @shipments_write_router.post("/shipments", response_model=Shipment)
     async def create_shipment(
         payload: ShipmentCreate,
@@ -288,46 +336,24 @@ def init() -> None:
             )
             if c:
                 data["courier_name"] = c.get("name", "")
-        if data.get("payment_mode") == "COD":
-            # Phase-31 rev-2 (2026-06) — REVERSED semantic.
-            #
-            # The form's "COD to Collect" field is the value the
-            # courier will physically take at delivery — it is the
-            # cod_amount, full stop. The Total Order Value is derived
-            # upward (= COD + Token), never downward. No subtraction
-            # is ever performed; the values flow through verbatim.
-            #
-            #   cod_amount = entered "COD to Collect" verbatim
-            #                (defaults to `amount` for legacy clients
-            #                that don't send a separate cod_amount).
-            #   amount     = cod_amount + token_amount (Total).
-            #   token_amount = advance already paid online.
-            #
-            # This matches what the operator types and what the
-            # printed label shows — no double-counting in either
-            # direction.
-            _token = float(data.get("token_amount") or 0)
-            _cod = (
-                float(data["cod_amount"])
-                if data.get("cod_amount") is not None
-                else float(data.get("amount") or 0)
-            )
-            # Phase-31 rev-2 validation (Task 6) — shared helper:
-            #   • Require cod_amount > 0 for COD-mode.
-            #   • Allow token_amount = 0 (no advance is fine).
-            #   • Allow token > cod (refund / overpay edge case);
-            #     logged but not blocked.
-            _validate_cod_amounts(
-                cod=_cod, token=_token,
-                user_id=current_user.get("id", ""),
-            )
-            data["cod_amount"] = _cod
-            data["amount"]     = _cod + _token
-        else:
-            # Prepaid / other modes — keep the entered amount as the
-            # total, no COD collection.
-            data["cod_amount"] = 0.0
-            data["amount"] = float(data.get("amount") or 0)
+        # Phase-34 — Use the canonical compute_order_amounts() helper
+        # for the POST /shipments path. Single source of truth for
+        # `amount = cod + token` (COD) or `amount = entered` (Prepaid).
+        _cod_in = (
+            float(data["cod_amount"])
+            if data.get("cod_amount") is not None
+            else float(data.get("amount") or 0)
+        )
+        _amounts = compute_order_amounts(
+            cod=_cod_in,
+            token=data.get("token_amount") or 0,
+            payment_mode=data.get("payment_mode", ""),
+            validate=True,
+            user_id=current_user.get("id", ""),
+        )
+        data["amount"]       = _amounts["amount"]
+        data["cod_amount"]   = _amounts["cod_amount"]
+        data["token_amount"] = _amounts["token_amount"]
         if data.get("items") is None:
             data["items"] = []
         if data.get("custom_values") is None:
@@ -528,11 +554,11 @@ def init() -> None:
             update.setdefault("cancelled_at", utcnow_iso())
             update.setdefault("cancel_reason", "user_action")
         if "amount" in update or "cod_amount" in update:
-            # Phase-31 rev-2 — REVERSED canonical math.
-            # The frontend sends `cod_amount` as the COD-to-Collect
-            # (verbatim). We trust it and derive Total = COD + Token.
-            # Legacy clients that send only `amount` for a COD row
-            # are handled by treating that field as the COD-to-collect.
+            # Phase-34 — Canonical compute_order_amounts() helper.
+            # Single source of truth for `amount = cod + token`. The
+            # frontend sends `cod_amount` as the COD-to-Collect; legacy
+            # clients send only `amount` for a COD row which is treated
+            # as the COD-to-collect (verbatim fallback).
             _pmode = (
                 update.get("payment_mode")
                 or existing.get("payment_mode")
@@ -543,23 +569,20 @@ def init() -> None:
                 if "token_amount" in update and update["token_amount"] is not None
                 else (existing.get("token_amount") or 0),
             )
-            if _pmode == "COD":
-                _cod = float(
-                    update["cod_amount"]
-                    if "cod_amount" in update and update["cod_amount"] is not None
-                    else update.get("amount", 0) or 0,
-                )
-                # Phase-31 rev-2 validation — same rules as POST.
-                _validate_cod_amounts(
-                    cod=_cod, token=_tok,
-                    user_id=current_user.get("id", ""),
-                )
-                update["cod_amount"] = _cod
-                update["amount"]     = _cod + _tok
-            else:
-                update["cod_amount"] = 0.0
-                if "amount" in update:
-                    update["amount"] = float(update["amount"] or 0)
+            _cod = float(
+                update["cod_amount"]
+                if "cod_amount" in update and update["cod_amount"] is not None
+                else update.get("amount", 0) or 0,
+            )
+            _amounts = compute_order_amounts(
+                cod=_cod, token=_tok,
+                payment_mode=_pmode,
+                validate=(_pmode == "COD"),
+                user_id=current_user.get("id", ""),
+            )
+            update["amount"]       = _amounts["amount"]
+            update["cod_amount"]   = _amounts["cod_amount"]
+            update["token_amount"] = _amounts["token_amount"]
         # Phase-33 — Parse + validate weight when it's part of the
         # update payload. Re-derives weight_value + weight_unit so
         # the row stays self-consistent even when the operator
@@ -1073,16 +1096,24 @@ def init() -> None:
             "sheet_row_num":      order.get("sheet_row_num"),
             "user_id":            current_user["id"],
         }
-        # Phase-31 rev-3 — Apply the EFFECTIVE COD math computed above.
-        # Reusing `_effective_cod` / `_effective_token` here (instead of
-        # re-deriving from overrides) guarantees the validator and the
-        # persisted document agree on the same number. No more drift.
+        # Phase-34 — Use canonical compute_order_amounts() helper.
+        # Reusing `_effective_cod` / `_effective_token` here guarantees
+        # the validator and the persisted document agree on the same
+        # number. Single source of truth for `amount = cod + token`.
+        _amounts = compute_order_amounts(
+            cod=_effective_cod,
+            token=_effective_token,
+            payment_mode=_get("payment_mode", "") or "",
+            validate=False,   # already validated above
+            user_id=current_user.get("id", ""),
+        )
         if _get("payment_mode") == "COD":
-            ship_doc["cod_amount"] = _effective_cod
-            ship_doc["amount"]     = _effective_cod + _effective_token
+            ship_doc["amount"]     = _amounts["amount"]
+            ship_doc["cod_amount"] = _amounts["cod_amount"]
         else:
             ship_doc["cod_amount"] = 0.0
             ship_doc["amount"]     = float(_get("amount", 0) or 0)
+        ship_doc["token_amount"]   = _amounts["token_amount"]
 
         # Phase F2.1 — when the import landed an already-Delivered row,
         # also stamp delivered_at so analytics + the Detail page show
