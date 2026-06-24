@@ -330,9 +330,15 @@ export default function Dashboard() {
     STATE:     { label: "State",            placeholder: "e.g. Gujarat", primary: true },
     PINCODE:   { label: "Pincode",          placeholder: "6 digits", keyboard: "numeric", primary: true },
     ITEMS:     { label: "Item(s)",          placeholder: "e.g. Saree x 2", primary: true },
-    AMOUNT:    { label: "Amount (₹)",       placeholder: "Enter amount", keyboard: "numeric", primary: true },
+    // Phase-35 (2026-06) — Smart Paste UI: 3 separate payment fields.
+    // The "AMOUNT" field on this screen now represents the
+    // **COD Collection** value — exactly what the customer pays at
+    // delivery (verbatim from the WhatsApp message). The Total Order
+    // Value is shown as a read-only chip computed as COD + Token.
+    // Token is its own field. No subtraction is ever performed.
+    AMOUNT:    { label: "COD Collection (₹)", placeholder: "What courier collects", keyboard: "numeric", primary: true },
     PAYMENT:   { label: "Payment",          placeholder: "COD or Prepaid", primary: true },
-    TOKEN:     { label: "Token Amount (₹)", placeholder: "Enter token", keyboard: "numeric" },
+    TOKEN:     { label: "Token Amount (₹)", placeholder: "Advance already paid", keyboard: "numeric" },
     COURIER:   { label: "Courier",          placeholder: "optional" },
     ORDER_ID:  { label: "Your Order ID",    placeholder: "ABC-001 / your own ID (optional)" },
     WEIGHT:    { label: "Weight (g)",       placeholder: "Enter weight in grams", keyboard: "numeric" },

@@ -336,10 +336,11 @@ City / State should be English transliteration when obvious (e.g.
 "અરવલ્લી" → "Aravalli", "ગુજરાત" → "Gujarat") so the courier sheet
 is consistent; otherwise keep the source script.
 
-**Rule 10 — Amount & token (CRITICAL — Phase-31 rev-2):**
-AMOUNT = the **COD-to-Collect** — i.e. what the courier will
-physically take from the customer at delivery. This is the number
-the operator types into the "COD to Collect (₹)" field.
+**Rule 10 — Amount & token (CRITICAL — Phase-35, REVERSED again):**
+AMOUNT = the **COD Collection** — i.e. exactly what the courier
+will physically take from the customer at delivery. This number
+is the VERBATIM COD amount from the source message — never
+modified, never reduced, never recomputed.
 
   * SIMPLEST case (no token / advance in the source text):
       "💰 Payment: COD ₹1750"          → AMOUNT: 1750, PAYMENT: COD
@@ -347,11 +348,10 @@ the operator types into the "COD to Collect (₹)" field.
       "Total: 999 / Paid online"       → AMOUNT: 999,  PAYMENT: PAID
       "₹1750 COD"                      → AMOUNT: 1750, PAYMENT: COD
 
-  * When the source contains BOTH a Total AND a Token / Advance,
-    AMOUNT must be the POST-ADVANCE balance (Total − Token), NOT
-    the gross total. You MUST do the subtraction yourself BEFORE
-    emitting AMOUNT — the downstream API stores AMOUNT verbatim
-    and adds the Token back to derive the gross total.
+  * When the source contains BOTH a COD and a Token / Advance,
+    AMOUNT must be the COD VALUE VERBATIM — DO NOT subtract.
+    Token is its own separate field. The downstream system will
+    compute Total Order Value = COD + Token automatically.
 
 TOKEN = the advance / partial amount the customer ALREADY paid online.
 Look for any of these signals (case-insensitive, may be in Gujarati / Hindi):
@@ -366,35 +366,38 @@ TOKEN is a NUMBER ONLY (just the digits). NEVER copy "tokn" / "token"
 text into TOKEN — only the number.
 TOKEN is its OWN field. DO NOT put token text into NOTES anymore.
 
-**Phase-31 rev-2 — AMOUNT is the COD-to-Collect (after subtraction):**
-When BOTH a Token and a Total appear in the same paste, emit:
-  • TOKEN = the advance number (verbatim).
-  • AMOUNT = Total − Token (you DO the subtraction).
+**Phase-35 — VERBATIM contract (no math, ever):**
+When BOTH a COD and a Token appear, emit BOTH numbers EXACTLY
+as written. The downstream API computes Total = COD + Token —
+that math is NOT your job.
 
   Examples (the ONLY correct behaviour):
+    Input  : "COD ₹650 · Token ₹50 paid"
+    RIGHT  : AMOUNT: 650   TOKEN: 50   PAYMENT: COD
+             (system computes Total = 650 + 50 = 700)
+    WRONG  : AMOUNT: 600   TOKEN: 50
+             (SUBTRACTING Token from COD is FORBIDDEN)
+    WRONG  : AMOUNT: 700   TOKEN: 50
+             (ADDING Token into AMOUNT is also FORBIDDEN — that
+              would double-count when system also computes Total)
+
     Input  : "Total ₹1500 · Token ₹500 paid online · COD"
-    RIGHT  : AMOUNT: 1000   TOKEN: 500   PAYMENT: COD
-             (1500 − 500 = 1000 to collect on delivery)
-    WRONG  : AMOUNT: 1500   TOKEN: 500
-             (Storing the gross would double-count the token when
-             the API recomputes Total = COD + Token.)
+    RIGHT  : AMOUNT: 1500  TOKEN: 500  PAYMENT: COD
+             (When ONLY a "Total" label is present and a Token,
+              treat Total as the COD-Collection amount —
+              customer pays Total at delivery; Token was a
+              separate online advance. System will derive a new
+              total = 1500 + 500 = 2000 visible on the UI.)
 
     Input  : "₹2400 COD, advance 400"
-    RIGHT  : AMOUNT: 2000   TOKEN: 400   PAYMENT: COD
-    WRONG  : AMOUNT: 2400   TOKEN: 400
+    RIGHT  : AMOUNT: 2400  TOKEN: 400  PAYMENT: COD
 
     Input  : "Order Value: 800 / Tokn 200"
-    RIGHT  : AMOUNT: 600    TOKEN: 200
-    WRONG  : AMOUNT: 800    TOKEN: 200
+    RIGHT  : AMOUNT: 800   TOKEN: 200
 
-If ONLY a single number is present (no separate "Total" vs "Token"
-distinction), just emit that number as AMOUNT — it is already the
-COD-to-Collect by default.
-
-If the subtraction would go negative (Token ≥ Total), still emit
-the raw numbers — operator will fix at the form (we don't clamp).
-Negative AMOUNT is allowed for the rare case where the customer
-has overpaid the advance.
+CRITICAL: AMOUNT must be the EXACT number that appears next to
+"COD" / "Cash on Delivery" / "Total" / "Order Value" in the source
+text. Never modify it, never subtract anything, never add anything.
 
 The "no subtraction" rule applies to **every other numeric field
 too** — never combine, sum, or subtract values. Numbers in the
