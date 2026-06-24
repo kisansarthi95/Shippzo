@@ -823,21 +823,49 @@ def init() -> None:
         # `manual_tracking_id`. For every other courier the original
         # series_prefix + zero-padded next_number path runs unchanged,
         # preserving 100% of historic behaviour.
+        # Phase-32 (rev-2, 2026-06) — Tracking-ID precedence flip.
+        #
+        # OLD behaviour: a courier's `manual_tracking` flag was the
+        # single source of truth. If the flag was OFF, we ALWAYS
+        # auto-generated `series_prefix + next_number`, silently
+        # discarding whatever `payload.manual_tracking_id` the
+        # operator had typed/scanned. That broke the Manual / Scan
+        # workflow for pending orders — operators expected the
+        # scanned AWB to land on the shipment, not a freshly minted
+        # sequential code.
+        #
+        # NEW behaviour (matches the direct POST /shipments path):
+        #   1. If the operator passes a non-empty `manual_tracking_id`,
+        #      USE IT AS-IS regardless of the courier's flag. The
+        #      operator's intent — typed or scanned — wins.
+        #   2. Otherwise, if the courier IS configured for manual
+        #      tracking, reject (we can't auto-generate for a manual
+        #      courier — no `next_number` is maintained).
+        #   3. Otherwise (no manual_tracking_id AND auto-mode courier)
+        #      generate `series_prefix + next_number` exactly as before
+        #      and bump the counter.
+        manual_id   = (payload.manual_tracking_id or "").strip()
         manual_mode = bool(courier.get("manual_tracking"))
-        if manual_mode:
-            manual_id = (payload.manual_tracking_id or "").strip()
-            if not manual_id:
-                raise HTTPException(
-                    status_code=400,
-                    detail=(
-                        f"Courier '{courier.get('name')}' uses manual tracking. "
-                        "Please enter the tracking number from the courier sticker."
-                    ),
-                )
+
+        if manual_id:
+            # Operator typed / scanned an explicit tracking ID — use it
+            # regardless of the courier's flag.
             tracking_id = manual_id
-            # No $inc on next_number — the counter is irrelevant for
-            # manual couriers and must stay where the user left it.
+            # No counter bump — the supplied AWB is by definition
+            # outside our sequential series.
+        elif manual_mode:
+            # Manual-only courier but operator didn't supply an AWB
+            # → still an error.
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Courier '{courier.get('name')}' uses manual tracking. "
+                    "Please enter the tracking number from the courier sticker."
+                ),
+            )
         else:
+            # Auto-mode courier with no override → original sequential
+            # path runs verbatim, counter is incremented atomically.
             padding  = int(courier.get("number_padding") or 4)
             next_num = int(courier.get("next_number") or 1)
             tracking_id = (

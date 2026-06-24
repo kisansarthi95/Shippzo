@@ -1,0 +1,37 @@
+{
+  "summary": "Phase-32 rev-2 fix VERIFIED: ship_pending_order now honours non-empty manual_tracking_id regardless of courier's manual_tracking flag. All 35 tests pass (4 new precedence tests + 6 items normalization + 9 COD math + 16 weight parser). The scanned/typed AWB now lands on the resulting shipment for auto-mode couriers, and the courier's next_number counter is NOT incremented when an override is supplied. All regression suites are intact — no behaviour drift detected.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_phase32_rev2_manual_tracking_precedence.py",
+    "/app/backend/tests/test_phase32_items_normalization.py",
+    "/app/backend/tests/test_phase31_cod_math.py",
+    "/app/backend/tests/test_phase33_weight_parser.py",
+    "/app/test_reports/pytest/pytest_iteration_13.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "shipments_write.py lines 826-880 implement the correct precedence: non-empty manual_tracking_id wins → use as-is, no counter bump; manual-mode without manual_id → 400; auto-mode without manual_id → series_prefix + zfill(padding) + $inc next_number. Logic matches the direct POST /shipments path's behaviour and the fix description.",
+    "Counter $inc is atomic (Mongo update_one with $inc) — race-safe. Verified by side-by-side before/after GET in test_auto_courier_empty_manual_id_autogenerates_and_bumps."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_phase32_rev2_manual_tracking_precedence.py (new — 4 test cases covering the precedence fix and 3 regression scenarios)"
+  ],
+  "success_rate": {
+    "backend": "100% (35/35)",
+    "frontend": "not tested (backend-only per request)"
+  },
+  "seed_data_creation": "Created ephemeral pending orders (smart-paste, skip_llm) per test, prefixed TEST_P32R2_. No couriers created — used the existing user2 Silver-plan courier and temporarily toggled its manual_tracking flag (restored in finally clauses).",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "user2@test.com is on the Silver plan (1 courier cap). To test manual-mode tracking, the test helper toggles the existing courier's manual_tracking flag via PUT /api/couriers/{id} and restores it in a finally block. If you add new manual-courier tests, reuse _ensure_manual_courier + _restore_auto helpers in /app/backend/tests/test_phase32_rev2_manual_tracking_precedence.py.",
+  "rca_of_issue": "RCA confirmed: pre-fix, ship_pending_order checked the courier's manual_tracking flag first and only honoured payload.manual_tracking_id when that flag was True. With the typical AUTO-mode courier, scanned AWBs were silently overwritten with a fresh series_prefix+next_number and the counter was bumped. The rev-2 fix reorders the logic so a non-empty manual_tracking_id short-circuits to use-as-is with no counter increment; manual-mode without an AWB still 400s; auto-mode without an AWB still auto-generates and bumps. Verified end-to-end via 4 targeted tests."
+}
