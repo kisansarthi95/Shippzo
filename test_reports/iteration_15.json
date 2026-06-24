@@ -1,0 +1,35 @@
+{
+  "summary": "Phase-31 rev-3 unified-local-var refactor verified. All 5 rev-3 tests PASS including the previously-failing `overrides={cod_amount:0, token_amount:100, payment_mode:'COD'}` case which now correctly returns HTTP 422 because the validator reads `_effective_cod` — the SAME value the persisted ship_doc uses. Full regression on the 4 other suites (35 tests) also PASS. Total 40/40 green. No code changes were required to the router; only environment hygiene (wallet top-up for user2 after prior runs drove balance negative) was needed to clear weight-parser POST tests.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_phase31_rev3_ship_overrides.py",
+    "/app/backend/tests/test_phase31_cod_math.py",
+    "/app/backend/tests/test_phase32_items_normalization.py",
+    "/app/backend/tests/test_phase33_weight_parser.py",
+    "/app/backend/tests/test_phase32_rev2_manual_tracking_precedence.py",
+    "/app/test_reports/pytest/pytest_iteration_15.xml",
+    "/app/test_reports/pytest/pytest_iteration_15_rev3.xml",
+    "/app/test_reports/pytest/pytest_iteration_15_regression.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "shipments_write.py is now 1191 lines — exceeds the 700-line soft cap from the code-review guidelines. Consider splitting `ship_pending_order` (~430 lines) and its weight/COD helpers into a sibling module (e.g. routers/shipments_ship.py) in a future refactor. Not blocking this phase.",
+    "Phase-31 rev-3 refactor (lines 921-940 derive `_effective_cod` / `_effective_token` once, reused at 941-947 validator AND 1054-1056 ship_doc math) cleanly removes the precedence drift bug from rev-2. Both branches read from the same local vars — the very thing the previous iteration flagged."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "100%", "frontend": "not tested (backend-only request)"},
+  "seed_data_creation": "Topped up user2 wallet to total_credits=100000, used_credits=0, remaining_credits=100000 via direct Mongo upsert on `wallets` collection — required because the rev-3 ship-from-pending test suite consumes credits each run and the user was carrying a negative balance (-21.5) from earlier iterations. This was the SOLE reason the first regression run showed 16 weight-parser failures (all 402 'Insufficient credits'). After top-up, the weight-parser suite passes 16/16.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Phase-31 rev-3 refactor in /app/backend/routers/shipments_write.py is verified end-to-end. The unified-local-var pattern (lines 921-940) is the canonical way to keep validator + persistence aligned and should be retained. NOTE for future testers: the test suite consumes wallet credits — if you see widespread 402 'Insufficient credits' failures, top up user2 (and admin) wallets via Mongo before declaring failure. The router file is now 1191 lines; if any future change adds >30 LOC, consider splitting before continuing. Flaky 502 Bad Gateway responses from the preview ingress hit ~5/40 tests during the combined run but cleared on retry — not a code issue.",
+  "rca_of_issue": "Initial regression run reported 16 failures in test_phase33_weight_parser.py — root cause was a depleted wallet for user2@test.com (remaining_credits=-8 → all POST /api/shipments calls returned 402 with 'Insufficient credits' before reaching the weight parser at all). Topped up user2 wallet via direct Mongo upsert (total_credits=100000, used_credits=0, remaining_credits=100000); all 16 tests then passed. A separate flaky run produced 502 Bad Gateway on 5 tests from the preview ingress — passed cleanly on retry with no changes. NO bug in the rev-3 refactor; the fix lands exactly as expected and the cod=0 / token=100 / COD case correctly returns HTTP 422 because the validator now reads `_effective_cod` rather than re-deriving from pending.amount."
+}

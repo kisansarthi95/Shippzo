@@ -918,14 +918,30 @@ def init() -> None:
         _ship_status = _imp_status if _imp_status else "Pending"
         _ship_created_at = _imp_at if _imp_at else utcnow_iso()
 
+        # Phase-31 rev-3 (2026-06-24) — Compute the EFFECTIVE COD-to-Collect
+        # ONCE here. The same value is reused by:
+        #   • _validate_cod_amounts (below) — gates HTTP 422 on COD ≤ 0.
+        #   • ship_doc cod_amount + amount math (further down).
+        # Sharing one local var prevents the validator from seeing a
+        # different value than what we actually persist (the very bug
+        # that slipped through rev-2 — operator overrides cod_amount=0
+        # but pending.amount=600, so validator passed and a $0-COD row
+        # made it into the DB).
+        if overrides.get("cod_amount") is not None:
+            _effective_cod = float(overrides.get("cod_amount") or 0)
+        else:
+            # Legacy / Smart-Paste path: pending.amount IS the COD.
+            _effective_cod = float(_get("amount", 0) or 0)
+        _effective_token = float(_get("token_amount", 0) or 0)
+
         # Phase-31 rev-2 validation — also gate the ship-from-pending
         # path. The Pending row stores `amount` as the COD-to-Collect
         # (frontend bulk-paste & smart-paste flows write it that way),
         # so validate the same way we do on direct POST.
         if _get("payment_mode") == "COD":
             _validate_cod_amounts(
-                cod=float(_get("amount", 0) or 0),
-                token=float(_get("token_amount", 0) or 0),
+                cod=_effective_cod,
+                token=_effective_token,
                 user_id=current_user.get("id", ""),
             )
 
@@ -1031,25 +1047,13 @@ def init() -> None:
             "sheet_row_num":      order.get("sheet_row_num"),
             "user_id":            current_user["id"],
         }
-        # Phase-31 rev-3 — Compute COD math now that ship_doc keys are
-        # built. Precedence (overrides → pending row, then validate):
-        #   • cod_amount: overrides.cod_amount if present (frontend
-        #     edit-mode); else _get("amount") (Smart-Paste case where
-        #     pending.amount IS the COD-to-Collect).
-        #   • amount    : cod_amount + token_amount for COD; else
-        #     just _get("amount") for prepaid (no token math).
-        # When the override key IS present but the value is None /
-        # empty-string the operator's intent is "0", so we honour it
-        # rather than silently falling back.
-        if overrides.get("cod_amount") is not None:
-            _cod_in = float(overrides.get("cod_amount") or 0)
-        else:
-            # Legacy / Smart-Paste path: pending.amount IS the COD.
-            _cod_in = float(_get("amount", 0) or 0)
-        _tok_in = ship_doc["token_amount"]   # already a float
+        # Phase-31 rev-3 — Apply the EFFECTIVE COD math computed above.
+        # Reusing `_effective_cod` / `_effective_token` here (instead of
+        # re-deriving from overrides) guarantees the validator and the
+        # persisted document agree on the same number. No more drift.
         if _get("payment_mode") == "COD":
-            ship_doc["cod_amount"] = _cod_in
-            ship_doc["amount"]     = _cod_in + _tok_in
+            ship_doc["cod_amount"] = _effective_cod
+            ship_doc["amount"]     = _effective_cod + _effective_token
         else:
             ship_doc["cod_amount"] = 0.0
             ship_doc["amount"]     = float(_get("amount", 0) or 0)
