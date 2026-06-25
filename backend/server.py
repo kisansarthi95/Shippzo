@@ -5247,6 +5247,22 @@ except Exception as _cu_exc:
         f"Failed to mount customers router: {_cu_exc}",
     )
 
+# Phase F4.0 — Courier Status Auto Sync (India Post via Android
+# NotificationListenerService, Phase 1). Adds /api/courier-sync/* routes
+# for partner discovery, per-user config, raw-SMS ingest, and audit log.
+try:
+    from routers.courier_sync import (
+        courier_sync_router as _courier_sync_router,
+        init as _init_courier_sync_router,
+    )
+    _init_courier_sync_router()
+    app.include_router(_courier_sync_router)
+except Exception as _cs_exc:
+    import logging as _lg
+    _lg.getLogger("server.bootstrap").exception(
+        f"Failed to mount courier_sync router: {_cs_exc}",
+    )
+
 
 # --------------------------------------------------------------------
 # Auth middleware — requires a valid bearer token on every /api/*
