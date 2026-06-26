@@ -339,21 +339,40 @@ def init() -> None:
         # Phase-34 — Use the canonical compute_order_amounts() helper
         # for the POST /shipments path. Single source of truth for
         # `amount = cod + token` (COD) or `amount = entered` (Prepaid).
-        _cod_in = (
-            float(data["cod_amount"])
-            if data.get("cod_amount") is not None
-            else float(data.get("amount") or 0)
-        )
-        _amounts = compute_order_amounts(
-            cod=_cod_in,
-            token=data.get("token_amount") or 0,
-            payment_mode=data.get("payment_mode", ""),
-            validate=True,
-            user_id=current_user.get("id", ""),
-        )
-        data["amount"]       = _amounts["amount"]
-        data["cod_amount"]   = _amounts["cod_amount"]
-        data["token_amount"] = _amounts["token_amount"]
+        #
+        # 2026-06-25 hotfix — Do NOT route Prepaid through the COD
+        # helper. The helper's `validate=True` path coerced Prepaid
+        # `amount` to 0 whenever cod_in was 0, wiping out the order
+        # value for every Prepaid shipment we wrote since Phase-34.
+        # For Prepaid, the entered `amount` IS the total \u2014 keep it
+        # verbatim. token_amount remains a passive carry-through.
+        _pmode = (data.get("payment_mode") or "").strip()
+        if _pmode == "COD":
+            _cod_in = (
+                float(data["cod_amount"])
+                if data.get("cod_amount") is not None
+                else float(data.get("amount") or 0)
+            )
+            _amounts = compute_order_amounts(
+                cod=_cod_in,
+                token=data.get("token_amount") or 0,
+                payment_mode=_pmode,
+                validate=True,
+                user_id=current_user.get("id", ""),
+            )
+            data["amount"]       = _amounts["amount"]
+            data["cod_amount"]   = _amounts["cod_amount"]
+            data["token_amount"] = _amounts["token_amount"]
+        else:
+            # Prepaid (or unset payment_mode): preserve the entered
+            # amount as the canonical total. Fallback to cod_amount
+            # if some legacy client sent only that field for a
+            # Prepaid row.
+            data["amount"] = float(
+                data.get("amount") or data.get("cod_amount") or 0
+            )
+            data["cod_amount"]   = 0.0
+            data["token_amount"] = float(data.get("token_amount") or 0)
         if data.get("items") is None:
             data["items"] = []
         if data.get("custom_values") is None:
@@ -604,6 +623,13 @@ def init() -> None:
             # frontend sends `cod_amount` as the COD-to-Collect; legacy
             # clients send only `amount` for a COD row which is treated
             # as the COD-to-collect (verbatim fallback).
+            #
+            # 2026-06-25 hotfix — Do NOT route Prepaid edits through
+            # the COD helper. The helper zeroed Prepaid `amount`
+            # because it was treating the entered value as cod_in,
+            # then computing amount=cod+token=0+0=0 whenever cod and
+            # token were both empty. For Prepaid the entered `amount`
+            # IS the total — keep it verbatim.
             _pmode = (
                 update.get("payment_mode")
                 or existing.get("payment_mode")
@@ -614,20 +640,26 @@ def init() -> None:
                 if "token_amount" in update and update["token_amount"] is not None
                 else (existing.get("token_amount") or 0),
             )
-            _cod = float(
-                update["cod_amount"]
-                if "cod_amount" in update and update["cod_amount"] is not None
-                else update.get("amount", 0) or 0,
-            )
-            _amounts = compute_order_amounts(
-                cod=_cod, token=_tok,
-                payment_mode=_pmode,
-                validate=(_pmode == "COD"),
-                user_id=current_user.get("id", ""),
-            )
-            update["amount"]       = _amounts["amount"]
-            update["cod_amount"]   = _amounts["cod_amount"]
-            update["token_amount"] = _amounts["token_amount"]
+            if _pmode == "COD":
+                _cod = float(
+                    update["cod_amount"]
+                    if "cod_amount" in update and update["cod_amount"] is not None
+                    else update.get("amount", 0) or 0,
+                )
+                _amounts = compute_order_amounts(
+                    cod=_cod, token=_tok,
+                    payment_mode=_pmode,
+                    validate=True,
+                    user_id=current_user.get("id", ""),
+                )
+                update["amount"]       = _amounts["amount"]
+                update["cod_amount"]   = _amounts["cod_amount"]
+                update["token_amount"] = _amounts["token_amount"]
+            else:
+                # Prepaid: preserve the entered amount as-is.
+                update["amount"]       = float(update.get("amount", 0) or 0)
+                update["cod_amount"]   = 0.0
+                update["token_amount"] = _tok
         # Phase-33 — Parse + validate weight when it's part of the
         # update payload. Re-derives weight_value + weight_unit so
         # the row stays self-consistent even when the operator

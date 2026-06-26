@@ -1,0 +1,36 @@
+{
+  "summary": "Prepaid Amount Preservation hotfix (shipments_write.py POST + PUT) fully verified. 13/13 new hotfix tests pass: 4 POST Prepaid preserve scenarios (zero cod+token, token carry-through, legacy cod_amount fallback, missing payment_mode default), 2 POST COD regressions (cod+token math + 422 validator), 2 PUT Prepaid edits, 2 PUT COD regressions (cod+token + amount-only fallback), and 3 repair-script idempotency checks (--dry-run no-op, live no-op, prod-repaired shipments 0260c63b=669.0 + 0b74e543=300.0 still correct). Regression suites also green: 5/5 Phase-32 rev-3/rev-4 duplicate-order-id tests pass and 31/31 courier_sync tests pass (1 pre-existing skip from iteration_18 unrelated to this fix). No new issues found; the bug-class is closed and the script is safe to re-run.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_prepaid_amount_hotfix.py",
+    "/app/test_reports/pytest/pytest_iteration_19.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "shipments_write.py POST branch correctly bypasses compute_order_amounts() for non-COD; preserves amount verbatim with cod_amount/amount fallback for legacy clients.",
+    "PUT branch derives payment_mode from update OR existing row, so an edit that omits payment_mode on a previously-Prepaid row still takes the preserve path.",
+    "The PUT block only fires when 'amount' or 'cod_amount' is in the update — token-only PUT does NOT touch amount, which matches the documented contract and the C2 test verifies it.",
+    "Repair script uses a defensive update filter (amount in [0, 0.0, None]) so any re-run after fix is a true no-op (idempotent), confirmed by E1+E2."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_prepaid_amount_hotfix.py (new)"
+  ],
+  "success_rate": {
+    "backend": "100% (13/13 hotfix + 5/5 phase32 rev3+rev4 + 31/31 courier_sync regression)",
+    "frontend": "skipped per request"
+  },
+  "seed_data_creation": "Created ~10 TEST_PREPAID_HOTFIX_* shipments under user2@test.com for POST/PUT validation. They live in the shipments collection and can be removed by filtering customer_name LIKE 'TEST_PREPAID_HOTFIX_%'.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Prepaid amount-preservation hotfix is verified end-to-end. The repair script is idempotent; any future re-run should remain 0 unless a new bug class re-introduces zero-amount Prepaid rows. The two production-repaired ids (0260c63b-6af7-4dd8-8bb6-a9f938391a23 = 669.0 and 0b74e543-6d13-4267-97c6-9c51215c6105 = 300.0) are sentinels — assert these in any future Phase-34 regression.",
+  "rca_of_issue": "Original bug: shipments_write.py routed every POST/PUT through compute_order_amounts() which always returned amount = cod + token. For Prepaid rows the frontend sends the total in `amount` and leaves cod_amount=0/token=0, so the helper overwrote the entered amount with 0. Hotfix gates the helper behind payment_mode == 'COD'; the else-branch preserves data.amount (with cod_amount fallback for legacy clients) and forces cod_amount=0. Mitigation: one-off repair script restored the 2 prod rows from pending_orders.amount via pending_order_id (preferred) or order_id/master_order_id fallback within the same user_id."
+}
