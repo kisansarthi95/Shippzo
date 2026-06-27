@@ -2510,6 +2510,117 @@ export const Api = {
   deleteCustomer: (id: string) =>
     api.delete<{ ok: boolean; deleted: string }>(`/me/customers/${id}`)
       .then((r) => r.data),
+
+  // ── Phase F4.0 — Courier Status Auto Sync (India Post via Android
+  //    NotificationListenerService, Phase 1).
+  courierSyncListPartners: () =>
+    api.get<CourierSyncPartner[]>("/courier-sync/partners").then((r) => r.data),
+  courierSyncListConfigs: () =>
+    api
+      .get<{ configs: CourierSyncConfig[] }>("/courier-sync/configs")
+      .then((r) => r.data.configs || []),
+  courierSyncUpdateConfig: (
+    partnerKey: string,
+    payload: { enabled?: boolean; tracking_pattern?: string; sender_pattern?: string },
+  ) =>
+    api
+      .put<{ ok: boolean; config: CourierSyncConfig }>(
+        `/courier-sync/configs/${encodeURIComponent(partnerKey)}`,
+        payload,
+      )
+      .then((r) => r.data.config),
+  courierSyncTestParse: (payload: { sender: string; title?: string; text: string }) =>
+    api
+      .post<CourierSyncParseResult>("/courier-sync/test-parse", payload)
+      .then((r) => r.data),
+  courierSyncIngest: (payload: {
+    sender: string;
+    title?: string;
+    text: string;
+    package?: string;
+    posted_at?: string;
+    device_id?: string;
+  }) =>
+    api
+      .post<{
+        ok: boolean;
+        matched: boolean;
+        action?: string;
+        reason?: string;
+        shipment_id?: string;
+        tracking_id?: string;
+        new_status?: string;
+        canonical?: string;
+        event_id: string;
+      }>("/courier-sync/ingest", payload)
+      .then((r) => r.data),
+  courierSyncListEvents: (params?: { limit?: number; only_matched?: boolean }) =>
+    api
+      .get<{ events: CourierSyncEvent[]; count: number }>("/courier-sync/events", {
+        params,
+      })
+      .then((r) => r.data),
+};
+
+export type CourierSyncPartner = {
+  key: string;
+  name: string;
+  channel: string;
+  tracking_pattern: string;
+  sender_pattern: string;
+  description: string;
+  enabled: boolean;
+};
+
+export type CourierSyncConfig = {
+  id: string;
+  user_id: string;
+  partner_key: string;
+  partner_name: string;
+  enabled: boolean;
+  tracking_pattern: string;
+  sender_pattern: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type CourierSyncParseResult = {
+  matched: boolean;
+  reason?: string;
+  partner_key: string;
+  partner_name?: string;
+  sender?: string;
+  tracking_id?: string;
+  tracking_ids?: string[];
+  canonical_status?: string;
+  shipment_status?: string;
+  matched_phrase?: string;
+  event_date?: string | null;
+  postman?: { postman_name: string; beat: string } | null;
+  raw_text?: string;
+};
+
+export type CourierSyncEvent = {
+  id: string;
+  user_id: string;
+  partner_key: string;
+  sender: string;
+  title: string;
+  raw_text: string;
+  package: string;
+  posted_at: string;
+  device_id: string;
+  received_at: string;
+  matched: boolean;
+  reason: string;
+  tracking_id: string;
+  canonical_status: string;
+  shipment_status: string;
+  matched_phrase: string;
+  event_date: string;
+  postman: Record<string, any>;
+  shipment_id: string;
+  action: string;
 };
 
 export type AbandonedCart = {

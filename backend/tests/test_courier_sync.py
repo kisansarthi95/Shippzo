@@ -10,7 +10,7 @@ import uuid
 import pytest
 import requests
 
-BASE_URL = "https://logistics-hub-740.preview.emergentagent.com"
+BASE_URL = os.environ.get("EXPO_BACKEND_URL", "https://logistics-hub-740.preview.emergentagent.com")
 API = BASE_URL.rstrip("/") + "/api"
 
 ADMIN = {"email": "admin@test.com", "password": "Admin@12345"}
@@ -186,11 +186,7 @@ class TestTestParse:
         assert r.status_code == 200
         d = r.json()
         assert d.get("matched") is False
-        # NOTE: registry.parse_notification currently swallows the
-        # partner-specific reason and returns "no_partner_matched".
-        # Spec requires "sender_not_india_post". Accepting both for
-        # now and reporting as implementation deviation.
-        assert d.get("reason") in ("sender_not_india_post", "no_partner_matched"), d
+        assert d.get("reason") == "sender_not_india_post", d
 
     def test_right_sender_no_awb(self, admin_session):
         r = admin_session.post(
@@ -201,8 +197,18 @@ class TestTestParse:
         assert r.status_code == 200
         d = r.json()
         assert d["matched"] is False
-        # Spec expects "no_tracking_id_in_text" but registry returns generic.
-        assert d["reason"] in ("no_tracking_id_in_text", "no_partner_matched"), d
+        assert d["reason"] == "no_tracking_id_in_text", d
+
+    def test_no_status_keyword_in_text(self, admin_session):
+        r = admin_session.post(
+            f"{API}/courier-sync/test-parse",
+            json={"sender": "VA-INPOST-G", "text": "Item: EG111222333IN was processed at the hub"},
+            timeout=15,
+        )
+        assert r.status_code == 200
+        d = r.json()
+        assert d["matched"] is False
+        assert d["reason"] == "no_status_keyword_matched", d
 
     def test_lowercase_tracking_id(self, admin_session):
         r = admin_session.post(
@@ -318,11 +324,23 @@ class TestIngest:
         assert gr.status_code == 200, gr.text
         ship = gr.json()
         assert ship["status"] == "Shipped"
-        # NOTE: last_courier_status_* audit fields are persisted in
-        # MongoDB by the ingest endpoint but NOT exposed via GET
-        # /shipments because the Shipment Pydantic response_model does
-        # not declare them. Verify they exist by checking the audit
-        # event instead.
+        # Phase F4.0 — last_courier_status_* audit fields now round-trip
+        # through the Shipment Pydantic response_model.
+        assert ship.get("last_courier_status_text") == "Out for Delivery", ship
+        assert ship.get("last_courier_status_source") == "auto_sync_sms", ship
+        assert ship.get("last_courier_status_partner") == "india_post", ship
+        assert ship.get("last_courier_status_at"), "last_courier_status_at not stamped"
+
+        # Also verify the audit fields show up in the LIST endpoint
+        lr = admin_session.get(f"{API}/shipments?limit=200", timeout=15)
+        assert lr.status_code == 200
+        list_body = lr.json()
+        rows = list_body if isinstance(list_body, list) else list_body.get("shipments", list_body.get("data", []))
+        match = next((r for r in rows if r.get("id") == shipment_eg["id"]), None)
+        assert match is not None, "shipment missing from list response"
+        assert match.get("last_courier_status_text") == "Out for Delivery", match
+        assert match.get("last_courier_status_partner") == "india_post", match
+
         ev = admin_session.get(
             f"{API}/courier-sync/events?limit=5&only_matched=true",
             timeout=15,

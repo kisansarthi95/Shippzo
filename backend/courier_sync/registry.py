@@ -62,18 +62,31 @@ def parse_notification(
     """Try every registered partner; return the first match.
 
     Returns a dict with `matched: False` and `partner_key: ""` when
-    NO partner recognised the notification.
+    NO partner recognised the notification. When at least one partner
+    was tried but rejected, the FIRST partner's failure dict is
+    returned verbatim (carrying the specific `reason`) so callers /
+    the test-parse UI can show exactly why the SMS was ignored.
     """
+    last_failure: Dict[str, Any] | None = None
     for cfg in PARTNERS.values():
         try:
             fn: Callable[..., Dict[str, Any]] = cfg["parse"]
             r = fn(sender=sender, text=text, title=title)
             if r.get("matched"):
                 return r
+            # Capture the FIRST attempted partner's specific failure
+            # reason. Later partners don't override it — the user is
+            # almost always shipping with a single primary partner
+            # (Phase 1 = India Post), so the first reason is the
+            # actionable one to surface.
+            if last_failure is None:
+                last_failure = r
         except Exception:
             # Defensive — never let one parser explode the ingest pipeline.
             continue
-    # No match. Return the failure shape from the first parser if any.
+    if last_failure is not None:
+        return last_failure
+    # No partner was even tried (registry empty).
     return {
         "matched":           False,
         "reason":            "no_partner_matched",

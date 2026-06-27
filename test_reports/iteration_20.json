@@ -1,0 +1,53 @@
+{
+  "summary": "Courier Status Auto Sync Phase 1 fully verified end-to-end after iteration_18 follow-ups. (A) Backend Shipment audit-fields round-trip: enabling india_post + ingesting an Out-for-Delivery SMS now returns last_courier_status_text='Out for Delivery', last_courier_status_source='auto_sync_sms', last_courier_status_partner='india_post', last_courier_status_at=<ISO> on BOTH GET /api/shipments/{id} and GET /api/shipments list — fields are also overwritten on re-ingest (Delivered) and delivered_at is correctly stamped from SMS event_date (2026-06-20). (B) Reason-passthrough fix in registry.parse_notification confirmed: wrong-sender → 'sender_not_india_post', right-sender-no-AWB → 'no_tracking_id_in_text', right-sender-AWB-no-keyword → 'no_status_keyword_matched' (new test added). (C) Frontend /courier-sync screen renders hero card, Supported Couriers list with India Post toggle, Test-Parse form (pre-filled sender 'VA-INPOST-G' + sample SMS), Test Parse → green Matched result card (Partner / Tracking / Status / Pipeline rows), Live Ingest fires + Alert + events refresh, Recent Sync Events show action pills (UPDATED / SKIP) with relative time. (D) Settings entry-point: navigated via Settings tab → Business tile → 'Courier Auto Sync' card (testID='open-courier-sync') → /courier-sync — works. (E) Regression suites: test_courier_sync.py 31 passed + 1 skipped (manual_tracking_id PUT path pre-existing skip, unrelated to this iter); test_prepaid_amount_hotfix.py 13/13; test_phase32_rev3_duplicate_order_id.py + test_phase32_rev4_autogen_retry.py 10/10 on retry (initial run flaked B1/B2/B3 with 502 from upstream gspread 429 — environmental, all green on retry).",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {
+        "component": "courier-sync.tsx",
+        "issue": "No testID props anywhere on the screen — every interactive element (Test Parse / Live Ingest buttons, partner toggles, refresh, sender/SMS inputs, event cards, Open shipment link) relies on visible text for automation. Settings entry already has testID='open-courier-sync' — please mirror that on this screen for future regression coverage.",
+        "testID": "MISSING (e.g. courier-sync-test-parse, courier-sync-live-ingest, courier-sync-toggle-{partner_key}, courier-sync-sender-input, courier-sync-sms-input, courier-sync-event-{id})",
+        "priority": "MEDIUM"
+      }
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {
+        "screen": "/courier-sync",
+        "issues": [
+          "The 'Live Ingest' Alert (RN Alert.alert) only shows browser-default dialog on web preview — looks fine; consider toast for UX consistency on web.",
+          "Recent Sync Events use raw_text with numberOfLines=2 — empty raw_text on the SKIP entry leaves a blank row; consider hiding the line entirely (`raw_text ? <Text> : null` already present, so OK)."
+        ]
+      }
+    ],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_courier_sync.py",
+    "/app/test_reports/pytest/pytest_iteration_20.xml"
+  ],
+  "action_items": [
+    "Add testID attributes to /app/frontend/app/courier-sync.tsx for every TouchableOpacity, TextInput, Switch and event card so the next regression agent can drive the screen without relying on visible text."
+  ],
+  "critical_code_review_comments": [
+    "Shipment Pydantic model (server.py L657-666) now declares all 4 last_courier_status_* fields with Optional[str]=\"\"; defaults are empty strings (not None), which matches MongoDB documents that pre-date this change — round-trip works for legacy shipments too (verified in list endpoint).",
+    "registry.parse_notification correctly captures the FIRST partner's failure dict (line ~82-83) and only falls back to the generic 'no_partner_matched' when the registry is empty — exactly per spec.",
+    "courier-sync.tsx uses inline `style={[styles.btn, !anyEnabled && styles.btnDisabled]}` for Live Ingest disabled state and ALSO `disabled={tpBusy || !anyEnabled}` — both visual and functional gating present.",
+    "Settings entry-point (settings.tsx L1656-1676) is nested inside `section === 'business'` block — the user must tap 'Business' tile first. This is correct grouping but worth calling out: the entry is NOT on the top-level Settings tile list."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_courier_sync.py (env-driven BASE_URL fallback, tightened reason assertions, added test_no_status_keyword_in_text, added last_courier_status_* round-trip assertions on GET /shipments/{id} and GET /shipments list)"
+  ],
+  "success_rate": {
+    "backend": "100% — 31/31 courier_sync passed (1 pre-existing skip unrelated), 13/13 prepaid_amount_hotfix, 4/4 phase32_rev3_duplicate_order_id, 6/6 phase32_rev4_autogen_retry (on retry after initial 502 flake)",
+    "frontend": "100% — login → /courier-sync direct nav, login → Settings → Business → Courier Auto Sync card → /courier-sync, Test Parse → Matched card, Live Ingest → event appears in Recent Sync Events"
+  },
+  "seed_data_creation": "Test fixtures create ~3 shipments per run prefixed 'TEST Customer EG' / 'TEST manual_tracking_id' / 'TEST order_id lookup' under admin@test.com. Audit events accumulate under user_id=admin in courier_sync_events collection. Safe to leave; they're tagged with TEST_ prefix in courier names where applicable.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Courier Sync Phase-1 is feature-complete and stable for the API + manual-test surface. The native Android NotificationListenerService is NOT yet built — Test Parse + Live Ingest buttons remain the only operator entry points. The /courier-sync screen has ZERO testID props; if regression coverage grows, ask the main agent to add testIDs (action_item above) before writing more Playwright. The gspread 429 quota on Master Sheet writes occasionally causes 502s on /api/smart-paste — re-run flaky tests once before reporting.",
+  "rca_of_issue": "Not applicable — this iteration verifies a forward-fix (audit field round-trip + reason passthrough) rather than diagnosing a regression."
+}

@@ -654,6 +654,16 @@ class Shipment(BaseModel):
     # boolean so edited orders surface there alongside their main stage.
     is_modified: bool = False
     modified_at: Optional[str] = None
+    # Phase F4.0 — Courier Status Auto Sync (Phase 1).
+    # Stamped by POST /api/courier-sync/ingest when an Android-forwarded
+    # courier SMS / notification mutates this shipment. The `status`
+    # column still drives the pipeline; these four fields exist so the
+    # UI can render the verbatim courier-side label, when it arrived,
+    # which partner it came from, and what source delivered it.
+    last_courier_status_text:    Optional[str] = ""   # canonical label (e.g. "Out for Delivery")
+    last_courier_status_at:      Optional[str] = ""   # ISO timestamp the ingest fired
+    last_courier_status_source:  Optional[str] = ""   # "auto_sync_sms" | "auto_sync_push" | ...
+    last_courier_status_partner: Optional[str] = ""   # partner_key (e.g. "india_post")
 
 
 class ShipmentCreate(BaseModel):
