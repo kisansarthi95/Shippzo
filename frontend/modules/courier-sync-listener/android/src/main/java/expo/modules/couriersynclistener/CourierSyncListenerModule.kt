@@ -41,7 +41,7 @@ class CourierSyncListenerModule : Module() {
     }
 
     Function("openNotificationAccessSettings") {
-      val ctx = appContext.reactContext ?: return@Function
+      val ctx = appContext.reactContext ?: return@Function null
       val intent = Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS).apply {
         addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
       }
@@ -56,10 +56,15 @@ class CourierSyncListenerModule : Module() {
         }
         try { ctx.startActivity(fallback) } catch (_: Exception) {}
       }
+      // Expo Modules SDK 54 sync `Function` requires the lambda to return
+      // `Any?`. Returning `Unit` (the natural last expression here) trips
+      // the Kotlin compiler with `Return type mismatch: expected 'Any?',
+      // actual 'Unit'`, so we explicitly hand back `null` from every path.
+      null
     }
 
     Function("setIngestConfig") { record: IngestConfigRecord ->
-      val ctx = appContext.reactContext ?: return@Function
+      val ctx = appContext.reactContext ?: return@Function null
       val prefs = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
       prefs.edit()
         .putString(KEY_BACKEND_URL,    record.backendUrl)
@@ -67,14 +72,16 @@ class CourierSyncListenerModule : Module() {
         .putString(KEY_DEVICE_ID,      record.deviceId)
         .putString(KEY_SENDER_PATTERN, (record.senderPattern ?: "INPOST"))
         .apply()
+      null
     }
 
     Function("setEnabled") { enabled: Boolean ->
-      val ctx = appContext.reactContext ?: return@Function
+      val ctx = appContext.reactContext ?: return@Function null
       ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         .edit()
         .putBoolean(KEY_ENABLED, enabled)
         .apply()
+      null
     }
 
     Function("getStatus") {

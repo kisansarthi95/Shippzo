@@ -1,0 +1,72 @@
+{
+  "summary": "Verified Kotlin fix for EAS Android APK build failure (Function lambda return type Unit -> Any?). Performed: (1) static review of CourierSyncListenerModule.kt; (2) backend regression of 4 test suites; (3) web preview integration test of /courier-sync with admin login. NO Android compile possible in sandbox — that must be reverified by user re-triggering EAS build. NO regressions detected.",
+  "static_kotlin_check": {
+    "file": "/app/frontend/modules/courier-sync-listener/android/src/main/java/expo/modules/couriersynclistener/CourierSyncListenerModule.kt",
+    "return_at_function_occurrences": "3 (lines 44, 67, 79) — ALL now use 'return@Function null' (Any?), none bare 'return@Function' (Unit)",
+    "void_function_blocks_end_with_null": {
+      "openNotificationAccessSettings (43-64)": "ends with bare 'null' on line 63 — OK",
+      "setIngestConfig (66-76)": "ends with bare 'null' on line 75 — OK",
+      "setEnabled (78-85)": "ends with bare 'null' on line 84 — OK"
+    },
+    "value_returning_functions_untouched": {
+      "isAvailable (34-37)": "returns Boolean — OK",
+      "isPermissionGranted (39-41)": "returns Boolean — OK",
+      "getStatus (87-98)": "returns mapOf(...) — OK"
+    },
+    "braces_balanced": true,
+    "no_remaining_unit_returning_lambdas": true
+  },
+  "backend_issues": { "critical": [], "minor": [] },
+  "backend_regression": {
+    "command": "pytest backend/tests/test_courier_sync.py backend/tests/test_phase32_rev3_duplicate_order_id.py backend/tests/test_phase32_rev4_autogen_retry.py backend/tests/test_prepaid_amount_hotfix.py",
+    "total": 56,
+    "passed": 55,
+    "skipped": 1,
+    "failed": 0,
+    "skipped_test": "test_courier_sync.py::TestIngest::test_match_via_manual_tracking_id (pre-existing skip — unrelated to Kotlin fix)",
+    "junit_xml": "/app/test_reports/pytest/pytest_iteration_21.xml"
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "frontend_regression": {
+    "url_tested": "http://localhost:3000/courier-sync (after admin@test.com login)",
+    "viewport": "375x812 mobile",
+    "red_screen_error": false,
+    "page_errors": "None — only pre-existing benign warnings (shadow* deprecation, expo-notifications web stub)",
+    "native_permission_card_on_web": "HIDDEN as expected (Platform.OS=web AND NativeMod=null via requireOptionalNativeModule → nativeStatus.available=false)",
+    "non_android_callout_visible": "YES — 'Auto Sync needs Android. iOS does not allow background SMS reading…' shown",
+    "test_parse_button": "renders + tappable; backend POST /api/courier-sync/test-parse returned matched result with tracking_id 'EG350860840IN'",
+    "live_ingest_button": "renders + enabled (admin has India Post enabled)",
+    "events_list": "renders without crash"
+  },
+  "js_bridge_graceful_degrade_check": {
+    "file": "/app/frontend/modules/courier-sync-listener/index.ts",
+    "isAvailable_returns_false_on_web": "VERIFIED — Platform.OS !== 'android' short-circuits to false (line 64); also NativeMod is null in web/Expo Go/iOS so the second guard would catch it anyway",
+    "all_methods_gated_by_isAvailable": "VERIFIED — isPermissionGranted/openNotificationAccessSettings/setIngestConfig/setEnabled all early-return when !isAvailable()",
+    "getStatus_returns_FALLBACK_STATUS_when_unavailable": "VERIFIED — line 123 returns spread of FALLBACK_STATUS {available:false, permissionGranted:false, ingestConfigured:false, enabled:false}",
+    "all_native_calls_wrapped_in_try_catch": true
+  },
+  "test_report_links": [
+    "/app/test_reports/pytest/pytest_iteration_21.xml"
+  ],
+  "action_items": [
+    "USER MUST re-trigger EAS Android build (gradle :courier-sync-listener:compileReleaseKotlin) — sandbox has no Android SDK so Kotlin compile cannot be verified here. All structural/static checks pass and the fix is consistent with Expo Modules Core SDK 54's sync Function builder signature (Any? return type).",
+    "OPTIONAL hardening: in CourierSyncListenerModule.kt:88 'val ctx = appContext.reactContext' is nullable but its result is consumed safely in the mapOf — keep as is, no change needed."
+  ],
+  "critical_code_review_comments": [
+    "Fix is minimal, additive, and correctly typed — no public JS API or schema change",
+    "JS bridge already defensive against null NativeMod via requireOptionalNativeModule + Platform.OS gate + try/catch — no regression risk on iOS/web/Expo Go",
+    "Helpful inline comment on lines 59-62 explaining the SDK-54 quirk; recommend keeping for future maintainers"
+  ],
+  "updated_files": [],
+  "success_rate": { "backend": "100%", "frontend": "100%" },
+  "seed_data_creation": "None — used existing admin@test.com seed data",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "If the EAS Android build still fails after this fix, check that (a) Expo Modules Core dependency in /app/frontend/modules/courier-sync-listener/android/build.gradle aligns with SDK 54 and (b) no other Function lambdas in the file return Unit. Sandbox cannot reproduce gradle compilation — user must re-run EAS.",
+  "rca_of_issue": "Expo Modules Core SDK 54 changed the sync `Function` builder so its lambda return-type infers as Any? (to allow returning JSON-compatible values to JS). Kotlin overload resolution then required EVERY exit path of the lambda body to evaluate to Any?, including the implicit final `Unit` from a `.apply()` or `.startActivity(...)` call. Three void Function blocks (openNotificationAccessSettings, setIngestConfig, setEnabled) had: (a) early-exit `return@Function` with no value (= Unit), and (b) a final void expression. Both were Unit, hence the compile error 'Return type mismatch: expected Any?, actual Unit'. Fix: return `null` explicitly on every exit (early or terminal). Verified via static read — no other lambdas affected."
+}
