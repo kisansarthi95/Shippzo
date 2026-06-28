@@ -1,0 +1,8 @@
+{
+  "name": "courier-sync-listener",
+  "version": "1.0.0",
+  "description": "Android NotificationListenerService bridge that forwards courier SMS notifications (India Post DLT, etc.) to the Shippzo backend ingest endpoint.",
+  "main": "index.ts",
+  "types": "index.ts",
+  "private": true
+}

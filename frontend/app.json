@@ -39,7 +39,9 @@
         "android.permission.READ_MEDIA_IMAGES",
         "android.permission.POST_NOTIFICATIONS",
         "android.permission.INTERNET",
-        "android.permission.ACCESS_NETWORK_STATE"
+        "android.permission.ACCESS_NETWORK_STATE",
+        "android.permission.BIND_NOTIFICATION_LISTENER_SERVICE",
+        "android.permission.FOREGROUND_SERVICE"
       ],
       "blockedPermissions": [
         "android.permission.READ_EXTERNAL_STORAGE",

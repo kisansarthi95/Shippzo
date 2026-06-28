@@ -1,0 +1,33 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+  <!-- Required by Android to bind our NotificationListenerService.
+       The user still has to flip the toggle in System Settings →
+       Notifications → Notification access; this permission only
+       grants the OS the right to ASK. -->
+  <uses-permission
+      android:name="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE"
+      tools:node="replace"
+      xmlns:tools="http://schemas.android.com/tools" />
+
+  <!-- Internet + network state are usually declared by the host app
+       already (we use them to POST to /api/courier-sync/ingest). -->
+  <uses-permission android:name="android.permission.INTERNET" />
+  <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+  <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+
+  <application>
+    <!-- The actual NotificationListenerService. The matching IntentFilter
+         + BIND_NOTIFICATION_LISTENER_SERVICE permission together tell
+         Android this is a notification reader; the user then enables it
+         from Settings → Notification access. -->
+    <service
+        android:name="expo.modules.couriersynclistener.CourierNotificationListenerService"
+        android:label="Shippzo Courier Auto Sync"
+        android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE"
+        android:exported="true">
+      <intent-filter>
+        <action android:name="android.service.notification.NotificationListenerService" />
+      </intent-filter>
+    </service>
+  </application>
+</manifest>

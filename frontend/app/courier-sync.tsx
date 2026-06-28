@@ -18,11 +18,13 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Stack, router } from "expo-router";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import PhIcon from "../components/PhIcon";
 import { Api } from "../lib/api";
 import type {
   CourierSyncPartner, CourierSyncEvent, CourierSyncParseResult,
 } from "../lib/api";
+import CourierSyncListener from "../modules/courier-sync-listener";
 
 const COLORS = {
   bg:          "#F7F8FA",
@@ -68,6 +70,55 @@ export default function CourierSyncScreen() {
   const [tpBusy, setTpBusy] = useState<boolean>(false);
   const [tpResult, setTpResult] = useState<CourierSyncParseResult | null>(null);
 
+  // Native NotificationListener state (Android-only; Expo Go = unavailable).
+  const [nativeStatus, setNativeStatus] = useState({
+    available:         CourierSyncListener.isAvailable(),
+    permissionGranted: CourierSyncListener.isPermissionGranted(),
+    ingestConfigured:  false,
+    enabled:           false,
+  });
+
+  const refreshNativeStatus = useCallback(() => {
+    try {
+      setNativeStatus(CourierSyncListener.getStatus());
+    } catch {
+      /* no-op */
+    }
+  }, []);
+
+  // Push backend URL + JWT + device id down to the native service so it
+  // can POST /api/courier-sync/ingest without needing the React layer.
+  // Re-fired on every focus so a fresh JWT (after re-login) propagates.
+  const pushIngestConfig = useCallback(async () => {
+    if (!CourierSyncListener.isAvailable()) return;
+    try {
+      const token =
+        (await AsyncStorage.getItem("@auth_token")) ||
+        (await AsyncStorage.getItem("auth_token")) ||
+        "";
+      const backendUrl =
+        (process.env as any).EXPO_PUBLIC_BACKEND_URL ||
+        (process.env as any).EXPO_PUBLIC_API_URL ||
+        "";
+      let deviceId = await AsyncStorage.getItem("@device_id");
+      if (!deviceId) {
+        deviceId = `dev_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+        await AsyncStorage.setItem("@device_id", deviceId);
+      }
+      if (token && backendUrl) {
+        CourierSyncListener.setIngestConfig({
+          backendUrl,
+          authToken:     token,
+          deviceId,
+          senderPattern: "INPOST",
+        });
+      }
+      refreshNativeStatus();
+    } catch {
+      /* no-op */
+    }
+  }, [refreshNativeStatus]);
+
   const load = useCallback(async () => {
     try {
       const [p, evs] = await Promise.all([
@@ -87,7 +138,7 @@ export default function CourierSyncScreen() {
     }
   }, []);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => { load(); pushIngestConfig(); }, [load, pushIngestConfig]);
 
   const onToggle = useCallback(async (partner: CourierSyncPartner, next: boolean) => {
     setSavingKey(partner.key);
@@ -96,6 +147,10 @@ export default function CourierSyncScreen() {
       setPartners((prev) =>
         prev.map((p) => (p.key === partner.key ? { ...p, enabled: next } : p)),
       );
+      // Mirror the toggle to the native service so it can drop / forward
+      // notifications without another round-trip.
+      CourierSyncListener.setEnabled(next);
+      refreshNativeStatus();
     } catch (e: any) {
       Alert.alert(
         "Could not save",
@@ -104,7 +159,7 @@ export default function CourierSyncScreen() {
     } finally {
       setSavingKey("");
     }
-  }, []);
+  }, [refreshNativeStatus]);
 
   const onTestParse = useCallback(async () => {
     if (!tpText.trim()) {
@@ -239,6 +294,55 @@ export default function CourierSyncScreen() {
           )}
         </View>
 
+        {/* Native bridge status — Android only. Shows "Grant Notification Access"
+            when the native module is bundled but the OS toggle is off. */}
+        {Platform.OS === "android" && nativeStatus.available ? (
+          <View
+            testID="native-permission-card"
+            style={[
+              styles.heroCard,
+              {
+                marginTop: -6,
+                borderColor: nativeStatus.permissionGranted ? "#A7F3D0" : "#FCD34D",
+                backgroundColor: nativeStatus.permissionGranted ? COLORS.successBg : COLORS.warnBg,
+              },
+            ]}
+          >
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
+              <PhIcon
+                name={nativeStatus.permissionGranted ? "checkmark-circle" : "alert-circle"}
+                size={22}
+                color={nativeStatus.permissionGranted ? COLORS.success : COLORS.warn}
+              />
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.heroTitle, { fontSize: 14, marginBottom: 2 }]}>
+                  {nativeStatus.permissionGranted
+                    ? "Notification access granted"
+                    : "Notification access required"}
+                </Text>
+                <Text style={[styles.heroBody, { fontSize: 12 }]}>
+                  {nativeStatus.permissionGranted
+                    ? "Shippzo can read courier SMS notifications and auto-sync."
+                    : "Tap below to open System Settings → enable Shippzo under \"Notification access\"."}
+                </Text>
+              </View>
+            </View>
+            {!nativeStatus.permissionGranted ? (
+              <TouchableOpacity
+                testID="grant-notification-access"
+                style={[styles.btn, styles.btnPrimary, { marginTop: 12 }]}
+                onPress={() => {
+                  CourierSyncListener.openNotificationAccessSettings();
+                  setTimeout(refreshNativeStatus, 800);
+                }}
+              >
+                <PhIcon name="settings-outline" size={16} color="#FFFFFF" />
+                <Text style={styles.btnPrimaryText}>Grant Notification Access</Text>
+              </TouchableOpacity>
+            ) : null}
+          </View>
+        ) : null}
+
         {/* Partner list */}
         <Text style={styles.sectionLabel}>Supported Couriers</Text>
         {partners.map((p) => (
@@ -255,6 +359,7 @@ export default function CourierSyncScreen() {
                 <ActivityIndicator size="small" color={COLORS.primary} />
               ) : (
                 <Switch
+                  testID={`partner-toggle-${p.key}`}
                   value={p.enabled}
                   onValueChange={(v) => onToggle(p, v)}
                   trackColor={{ false: "#D1D5DB", true: COLORS.primary }}
@@ -278,6 +383,7 @@ export default function CourierSyncScreen() {
         <View style={styles.testCard}>
           <Text style={styles.label}>Sender (DLT header)</Text>
           <TextInput
+            testID="tp-sender-input"
             style={styles.input}
             value={tpSender}
             onChangeText={setTpSender}
@@ -288,6 +394,7 @@ export default function CourierSyncScreen() {
           />
           <Text style={[styles.label, { marginTop: 12 }]}>SMS body</Text>
           <TextInput
+            testID="tp-text-input"
             style={[styles.input, styles.multiline]}
             value={tpText}
             onChangeText={setTpText}
@@ -298,6 +405,7 @@ export default function CourierSyncScreen() {
           />
           <View style={styles.btnRow}>
             <TouchableOpacity
+              testID="tp-test-parse-btn"
               style={[styles.btn, styles.btnSecondary]}
               onPress={onTestParse}
               disabled={tpBusy}
@@ -308,6 +416,7 @@ export default function CourierSyncScreen() {
               </Text>
             </TouchableOpacity>
             <TouchableOpacity
+              testID="tp-live-ingest-btn"
               style={[styles.btn, styles.btnPrimary, !anyEnabled && styles.btnDisabled]}
               onPress={onLiveIngest}
               disabled={tpBusy || !anyEnabled}
