@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import PhIcon from "../../components/PhIcon";
 import {
   View,
@@ -51,7 +51,12 @@ export default function Dashboard() {
   // 3-column stat grid: 8px horizontal padding + 10px × 2 gaps
   // Reduced edge padding from 16→8 so cards stretch closer to
   // the device edge (user requested edge-to-edge feel).
-  const cardW = Math.floor((screenWidth - 16 - 20) / 3);
+  // Memoized so the derived value only changes on real screen-size
+  // change (rotation / split-screen), not on every parent re-render.
+  const cardW = useMemo(
+    () => Math.floor((screenWidth - 16 - 20) / 3),
+    [screenWidth],
+  );
 
   // ────────────────────────────────────────────────────────────
   // Smart Paste bottom-sheet drag logic.
@@ -135,10 +140,10 @@ export default function Dashboard() {
     }, [load])
   );
 
-  const onRefresh = () => {
+  const onRefresh = useCallback(() => {
     setRefreshing(true);
     load().catch(() => {});
-  };
+  }, [load]);
 
   // Smart Paste — Phase-7 hard reset.
   // Entry sheet has ONLY 2 buttons: Paste Text / Upload Photo.
@@ -1918,7 +1923,7 @@ export default function Dashboard() {
   );
 }
 
-function StatCard({
+const StatCard = React.memo(function StatCard({
   label,
   value,
   icon,
@@ -1972,9 +1977,9 @@ function StatCard({
       </Text>
     </View>
   );
-}
+});
 
-function ActionPill({
+const ActionPill = React.memo(function ActionPill({
   icon,
   label,
   onPress,
@@ -2031,9 +2036,9 @@ function ActionPill({
       )}
     </TouchableOpacity>
   );
-}
+});
 
-function StatusChip({ status }: { status: string }) {
+const StatusChip = React.memo(function StatusChip({ status }: { status: string }) {
   // Phase-12: status alias map. Renames the legacy "Dispatch"/"Dispatched"
   // DB values to the user-facing "Ready to Ship" badge so the home-screen
   // Recent-Shipments card stays consistent with the Shipments tab.
@@ -2061,7 +2066,7 @@ function StatusChip({ status }: { status: string }) {
       </Text>
     </View>
   );
-}
+});
 
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: colors.background },

@@ -565,16 +565,24 @@ export default function SettingsScreen() {
   }, [navigation]);
 
   const load = useCallback(async () => {
-    const [s, cs] = await Promise.all([Api.getSettings(), Api.listCouriers()]);
+    // Fan-out: settings, couriers, master-id counter, courier limits,
+    // and sheets service-account are all independent. Run them in
+    // parallel so the screen paints as soon as the slowest finishes,
+    // not the sum of their latencies. Each non-critical call is
+    // .catch()-isolated so one failure can't poison the others.
+    const [s, cs, masterCounter, courierLim, saEmailRes] = await Promise.all([
+      Api.getSettings(),
+      Api.listCouriers(),
+      Api.getMasterIdCounter().catch(() => null),
+      Api.getCourierLimits().catch(() => null),
+      Api.sheetsServiceAccount().catch(() => null),
+    ]);
     setSender(s.sender);
     setTemplate(s.whatsapp_template);
     setCopyTemplate(s.copy_template);
     setEtaDays(String(s.default_eta_days));
     setCouriers(cs);
-    // Best-effort fetch of the plan-enforced courier cap. Never blocks.
-    Api.getCourierLimits()
-      .then((lim) => setCourierLimits(lim))
-      .catch(() => setCourierLimits(null));
+    setCourierLimits(courierLim);
     setBrandName(s.brand?.name || "");
     setBrandLogo(s.brand?.logo_base64 || "");
     setPreferLogo((s as any).prefer_logo !== false);
@@ -590,14 +598,10 @@ export default function SettingsScreen() {
     // Phase-7d: Master Order ID auto-generate (default ON)
     setOrderIdAutoGen((s as any).order_id_auto_generate !== false);
     setOrderIdAutofillNew((s as any).order_id_autofill_in_new_shipment !== false);
-    // Phase-7f: load current Master Order ID counter (separate endpoint
-    // since it's not on the Settings doc — it's a global counter doc).
-    try {
-      const c = await Api.getMasterIdCounter();
-      setOidCounterCurrent(c.current_seq);
-      setOidCounterNextPreview(c.next_master_order_id);
-    } catch {
-      /* ignore — fresh user / offline */
+    // Phase-7f: apply Master Order ID counter values from the parallel fetch.
+    if (masterCounter) {
+      setOidCounterCurrent(masterCounter.current_seq);
+      setOidCounterNextPreview(masterCounter.next_master_order_id);
     }
     // Phase-4b+ AI rate card (fall back to spec defaults)
     setAiCostSimple(
@@ -630,12 +634,8 @@ export default function SettingsScreen() {
       setConnectedHeaders(s.sheet.headers || []);
       setMapping(s.sheet.column_mapping || {});
     }
-    // Phase-5: fetch the Service Account email so we can show users
-    // exactly which address to share their Sheet with. Lazy + best-
-    // effort — never blocks the rest of the screen on failure.
-    Api.sheetsServiceAccount()
-      .then((sa) => setSaEmail(sa?.email || ""))
-      .catch(() => {});
+    // Phase-5: apply Service Account email from the parallel fetch.
+    if (saEmailRes) setSaEmail(saEmailRes?.email || "");
     // Bump load-version so the dirty-tracking useEffect captures a fresh
     // snapshot AFTER all the setters above have flushed into React state.
     setLoadVersion((v) => v + 1);
@@ -3400,7 +3400,7 @@ export default function SettingsScreen() {
   );
 }
 
-function Section({
+const Section = React.memo(function Section({
   title, icon, children,
 }: { title: string; icon: string; children: React.ReactNode }) {
   return (
@@ -3420,16 +3420,16 @@ function Section({
       {children}
     </View>
   );
-}
+});
 
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
+const Field = React.memo(function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <View style={{ marginBottom: 10 }}>
       <Text style={styles.fieldLabel}>{label}</Text>
       {children}
     </View>
   );
-}
+});
 
 // ───────────── Notifications panel ─────────────
 //
@@ -3472,7 +3472,7 @@ function NotificationsPanel() {
     load().catch(() => {});
   }, [load]);
 
-  const toggle = async (k: NotifKey, val: boolean) => {
+  const toggle = useCallback(async (k: NotifKey, val: boolean) => {
     if (!prefs) return;
     const next = { ...prefs, [k]: val };
     setPrefs(next);
@@ -3486,7 +3486,7 @@ function NotificationsPanel() {
     } finally {
       setSaving(false);
     }
-  };
+  }, [prefs]);
 
   if (loading || !prefs) {
     return (
@@ -3551,7 +3551,7 @@ function NotificationsPanel() {
   );
 }
 
-function NotifRowSwitch({
+const NotifRowSwitch = React.memo(function NotifRowSwitch({
   icon, color, title, sub, value, onChange, disabled,
 }: {
   icon: string; color: string; title: string; sub: string;
@@ -3575,7 +3575,7 @@ function NotifRowSwitch({
       />
     </View>
   );
-}
+});
 
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: colors.background },
