@@ -1523,7 +1523,14 @@ export const Api = {
         reason: string;
         source: "llm" | "regex" | "fallback";
       };
-    }>("/smart-paste/parse", { text })
+    }>("/smart-paste/parse", { text }, {
+      // Per-endpoint timeout — Smart Paste runs an LLM call when the
+      // regex fallback is incomplete, which can take 20-40 s on a slow
+      // cellular link. The shared 25 s global axios timeout (see top of
+      // file) was firing mid-LLM and surfacing as "Network Error".
+      // 60 s comfortably covers worst-case round-trips.
+      timeout: 60000,
+    })
       .then((r) => r.data),
   smartPasteCheckDuplicate: (text: string) =>
     api.post<{
@@ -1548,7 +1555,13 @@ export const Api = {
         created_at: string;
         match_on: string[];
       }>;
-    }>("/smart-paste/check-duplicate", { text }).then((r) => r.data),
+    }>("/smart-paste/check-duplicate", { text }, {
+      // Same rationale as smartPasteParse — this endpoint runs the
+      // identical LLM-backed parser plus a duplicate scan against
+      // pending orders + shipments. 60 s per-call override keeps the
+      // global timeout tight for normal endpoints.
+      timeout: 60000,
+    }).then((r) => r.data),
   smartPasteCreate: (
     text: string,
     skipLlm: boolean = false,
