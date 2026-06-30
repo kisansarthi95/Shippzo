@@ -22,6 +22,11 @@ PARTNERS: Dict[str, Dict[str, Any]] = {
         "sender_pattern":   india_post.SENDER_PATTERN_STR,
         "parse":            india_post.parse,
         "matches_sender":   india_post.matches_sender,
+        # Canonical statuses that are allowed to mutate shipment.status.
+        # Everything else parsed by this partner is recorded as an audit
+        # event but does NOT touch the shipment row. See india_post.py
+        # for the rationale (Phase 1 = only Booked + Delivered).
+        "status_update_whitelist": india_post.STATUS_UPDATE_WHITELIST,
         # Brief operator-facing description (English; UI may swap to
         # Gujarati via i18n later).
         "description":      (

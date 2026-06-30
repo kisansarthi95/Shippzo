@@ -64,25 +64,49 @@ _POSTMAN_RE = re.compile(
 )
 
 # --------------------------------------------------------------------
+# Status whitelist — ONLY these canonical statuses are allowed to
+# mutate the shipment.status field. Everything else is parsed and
+# recorded as an audit event but does NOT touch the shipment row.
+#
+# Rationale: intermediate events (Out for Delivery, In Transit,
+# Dispatched, Arrived) churn the DB on every postman scan without
+# adding actionable signal — operators want only the two terminal
+# states that anchor the lifecycle: initial booking and final
+# delivery. RTO / Undelivered are intentionally also excluded from
+# the whitelist for Phase 1 (manual confirmation required) and may
+# be added in a later phase.
+# --------------------------------------------------------------------
+STATUS_UPDATE_WHITELIST: frozenset[str] = frozenset({"Booked", "Delivered"})
+
+# --------------------------------------------------------------------
 # Status keyword map  (canonical_status, shipment_status)
-# Order matters — most specific phrases first.
+# Order matters — most specific phrases first. Negative phrasings
+# ("could not be delivered", "returned to sender") MUST come before
+# the bare `\bdelivered\b` rule to avoid false positives.
+#
+# `shipment_status` is intentionally empty ("") for every canonical
+# that is NOT in STATUS_UPDATE_WHITELIST — the router uses that
+# emptiness as a secondary safety net.
 # --------------------------------------------------------------------
 _STATUS_RULES = [
     # phrase                             canonical            ship status
-    (r"out\s+for\s+delivery",            "Out for Delivery",  "Shipped"),
-    (r"could\s+not\s+be\s+delivered",    "Undelivered",       "Shipped"),
-    (r"undelivered",                     "Undelivered",       "Shipped"),
-    (r"return(ed)?\s+to\s+sender",       "RTO",               "Returned"),
-    (r"\brto\b",                         "RTO",               "Returned"),
+    # ── Negative / RTO phrasings first (would false-match "delivered" below)
+    (r"could\s+not\s+be\s+delivered",    "Undelivered",       ""),
+    (r"undelivered",                     "Undelivered",       ""),
+    (r"return(ed)?\s+to\s+sender",       "RTO",               ""),
+    (r"\brto\b",                         "RTO",               ""),
+    # ── Intermediate transit / scan events — parsed but ignored
+    (r"out\s+for\s+delivery",            "Out for Delivery",  ""),
+    (r"in\s+transit",                    "In Transit",        ""),
+    (r"dispatched",                      "In Transit",        ""),
+    (r"arrived\s+at",                    "In Transit",        ""),
+    (r"received\s+at",                   "In Transit",        ""),
+    (r"bag\s+received",                  "In Transit",        ""),
+    # ── Whitelisted terminal/initial statuses that DO mutate shipment.status
     (r"has\s+been\s+delivered",          "Delivered",         "Delivered"),
     (r"\bdelivered\b",                   "Delivered",         "Delivered"),
     (r"has\s+been\s+booked",             "Booked",            "Shipped"),
     (r"\bbooked\b",                      "Booked",            "Shipped"),
-    (r"in\s+transit",                    "In Transit",        "Shipped"),
-    (r"dispatched",                      "In Transit",        "Shipped"),
-    (r"arrived\s+at",                    "In Transit",        "Shipped"),
-    (r"received\s+at",                   "In Transit",        "Shipped"),
-    (r"bag\s+received",                  "In Transit",        "Shipped"),
 ]
 _STATUS_RULES = [(re.compile(p, re.IGNORECASE), c, s) for (p, c, s) in _STATUS_RULES]
 

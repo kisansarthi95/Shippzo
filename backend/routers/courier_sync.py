@@ -258,15 +258,50 @@ def init() -> None:
         Shipment.status. Always writes an audit row to
         `courier_sync_events` — even on no-match — so operators can
         see exactly which notifications were ignored and why.
+
+        Status-update whitelist (Phase 1): only canonical statuses
+        'Booked' and 'Delivered' are allowed to mutate `shipment.status`.
+        Intermediate events (Out for Delivery, In Transit, Dispatched,
+        Arrived, RTO, Undelivered) are still parsed and persisted to
+        `courier_sync_events` for audit but the shipment row is left
+        untouched. This is enforced both here (router-level guard)
+        and at the parser level (empty `shipment_status` for
+        non-whitelisted canonicals — see india_post._STATUS_RULES).
         """
         await _ensure_indexes()
-        result = _cs_pkg.parse_notification(
-            sender = payload.sender,
-            title  = payload.title,
-            text   = payload.text,
+
+        # Per-request correlation id — every log line in this pipeline
+        # carries it so operators can grep one SMS end-to-end.
+        event_id  = str(uuid.uuid4())
+        log_tag   = f"[courier_sync.ingest evt={event_id[:8]} usr={current_user['id'][:8]}]"
+
+        # ── Step 1: SMS received ───────────────────────────────────
+        _logger.info(
+            "%s step=1 sms_received sender=%r title=%r text_len=%d "
+            "package=%r posted_at=%r device=%r",
+            log_tag,
+            (payload.sender or "")[:60],
+            (payload.title or "")[:60],
+            len(payload.text or ""),
+            payload.package or "",
+            payload.posted_at or "",
+            (payload.device_id or "")[:16],
         )
 
-        event_id  = str(uuid.uuid4())
+        try:
+            result = _cs_pkg.parse_notification(
+                sender = payload.sender,
+                title  = payload.title,
+                text   = payload.text,
+            )
+        except Exception:
+            _logger.exception("%s step=parse_error parser_crashed", log_tag)
+            result = {
+                "matched": False,
+                "reason":  "parser_exception",
+                "partner_key": "",
+            }
+
         now_iso   = utcnow_iso()
         event_doc: Dict[str, Any] = {
             "id":               event_id,
@@ -291,53 +326,99 @@ def init() -> None:
             "action":           "",
         }
 
-        # ── No partner / no AWB / no status keyword → just log & exit
+        # ── Step 2: sender detection / partner match ───────────────
         if not result.get("matched"):
+            reason = result.get("reason", "unknown")
+            _logger.info(
+                "%s step=2 sender_match=NO partner=%r reason=%s — short-circuit",
+                log_tag, result.get("partner_key", ""), reason,
+            )
             event_doc["action"] = "ignored"
-            await db.courier_sync_events.insert_one(event_doc)
+            try:
+                await db.courier_sync_events.insert_one(event_doc)
+            except Exception:
+                _logger.exception("%s step=audit_write_error (no_match)", log_tag)
             return {
-                "ok":      True,
-                "matched": False,
-                "reason":  result.get("reason", "unknown"),
+                "ok":       True,
+                "matched":  False,
+                "reason":   reason,
                 "event_id": event_id,
             }
+
+        partner_key = result["partner_key"]
+        _logger.info(
+            "%s step=2 sender_match=YES partner=%s", log_tag, partner_key,
+        )
+
+        # ── Step 3: tracking ID extracted ──────────────────────────
+        awb = result.get("tracking_id", "")
+        _logger.info(
+            "%s step=3 tracking_extracted awb=%s all_awbs=%s",
+            log_tag, awb, result.get("tracking_ids") or [awb],
+        )
 
         # ── Partner config gate — user must have enabled it.
-        cfg = await db.courier_partner_configs.find_one(
-            {
-                "user_id":      current_user["id"],
-                "partner_key":  result["partner_key"],
-            },
-            {"_id": 0},
-        )
+        try:
+            cfg = await db.courier_partner_configs.find_one(
+                {
+                    "user_id":      current_user["id"],
+                    "partner_key":  partner_key,
+                },
+                {"_id": 0},
+            )
+        except Exception:
+            _logger.exception("%s step=db_error config_lookup", log_tag)
+            cfg = None
+
         if not cfg or not cfg.get("enabled"):
+            _logger.info(
+                "%s step=3b partner_disabled partner=%s — skipping update",
+                log_tag, partner_key,
+            )
             event_doc["action"] = "partner_disabled"
-            await db.courier_sync_events.insert_one(event_doc)
+            try:
+                await db.courier_sync_events.insert_one(event_doc)
+            except Exception:
+                _logger.exception("%s step=audit_write_error (partner_disabled)", log_tag)
             return {
-                "ok":      True,
-                "matched": True,
-                "action":  "partner_disabled",
+                "ok":       True,
+                "matched":  True,
+                "action":   "partner_disabled",
                 "event_id": event_id,
             }
 
-        # ── Find the shipment (scoped to this user). Match on either
-        #    tracking_id OR manual_tracking_id OR order_id (some users
-        #    save the AWB directly in the order id field).
-        awb = result["tracking_id"]
-        ship = await db.shipments.find_one(
-            {
-                "user_id": current_user["id"],
-                "$or": [
-                    {"tracking_id":         awb},
-                    {"manual_tracking_id":  awb},
-                    {"order_id":            awb},
-                ],
-            },
-            {"_id": 0},
-        )
+        # ── Step 4: shipment lookup ────────────────────────────────
+        try:
+            ship = await db.shipments.find_one(
+                {
+                    "user_id": current_user["id"],
+                    "$or": [
+                        {"tracking_id":         awb},
+                        {"manual_tracking_id":  awb},
+                        {"order_id":            awb},
+                    ],
+                },
+                {"_id": 0},
+            )
+        except Exception:
+            _logger.exception("%s step=4 db_error shipment_lookup awb=%s", log_tag, awb)
+            event_doc["action"] = "db_error_shipment_lookup"
+            try:
+                await db.courier_sync_events.insert_one(event_doc)
+            except Exception:
+                _logger.exception("%s step=audit_write_error (db_lookup)", log_tag)
+            raise HTTPException(status_code=500, detail="DB error during shipment lookup")
+
         if not ship:
+            _logger.info(
+                "%s step=4 shipment_found=NO awb=%s — recording audit only",
+                log_tag, awb,
+            )
             event_doc["action"] = "no_shipment_found"
-            await db.courier_sync_events.insert_one(event_doc)
+            try:
+                await db.courier_sync_events.insert_one(event_doc)
+            except Exception:
+                _logger.exception("%s step=audit_write_error (no_shipment)", log_tag)
             return {
                 "ok":          True,
                 "matched":     True,
@@ -347,30 +428,88 @@ def init() -> None:
             }
 
         event_doc["shipment_id"] = ship["id"]
+        _logger.info(
+            "%s step=4 shipment_found=YES shipment_id=%s current_status=%r",
+            log_tag, ship["id"], (ship.get("status") or ""),
+        )
 
-        # ── Decide whether to mutate the shipment.
-        # Phase-1 rule: never downgrade an already-Delivered shipment.
-        # If the canonical status is "Delivered" and we don't yet
-        # have a delivered_at, stamp it.
+        # ── Step 5: status classification ──────────────────────────
         current_status = (ship.get("status") or "").strip()
-        new_status = result.get("shipment_status") or ""
-        canonical  = result.get("canonical_status") or ""
+        new_status     = result.get("shipment_status") or ""
+        canonical      = result.get("canonical_status") or ""
 
+        # Resolve the per-partner whitelist (falls back to a safe
+        # default of {"Booked", "Delivered"} if a partner ever ships
+        # without one — defensive).
+        partner_cfg     = _cs_pkg.get_partner(partner_key) or {}
+        status_whitelist = partner_cfg.get(
+            "status_update_whitelist",
+            frozenset({"Booked", "Delivered"}),
+        )
+
+        _logger.info(
+            "%s step=5 status_identified canonical=%r ship_status=%r "
+            "phrase=%r whitelist=%s",
+            log_tag, canonical, new_status,
+            (result.get("matched_phrase") or "")[:40],
+            sorted(list(status_whitelist)),
+        )
+
+        # ── Guard A: never downgrade an already-Delivered shipment.
         if current_status == "Delivered" and canonical != "Delivered":
+            _logger.info(
+                "%s step=6 update_decision=SKIP reason=ignored_delivered "
+                "(shipment is already Delivered, incoming canonical=%r)",
+                log_tag, canonical,
+            )
             event_doc["action"] = "ignored_delivered"
-            await db.courier_sync_events.insert_one(event_doc)
+            try:
+                await db.courier_sync_events.insert_one(event_doc)
+            except Exception:
+                _logger.exception("%s step=audit_write_error (ignored_delivered)", log_tag)
             return {
-                "ok":      True,
-                "matched": True,
-                "action":  "ignored_delivered",
+                "ok":       True,
+                "matched":  True,
+                "action":   "ignored_delivered",
                 "event_id": event_id,
             }
 
+        # ── Guard B: whitelist — only Booked / Delivered may mutate
+        #     shipment.status. Intermediate events are recorded as
+        #     audit only.
+        if canonical not in status_whitelist:
+            _logger.info(
+                "%s step=6 update_decision=SKIP reason=ignored_intermediate_status "
+                "canonical=%r (not in whitelist %s) — audit-only write",
+                log_tag, canonical, sorted(list(status_whitelist)),
+            )
+            event_doc["action"] = "ignored_intermediate_status"
+            event_doc["reason"] = (
+                event_doc.get("reason")
+                or f"canonical {canonical!r} not in whitelist"
+            )
+            try:
+                await db.courier_sync_events.insert_one(event_doc)
+            except Exception:
+                _logger.exception(
+                    "%s step=audit_write_error (ignored_intermediate)", log_tag,
+                )
+            return {
+                "ok":              True,
+                "matched":         True,
+                "action":          "ignored_intermediate_status",
+                "canonical":       canonical,
+                "shipment_id":     ship["id"],
+                "tracking_id":     awb,
+                "event_id":        event_id,
+            }
+
+        # ── Step 6: build update set ───────────────────────────────
         update_set: Dict[str, Any] = {
             "last_courier_status_text":     canonical,
             "last_courier_status_at":       now_iso,
             "last_courier_status_source":   "auto_sync_sms",
-            "last_courier_status_partner":  result.get("partner_key", ""),
+            "last_courier_status_partner":  partner_key,
             "updated_at":                   now_iso,
         }
         if new_status and current_status != new_status:
@@ -380,20 +519,50 @@ def init() -> None:
                 result.get("event_date") or now_iso
             )
 
-        # No-op fast-path — nothing meaningful changed.
         meaningful_fields = {"status", "delivered_at"}
         meaningful_change = any(
             (k in update_set and update_set[k] != ship.get(k))
             for k in meaningful_fields
         )
 
-        await db.shipments.update_one(
-            {"id": ship["id"], "user_id": current_user["id"]},
-            {"$set": update_set},
+        _logger.info(
+            "%s step=6 update_decision=APPLY current=%r → new=%r "
+            "meaningful=%s set_keys=%s",
+            log_tag, current_status, new_status, meaningful_change,
+            sorted(list(update_set.keys())),
+        )
+
+        # ── Step 7: apply update ───────────────────────────────────
+        try:
+            upd_result = await db.shipments.update_one(
+                {"id": ship["id"], "user_id": current_user["id"]},
+                {"$set": update_set},
+            )
+        except Exception:
+            _logger.exception(
+                "%s step=7 db_error shipment_update shipment_id=%s",
+                log_tag, ship["id"],
+            )
+            event_doc["action"] = "db_error_shipment_update"
+            try:
+                await db.courier_sync_events.insert_one(event_doc)
+            except Exception:
+                _logger.exception("%s step=audit_write_error (db_update)", log_tag)
+            raise HTTPException(status_code=500, detail="DB error during shipment update")
+
+        _logger.info(
+            "%s step=7 status_updated shipment_id=%s matched_count=%s modified_count=%s",
+            log_tag, ship["id"],
+            getattr(upd_result, "matched_count", "?"),
+            getattr(upd_result, "modified_count", "?"),
         )
 
         event_doc["action"] = "updated" if meaningful_change else "already_in_sync"
-        await db.courier_sync_events.insert_one(event_doc)
+        try:
+            await db.courier_sync_events.insert_one(event_doc)
+        except Exception:
+            _logger.exception("%s step=audit_write_error (success_write)", log_tag)
+
         return {
             "ok":              True,
             "matched":         True,

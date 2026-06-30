@@ -23126,3 +23126,153 @@ agent_communication:
         + verified by A13c re-login). No manual cleanup required.
 
         Main agent: refactor is regression-clean. Please summarise and finish.
+
+backend:
+  - task: "Courier Sync — Status Whitelist (Booked/Delivered only) + Structured Pipeline Logging"
+    implemented: true
+    working: true
+    file: "/app/backend/courier_sync/india_post.py, /app/backend/courier_sync/registry.py, /app/backend/routers/courier_sync.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "testing"
+        -comment: |
+            VERIFIED (iteration 22). New pytest suite added at
+            /app/backend/tests/test_courier_sync_whitelist.py — 16/16 PASS in 7.86 s.
+
+            Coverage matches the review request exactly:
+              • A1–A6 parser cases via POST /api/courier-sync/test-parse
+                  - Booked     → canonical=Booked,           shipment_status=Shipped   ✅
+                  - Delivered  → canonical=Delivered,        shipment_status=Delivered ✅
+                  - Out for Delivery → canonical=Out for Delivery, shipment_status="" ✅
+                  - In Transit → canonical=In Transit,       shipment_status=""        ✅
+                  - Undelivered→ canonical=Undelivered,      shipment_status=""        ✅
+                  - RTO        → canonical=RTO,              shipment_status=""        ✅
+              • A7 wrong sender (RANDOM-XYZ) → matched=false, reason=sender_not_india_post ✅
+              • B1 in transit → action=ignored_intermediate_status, shipment status unchanged ✅
+              • B2 out for delivery → action=ignored_intermediate_status, unchanged ✅
+              • B3 Booked → action=updated, shipment.status="Shipped" ✅
+              • B4 Delivered → action=updated, shipment.status="Delivered", delivered_at populated ✅
+              • B5 (post-Delivered in transit) → action=ignored_delivered, status stays "Delivered" ✅
+              • C audit log — every B1–B5 event row found in /api/courier-sync/events with
+                correct canonical_status and action ✅
+              • D1 structured logs for B3 contain all required markers in order:
+                  step=1 sms_received, step=2 sender_match=YES, step=3 tracking_extracted,
+                  step=4 shipment_found=YES, step=5 status_identified,
+                  step=6 update_decision=APPLY, step=7 status_updated ✅
+              • D2 for B1: log line contains "step=6 update_decision=SKIP" and
+                "ignored_intermediate_status" ✅
+
+            Test shipment cleanup: handled by fixture teardown (DELETE /api/shipments/{id}).
+            No regression introduced. Feature is working as specified.
+        -working: "NA"
+        -agent: "main"
+        -comment: |
+            Implemented status whitelist + structured logging on courier sync ingest pipeline.
+
+            Changes:
+            1. india_post._STATUS_RULES rewritten:
+               • Only canonical=="Booked" → shipment_status "Shipped"
+               • Only canonical=="Delivered" → shipment_status "Delivered"
+               • Intermediate canonicals ("Out for Delivery", "In Transit",
+                 "Undelivered", "RTO") now map to EMPTY shipment_status — they
+                 are still classified and surfaced in the parse result for
+                 audit purposes but cannot mutate the shipment row.
+               • Added new module-level constant STATUS_UPDATE_WHITELIST =
+                 frozenset({"Booked", "Delivered"}).
+               • Reordered rules so negative phrasings ("could not be delivered",
+                 "returned to sender") still take precedence over the bare
+                 \bdelivered\b match.
+
+            2. registry.PARTNERS["india_post"] now exposes
+               "status_update_whitelist" = india_post.STATUS_UPDATE_WHITELIST.
+
+            3. routers/courier_sync.py POST /ingest fully refactored:
+               • Per-request correlation id (log_tag) carries event_id[:8]
+                 + user_id[:8] in every log line.
+               • Structured INFO logs at every step:
+                   step=1 sms_received  → sender/title/text_len/package/posted_at/device
+                   step=2 sender_match  → YES/NO + partner_key
+                   step=2 reason short-circuit when no parser match
+                   step=3 tracking_extracted → awb + all_awbs
+                   step=3b partner_disabled
+                   step=4 shipment_found YES/NO + current_status
+                   step=5 status_identified → canonical / ship_status / phrase / whitelist
+                   step=6 update_decision SKIP (ignored_delivered)
+                   step=6 update_decision SKIP (ignored_intermediate_status)
+                   step=6 update_decision APPLY
+                   step=7 status_updated → matched_count / modified_count
+                   step=audit_write_error on any DB write failure
+                   step=db_error_* on DB read/update failure
+                   step=parse_error on parser exception (defensive)
+               • New router-level guard: if canonical not in
+                 status_update_whitelist → action="ignored_intermediate_status",
+                 audit-only write to courier_sync_events, NO shipment mutation,
+                 200 returned with action label so the client can also surface it.
+               • Existing "ignored_delivered" downgrade-guard kept intact.
+               • Existing "partner_disabled", "no_shipment_found",
+                 "already_in_sync", "updated" actions retained — payload shape
+                 unchanged for the success path.
+               • All DB reads/writes are wrapped in try/except with logger.exception
+                 so an audit row is still attempted on every error path.
+
+            Test instructions (sandbox):
+              Login as admin@test.com / Admin@12345.
+              Use POST /api/courier-sync/test-parse to dry-run parsing for:
+                a) "Item EG350860840IN has been Booked at PUNE GPO" → canonical=Booked, shipment_status=Shipped
+                b) "Item EG350860840IN has been Delivered on 2026-06-30 at PO" → canonical=Delivered, shipment_status=Delivered
+                c) "Item EG350860840IN is out for delivery by - JOHN (BEAT_03)" → canonical=Out for Delivery, shipment_status=""
+                d) "Item EG350860840IN in transit" → canonical=In Transit, shipment_status=""
+              Use POST /api/courier-sync/ingest with sender "VA-INPOST-G" to verify:
+                - (a) → action=updated (or partner_disabled if config not enabled — enable via PUT /configs/india_post first)
+                - (b) → action=updated, delivered_at stamped
+                - (c) and (d) → action=ignored_intermediate_status (NO shipment.status change)
+              Confirm /api/courier-sync/events log rows for all four (matched=true,
+              canonical correctly set, but only Booked/Delivered have action=updated).
+              Confirm backend logs at /var/log/supervisor/backend.err.log show the
+              step=1..7 structured pipeline trace with the [courier_sync.ingest evt=… usr=…] tag.
+
+metadata:
+  last_updated_by: "main_agent"
+  last_change: "Phase Courier-Sync — status whitelist + structured logging"
+
+test_plan:
+  current_focus:
+    - "Courier Sync — Status Whitelist (Booked/Delivered only) + Structured Pipeline Logging"
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"
+
+agent_communication:
+    -agent: "main"
+    -message: |
+        Implemented two requirements from user message 280 in a single coherent change:
+          (1) STATUS WHITELIST — only canonical "Booked" and "Delivered" may mutate
+              shipment.status. All other India Post statuses (Out for Delivery,
+              In Transit, Dispatched/Arrived/Received, Undelivered, RTO) are still
+              parsed and logged to courier_sync_events with action="ignored_intermediate_status"
+              but DO NOT touch the shipment row.
+          (2) STRUCTURED DEBUG LOGGING — every step of the SMS ingest pipeline
+              now emits a tagged INFO log with a per-request correlation id, so
+              an operator can grep one SMS end-to-end from /var/log/supervisor/backend.err.log.
+
+        Files changed:
+          - /app/backend/courier_sync/india_post.py (_STATUS_RULES + STATUS_UPDATE_WHITELIST)
+          - /app/backend/courier_sync/registry.py   (exposes whitelist on partner cfg)
+          - /app/backend/routers/courier_sync.py    (ingest endpoint refactored)
+
+        No frontend changes — Android Notification Listener already POSTs the same
+        payload shape; the backend now classifies it correctly.
+
+        Please test backend only. Credentials in /app/memory/test_credentials.md.
+        Focus on:
+          • POST /api/courier-sync/test-parse — confirms parser returns empty
+            shipment_status for intermediate canonicals.
+          • POST /api/courier-sync/ingest    — confirms intermediate SMS produces
+            action="ignored_intermediate_status" and the underlying shipment row
+            is UNCHANGED. Booked/Delivered SMS produce action="updated" and the
+            shipment.status changes accordingly.
+          • GET  /api/courier-sync/events   — verifies the audit row exists with
+            the correct canonical_status for all four cases above.

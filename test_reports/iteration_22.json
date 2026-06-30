@@ -1,0 +1,69 @@
+{
+  "summary": "Verified Courier Sync ingest pipeline status whitelist + structured logging (BACKEND-ONLY). All 16 pytest cases passed in /app/backend/tests/test_courier_sync_whitelist.py covering Sections A (parser test-parse A1-A7), B (ingest end-to-end B1-B5), C (audit events), and D (structured logs).",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_courier_sync_whitelist.py",
+    "/app/test_reports/pytest/pytest_iteration_22.xml"
+  ],
+  "action_items": [
+    "None — feature is working as specified. Main agent can summarise & finish."
+  ],
+  "critical_code_review_comments": [
+    "Implementation correctly enforces whitelist at TWO layers: parser-level (empty shipment_status for non-whitelisted canonicals) and router-level (canonical not in status_update_whitelist guard). Defensive design.",
+    "Existing ignored_delivered guard runs BEFORE the new ignored_intermediate_status guard, so B5 (in-transit after Delivered) correctly returns ignored_delivered rather than ignored_intermediate_status — matches spec ('preferred OR').",
+    "Structured logs are well-formatted with [courier_sync.ingest evt=… usr=…] correlation tag enabling end-to-end grep of a single SMS pipeline.",
+    "All DB read/write paths wrapped in try/except with logger.exception and audit row attempts on failure — robust error handling."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_courier_sync_whitelist.py (new)",
+    "/app/test_result.md (status_history append: working: true)"
+  ],
+  "success_rate": {
+    "backend": "100% (16/16 pytest cases)",
+    "frontend": "N/A (backend-only test request)"
+  },
+  "seed_data_creation": "Test fixture creates one TEST courier ('TEST_IndiaPost_WL_<run>') and one TEST shipment (unique EG<rand>IN AWB) per run. Shipment deleted in teardown. Courier left in place (idempotent across runs).",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "If retesting, just run: pytest /app/backend/tests/test_courier_sync_whitelist.py -v. Test is fully self-contained — creates its own shipment & cleans it up. India Post partner is auto-enabled by the admin_session fixture.",
+  "evidence": {
+    "A_parser_results": {
+      "A1_Booked": "matched=true, canonical=Booked, shipment_status=Shipped — PASS",
+      "A2_Delivered": "matched=true, canonical=Delivered, shipment_status=Delivered — PASS",
+      "A3_OutForDelivery": "matched=true, canonical=Out for Delivery, shipment_status='' — PASS",
+      "A4_InTransit": "matched=true, canonical=In Transit, shipment_status='' — PASS",
+      "A5_Undelivered": "matched=true, canonical=Undelivered, shipment_status='' — PASS",
+      "A6_RTO": "matched=true, canonical=RTO, shipment_status='' — PASS",
+      "A7_WrongSender": "matched=false, reason=sender_not_india_post — PASS"
+    },
+    "B_ingest_results": {
+      "initial_status": "Pending",
+      "B1_in_transit": "action=ignored_intermediate_status, canonical=In Transit, ship.status UNCHANGED (Pending)",
+      "B2_out_for_delivery": "action=ignored_intermediate_status, canonical=Out for Delivery, ship.status UNCHANGED",
+      "B3_booked": "action=updated, canonical=Booked, new_status=Shipped, ship.status=Shipped",
+      "B4_delivered": "action=updated, canonical=Delivered, ship.status=Delivered, delivered_at populated with 2026-06-30",
+      "B5_post_delivered_in_transit": "action=ignored_delivered (preferred path), ship.status remains Delivered"
+    },
+    "C_audit_log": "All B1-B5 event_ids found in /api/courier-sync/events with correct canonical_status and action fields.",
+    "D_structured_logs_sample_B3": [
+      "step=1 sms_received sender='VA-INPOST-G' ...",
+      "step=2 sender_match=YES partner=india_post",
+      "step=3 tracking_extracted awb=EG757186076IN ...",
+      "step=4 shipment_found=YES shipment_id=... current_status='Pending'",
+      "step=5 status_identified canonical='Booked' ship_status='Shipped' phrase='has been Booked' whitelist=['Booked', 'Delivered']",
+      "step=6 update_decision=APPLY current='Pending' → new='Shipped' meaningful=True ...",
+      "step=7 status_updated shipment_id=... matched_count=1 modified_count=1"
+    ],
+    "D_structured_logs_B1_skip": "step=6 update_decision=SKIP reason=ignored_intermediate_status canonical='In Transit' (not in whitelist ['Booked', 'Delivered']) — audit-only write"
+  },
+  "rca_of_issue": "N/A — feature verified working as specified."
+}
