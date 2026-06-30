@@ -51,7 +51,6 @@
     "expo-web-browser": "~15.0.11",
     "phosphor-react-native": "^3.0.6",
     "react": "19.1.0",
-    "react-dom": "19.1.0",
     "react-native": "0.81.5",
     "react-native-chart-kit": "^6.12.2",
     "react-native-dotenv": "^3.4.11",
@@ -60,7 +59,6 @@
     "react-native-safe-area-context": "~5.6.0",
     "react-native-screens": "~4.16.0",
     "react-native-svg": "15.12.1",
-    "react-native-web": "^0.21.0",
     "react-native-webview": "13.15.0",
     "react-native-worklets": "0.5.1"
   },
@@ -71,6 +69,5 @@
     "eslint-config-expo": "~10.0.0",
     "typescript": "~5.9.3"
   },
-  "private": true,
-  "packageManager": "yarn@1.22.22+sha512.a6b2f7906b721bba3d67d4aff083df04dad64c399707841b7acf00f6b133b7ac24255f2652fa22ae3534329dc6180534e98d17432037ff6fd140556e2bb3137e"
+  "private": true
 }
