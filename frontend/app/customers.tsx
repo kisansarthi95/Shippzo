@@ -16,6 +16,17 @@ import SearchBar from "../components/SearchBar";
 import FilterChipRow from "../components/FilterChipRow";
 import { Api, Customer } from "../lib/api";
 import { colors } from "../lib/theme";
+import { screenCache } from "../lib/screenCache";
+import { SkeletonList, SkeletonStatsStrip } from "../components/Skeleton";
+
+const CACHE_KEY_CUSTOMERS = "customers:list";
+const CACHE_KEY_STATS     = "customers:stats";
+
+type CustomerStats = {
+  total: number;
+  total_spent: number;
+  by_source: { source_app: string; count: number; total_spent: number }[];
+};
 
 function formatINR(n: number): string {
   if (!n) return "₹0";
@@ -29,14 +40,17 @@ function sourceLabel(s: string): string {
 
 export default function CustomersScreen() {
   const router = useRouter();
-  const [loading, setLoading] = useState(true);
+  // Stale-while-revalidate: seed state from the in-memory cache so the
+  // previous screen content paints IMMEDIATELY on re-entry; the
+  // useEffect below then fetches fresh data in the background and
+  // swaps it in once it arrives. Falls back to blocking spinner only
+  // on the very first visit (no cache yet).
+  const cachedList  = screenCache.get<Customer[]>(CACHE_KEY_CUSTOMERS);
+  const cachedStats = screenCache.get<CustomerStats>(CACHE_KEY_STATS);
+  const [loading, setLoading] = useState(!cachedList);
   const [refreshing, setRefreshing] = useState(false);
-  const [customers, setCustomers] = useState<Customer[]>([]);
-  const [stats, setStats] = useState<{
-    total: number;
-    total_spent: number;
-    by_source: { source_app: string; count: number; total_spent: number }[];
-  } | null>(null);
+  const [customers, setCustomers] = useState<Customer[]>(cachedList || []);
+  const [stats, setStats] = useState<CustomerStats | null>(cachedStats);
   const [sourceFilter, setSourceFilter] = useState<string>("");
   const [search, setSearch] = useState("");
 
@@ -51,6 +65,13 @@ export default function CustomersScreen() {
       ]);
       setCustomers(list.customers);
       setStats(s);
+      // Only cache the unfiltered/unsearched view so a re-entry shows
+      // the "all customers" state immediately. Filter/search results
+      // are inherently per-query and would pollute the cache.
+      if (!sourceFilter && !search.trim()) {
+        screenCache.set(CACHE_KEY_CUSTOMERS, list.customers);
+        screenCache.set(CACHE_KEY_STATS, s);
+      }
     } catch (e: any) {
       Alert.alert(
         "Couldn't load customers",
@@ -96,8 +117,9 @@ export default function CustomersScreen() {
       />
 
       {loading ? (
-        <View style={[styles.safe, styles.center]}>
-          <ActivityIndicator size="large" color={colors.primary} />
+        <View>
+          <SkeletonStatsStrip boxes={3} />
+          <SkeletonList rows={6} height={92} />
         </View>
       ) : (
         <ScrollView

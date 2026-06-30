@@ -248,6 +248,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setToken(null);
     setUser(null);
     await AsyncStorage.multiRemove([TOKEN_KEY, USER_KEY]);
+    // Wipe in-memory screen cache so the next user / fresh login
+    // doesn't see stale data from the previous session.
+    try {
+      const { screenCache } = await import("./screenCache");
+      screenCache.invalidate();
+    } catch { /* ignore */ }
   }, []);
 
   const refresh = useCallback(async () => {

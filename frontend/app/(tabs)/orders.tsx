@@ -9,6 +9,10 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { useFocusEffect, useRouter } from "expo-router";
 import { Api, SheetOrder, PendingOrder, Courier, AbandonedCart } from "../../lib/api";
 import { colors } from "../../lib/theme";
+import { screenCache } from "../../lib/screenCache";
+import { SkeletonList } from "../../components/Skeleton";
+
+const CACHE_KEY_ORDERS = "orders:unified";
 import { useFeatureFlag } from "../../lib/feature_flags";
 import ConfirmCancelModal, {
   TerminalAction,
@@ -32,7 +36,12 @@ export default function OrdersFromSheet() {
   // admin can untick per plan. UI silently hides the badges when off.
   const flagNewMarker     = useFeatureFlag("pending_orders_new_marker");
   const flagRepeatMarker  = useFeatureFlag("pending_orders_repeat_marker");
-  const [loading, setLoading] = useState(true);
+  // Phase Skeleton-SWR — seed loading=false when we have any cached
+  // orders from a previous visit. Background refresh below replaces
+  // the stale data once the API returns. Falls back to skeleton on
+  // first-ever visit (no cache yet).
+  const cachedPaste = screenCache.get<PendingOrder[]>("orders:paste");
+  const [loading, setLoading] = useState(!cachedPaste);
   const [orders, setOrders] = useState<SheetOrder[]>([]);
   const [connected, setConnected] = useState(false);
   const [lastSync, setLastSync] = useState<Date | null>(null);
@@ -45,7 +54,7 @@ export default function OrdersFromSheet() {
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Smart Paste pending orders queue
-  const [pasteOrders, setPasteOrders] = useState<PendingOrder[]>([]);
+  const [pasteOrders, setPasteOrders] = useState<PendingOrder[]>(cachedPaste || []);
   // Phase F1 — File-import pending queue (CSV/XLSX uploads)
   const [fileOrders, setFileOrders] = useState<PendingOrder[]>([]);
   // Phase F2.5 — Webhook ingest pending queue (Dukaan/Shopify/etc.)
@@ -119,6 +128,8 @@ export default function OrdersFromSheet() {
           .catch(() => ({ carts: [], count: 0, total: 0 })),
       ]);
       setPasteOrders(pos);
+      // Stale-while-revalidate cache — only the most common source.
+      screenCache.set("orders:paste", pos);
       setFileOrders(fos);
       setWebhookOrders(wos);
       setAbandonedRecoveredOrders(aros as PendingOrder[]);
@@ -1036,7 +1047,7 @@ export default function OrdersFromSheet() {
       )}
 
       {loading ? (
-        <ActivityIndicator color={colors.primary} style={{ marginTop: 40 }} />
+        <SkeletonList rows={6} height={120} />
       ) : unifiedRows.length === 0 ? (
         <View style={styles.empty} testID="unified-empty">
           <PhIcon name="cube-outline" size={48} color="#9CA3AF" />

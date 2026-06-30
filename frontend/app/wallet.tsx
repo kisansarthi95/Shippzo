@@ -29,6 +29,11 @@ import { Stack, useFocusEffect, useRouter } from "expo-router";
 import { Api, CreditHistoryEntry, Wallet, api } from "../lib/api";
 import { colors } from "../lib/theme";
 import { useFeatureFlag } from "../lib/feature_flags";
+import { screenCache } from "../lib/screenCache";
+import { SkeletonBlock, SkeletonList } from "../components/Skeleton";
+
+const CACHE_KEY_WALLET  = "wallet:summary";
+const CACHE_KEY_HISTORY = "wallet:history";
 
 type CreditPackage = {
   amount_inr: number;
@@ -43,9 +48,14 @@ export default function WalletScreen() {
   // Phase F3.6 — gate "Top up credits" by feature flag. Hidden for
   // free trial / starter tiers. Admin always sees it.
   const flagWalletTopup = useFeatureFlag("wallet_topup");
-  const [wallet, setWallet] = useState<Wallet | null>(null);
-  const [history, setHistory] = useState<CreditHistoryEntry[]>([]);
-  const [loading, setLoading] = useState(true);
+  // Stale-while-revalidate: seed from cache so users see their balance
+  // + history instantly when re-opening Wallet. Background fetch in
+  // useFocusEffect refreshes both.
+  const cachedWallet  = screenCache.get<Wallet>(CACHE_KEY_WALLET);
+  const cachedHistory = screenCache.get<CreditHistoryEntry[]>(CACHE_KEY_HISTORY);
+  const [wallet, setWallet] = useState<Wallet | null>(cachedWallet);
+  const [history, setHistory] = useState<CreditHistoryEntry[]>(cachedHistory || []);
+  const [loading, setLoading] = useState(!cachedWallet);
   const [refreshing, setRefreshing] = useState(false);
   const [purchaseOpen, setPurchaseOpen] = useState(false);
   const [amount, setAmount] = useState("100");
@@ -68,6 +78,8 @@ export default function WalletScreen() {
       ]);
       setWallet(w);
       setHistory(h.entries);
+      screenCache.set(CACHE_KEY_WALLET, w);
+      screenCache.set(CACHE_KEY_HISTORY, h.entries);
       if (p.data?.packages?.length) setPackages(p.data.packages);
     } catch (e: any) {
       Alert.alert("Could not load wallet", e?.message || "Please try again");
@@ -79,7 +91,10 @@ export default function WalletScreen() {
 
   useFocusEffect(
     useCallback(() => {
-      setLoading(true);
+      // Don't flash a skeleton when cached data is already on-screen —
+      // refresh silently in the background. Show skeleton only on the
+      // very first visit (no cache).
+      if (!screenCache.get(CACHE_KEY_WALLET)) setLoading(true);
       load().catch(() => {});
     }, [load]),
   );
@@ -186,7 +201,10 @@ export default function WalletScreen() {
           )}
         </View>
         {loading ? (
-          <ActivityIndicator style={{ marginTop: 30 }} color={colors.primary} />
+          <View>
+            <SkeletonBlock width="70%" height={22} style={{ marginTop: 4, marginBottom: 16 }} />
+            <SkeletonList rows={5} height={64} />
+          </View>
         ) : history.length === 0 ? (
           <View style={styles.emptyBox}>
             <PhIcon name="receipt-outline" size={28} color="#94A3B8" />
