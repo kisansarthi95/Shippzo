@@ -1602,7 +1602,7 @@ export default function Dashboard() {
 
       <ScrollView
         testID="dashboard-scroll"
-        contentContainerStyle={{ paddingBottom: 40 }}
+        contentContainerStyle={{ paddingBottom: 100 }}
         refreshControl={
           <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
         }

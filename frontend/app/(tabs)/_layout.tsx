@@ -1,7 +1,7 @@
 import { Tabs } from "expo-router";
 import PhIcon from "../../components/PhIcon";
 import { colors } from "../../lib/theme";
-import { Platform, View } from "react-native";
+import { View } from "react-native";
 import { usePermissions } from "../../lib/permissions";
 import { NewOrderAlertProvider } from "../../lib/new_order_alert";
 
@@ -21,9 +21,7 @@ export default function TabsLayout() {
           backgroundColor: colors.surface,
           borderTopWidth: 2,
           borderTopColor: "#E5E7EB",
-          height: Platform.OS === "ios" ? 92 : 78,
           paddingTop: 8,
-          paddingBottom: Platform.OS === "ios" ? 34 : 18,
         },
         tabBarIconStyle: { marginBottom: -2 },
         tabBarLabelStyle: {
