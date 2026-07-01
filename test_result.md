@@ -23276,3 +23276,160 @@ agent_communication:
             shipment.status changes accordingly.
           • GET  /api/courier-sync/events   — verifies the audit row exists with
             the correct canonical_status for all four cases above.
+
+backend:
+  - task: "Shipment Labels — per-user labels + assignment (Phase F4.1)"
+    implemented: true
+    working: false
+    file: "/app/backend/routers/labels.py, /app/backend/server.py"
+    stuck_count: 1
+    priority: "high"
+    needs_retesting: true
+    status_history:
+        -working: false
+        -agent: "testing"
+        -comment: |
+            Iteration 23 — Backend tests executed with
+            /app/backend/tests/test_shipment_labels_phase_f41.py
+            (23 test cases covering A/B/C/D/E). Result: 22 PASSED, 1 FAILED.
+
+            ✅ PASSING (22/23):
+              A1 list + 10 defaults (all preset names present, is_default=true, all fields OK)
+              A2 create custom label (uuid id, is_default=false, kind=custom)
+              A3 duplicate name (case-insensitive) → 409
+              A4 update label (name + color) — verified via GET
+              A5 empty update body → 400 "No fields to update"
+              A6 update non-existent → 404
+              B0 shipment prep
+              B2 idempotent PUT (same body twice)
+              B3 dedupe input (["X","X","Y","Y"] → 2)
+              B4 silent drop invalid ids (fake id dropped, valid kept)
+              B5 clear labels (empty array) — 200
+              B6 cap >20 → 400 "Max 20 labels per shipment"
+              B7 shipment not found → 404
+              C1 re-assign
+              C2 delete label → 200
+              C3 cleanup (deleted id no longer in labels list)
+              C4 delete non-existent → 404
+              D1 GET /api/shipments schema intact
+              D2 POST /api/shipments without labels — works unchanged
+              D3 PUT /api/shipments non-labels update — works unchanged
+              E1 user2 has own 10 default labels with DIFFERENT ids (disjoint from admin)
+              E2 user2 cannot delete admin's label (404)
+
+            ❌ FAILING (1/23) — B1 persistence via GET:
+              PUT /api/shipments/{sid}/labels returns 200 with correct labels
+              array in the response BUT subsequent GET /api/shipments does
+              NOT include the labels field on the shipment doc (returns
+              None / absent).
+
+              ROOT CAUSE:
+              routers/shipments_read.py builds every response through the
+              Pydantic model `Shipment(**doc)` (server.py lines ~562-666).
+              The `Shipment` model does NOT declare a `labels` field, so
+              Pydantic silently STRIPS the array coming out of MongoDB
+              on every read. The DB write is fine — direct Mongo shows
+              labels=[…] on the doc after PUT — but no client-facing GET
+              can ever see it. This breaks the spec ("Every shipment doc
+              may now include an optional `labels: string[]` field").
+
+              REPRODUCTION (raw curl):
+                PUT /api/shipments/{id}/labels body={"labels":["L1","L2"]}
+                  → 200 {"ok":true,"labels":["L1","L2"]}
+                GET /api/shipments?limit=1
+                  → shipment doc has NO `labels` key (verified via jq)
+
+              This ALSO gives C3 a false pass (the deleted-label cleanup
+              did happen in DB, but the assertion only sees `labels or []`
+              on both sides because the field is always stripped by
+              Shipment(...)).
+
+              FIX REQUIRED (main agent):
+              Add a `labels` field to the Pydantic Shipment model in
+              server.py so it survives the round-trip:
+                  labels: List[str] = Field(default_factory=list)
+              Also add optional `labels: Optional[List[str]] = None` to
+              ShipmentUpdate if PUT /api/shipments should accept it —
+              but for F4.1 the dedicated PUT /shipments/{id}/labels
+              endpoint is fine; the Shipment model change alone is
+              sufficient for GET exposure.
+
+              After fix, re-run
+              /app/backend/tests/test_shipment_labels_phase_f41.py — all
+              23 cases should pass.
+        -working: "NA"
+        -agent: "main"
+        -comment: |
+            New additive-only router mounted at /api. Endpoints:
+              GET    /api/labels                    (auto-seeds 10 defaults per user on first call)
+              POST   /api/labels                    body: {name, icon, color, kind?}
+              PUT    /api/labels/{id}               body: {name?, icon?, color?}
+              DELETE /api/labels/{id}               (also strips id from every shipment.labels[])
+              PUT    /api/shipments/{id}/labels     body: {labels: string[]}
+            Zero existing endpoint touched — verified.
+            Defaults on first GET /api/labels for a new user:
+              Order:    Address Issue, Phone Number Issue, Item Pending, Return Received, Resend Article, Manual Review
+              Priority: VIP Customer, Urgent, High Priority, Low Priority
+            Test flow:
+              1) GET /api/labels → count=10 (all is_default:true, mix of order/priority).
+              2) POST /api/labels {name:"My Custom", icon:"star", color:"#EC4899"} → 200, returned label.is_default=false, kind=custom.
+              3) GET /api/labels → count=11 including the new one.
+              4) PUT /api/labels/{id} {name:"Renamed"} → 200, label.name updated.
+              5) Create a shipment (or take an existing one). PUT /api/shipments/{id}/labels {labels:[<label_id_1>,<label_id_2>]} → 200, response.labels=[…]. Verify the shipment doc now has labels=[…] via GET /api/shipments.
+              6) PUT /api/shipments/{id}/labels {labels:[]} → clears them (200, labels:[]).
+              7) DELETE /api/labels/{id} → 200. Confirm the label is gone AND is stripped from any shipment.labels array (issue a fresh GET /api/shipments and check).
+              8) Regression — do NOT touch existing endpoints. Confirm GET /api/shipments still returns the same schema (with an optional new `labels` field on each row).
+
+frontend:
+  - task: "Shipment card — Label section (+ button, chips, picker sheet, create dialog)"
+    implemented: true
+    working: "NA"
+    file: "/app/frontend/lib/labels.ts, /app/frontend/components/LabelChip.tsx, /app/frontend/components/LabelPickerSheet.tsx, /app/frontend/app/(tabs)/shipments.tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: |
+            NOT REQUESTED FOR AUTOMATED TESTING THIS ITERATION. Frontend
+            visual verification will be done by user on device. Backend
+            behind it is the priority under test.
+            UI insertion points (for reference):
+              - Divider + "+" button appears right below the timestamp on
+                every shipment card (label rendered above the existing
+                icon-row of actions — PENDING/PROCESSING is UNCHANGED).
+              - Tapping "+" opens LabelPickerSheet with Order / Priority
+                groups + Create New Label footer.
+              - Selecting a chip auto-applies (PUT to /api/shipments/{id}/labels)
+                and updates the card row instantly.
+              - Create dialog: name field, icon grid (24 icons), color grid
+                (12 colors), Save Label button.
+              - Chips display horizontally scrollable when many.
+              - X on chip removes it from that shipment (PUT with new array).
+
+metadata:
+  last_updated_by: "main_agent"
+  last_change: "Phase F4.1 — Shipment Labels feature (backend + frontend UI)"
+
+test_plan:
+  current_focus:
+    - "Shipment Labels — per-user labels + assignment (Phase F4.1)"
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"
+
+agent_communication:
+    -agent: "main"
+    -message: |
+        Phase F4.1 backend is READY for test. New router at /api with 5
+        endpoints (all listed above). No existing endpoint modified.
+        Please test ONLY the new endpoints + the regression check that
+        GET /api/shipments still works and now returns an optional
+        `labels: string[]` field on shipments that have been assigned
+        labels.
+
+        Credentials: /app/memory/test_credentials.md (admin@test.com /
+        Admin@12345).
+
+        DO NOT test the frontend — user will visually verify on device.

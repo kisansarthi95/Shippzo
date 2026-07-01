@@ -5273,6 +5273,22 @@ except Exception as _cs_exc:
         f"Failed to mount courier_sync router: {_cs_exc}",
     )
 
+# Phase F4.1 — Shipment Label Management (per-user labels with icon +
+# color + assignment to shipment.labels[]). Additive-only; no existing
+# endpoint touched. Adds /api/labels + /api/shipments/{id}/labels.
+try:
+    from routers.labels import (
+        labels_router as _labels_router,
+        init as _init_labels_router,
+    )
+    _init_labels_router()
+    app.include_router(_labels_router)
+except Exception as _lbl_exc:
+    import logging as _lg
+    _lg.getLogger("server.bootstrap").exception(
+        f"Failed to mount labels router: {_lbl_exc}",
+    )
+
 
 # --------------------------------------------------------------------
 # Auth middleware — requires a valid bearer token on every /api/*

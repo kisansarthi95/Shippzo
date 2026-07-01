@@ -27,6 +27,9 @@ import { fillFromShipment } from "../../lib/templateVariables";
 import { useAuth } from "../../lib/auth";
 import { buildLabelHtml, pageDimensionsFor } from "../../lib/label";
 import { colors } from "../../lib/theme";
+import { LabelsApi, ShipmentLabel } from "../../lib/labels";
+import LabelChip from "../../components/LabelChip";
+import LabelPickerSheet from "../../components/LabelPickerSheet";
 import { useFeatureFlag } from "../../lib/feature_flags";
 import { requestWhatsAppSend } from "../../lib/whatsappGuard";
 import DailyLimitBanner from "../../components/DailyLimitBanner";
@@ -197,6 +200,13 @@ export default function Shipments() {
   const [pickerField, setPickerField] = useState<"from" | "to" | null>(null);
   const [selectMode, setSelectMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  // ── Label picker state (additive — does not touch selection/bulk flow)
+  // labelPickerFor  = shipment.id whose labels the sheet is editing (null = closed)
+  // labelDefs       = map<label_id → ShipmentLabel> for chip rendering on cards
+  // shipmentLabels  = map<shipment.id → label_id[]> (mirror of shipment.labels)
+  const [labelPickerFor, setLabelPickerFor] = useState<string | null>(null);
+  const [labelDefs, setLabelDefs] = useState<Record<string, ShipmentLabel>>({});
+  const [shipmentLabels, setShipmentLabels] = useState<Record<string, string[]>>({});
   // perPage matches what the LabelViewer accepts so we can route every
   // option (A4, A6, Thermal 4×6, Barcode 2×1) through the same printer.
   type BulkPerPage = 1 | 2 | 4 | "thermal" | "barcode";
@@ -314,6 +324,13 @@ export default function Shipments() {
       setItems(list);
       setSettings(s);
       setCouriers(cs);
+      // Mirror shipment.labels into local state so chip render is O(1)
+      // and instant-toggle in the picker doesn't need to refetch.
+      const sm: Record<string, string[]> = {};
+      list.forEach((sh: any) => {
+        if (Array.isArray(sh.labels) && sh.labels.length) sm[sh.id] = sh.labels;
+      });
+      setShipmentLabels(sm);
     } catch (e: any) {
       // silently ignore transient failures so no global toast
       console.log("shipments load error:", e?.message || e);
@@ -322,10 +339,23 @@ export default function Shipments() {
     }
   }, [search]);
 
+  // Load the user's label definitions once (auto-seeds 10 defaults on
+  // first visit via the backend). Refetched on focus so newly-created
+  // labels from other flows show up.
+  const loadLabels = useCallback(async () => {
+    try {
+      const arr = await LabelsApi.list();
+      const map: Record<string, ShipmentLabel> = {};
+      arr.forEach((l) => { map[l.id] = l; });
+      setLabelDefs(map);
+    } catch { /* non-fatal */ }
+  }, []);
+
   useFocusEffect(useCallback(() => {
     load().catch(() => {});
     loadNeedConfirm().catch(() => {});
-  }, [load, loadNeedConfirm]));
+    loadLabels().catch(() => {});
+  }, [load, loadNeedConfirm, loadLabels]));
 
   // Handle deep-link params from Dashboard quick actions.
   React.useEffect(() => {
@@ -1811,6 +1841,46 @@ export default function Shipments() {
                   {"  "}{formatTimestamp(item.created_at)}
                 </Text>
               )}
+              {/* ── Phase F4.1 — Label row (additive, does NOT touch
+                     any existing action button). Divider + "+" on the
+                     right; chips render below when the shipment has
+                     any assigned labels. Horizontal scroll when many. */}
+              <View style={labelStyles.dividerRow}>
+                <View style={labelStyles.divider} />
+                <TouchableOpacity
+                  onPress={() => setLabelPickerFor(item.id)}
+                  hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                  style={labelStyles.plusBtn}
+                  accessibilityLabel="Add label"
+                >
+                  <PhIcon name="add" size={16} color={colors.primary} />
+                </TouchableOpacity>
+              </View>
+              {(shipmentLabels[item.id] || []).length > 0 && (
+                <ScrollView
+                  horizontal
+                  showsHorizontalScrollIndicator={false}
+                  style={labelStyles.chipRow}
+                  contentContainerStyle={{ paddingRight: 4 }}
+                >
+                  {(shipmentLabels[item.id] || []).map((lid) => {
+                    const def = labelDefs[lid];
+                    if (!def) return null;
+                    return (
+                      <LabelChip
+                        key={lid}
+                        label={def}
+                        size="sm"
+                        onRemove={() => {
+                          const next = (shipmentLabels[item.id] || []).filter((x) => x !== lid);
+                          setShipmentLabels((prev) => ({ ...prev, [item.id]: next }));
+                          LabelsApi.setForShipment(item.id, next).catch(() => {});
+                        }}
+                      />
+                    );
+                  })}
+                </ScrollView>
+              )}
             </TouchableOpacity>
             {!selectMode && (
               <View style={styles.actions}>
@@ -2309,9 +2379,59 @@ export default function Shipments() {
           </View>
         </View>
       </Modal>
+      {/* ── Phase F4.1 — Shipment Label picker (single bottom-sheet
+             reused for every card via labelPickerFor === card.id). */}
+      <LabelPickerSheet
+        visible={!!labelPickerFor}
+        selectedIds={labelPickerFor ? (shipmentLabels[labelPickerFor] || []) : []}
+        onClose={() => setLabelPickerFor(null)}
+        onApply={(ids) => {
+          if (!labelPickerFor) return;
+          // Optimistic UI — chip row updates instantly; PUT flies to
+          // backend in the background. Failure is swallowed to avoid
+          // interrupting the toggle interaction.
+          const sid = labelPickerFor;
+          setShipmentLabels((prev) => ({ ...prev, [sid]: ids }));
+          LabelsApi.setForShipment(sid, ids).catch(() => {});
+          // Refresh label defs so a just-created label's chip shows up.
+          loadLabels().catch(() => {});
+        }}
+      />
     </SafeAreaView>
   );
 }
+
+// ── Phase F4.1 — Label section styles (kept separate from `styles`
+// so a future refactor can move them into a shared module without
+// touching the giant existing stylesheet).
+const labelStyles = StyleSheet.create({
+  dividerRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    marginTop: 6,
+    marginBottom: 2,
+  },
+  divider: {
+    flex: 1,
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: "#E5E7EB",
+  },
+  plusBtn: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#E5E7EB",
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#F8FAFC",
+  },
+  chipRow: {
+    marginTop: 6,
+    marginBottom: 2,
+  },
+});
 
 function ActionBtn({
   icon, color, onPress, testID,

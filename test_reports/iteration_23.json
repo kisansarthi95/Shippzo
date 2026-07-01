@@ -1,0 +1,42 @@
+{
+  "summary": "Backend-only test of Shipment Labels (Phase F4.1). Executed 23 pytest cases across A (CRUD), B (shipment assignment), C (delete cleanup), D (regression), E (multi-user isolation). Result: 22 PASSED, 1 FAILED. All Labels router endpoints work correctly at the API+DB layer. However, GET /api/shipments STRIPS the newly-added `labels` field on every response because the Pydantic `Shipment` model in server.py does not declare it — so clients can never see the labels a shipment was assigned. PUT /api/shipments/{id}/labels returns 200 with correct labels in the response, and DB write is correct (verified in test C3 cleanup succeeded), but the round-trip through GET is broken.",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "GET /api/shipments (and GET /api/shipments/{id})",
+        "issue": "The `labels: string[]` field added to shipment docs by PUT /api/shipments/{id}/labels is stripped on every GET because the Pydantic Shipment model in /app/backend/server.py (lines ~562-666) has no `labels` field. Pydantic drops unknown fields, so clients always see `labels: undefined/None`. Fix: add `labels: List[str] = Field(default_factory=list)` to the Shipment model. This breaks spec item D1 (`optional labels: string[] field on each row`) and blocks the frontend chip UI from displaying assigned labels after a reload.",
+        "priority": "CRITICAL"
+      }
+    ],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_shipment_labels_phase_f41.py",
+    "/app/test_reports/pytest/pytest_iteration_23.xml"
+  ],
+  "action_items": [
+    "Add `labels: List[str] = Field(default_factory=list)` to the Pydantic `Shipment` model in /app/backend/server.py so GET /api/shipments and GET /api/shipments/{id} include the assigned labels. This is the single fix required — the labels router itself is correct.",
+    "(Optional, but useful for symmetry) Add `labels: Optional[List[str]] = None` to the `ShipmentUpdate` model too if PUT /api/shipments/{id} should also accept labels changes; for F4.1 the dedicated /api/shipments/{id}/labels endpoint is enough.",
+    "After the fix, re-run `pytest /app/backend/tests/test_shipment_labels_phase_f41.py -v` — all 23 tests should pass."
+  ],
+  "critical_code_review_comments": [
+    "routers/labels.py is clean, well-documented, and defensive (case-insensitive dedupe, silent-drop of invalid ids, 20-label cap, delete cleanup via $pull, user-scoped queries throughout). No _id leakage.",
+    "The mismatch between the labels router (writes `labels` to shipment doc) and the Shipment Pydantic model (has no `labels` field, therefore reads strip it) is the only integration gap and is exactly the kind of thing that hurts feature-scope split across two files. Suggest keeping a comment on the Shipment model pointing at labels.py so future maintainers don't drop the field again."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_shipment_labels_phase_f41.py (new)",
+    "/app/test_result.md (updated Shipment Labels task status to working=false with RCA + fix guidance)"
+  ],
+  "success_rate": {"backend": "95.7% (22/23)", "frontend": "N/A (not tested per request)"},
+  "seed_data_creation": "Created 1 test shipment for admin (`TEST-REG-*`) and 1 custom label `AutoTest Label` (later deleted in test C2). All test data prefixed with `TEST-` or `AutoTest`. Second user (user2@test.com) got their 10 default labels auto-seeded on first GET — this is normal, expected behavior per spec.",
+  "retest_needed": true,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "After main agent adds the `labels` field to the Shipment Pydantic model, re-run `pytest /app/backend/tests/test_shipment_labels_phase_f41.py -v --junitxml=/app/test_reports/pytest/pytest_iteration_24.xml`. Expect all 23 tests to pass. The test file is idempotent — it cleans up any leftover 'AutoTest Label' at the start of test_A2, so it can be re-run indefinitely.",
+  "rca_of_issue": "Bug: GET /api/shipments never returns the newly-added `labels` array even though PUT /api/shipments/{id}/labels writes it to Mongo correctly. Reproduction: (1) POST /api/auth/login as admin; (2) PUT /api/shipments/<sid>/labels with {labels:[<real_id_1>,<real_id_2>]} → response is 200 {ok:true, labels:[<id1>,<id2>]}; (3) GET /api/shipments?limit=1 → the shipment doc has NO `labels` key. Cause: /app/backend/routers/shipments_read.py returns `Shipment(**doc)` (Pydantic model). The Shipment model in server.py doesn't declare a `labels` field, so Pydantic silently strips it. Mitigation: Add `labels: List[str] = Field(default_factory=list)` to the Shipment model. Single-line fix, no other code changes needed."
+}
