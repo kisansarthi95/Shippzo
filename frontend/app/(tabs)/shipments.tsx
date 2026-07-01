@@ -2,7 +2,7 @@ import React, { useCallback, useMemo, useState, useEffect } from "react";
 import PhIcon from "../../components/PhIcon";
 import {
   View, Text, StyleSheet, TextInput, ScrollView, TouchableOpacity,
-  FlatList, RefreshControl, Linking, Alert, Platform, Modal,
+  FlatList, RefreshControl, Linking, Alert, Platform, Modal, ToastAndroid,
   ActivityIndicator,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -219,6 +219,22 @@ export default function Shipments() {
   // be visible. Piggybacks the existing dateFilteredItems memo so
   // it composes cleanly with status + date + print filters.
   const [labelFilter, setLabelFilter] = useState<string>("");
+  // ── Phase F4.8 — Contact-saved visual indicator ────────────────
+  // Set of shipment ids that were successfully saved as contacts in
+  // this session (single tap OR bulk vcf). UI-only — the "Already
+  // Saved" server-side check remains completely unchanged; this
+  // state only flips the per-card save button to a filled-green
+  // Person✓ style so the operator can see at a glance which cards
+  // have been actioned in the current session.
+  const [contactSavedIds, setContactSavedIds] = useState<Set<string>>(new Set());
+  const markContactsSaved = useCallback((ids: string[]) => {
+    if (!ids || ids.length === 0) return;
+    setContactSavedIds((prev) => {
+      const next = new Set(prev);
+      ids.forEach((id) => next.add(id));
+      return next;
+    });
+  }, []);
   // perPage matches what the LabelViewer accepts so we can route every
   // option (A4, A6, Thermal 4×6, Barcode 2×1) through the same printer.
   type BulkPerPage = 1 | 2 | 4 | "thermal" | "barcode";
@@ -1088,6 +1104,11 @@ export default function Shipments() {
           postal: built.postal,
           notes:  built.notes,
         });
+        // Phase F4.8 — UI-only: mark this shipment as freshly saved
+        // so the per-card person button flips to the green/white
+        // "saved" state IMMEDIATELY. No popup / toast on single
+        // save — matches the spec exactly.
+        markContactsSaved([ship.id]);
         // Best-effort — record that the intent was fired so the next
         // tap can warn. We don't await failure here because the OS
         // intent has already gone out.
@@ -1185,12 +1206,31 @@ export default function Shipments() {
       const r = await Api.buildBulkVcf(ids, overrideCategory);
       await saveBulkVcf(r.vcf, `contacts_${ids.length}.vcf`);
       setBulkContactPickerOpen(false);
-      Alert.alert(
-        "Ready",
-        `Prepared ${r.count} contact${r.count === 1 ? "" : "s"}${
-          r.skipped ? ` (skipped ${r.skipped} without phone)` : ""
-        }. Open the .vcf file to import into your Contacts app.`,
-      );
+      // Phase F4.8 — UI-only: mark all shipments that carried a
+      // phone as freshly saved so the per-card person button flips
+      // to the green/white "saved" state IMMEDIATELY. Backend's
+      // `skipped` count == rows without a phone (i.e., rows that
+      // could NOT be included in the .vcf), so we compute the
+      // "succeeded" subset by filtering ids for a non-empty phone
+      // — same rule the backend uses. Only successful rows flip.
+      const idsWithPhone = ids.filter((id) => {
+        const s = items.find((x) => x.id === id);
+        return !!(s && (s.customer_phone || "").trim());
+      });
+      markContactsSaved(idsWithPhone);
+      const savedCount = r.count;
+      const failedCount = r.skipped || 0;
+      // Cross-platform toast:
+      //   • Android → native ToastAndroid (short-lived, non-blocking)
+      //   • iOS / web preview → Alert with just an OK button
+      const toastMsg = failedCount > 0
+        ? `${savedCount} contacts saved, ${failedCount} failed.`
+        : "Contacts saved successfully. Saved contacts are now marked in green.";
+      if (Platform.OS === "android") {
+        ToastAndroid.show(toastMsg, ToastAndroid.LONG);
+      } else {
+        Alert.alert("Contacts saved", toastMsg);
+      }
     } catch (e: any) {
       Alert.alert(
         "Export failed",
@@ -2320,12 +2360,26 @@ export default function Shipments() {
                 {/* Phase-16: Save Contact — opens the native contact
                     INSERT intent with the shipment's info pre-filled.
                     Always visible (no plan gate) because it's a
-                    zero-cost utility and a frequent request. */}
-                <ActionBtn
-                  icon="person-add-outline" color="#7C3AED"
-                  onPress={() => handleSaveContact(item)}
-                  testID={`save-contact-${item.tracking_id}`}
-                />
+                    zero-cost utility and a frequent request.
+                    Phase F4.8 — After a successful save (single or
+                    bulk-with-phone), flip to a filled-green pill with
+                    a white filled-person icon so the operator can
+                    see at a glance which cards were already actioned
+                    this session. Purely visual — the underlying
+                    "Already Saved" check on tap is UNCHANGED. */}
+                {(() => {
+                  const savedNow = contactSavedIds.has(item.id);
+                  return (
+                    <ActionBtn
+                      icon={savedNow ? "person" : "person-add-outline"}
+                      color="#7C3AED"
+                      bg={savedNow ? "#10B981" : undefined}
+                      iconColor={savedNow ? "#fff" : "#7C3AED"}
+                      onPress={() => handleSaveContact(item)}
+                      testID={`save-contact-${item.tracking_id}`}
+                    />
+                  );
+                })()}
                 {flagDelete && !isTerminalShipmentStatus(item.status) ? (
                   <ActionBtn
                     icon="close-circle-outline" color={colors.dangerText}
@@ -2809,16 +2863,29 @@ const labelStyles = StyleSheet.create({
 });
 
 function ActionBtn({
-  icon, color, onPress, testID,
+  icon, color, onPress, testID, bg, iconColor,
 }: {
   icon: string;
   color: string;
   onPress: () => void;
   testID?: string;
+  // Phase F4.8 — Optional filled-background variant for state
+  // indicators (e.g., Contact Saved). Falls back to the standard
+  // outline pill when omitted so every existing call-site keeps
+  // its exact appearance.
+  bg?: string;
+  iconColor?: string;
 }) {
   return (
-    <TouchableOpacity testID={testID} onPress={onPress} style={styles.actionBtn}>
-      <PhIcon name={icon} size={18} color={color} />
+    <TouchableOpacity
+      testID={testID}
+      onPress={onPress}
+      style={[
+        styles.actionBtn,
+        bg ? { backgroundColor: bg, borderColor: bg } : null,
+      ]}
+    >
+      <PhIcon name={icon} size={18} color={iconColor || color} />
     </TouchableOpacity>
   );
 }
