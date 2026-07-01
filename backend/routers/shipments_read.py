@@ -48,6 +48,7 @@ shipments_read_router = APIRouter(prefix="/api", tags=["shipments-read"])
 def init() -> None:
     """Register routes after server.py finishes initialising."""
     import logging
+    import re as _re
     _logger = logging.getLogger("routers.shipments_read")
     from server import (  # noqa: WPS433 — intentional late import
         db,
@@ -56,6 +57,11 @@ def init() -> None:
         utcnow_iso,
         resolve_city,
         resolve_pincode,
+    )
+    from utils.search_normalize import (  # noqa: WPS433 — same rationale
+        normalize_text,
+        normalize_tokens,
+        build_search_blob,
     )
 
     # =================  Shipments — list + stats  =====================
@@ -100,16 +106,65 @@ def init() -> None:
         if courier_id:
             q["courier_id"] = courier_id
         if search:
-            q["$or"] = [
+            # ── Phase C — Universal Smart Search ────────────────────
+            #   1. Normalise the query the same way products are
+            #      normalised (unidecode + hyphen-join + gram/gm →
+            #      "g" + quantity-suffix strip).  This is the SAME
+            #      pipeline as the Suggested-Filters generator so
+            #      the chip count and the visible list always match.
+            #   2. Match on `_search_blob` (a pre-computed field on
+            #      every shipment containing the normalised
+            #      concatenation of items + customer_name + city +
+            #      order_id + notes + weight + …).
+            #   3. Fall back to the OLD field-scoped regex for any
+            #      shipments that haven't been backfilled yet — they
+            #      get their blob computed lazily on the next write.
+            n_query = normalize_text(search)
+            n_tokens = normalize_tokens(search)
+            or_branches = [
                 {"tracking_id":   {"$regex": search, "$options": "i"}},
                 {"customer_name": {"$regex": search, "$options": "i"}},
                 {"customer_phone": {"$regex": search, "$options": "i"}},
                 {"city":          {"$regex": search, "$options": "i"}},
                 {"order_id":      {"$regex": search, "$options": "i"}},
             ]
+            if n_tokens:
+                # AND across tokens (subset match) via one $regex
+                # per token — cheap on Mongo when the collection is
+                # tenant-scoped and small.
+                and_tokens = [
+                    {"_search_blob": {
+                        "$regex": _re.escape(t),
+                        "$options": "i",
+                    }} for t in n_tokens
+                ]
+                or_branches.append({"$and": and_tokens})
+            q["$or"] = or_branches
         docs = await db.shipments.find(q, {"_id": 0}).sort(
             "created_at", -1
         ).to_list(limit)
+
+        # ── Lazy backfill of `_search_blob`.  Any doc served here
+        #    without a blob gets one computed and persisted so future
+        #    searches match without a full migration script.  Fire
+        #    and forget — never blocks the response.
+        _to_backfill = [d for d in docs if not d.get("_search_blob")]
+        if _to_backfill:
+            import asyncio as _asyncio
+
+            async def _bf():
+                try:
+                    for d in _to_backfill:
+                        blob = build_search_blob(d)
+                        await db.shipments.update_one(
+                            {"id": d["id"]},
+                            {"$set": {"_search_blob": blob}},
+                        )
+                except Exception:  # noqa: BLE001
+                    pass
+
+            _asyncio.create_task(_bf())
+
         return [Shipment(**d) for d in docs]
 
     @shipments_read_router.get("/shipments/stats")
@@ -167,6 +222,97 @@ def init() -> None:
             "prepaid_count": prepaid_count,
             "revenue_total": cod_sum + prepaid_sum,
         }
+
+    # =================  Product Suggestions (Phase C)  ================
+
+    @shipments_read_router.get("/shipments/product-suggestions")
+    async def product_suggestions(
+        limit: int = 10,
+        min_count: int = 2,
+        current_user: Dict[str, Any] = Depends(_get_current_user),
+    ):
+        """Return the top-N most frequent (normalised) product tokens
+        across the caller's shipments.
+
+        Each suggestion carries a `count` that MATCHES the number of
+        shipments returned by `GET /shipments?search=<display>` — the
+        client uses this to render Suggested-Filter chips whose count
+        badge equals the resulting list length after the chip is
+        tapped.  Implementation:
+
+          1. Iterate the shipments collection scoped to user_id.
+          2. For every `items[]` entry, normalise via
+             `normalize_text()` (unidecode + hyphen-join + gram/gm
+             stripping + quantity-suffix strip).
+          3. Group by normalised form, keep the most common ORIGINAL
+             display variant, and count.
+          4. Second pass — for each group, `count_documents` against
+             `_search_blob` using the SAME regex the search endpoint
+             uses, so the badge is truthful even when several
+             normalised variants collide.
+        """
+        base = {"user_id": current_user["id"]}
+        # Fetch just the items[] array to keep the cursor tiny.
+        groups: Dict[str, Dict[str, Any]] = {}
+        cursor = db.shipments.find(base, {"_id": 0, "items": 1})
+        async for d in cursor:
+            arr = d.get("items") or []
+            if not isinstance(arr, list):
+                continue
+            for raw in arr:
+                term = str(raw or "").strip()
+                if len(term) < 2:
+                    continue
+                norm = normalize_text(term)
+                if not norm:
+                    continue
+                g = groups.get(norm)
+                if g is None:
+                    groups[norm] = {
+                        "norm": norm,
+                        "display": term,
+                        "raw_count": 1,
+                        "variants": {term: 1},
+                    }
+                else:
+                    g["raw_count"] += 1
+                    g["variants"][term] = g["variants"].get(term, 0) + 1
+                    # Prefer the most common original spelling — keeps
+                    # the chip label recognisable.
+                    if g["variants"][term] > g["variants"].get(g["display"], 0):
+                        g["display"] = term
+
+        # Second pass — resolve the TRUE match count using the same
+        # blob regex as the search endpoint, so tap-through never
+        # shows fewer results than the badge promises.
+        results = []
+        for g in groups.values():
+            if g["raw_count"] < min_count:
+                continue
+            tokens = [t for t in g["norm"].split(" ") if t]
+            if not tokens:
+                continue
+            and_clauses = [
+                {"_search_blob": {"$regex": _re.escape(t), "$options": "i"}}
+                for t in tokens
+            ]
+            q = {**base}
+            if len(and_clauses) == 1:
+                q.update(and_clauses[0])
+            else:
+                q["$and"] = and_clauses
+            match_count = await db.shipments.count_documents(q)
+            if match_count < min_count:
+                continue
+            results.append({
+                "display": g["display"],
+                "norm": g["norm"],
+                "count": match_count,
+            })
+
+        # Sort by count DESC, then by display alphabetical for stable order.
+        results.sort(key=lambda r: (-r["count"], r["display"].lower()))
+        return {"suggestions": results[: max(1, min(limit, 50))]}
 
     # =================  Shipments — export / single / bulk  ===========
 

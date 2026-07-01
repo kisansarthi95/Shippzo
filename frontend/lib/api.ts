@@ -953,6 +953,22 @@ export const Api = {
         revenue_total: number;
       }>("/shipments/stats")
       .then((r) => r.data),
+
+  /**
+   * Phase C — Universal Smart Search suggestions.
+   *
+   * Returns the top-N most frequent product tokens across the
+   * caller's shipments.  Each entry's `count` is guaranteed to
+   * match the number of shipments returned by
+   * `/api/shipments?search=<display>` because the backend uses the
+   * same normalised `_search_blob` for both.
+   */
+  productSuggestions: (limit = 10, min_count = 2) =>
+    api
+      .get<{
+        suggestions: { display: string; norm: string; count: number }[];
+      }>("/shipments/product-suggestions", { params: { limit, min_count } })
+      .then((r) => r.data.suggestions),
   /**
    * Phase-9: Warehouse-optimised "Scan to Dispatch" endpoint. Flips
    * a shipment from Pending → Dispatch atomically (no race), echoes

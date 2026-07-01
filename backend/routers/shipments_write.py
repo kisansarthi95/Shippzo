@@ -504,6 +504,15 @@ def init() -> None:
             and not order_id_explicit
             and doc.get("order_id") == doc.get("master_order_id")
         )
+        # Phase C — Universal Smart Search index. Compute the
+        # normalised search blob (unidecode + hyphen-join + gram/gm
+        # → "g" + quantity-suffix strip) so the READ endpoint can
+        # $regex against it directly.
+        try:
+            from utils.search_normalize import build_search_blob
+            doc["_search_blob"] = build_search_blob(doc)
+        except Exception:  # noqa: BLE001
+            doc["_search_blob"] = ""
         _retry_attempts = 0
         _max_retries = 5
         while True:
@@ -769,6 +778,22 @@ def init() -> None:
         )
         if not res:
             raise HTTPException(status_code=404, detail="Shipment not found")
+        # Phase C — refresh normalised search blob whenever a
+        # searchable field is touched (items, weight, customer_name,
+        # address, order_id, notes).  We rebuild off the *fresh*
+        # merged doc so the blob stays perfectly in sync with the
+        # stored data.
+        try:
+            from utils.search_normalize import build_search_blob
+            new_blob = build_search_blob(res)
+            if new_blob != (res.get("_search_blob") or ""):
+                await db.shipments.update_one(
+                    {"id": shipment_id},
+                    {"$set": {"_search_blob": new_blob}},
+                )
+                res["_search_blob"] = new_blob
+        except Exception:  # noqa: BLE001
+            pass
 
         # Best-effort Master-Sheet write-back. Plan-gated:
         # `sheet_two_way_status_sync` must be enabled for the user's plan.

@@ -1,0 +1,41 @@
+{
+  "summary": "Universal Smart Search (Phase C) backend verification. 7/8 tests PASS including T6 — the critical Suggested-Filters parity bug (count-badge == tap-through result count) is fixed and verified across all 6 suggestions returned by the admin workspace. T1 (blob backfilled), T2 items search, T3 word-order insensitivity, T4 case/hyphen insensitivity, T5 weight-unit collapse (100gm↔100 gram↔100g), T6 suggestions parity, T8 combined filters, T9 write path (create+update refreshes blob and drops old tokens) all pass. Only T7 (best-effort multilingual) fails due to a design flaw in how the schwa-compact fold interacts with the AND-of-tokens query: Gujarati-stored city 'ભાવનગર' (blob='bhaavngr bhvngr') does NOT match Latin search 'Bhavnagar' (query tokens=['bhavnagar','bhvngr'] — 'bhavnagar' substring is not in the blob, so the $and fails even though 'bhvngr' matches). See rca_of_issue below.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "GET /api/shipments?search=<latin>",
+        "issue": "Multilingual (schwa-compact) fold does not match in both directions. The normalizer emits BOTH the original Latin token and its schwa-compact skeleton, and the search endpoint AND's across every token. So searching 'Bhavnagar' produces tokens [bhavnagar, bhvngr] and requires BOTH substrings in the blob; a Gujarati-only stored value produces blob='bhaavngr bhvngr' which lacks 'bhavnagar' and therefore misses. T7 spec (POST city='ભાવનગર' → GET search=Bhavnagar) fails. Fix: treat each query term as (raw_token OR its schwa_compact) grouped, then AND across groups — or search on the compact form only when the raw and compact differ."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_smart_search.py",
+    "/app/test_reports/pytest/pytest_iteration_29_smart_search.xml"
+  ],
+  "action_items": [
+    "Fix multilingual bi-directional match: in shipments_read.list_shipments, when normalize_tokens returns a token whose schwa_compact differs, treat them as an OR-group inside the outer $and rather than two independent AND-clauses. Alternatively, only emit the schwa_compact form (drop the raw token) so both storage and query converge on the same skeleton — but that would break exact-substring matches like 'Widget' which have no schwa collapse. Cleanest fix: build_search_blob and normalize_tokens should each return a set of tokens where the OR relationship between original+compact is encoded into the QUERY builder (not the token list)."
+  ],
+  "critical_code_review_comments": [
+    "shipments_read.py list_shipments builds regex patterns with re.escape(t) — good. But the two additional OR branches for tracking_id / customer_name / customer_phone / city / order_id are now redundant with the _search_blob path and slow down every search on a large collection (5 regex OR clauses over full-scan-worthy indexed fields). Consider dropping the field-scoped fallback once you confirm all docs have _search_blob (which the backfill guarantees).",
+    "The lazy backfill in list_shipments spawns asyncio tasks in the request path. Under heavy list traffic this could fan-out lots of unindexed update_one calls. Consider adding a startup migration or a boolean 'blob_v1' flag to avoid recomputing on every list of the same never-updated legacy doc."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_smart_search.py (new)"
+  ],
+  "success_rate": {
+    "backend": "87.5% (7/8 tests — T7 multilingual has a real design gap; all T1–T6, T8, T9 pass)",
+    "frontend": "not tested (backend-only request)"
+  },
+  "seed_data_creation": "T9 creates 1 shipment and cancels it (soft delete). T7 creates 1 shipment with Gujarati city; cleanup runs but the FAIL point aborts before delete on assertion — the leaked row is a Prepaid TESTBLOB_MULTI/Widget in city='ભાવનગર', harmless but flag it for the main agent.",
+  "retest_needed": true,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Test creds admin@test.com / Admin@12345 (see /app/memory/test_credentials.md). Backend URL from EXPO_PUBLIC_BACKEND_URL. All 8 tests in /app/backend/tests/test_smart_search.py. After T7 fix, re-run this whole file; expected 8/8 green.",
+  "rca_of_issue": "RCA — T7 multilingual mismatch:\n\n1. Store side: shipment.city='ભાવનગર'. build_search_blob calls normalize_text('ભાવનગર'). unidecode gives 'bhaavngr' (Gujarati anusvara + matras collapse). normalize_text then appends the schwa-compact 'bhvngr'. So blob = 'bhaavngr bhvngr'.\n\n2. Query side: user searches 'Bhavnagar'. normalize_tokens returns sorted({'bhavnagar', 'bhvngr'}).\n\n3. list_shipments builds `$and: [{blob $regex 'bhavnagar'}, {blob $regex 'bhvngr'}]`. Second clause matches, first does NOT (blob has 'bhaavngr' not 'bhavnagar'). AND fails → 0 results.\n\nFix options (main agent to pick):\n  A) In list_shipments, group each query token with its schwa_compact into an inner $or, then AND the groups. Compute compact for each token via _schwa_compact and if it differs, wrap `{$or: [{blob:tok}, {blob:compact}]}`.\n  B) Change normalize_tokens to emit only the compact form for tokens where compact != original, AND ALSO index that compact form on the store side (already happens). Downside: pure-Latin queries like 'Widget' don't fold — need special-case skip when compact==original.\n  C) Store blob as a token SET and use $all match — same problem as (A) really.\n\nOption A is the smallest, safest change. Confirmed by inspecting utils/search_normalize.py:160–172 and routers/shipments_read.py:122–142."
+}

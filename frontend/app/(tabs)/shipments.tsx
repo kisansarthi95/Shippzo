@@ -231,38 +231,34 @@ export default function Shipments() {
   const [quickPicker, setQuickPicker] = useState<"print" | "label" | "courier" | null>(null);
   const [filterSheetOpen, setFilterSheetOpen] = useState(false);
 
-  // Phase C — Suggested Filters. Computes the most frequently
-  // occurring product names across the currently loaded shipments
-  // and exposes them as one-tap filter chips inside the Filter
-  // Bottom Sheet.  Tapping a chip drops the term into the search
-  // bar, so it composes with every other filter (status, print,
-  // label, courier, date, payment).
+  // Phase C — Suggested Filters (server-driven).
   //
-  // Rules:
-  //   • Case-insensitive counting on the flattened `items[]` array.
-  //   • Only surface items that appear 2+ times (otherwise every
-  //     unique product name would flood the list and be useless as
-  //     a "frequently used" hint).
-  //   • Sort by count DESC, then alphabetically for a stable order.
-  //   • Cap at 10 to keep the sheet compact.
-  const suggestedFilters = useMemo(() => {
-    const counts = new Map<string, { display: string; count: number }>();
-    for (const s of items) {
-      const arr = Array.isArray((s as any).items) ? (s as any).items : [];
-      for (const raw of arr) {
-        const term = String(raw || "").trim();
-        if (term.length < 2) continue;
-        const key = term.toLowerCase();
-        const prev = counts.get(key);
-        if (prev) prev.count += 1;
-        else counts.set(key, { display: term, count: 1 });
-      }
-    }
-    return Array.from(counts.values())
-      .filter((v) => v.count >= 2)
-      .sort((a, b) => (b.count - a.count) || a.display.localeCompare(b.display))
-      .slice(0, 10);
-  }, [items]);
+  // Historically we counted product-name frequency client-side over
+  // the loaded `items` array — but that meant the badge count could
+  // never match the search endpoint's result count (they used
+  // different match logic and the client only saw the first N
+  // shipments).
+  //
+  // The backend now owns both:
+  //   * `/api/shipments/product-suggestions`  → returns a normalised
+  //     token, a display variant, and the EXACT number of shipments
+  //     that will match when the chip is tapped.
+  //   * `/api/shipments?search=<display>`     → matches via the same
+  //     normalised `_search_blob` so tap-through NEVER shows fewer
+  //     rows than the badge promises.
+  //
+  // Fetched lazily whenever `items` changes so newly-created
+  // shipments feed into the suggestions on the next refresh.
+  const [suggestedFilters, setSuggestedFilters] = useState<
+    { display: string; norm: string; count: number }[]
+  >([]);
+  useEffect(() => {
+    let cancelled = false;
+    Api.productSuggestions(10, 2)
+      .then((rows) => { if (!cancelled) setSuggestedFilters(rows || []); })
+      .catch(() => { if (!cancelled) setSuggestedFilters([]); });
+    return () => { cancelled = true; };
+  }, [items.length]);
   // Phase B — when the "+ Create new label" button in the Filter
   // Bottom Sheet is tapped we open LabelPickerSheet in a special
   // "create-mode-only" state.  We reuse the existing sheet by
