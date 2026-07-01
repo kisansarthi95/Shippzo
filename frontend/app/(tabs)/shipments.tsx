@@ -447,8 +447,13 @@ export default function Shipments() {
       Alert.alert("Choose layout", "Pick a print layout (Thermal / A4 / A6) first.");
       return;
     }
+    // Capture the id list BEFORE the print — the OS print dialog can
+    // take a while and by the time we come back the user may have
+    // touched the selection, so we snapshot upfront and use this
+    // exact list in the Confirm-Bulk-Print dialog below.
+    const idsSnapshot = Array.from(selectedIds);
     try {
-      const shipments = await Api.bulkFetch(Array.from(selectedIds));
+      const shipments = await Api.bulkFetch(idsSnapshot);
       if (shipments.length === 0) return;
       const html = buildLabelHtml(shipments, settings.sender, {
         perPage: bulkPerPage,
@@ -465,6 +470,61 @@ export default function Shipments() {
       await Print.printAsync({ html, ...(dims || {}) });
       // Remember this layout as the user's last-used choice.
       persistLastUsedPerPage(bulkPerPage);
+
+      // ── Phase F4.4 — ONE Confirm-Bulk-Print dialog after the
+      //    entire batch completes. Unlike the single-print flow, we
+      //    do NOT queue one confirmation per shipment; a single
+      //    "Yes, All Printed" tap marks every selected shipment as
+      //    Printed in one Promise.all fan-out.
+      const batchCount = idsSnapshot.length;
+      Alert.alert(
+        "Confirm Bulk Print",
+        `Did all ${batchCount} shipment ${batchCount === 1 ? "label" : "labels"} print successfully?`,
+        [
+          { text: "Cancel", style: "cancel" },
+          {
+            text: "Yes, All Printed",
+            onPress: async () => {
+              try {
+                // Parallel fan-out — one PUT per shipment. Failures
+                // are per-id and never block the rest of the batch;
+                // a failed id simply stays "Not Printed" and the
+                // user can retry from its card. `allSettled` gives
+                // us the count of survivors for the summary toast.
+                const results = await Promise.allSettled(
+                  idsSnapshot.map((sid) => Api.setPrintStatus(sid, true)),
+                );
+                const okIds = new Set<string>();
+                results.forEach((r, i) => {
+                  if (r.status === "fulfilled") okIds.add(idsSnapshot[i]);
+                });
+                // Optimistic UI — flip the Printed state locally on
+                // every successful id so cards turn green before the
+                // background refetch reconciles.
+                setItems((prev) => prev.map((row) =>
+                  okIds.has(row.id)
+                    ? { ...row, print_status: "Printed" as any }
+                    : row,
+                ));
+                // Surface partial failures without blocking success.
+                const failed = idsSnapshot.length - okIds.size;
+                if (failed > 0) {
+                  Alert.alert(
+                    "Some shipments could not be marked",
+                    `${okIds.size} marked as Printed, ${failed} failed. The failed ones will stay orange — retry from their cards.`,
+                  );
+                }
+                load().catch(() => {});
+              } catch (e: any) {
+                Alert.alert(
+                  "Couldn't save print status",
+                  e?.response?.data?.detail || e?.message || "Try again.",
+                );
+              }
+            },
+          },
+        ],
+      );
     } catch (e: any) {
       Alert.alert("Error", e?.message || "Failed");
     }
