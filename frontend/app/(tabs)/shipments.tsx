@@ -998,15 +998,63 @@ export default function Shipments() {
   };
 
   // Live count per status filter — powers badge numbers on each tab.
-  // Uses the already-loaded `items` so badges never lag the list.
+  // Bug-fix (Jul-2026): badges must respect every other active filter
+  // (print / label / courier / date / payment) so the visible count on
+  // "All" matches the actual list length after those filters are
+  // applied. Only the status filter itself is excluded from the input
+  // set — otherwise each status tab would only ever show its own count.
+  const countableItems = useMemo(() => {
+    // Reuse the same filter chain as `dateFilteredItems` but skip the
+    // status filter (that's the whole point of these per-tab counts).
+    const byPrint = printFilter === "All"
+      ? items
+      : items.filter((s) => {
+          const isPrinted = (s.print_status || "") === "Printed";
+          return printFilter === "Printed" ? isPrinted : !isPrinted;
+        });
+    const byLabel = !labelFilter
+      ? byPrint
+      : byPrint.filter((s) => {
+          const arr = shipmentLabels[s.id] || (s as any).labels || [];
+          return Array.isArray(arr) && arr.includes(labelFilter);
+        });
+    const byPay = paymentFilter.size === 0
+      ? byLabel
+      : byLabel.filter((s) => paymentFilter.has(String((s as any).payment_mode || "").trim()));
+    const byCourier = !courierFilter
+      ? byPay
+      : byPay.filter((s) => String((s as any).courier_id || "") === courierFilter);
+    if (dateFilter === "all") return byCourier;
+    if (dateFilter === "custom") {
+      if (!customFrom && !customTo) return byCourier;
+      const from = customFrom ? new Date(customFrom.getFullYear(), customFrom.getMonth(), customFrom.getDate()).getTime() : 0;
+      const to = customTo ? new Date(customTo.getFullYear(), customTo.getMonth(), customTo.getDate(), 23, 59, 59, 999).getTime() : Number.MAX_SAFE_INTEGER;
+      return byCourier.filter((s) => {
+        const t = Date.parse(s.created_at || "");
+        return !isNaN(t) && t >= from && t <= to;
+      });
+    }
+    const now = Date.now();
+    const cutoff =
+      dateFilter === "today"
+        ? now - 24 * 60 * 60 * 1000
+        : dateFilter === "week"
+        ? now - 7 * 24 * 60 * 60 * 1000
+        : now - 30 * 24 * 60 * 60 * 1000;
+    return byCourier.filter((s) => {
+      const t = Date.parse(s.created_at || "");
+      return !isNaN(t) && t >= cutoff;
+    });
+  }, [items, printFilter, labelFilter, shipmentLabels, paymentFilter, courierFilter, dateFilter, customFrom, customTo]);
+
   const statusCounts = useMemo(() => {
     const counts: Record<StatusFilter, number> = {
-      "All": items.length,
+      "All": countableItems.length,
       "Pending": 0, "Processing": 0, "Ready to Ship": 0, "Shipped": 0,
       "Delivered": 0, "Feedback": 0, "Modified": 0,
       "Cancel by buyer": 0, "Cancelled": 0, "Returned": 0,
     };
-    for (const s of items) {
+    for (const s of countableItems) {
       const st = s.status || "";
       for (const f of STATUS_FILTER_ORDER) {
         if (f === "All") continue;
@@ -1014,7 +1062,7 @@ export default function Shipments() {
       }
     }
     return counts;
-  }, [items]);
+  }, [countableItems]);
 
   // Phase-33 — "Remove" no longer hard-deletes. The trash icon has
   // been replaced by an X "Cancel Order" tick that triggers the
