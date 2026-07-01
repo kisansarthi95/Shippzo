@@ -433,5 +433,5 @@ def init() -> None:
     )
     smart_paste_router.post("/smart-paste/chat")(smart_paste_chat)
     smart_paste_router.post("/smart-paste/photo")(smart_paste_photo)
-    smart_paste_router.post("/smart-paste", response_model=PendingOrder)(smart_paste_create)
+    smart_paste_router.post("/smart-paste")(smart_paste_create)
     _logger.info("[smart_paste] 3 heavy endpoints rebound (Phase-5h)")

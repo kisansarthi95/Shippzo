@@ -2117,6 +2117,14 @@ class PendingOrder(BaseModel):
     # impossible to miss. `is_repeat_customer` is set at ingest time
     # when the customer's phone matches an existing shipment for the
     # same user → UI paints a REPEAT badge alongside (or instead of)
+    # Phase F4.5 — Sheet-row dedup key. Populated when the frontend
+    # imports this pending order from a row of the connected Google
+    # Sheet (via /api/sheets/orders). The (user_id, sheet_row_key)
+    # unique partial index enforces at-most-once import at the DB
+    # layer; the application-level pre-check in smart_paste_create
+    # returns the existing row with `skipped: true` on collision.
+    sheet_row_key: str = ""
+
     # NEW. Both default to False so legacy rows stay valid.
     viewed: bool = False
     is_repeat_customer: bool = False
@@ -2131,6 +2139,15 @@ class SmartPasteRequest(BaseModel):
     # column letter (best-effort) and persists on the PendingOrder so
     # they flow into the eventual shipment.
     custom_values: Optional[Dict[str, str]] = None
+    # Phase F4.5 — Optional sheet-row identifier. When present the
+    # endpoint runs the dedup pre-check and returns the existing row
+    # (with `skipped: true`) instead of inserting a duplicate.
+    sheet_row_key: Optional[str] = ""
+    # Explicit order_id override (secondary dedup key). Normally the
+    # server derives order_id from the parsed text; passing it here
+    # lets the client force a specific value AND makes the dedup
+    # order_id branch fire even before AI parsing runs.
+    order_id: Optional[str] = ""
 
 
 class SmartPasteChatRequest(BaseModel):
@@ -3183,6 +3200,17 @@ async def smart_paste_create(
         **{k: v for k, v in fields.items() if k in PendingOrder.model_fields
            and k not in ("sheet_row_num", "custom_values")},
     )
+    # Phase F4.5 — Persist the client-supplied sheet dedup identifiers
+    # onto the PendingOrder so both (a) the unique partial index on
+    # (user_id, sheet_row_key) can catch race duplicates and (b) the
+    # application-level pre-check below sees a non-empty key. Client-
+    # supplied `order_id` overrides whatever the parser extracted.
+    _client_row_key = str((payload.sheet_row_key or "")).strip()
+    _client_order_id = str((payload.order_id or "")).strip()
+    if _client_row_key:
+        po.sheet_row_key = _client_row_key
+    if _client_order_id:
+        po.order_id = _client_order_id
     # Phase-21 — Tag the row as a REPEAT customer if this phone has
     # already been shipped at least once by the same user. Cheap
     # indexed query; never raises.
