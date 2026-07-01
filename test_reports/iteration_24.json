@@ -1,0 +1,42 @@
+{
+  "summary": "Phase F4.2 Tracking-ID-Required gate on PUT /api/shipments/{id}: 18/19 backend assertions PASSED against the live preview backend (admin@test.com). Scenarios A (5 reject-without-tracking cases → 422 with correct detail prefix), B (Pending/Cancelled/Cancel by buyer/Returned → 200 without tracking), C1 (tracking_id + status in one payload → 200), C3 (whitespace-only tracking rejected → 422), D (full Processing→Delivered progression with tracking → 200 and delivered_at stamped), E (non-status updates: customer_name/amount/address → 200), F1/F2/F3 (list, POST default status=Pending, terminal-lock 423 beats tracking gate 422). One failure: C2 — supplying manual_tracking_id + status in the same PUT returns 422 instead of 200 because ShipmentUpdate Pydantic model (/app/backend/server.py:721) does NOT declare manual_tracking_id. FastAPI silently drops the field from the payload, the tracking gate sees no incoming tracking id, and rejects the request. This blocks the one-shot 'add manual AWB + advance status' flow the review explicitly requires.",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "PUT /api/shipments/{id}",
+        "issue": "ShipmentUpdate (server.py:721-757) is missing the `manual_tracking_id: Optional[str] = None` field. As a result, PUT payloads containing manual_tracking_id + status are stripped by Pydantic, and the F4.2 tracking gate rejects them with 422 even though a valid manual AWB was supplied. Reproduction: PUT /api/shipments/{id} {\"manual_tracking_id\":\"MAN-AWB-2002\",\"status\":\"Processing\"} on an untracked Pending shipment → returns 422 {detail:'Tracking ID Required — ...'}. Expected: 200 with status=Processing and manual_tracking_id persisted. Fix: add `manual_tracking_id: Optional[str] = None` to ShipmentUpdate.",
+        "priority": "HIGH"
+      }
+    ],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_phase_f42_tracking_gate.py",
+    "/app/test_reports/pytest/pytest_iteration_24_f42.xml"
+  ],
+  "action_items": [
+    "Add `manual_tracking_id: Optional[str] = None` to the ShipmentUpdate model in /app/backend/server.py (~line 721-757) so the F4.2 tracking gate can honour manual_tracking_id supplied in the same PUT that advances the status. No other changes needed — the gate logic in routers/shipments_write.py already inspects update.get('manual_tracking_id')."
+  ],
+  "critical_code_review_comments": [
+    "F4.2 gate implementation in /app/backend/routers/shipments_write.py:652-682 is clean and correct: whitelist set is well-scoped, .strip() correctly rejects whitespace, dual-source check (existing DB tracking OR incoming payload tracking) works, 423 terminal-lock guard fires before the 422 tracking guard so cancelled shipments do not spuriously flip error codes.",
+    "Model/router coupling: because ShipmentUpdate is the sole shape allowed into the PUT, ANY field the router reads from `update` must also be declared on ShipmentUpdate. `manual_tracking_id` is read but not declared — this is the root cause of the C2 failure."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_phase_f42_tracking_gate.py (new)"
+  ],
+  "success_rate": {
+    "backend": "94.7% (18/19)",
+    "frontend": "N/A — backend-only review"
+  },
+  "seed_data_creation": "Test creates 14 Pending shipments prefixed customer_name='TEST_F42_<hex>' via POST /api/shipments as admin. Session-scoped teardown DELETEs each (which flips to Cancelled per Phase-33). No manual DB seeding used.",
+  "retest_needed": true,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "After main agent adds `manual_tracking_id: Optional[str] = None` to ShipmentUpdate, re-run: `cd /app/backend && EXPO_PUBLIC_BACKEND_URL=https://logistics-hub-740.preview.emergentagent.com python -m pytest tests/test_phase_f42_tracking_gate.py -v`. All 19 tests should pass. The C2 test is already written to assert 200 + manual_tracking_id persisted on GET; no test-file changes needed.",
+  "rca_of_issue": "RCA for C2 failure: FastAPI validates the incoming PUT body against ShipmentUpdate (server.py:721). Pydantic v2's default behaviour drops fields not declared on the model. ShipmentUpdate declares tracking_id, courier_id, courier_name, order_id, customer_*, address_*, city/state/pincode, payment_mode, amount, cod_amount, items, item_description, weight, weight_value, weight_unit, token_amount, box_dimensions, shipment_notes, status, variant_*, package_type, category, rate_applied, rate_basis — but NOT manual_tracking_id. Consequently `payload.model_dump()` in shipments_write.py:620 returns an update dict missing the field. The F4.2 gate at line 667-673 checks `update.get('manual_tracking_id')` → empty; combined with empty existing DB value, it raises 422. Fix: single-line addition on ShipmentUpdate. Impact: without the fix, operators using manual/scan-based couriers (India Post, Anjani, etc.) cannot in one PUT both attach the manual AWB and advance the shipment status — they must first PUT tracking, then PUT status, which is exactly what the F4.2 review explicitly requires to work in a single call."
+}

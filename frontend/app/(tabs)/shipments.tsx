@@ -496,9 +496,23 @@ export default function Shipments() {
     // Users can get the full 8-status picker via the "⋮" chip tap.
     const prev = s.status || "Pending";
     const newStatus = prev === "Delivered" ? "Ready to Ship" : "Delivered";
+    // Phase F4.2 — Same tracking-ID gate as the Next-Stage button.
+    if (!guardTrackingForNextStatus(s, newStatus)) return;
     try {
       await Api.updateShipment(s.id, { status: newStatus });
     } catch (e: any) {
+      if (
+        e?.response?.status === 422 &&
+        typeof e?.response?.data?.detail === "string" &&
+        e.response.data.detail.startsWith("Tracking ID Required")
+      ) {
+        Alert.alert(
+          "Tracking ID Required",
+          "Please add the Courier Tracking ID before moving this shipment to the next stage.",
+          [{ text: "OK" }],
+        );
+        return;
+      }
       if (isNetworkErrish(e)) {
         await SyncQueue.enqueueShipmentStatus(s.id, newStatus, s.tracking_id);
       } else {
@@ -555,9 +569,28 @@ export default function Shipments() {
     }
     setStatusUpdating(true);
     try {
+      // Phase F4.2 — Same guard as the Next-Stage button. `Cancelled`
+      // and `Returned` are already exempted inside the guard so they
+      // continue to flow through the terminal-confirmation modal.
+      if (!guardTrackingForNextStatus(statusPickerShipment, newStatus)) {
+        setStatusUpdating(false);
+        return;
+      }
       try {
         await Api.updateShipment(statusPickerShipment.id, { status: newStatus });
       } catch (e: any) {
+        if (
+          e?.response?.status === 422 &&
+          typeof e?.response?.data?.detail === "string" &&
+          e.response.data.detail.startsWith("Tracking ID Required")
+        ) {
+          Alert.alert(
+            "Tracking ID Required",
+            "Please add the Courier Tracking ID before moving this shipment to the next stage.",
+            [{ text: "OK" }],
+          );
+          return;
+        }
         if (isNetworkErrish(e)) {
           await SyncQueue.enqueueShipmentStatus(
             statusPickerShipment.id,
@@ -684,14 +717,67 @@ export default function Shipments() {
   };
 
   const [advancingId, setAdvancingId] = useState<string | null>(null);
+
+  // ─────────────────────────────────────────────────────────────
+  // Phase F4.2 — Tracking-ID-required client-side gate.
+  //
+  // Mirrors the backend rule in shipments_write.py:
+  //   A shipment MUST NOT move beyond Pending until a courier
+  //   Tracking ID has been assigned. Frontend prevents the user
+  //   action; backend rejects any bypass with HTTP 422.
+  //
+  // Returns true when the transition is allowed to proceed; false
+  // AFTER showing the informative alert when it should be blocked.
+  // ─────────────────────────────────────────────────────────────
+  const STATUS_ALLOWED_WITHOUT_TRACKING = new Set<string>([
+    "Pending", "Cancelled", "Cancel by buyer", "Returned",
+  ]);
+  const shipmentHasTracking = (s: Shipment | null | undefined): boolean => {
+    if (!s) return false;
+    return !!((s.tracking_id || "").trim() || ((s as any).manual_tracking_id || "").trim());
+  };
+  const guardTrackingForNextStatus = (
+    s: Shipment | null | undefined,
+    nextStatus: string,
+  ): boolean => {
+    if (!s || !nextStatus) return true;
+    if (STATUS_ALLOWED_WITHOUT_TRACKING.has(nextStatus)) return true;
+    if (shipmentHasTracking(s)) return true;
+    Alert.alert(
+      "Tracking ID Required",
+      "Please add the Courier Tracking ID before moving this shipment to the next stage.",
+      [{ text: "OK" }],
+    );
+    return false;
+  };
+
   const advanceStage = async (ship: Shipment) => {
     const next = nextStageOf(ship.status || "");
     if (!next) return;
+    // Phase F4.2 — Guard before we even set the loading state so the
+    // button doesn't briefly grey-out on a blocked action.
+    if (!guardTrackingForNextStatus(ship, next)) return;
     setAdvancingId(ship.id);
     try {
       try {
         await Api.updateShipment(ship.id, { status: next });
       } catch (e: any) {
+        // Defence-in-depth: backend returned 422 tracking-required
+        // even though the local guard let it through (e.g., cache
+        // race after tracking was cleared). Surface the exact same
+        // friendly dialog as the local check.
+        if (
+          e?.response?.status === 422 &&
+          typeof e?.response?.data?.detail === "string" &&
+          e.response.data.detail.startsWith("Tracking ID Required")
+        ) {
+          Alert.alert(
+            "Tracking ID Required",
+            "Please add the Courier Tracking ID before moving this shipment to the next stage.",
+            [{ text: "OK" }],
+          );
+          return;
+        }
         if (isNetworkErrish(e)) {
           await SyncQueue.enqueueShipmentStatus(
             ship.id, next, ship.tracking_id,

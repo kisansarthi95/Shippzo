@@ -596,7 +596,17 @@ def init() -> None:
         )
         existing = await db.shipments.find_one(
             {"id": shipment_id, "user_id": current_user["id"]},
-            {"_id": 0, "status": 1, "payment_mode": 1, "token_amount": 1},
+            {
+                "_id": 0,
+                "status": 1,
+                "payment_mode": 1,
+                "token_amount": 1,
+                # Phase F4.2 — need current tracking fields for the
+                # "cannot advance beyond Pending without a Tracking ID"
+                # gate below.
+                "tracking_id": 1,
+                "manual_tracking_id": 1,
+            },
         )
         if not existing:
             raise HTTPException(status_code=404, detail="Shipment not found")
@@ -609,6 +619,68 @@ def init() -> None:
         update = {
             k: v for k, v in payload.model_dump().items() if v is not None
         }
+
+        # ─────────────────────────────────────────────────────────────
+        # Phase F4.2 — Tracking-ID-required gate.
+        #
+        # Business rule:
+        #   A Shipment MUST NOT move beyond the Pending stage until a
+        #   valid Courier Tracking ID has been assigned.
+        #
+        # Allowed statuses without a tracking id:
+        #   • "Pending"         (initial state, no motion)
+        #   • "Cancelled"       (backward — user can cancel a bare order)
+        #   • "Cancel by buyer" (backward)
+        #   • "Returned"        (terminal — see is_terminal_shipment_status;
+        #                        implicitly blocked below since Returned
+        #                        implies it was previously Shipped so a
+        #                        tracking id already exists — but we
+        #                        list it anyway for correctness against
+        #                        weird migrated data)
+        #
+        # Everything else (Processing / Ready to Ship / Dispatch /
+        # Shipped / Delivered / Feedback / In Transit / Out for
+        # Delivery / Undelivered / RTO / …) requires a non-empty
+        # tracking_id OR manual_tracking_id — either already stored
+        # on the shipment, or arriving in THIS same PUT payload
+        # (so an operator can add the tracking id and advance the
+        # status in one call).
+        #
+        # Enforced at the API boundary so a compromised or misbehaving
+        # client cannot bypass this rule.
+        # ─────────────────────────────────────────────────────────────
+        _STATUS_ALLOWED_WITHOUT_TRACKING = {
+            "Pending",
+            "Cancelled",
+            "Cancel by buyer",
+            "Returned",
+        }
+        _incoming_status = update.get("status")
+        if (
+            _incoming_status
+            and str(_incoming_status).strip() not in _STATUS_ALLOWED_WITHOUT_TRACKING
+        ):
+            _trk_existing = (
+                str(existing.get("tracking_id") or "").strip()
+                or str(existing.get("manual_tracking_id") or "").strip()
+            )
+            _trk_incoming = (
+                str(update.get("tracking_id") or "").strip()
+                if "tracking_id" in update else ""
+            ) or (
+                str(update.get("manual_tracking_id") or "").strip()
+                if "manual_tracking_id" in update else ""
+            )
+            if not _trk_existing and not _trk_incoming:
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        "Tracking ID Required — Please add the Courier "
+                        "Tracking ID before moving this shipment to the "
+                        "next stage."
+                    ),
+                )
+
         if "status" in update and update["status"] == "Delivered":
             update["delivered_at"] = utcnow_iso()
         # Phase-33 — Stamp terminal-state metadata when the target

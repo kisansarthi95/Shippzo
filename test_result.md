@@ -256,6 +256,124 @@ agent_communication:
 #====================================================================================================
 # Testing Data - Main Agent and testing sub agent both should log testing data below this section
 #====================================================================================================
+## Backend Test Run: Tracking-ID Required Validation (Phase F4.2) (2026-07-01)
+
+backend:
+  - task: "Tracking-ID Required Validation (Phase F4.2)"
+    implemented: true
+    working: false
+    file: "/app/backend/routers/shipments_write.py, /app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+        -working: false
+        -agent: "testing"
+        -comment: |
+            18/19 assertions PASSED against
+            https://logistics-hub-740.preview.emergentagent.com/api
+            via /app/backend/tests/test_phase_f42_tracking_gate.py.
+
+            PASSING (per review-request scenarios):
+              A1-A5 — PUT /api/shipments/{id} status ∈ {Processing,
+                Ready to Ship, Shipped, Delivered, Out for Delivery}
+                on an untracked Pending row → 422 with detail
+                "Tracking ID Required — Please add the Courier Tracking
+                ID before moving this shipment to the next stage."
+                Follow-up GET confirms status stays "Pending". PASS.
+              B1-B4 — status ∈ {Pending, Cancelled, Cancel by buyer,
+                Returned} on untracked row → 200. PASS.
+              C1 — {tracking_id:"TESTAWB1001", status:"Processing"}
+                on untracked row → 200; GET confirms both fields
+                updated. PASS.
+              C3 — {tracking_id:"   ", status:"Processing"} → 422
+                (whitespace correctly rejected via .strip()). PASS.
+              D1-D4 — Existing tracking_id "AWB-999", walk
+                Processing → Ready to Ship → Shipped → Delivered.
+                All 200; delivered_at stamped correctly. PASS.
+              E1-E3 — {customer_name}/{amount}/{address_line1} without
+                any status field → 200; gate correctly does not
+                fire when the update has no status. Status stays
+                Pending. PASS.
+              F1 — GET /api/shipments?limit=5 → 200 list unchanged.
+              F2 — POST /api/shipments defaults status="Pending" and
+                stays untracked when tracking_id="" is supplied.
+              F3 — Cancelled row + PUT {status:"Processing"} → 423
+                (terminal-lock) with the terminal-lock detail, NOT
+                422. Gate ordering (423 before 422) is correct.
+
+            FAILING:
+              C2 — PUT {manual_tracking_id:"MAN-AWB-2002",
+                status:"Processing"} on an untracked row returns
+                422 instead of 200.
+
+              RCA — /app/backend/server.py:721-757 defines
+                `class ShipmentUpdate(BaseModel)` without a
+                `manual_tracking_id` field. FastAPI validates the PUT
+                body against this model; Pydantic silently drops the
+                unknown field. shipments_write.py:620 does
+                `update = {k:v for k,v in payload.model_dump().items()
+                if v is not None}` so `manual_tracking_id` never
+                reaches the update dict. The F4.2 gate at
+                shipments_write.py:667-673 then reads
+                update.get("manual_tracking_id") → "" and rejects
+                the request with 422.
+
+              IMPACT — Operators using manual/scan couriers (India
+                Post Speed Post, Anjani, etc.) cannot attach the
+                AWB and advance the status in a single PUT. They
+                would have to send two PUTs (which is disallowed
+                by the same gate for the second call since the
+                first-PUT-only-manual-tracking-id would need to
+                exist as a field too — same root cause).
+
+              FIX — Add `manual_tracking_id: Optional[str] = None`
+                to ShipmentUpdate in /app/backend/server.py
+                alongside `tracking_id`. Single-line change. Gate
+                logic already handles the field correctly.
+
+            REGRESSION IMPACT: No existing endpoint or flow broken.
+            The F4.2 gate only fires on PUT /api/shipments/{id}
+            when the payload carries a `status` field not in the
+            whitelist and the shipment lacks both tracking columns.
+
+            Cleanup: 14 test shipments (customer_name prefix
+            "TEST_F42_") created and DELETEd/flipped to Cancelled
+            via the test's session-scoped teardown. Backend logs
+            confirm all DELETEs returned 200.
+
+            Test file: /app/backend/tests/test_phase_f42_tracking_gate.py
+            JUnit:     /app/test_reports/pytest/pytest_iteration_24_f42.xml
+
+agent_communication:
+    -agent: "testing"
+    -message: |
+        Phase F4.2 Tracking-ID gate — 18/19 PASSED.
+
+        ✅ A/B/D/E/F all pass. C1 and C3 pass. Gate ordering is
+        correct (423 before 422), whitespace tracking correctly
+        rejected, delivered_at stamped when moving to Delivered
+        with a valid tracking, non-status updates unaffected,
+        POST default status still Pending.
+
+        ❌ C2 fails: manual_tracking_id + status in the same PUT
+        returns 422. Root cause is a missing field on the
+        ShipmentUpdate Pydantic model — not in the F4.2 gate code
+        itself. Fix is a single-line addition:
+        `manual_tracking_id: Optional[str] = None` in
+        /app/backend/server.py at ~line 722 (next to tracking_id).
+
+        Main agent: please apply the one-line fix to ShipmentUpdate
+        and re-run:
+          cd /app/backend && EXPO_PUBLIC_BACKEND_URL=https://logistics-hub-740.preview.emergentagent.com \
+            python -m pytest tests/test_phase_f42_tracking_gate.py -v
+
+        Once C2 turns green (all 19/19), this task can be marked
+        working: true.
+
+---
+
+
 ## Backend Test Run: Phase-28 Dynamic WhatsApp Provider — Step 7 re-test after bug-fix (2026-05-30)
 
 backend:
