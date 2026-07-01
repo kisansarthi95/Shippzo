@@ -19,6 +19,7 @@ import {
   ScrollView, TextInput, ActivityIndicator, Alert, Pressable,
 } from "react-native";
 import PhIcon from "./PhIcon";
+import LabelChip from "./LabelChip";
 import {
   LabelsApi,
   ShipmentLabel,
@@ -228,6 +229,27 @@ export default function LabelPickerSheet({
                   );
                 })}
               </View>
+              {/* ── Phase F4.7 — Live preview chip. Rebuilds on every
+                     keystroke / icon-tap / color-tap so the operator
+                     sees exactly what the chip will look like once
+                     saved. Uses the existing LabelChip so any future
+                     chip styling change flows here automatically. */}
+              <Text style={styles.fieldLabel}>Preview</Text>
+              <View style={styles.previewRow}>
+                <LabelChip
+                  label={{
+                    id:         "__preview__",
+                    user_id:    "",
+                    name:       name.trim() || "Label name",
+                    icon:       icon,
+                    color:      color,
+                    kind:       "custom" as any,
+                    is_default: false,
+                    created_at: "",
+                    updated_at: "",
+                  }}
+                />
+              </View>
               <TouchableOpacity
                 style={[styles.saveBtn, saving && { opacity: 0.6 }]}
                 onPress={submitCreate}
@@ -316,6 +338,15 @@ const styles = StyleSheet.create({
     backgroundColor: colors.primary,
     marginTop: 16, paddingVertical: 12,
     borderRadius: 10, alignItems: "center",
+  },
+  // Phase F4.7 — Live preview row sits directly above the Save button.
+  // Left-aligned so it visually reads as "this is what you're building".
+  previewRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginTop: 4,
+    paddingVertical: 8,
+    paddingHorizontal: 4,
   },
   saveTxt: { color: "#fff", fontWeight: "800", fontSize: 15 },
 });
