@@ -230,6 +230,39 @@ export default function Shipments() {
   const [courierFilter, setCourierFilter] = useState<string>("");
   const [quickPicker, setQuickPicker] = useState<"print" | "label" | "courier" | null>(null);
   const [filterSheetOpen, setFilterSheetOpen] = useState(false);
+
+  // Phase C — Suggested Filters. Computes the most frequently
+  // occurring product names across the currently loaded shipments
+  // and exposes them as one-tap filter chips inside the Filter
+  // Bottom Sheet.  Tapping a chip drops the term into the search
+  // bar, so it composes with every other filter (status, print,
+  // label, courier, date, payment).
+  //
+  // Rules:
+  //   • Case-insensitive counting on the flattened `items[]` array.
+  //   • Only surface items that appear 2+ times (otherwise every
+  //     unique product name would flood the list and be useless as
+  //     a "frequently used" hint).
+  //   • Sort by count DESC, then alphabetically for a stable order.
+  //   • Cap at 10 to keep the sheet compact.
+  const suggestedFilters = useMemo(() => {
+    const counts = new Map<string, { display: string; count: number }>();
+    for (const s of items) {
+      const arr = Array.isArray((s as any).items) ? (s as any).items : [];
+      for (const raw of arr) {
+        const term = String(raw || "").trim();
+        if (term.length < 2) continue;
+        const key = term.toLowerCase();
+        const prev = counts.get(key);
+        if (prev) prev.count += 1;
+        else counts.set(key, { display: term, count: 1 });
+      }
+    }
+    return Array.from(counts.values())
+      .filter((v) => v.count >= 2)
+      .sort((a, b) => (b.count - a.count) || a.display.localeCompare(b.display))
+      .slice(0, 10);
+  }, [items]);
   // Phase B — when the "+ Create new label" button in the Filter
   // Bottom Sheet is tapped we open LabelPickerSheet in a special
   // "create-mode-only" state.  We reuse the existing sheet by
@@ -2827,7 +2860,17 @@ export default function Shipments() {
         onOpenCustomDate={() => setShowDateModal(true)}
         paymentFilter={paymentFilter}
         setPaymentFilter={setPaymentFilter}
-        onCreateLabel={() => setLabelCreateOpen(true)}
+        suggestions={suggestedFilters}
+        onPickSuggestion={(term) => {
+          // Drop the suggestion into the search bar → the existing
+          // `search` state drives the backend query, so this
+          // instantly filters the list and composes cleanly with
+          // every other active filter (status, print, label, etc.).
+          setSearch(term);
+          // Kick off an immediate reload so users see the filtered
+          // list without waiting for the debounce timer.
+          load().catch(() => {});
+        }}
         onClearAll={() => {
           setDateFilter("all");
           setCustomFrom(null);

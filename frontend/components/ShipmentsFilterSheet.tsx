@@ -23,6 +23,8 @@ import { colors } from "../lib/theme";
 
 type DateFilterKey = "all" | "today" | "week" | "month" | "custom";
 
+type Suggestion = { display: string; count: number };
+
 type Props = {
   visible: boolean;
   onClose: () => void;
@@ -35,9 +37,11 @@ type Props = {
   // Payment
   paymentFilter: Set<string>;
   setPaymentFilter: (v: Set<string>) => void;
-  // Create Label shortcut
-  onCreateLabel: () => void;
-  // Clear-all counter (how many groups have active filters)
+  // Phase C — Suggested product-name filters (most frequently
+  // occurring items across the currently loaded shipments).
+  suggestions: Suggestion[];
+  onPickSuggestion: (term: string) => void;
+  // Clear-all
   onClearAll: () => void;
 };
 
@@ -58,7 +62,7 @@ export default function ShipmentsFilterSheet({
   dateFilter, setDateFilter,
   customFrom, customTo, onOpenCustomDate,
   paymentFilter, setPaymentFilter,
-  onCreateLabel, onClearAll,
+  suggestions, onPickSuggestion, onClearAll,
 }: Props) {
   const togglePayment = (mode: string) => {
     const next = new Set(paymentFilter);
@@ -193,33 +197,55 @@ export default function ShipmentsFilterSheet({
             })}
           </View>
 
-          {/* ── Labels section ─────────────────────────────────── */}
-          <Text style={styles.sectionTitle}>Labels</Text>
-          <TouchableOpacity
-            testID="fs-create-label"
-            onPress={() => {
-              onClose();
-              // Small delay so the create-label sheet doesn't fight
-              // the closing animation of this bottom sheet.
-              setTimeout(onCreateLabel, 160);
-            }}
-            style={styles.createLabelRow}
-          >
-            <View style={styles.createIconBubble}>
-              <PhIcon name="add" size={18} color={colors.primary} />
+          {/* ── Suggested Filters section (Phase C) ─────────────
+              Shows the most frequently occurring product names
+              (items[]) across your loaded shipments. Tap a chip and
+              we drop that term straight into the search bar so it
+              composes with every other filter. The old "Create new
+              label" shortcut lives on the shipment card itself
+              (Label icon → +New) — no need to duplicate it here. */}
+          <Text style={styles.sectionTitle}>
+            Suggested Filters{suggestions.length > 0 ? ` (${suggestions.length})` : ""}
+          </Text>
+          {suggestions.length === 0 ? (
+            <Text style={styles.helper}>
+              No frequently-used product names yet. Once the same
+              product appears in 2+ shipments, it'll show up here as
+              a one-tap filter.
+            </Text>
+          ) : (
+            <View style={styles.chipWrap}>
+              {suggestions.map((s) => (
+                <TouchableOpacity
+                  key={s.display}
+                  testID={`fs-sugg-${s.display}`}
+                  onPress={() => {
+                    onPickSuggestion(s.display);
+                    onClose();
+                  }}
+                  style={[
+                    styles.chip,
+                    { flexDirection: "row", gap: 6, alignItems: "center" },
+                  ]}
+                >
+                  <PhIcon name="search" size={13} color={colors.primary} />
+                  <Text
+                    numberOfLines={1}
+                    allowFontScaling={false}
+                    style={[styles.chipTxt, { color: colors.primary }]}
+                  >
+                    {s.display}
+                  </Text>
+                  <View style={styles.countPill}>
+                    <Text style={styles.countPillTxt}>{s.count}</Text>
+                  </View>
+                </TouchableOpacity>
+              ))}
             </View>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.createLabelTitle}>Create new label</Text>
-              <Text style={styles.createLabelSub}>
-                Add a coloured tag to organise your shipments
-              </Text>
-            </View>
-            <PhIcon name="chevron-forward" size={18} color="#94A3B8" />
-          </TouchableOpacity>
-
+          )}
           <Text style={styles.helper}>
-            Tip: To filter by a specific label, use the "All Labels" chip
-            in the Quick Filter row above.
+            Tip: To create a new label, open any shipment's Label
+            picker directly from its card.
           </Text>
         </ScrollView>
 
@@ -284,19 +310,15 @@ const styles = StyleSheet.create({
     backgroundColor: "#fff",
   },
   chipTxt: { fontSize: 13, fontWeight: "700" },
-  createLabelRow: {
-    flexDirection: "row", alignItems: "center", gap: 12,
-    paddingVertical: 12, paddingHorizontal: 12,
-    borderWidth: 1, borderColor: "#E5E7EB", borderRadius: 12,
-    backgroundColor: "#F8FAFC",
-  },
-  createIconBubble: {
-    width: 36, height: 36, borderRadius: 18,
+  countPill: {
+    minWidth: 20, height: 18, borderRadius: 9,
+    paddingHorizontal: 6, marginLeft: 2,
+    backgroundColor: `${colors.primary}22`,
     alignItems: "center", justifyContent: "center",
-    backgroundColor: `${colors.primary}18`,
   },
-  createLabelTitle: { fontSize: 14, fontWeight: "800", color: colors.text },
-  createLabelSub: { fontSize: 12, color: "#64748B", marginTop: 2 },
+  countPillTxt: {
+    fontSize: 10, fontWeight: "800", color: colors.primary,
+  },
   helper: {
     fontSize: 12, color: "#94A3B8", marginTop: 10, lineHeight: 16,
   },
