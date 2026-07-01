@@ -80,8 +80,9 @@ export default function ShipmentsFilterSheet({
 
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
-      <Pressable style={styles.backdrop} onPress={onClose} />
-      <View style={styles.sheet}>
+      <View style={styles.root}>
+        <Pressable style={styles.backdrop} onPress={onClose} />
+        <View style={styles.sheet}>
         {/* Header */}
         <View style={styles.header}>
           <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
@@ -239,13 +240,18 @@ export default function ShipmentsFilterSheet({
             <Text style={[styles.btnTxt, { color: "#fff" }]}>Apply</Text>
           </TouchableOpacity>
         </View>
+        </View>
       </View>
     </Modal>
   );
 }
 
 const styles = StyleSheet.create({
-  backdrop: { flex: 1, backgroundColor: "rgba(0,0,0,0.35)" },
+  root: { flex: 1, justifyContent: "flex-end" },
+  backdrop: {
+    position: "absolute", top: 0, left: 0, right: 0, bottom: 0,
+    backgroundColor: "rgba(0,0,0,0.35)",
+  },
   sheet: {
     backgroundColor: "#fff",
     borderTopLeftRadius: 20,
