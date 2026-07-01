@@ -793,12 +793,40 @@ export default function Dashboard() {
         text,
         true, // skip_llm = canonical fields → save 2-4s
         Object.keys(cv).length ? cv : undefined,
+        // Phase F4.5 — pass the order_id as a dedup key so the
+        // backend can silently short-circuit a repeat paste of the
+        // same order (e.g., user pastes twice by accident, or the
+        // same row is imported again from the connected Sheet). No
+        // sheet_row_key is available on the free-form paste path.
+        {
+          orderId: String(legacyFields.order_id || "").trim() || undefined,
+        },
       );
       setPasting(false);
       setChatSending(false);
       setPasteStage("");
       // Close Summary Card immediately on success.
       closeChat();
+
+      // Phase F4.5 — Duplicate short-circuit path. Backend returned
+      // the existing pending_order with `skipped: true` because
+      // either the sheet_row_key or the order_id matched a row this
+      // user had already imported. Surface a friendly "Already
+      // imported" alert instead of the standard success message so
+      // the operator knows nothing new was queued and can jump to
+      // the pre-existing row.
+      if (created?.skipped) {
+        Alert.alert(
+          "Already imported",
+          "This order was already added earlier — nothing new was queued.",
+          [
+            { text: "OK", style: "cancel" },
+            { text: "View Orders →", onPress: () => router.push("/orders") },
+          ],
+        );
+        return;
+      }
+
       const masterId = created?.master_order_id || "";
       const userId = created?.order_id || "";
       const sameId = masterId && userId && masterId === userId;

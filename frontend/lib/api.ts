@@ -1582,12 +1582,22 @@ export const Api = {
     text: string,
     skipLlm: boolean = false,
     customValues?: Record<string, string>,
+    // Phase F4.5 — Optional sheet dedup identifiers. When importing a
+    // row from the connected Google Sheet (via /api/sheets/orders),
+    // pass the sheet row_key here so the backend skips inserting a
+    // duplicate pending_order for that same row. `orderId` is a
+    // secondary dedup key — helpful when the sheet row_key drifts
+    // (e.g., the user renamed the customer in the sheet between
+    // imports) but the storefront order id is unchanged.
+    dedupe?: { sheetRowKey?: string; orderId?: string },
   ) =>
     api
-      .post<PendingOrder>("/smart-paste", {
+      .post<PendingOrder & { skipped?: boolean; skip_reason?: string }>("/smart-paste", {
         text,
         skip_llm: skipLlm,
         custom_values: customValues || undefined,
+        sheet_row_key: dedupe?.sheetRowKey || undefined,
+        order_id:      dedupe?.orderId    || undefined,
       }, {
         // Phase-12 fix: this endpoint writes to Google Sheets BEFORE
         // saving to Mongo (atomic guarantee). On a flaky cellular
