@@ -9,7 +9,7 @@
  */
 import React from "react";
 import { View, Text, TouchableOpacity, StyleSheet } from "react-native";
-import { Ionicons } from "@expo/vector-icons";
+import PhIcon from "./PhIcon";
 import { ShipmentLabel, LABEL_ICON_MAP } from "../lib/labels";
 
 type Props = {
@@ -45,7 +45,7 @@ const LabelChip = React.memo(function LabelChip({ label, onRemove, size = "md" }
         },
       ]}
     >
-      <Ionicons name={iconName as any} size={isSm ? 12 : 14} color={label.color} />
+      <PhIcon name={iconName as any} size={isSm ? 12 : 14} color={label.color} />
       <Text
         style={[
           styles.txt,
@@ -65,7 +65,7 @@ const LabelChip = React.memo(function LabelChip({ label, onRemove, size = "md" }
           accessibilityLabel={`Remove ${label.name}`}
           style={{ marginLeft: 2 }}
         >
-          <Ionicons name="close" size={isSm ? 12 : 14} color={label.color} />
+          <PhIcon name="close" size={isSm ? 12 : 14} color={label.color} />
         </TouchableOpacity>
       ) : null}
     </View>

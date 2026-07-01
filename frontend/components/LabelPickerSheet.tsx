@@ -18,7 +18,7 @@ import {
   View, Text, TouchableOpacity, StyleSheet, Modal,
   ScrollView, TextInput, ActivityIndicator, Alert, Pressable,
 } from "react-native";
-import { Ionicons } from "@expo/vector-icons";
+import PhIcon from "./PhIcon";
 import {
   LabelsApi,
   ShipmentLabel,
@@ -111,10 +111,10 @@ export default function LabelPickerSheet({
         onPress={() => toggle(l.id)}
         activeOpacity={0.7}
       >
-        <Ionicons name={iconName as any} size={16} color={l.color} />
+        <PhIcon name={iconName as any} size={16} color={l.color} />
         <Text style={styles.rowTxt} numberOfLines={1}>{l.name}</Text>
         {active ? (
-          <Ionicons name="checkmark-circle" size={18} color={l.color} />
+          <PhIcon name="checkmark-circle" size={18} color={l.color} />
         ) : (
           <View style={{ width: 18 }} />
         )}
@@ -131,7 +131,7 @@ export default function LabelPickerSheet({
             <View style={styles.header}>
               <Text style={styles.headerTxt}>Select Label</Text>
               <TouchableOpacity onPress={onClose} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-                <Ionicons name="chevron-down" size={22} color={colors.text} />
+                <PhIcon name="chevron-down" size={22} color={colors.text} />
               </TouchableOpacity>
             </View>
             <ScrollView style={{ maxHeight: 460 }} contentContainerStyle={{ paddingBottom: 8 }}>
@@ -165,7 +165,7 @@ export default function LabelPickerSheet({
                 onPress={() => setView("create")}
                 activeOpacity={0.7}
               >
-                <Ionicons name="add-circle-outline" size={18} color={colors.primary} />
+                <PhIcon name="add-circle-outline" size={18} color={colors.primary} />
                 <Text style={styles.createTxt}>Create New Label</Text>
               </TouchableOpacity>
             </ScrollView>
@@ -175,7 +175,7 @@ export default function LabelPickerSheet({
             <View style={styles.header}>
               <Text style={styles.headerTxt}>Create New Label</Text>
               <TouchableOpacity onPress={() => setView("select")} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-                <Ionicons name="close" size={22} color={colors.text} />
+                <PhIcon name="close" size={22} color={colors.text} />
               </TouchableOpacity>
             </View>
             <ScrollView style={{ maxHeight: 500 }} contentContainerStyle={{ paddingBottom: 8 }}>
@@ -203,7 +203,7 @@ export default function LabelPickerSheet({
                       ]}
                       activeOpacity={0.7}
                     >
-                      <Ionicons name={iconName as any} size={22} color={active ? color : "#334155"} />
+                      <PhIcon name={iconName as any} size={22} color={active ? color : "#334155"} />
                     </TouchableOpacity>
                   );
                 })}
@@ -223,7 +223,7 @@ export default function LabelPickerSheet({
                       ]}
                       activeOpacity={0.7}
                     >
-                      {active ? <Ionicons name="checkmark" size={18} color="#fff" /> : null}
+                      {active ? <PhIcon name="checkmark" size={18} color="#fff" /> : null}
                     </TouchableOpacity>
                   );
                 })}
