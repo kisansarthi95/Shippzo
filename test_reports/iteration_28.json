@@ -1,0 +1,55 @@
+{
+  "summary": "Phase F4.5 Sheet-Row Dedupe backend testing. 8/10 pass, 2 fail. The dedup logic FIRES correctly server-side (import_log audit row is written, no duplicate is inserted, unique index is present), but the response is missing the required `skipped: true` / `skip_reason: 'duplicate_sheet_row'` fields due to `response_model=PendingOrder` on the /api/smart-paste route stripping unknown keys. Two additional model gaps also identified.",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "POST /api/smart-paste",
+        "issue": "Route is registered with `response_model=PendingOrder` (routers/smart_paste.py:436). FastAPI/Pydantic strips the `skipped` and `skip_reason` keys the endpoint sets on the returned dupe doc, so the client cannot detect a dedup. Fix: drop response_model OR use a wrapper model that declares `skipped: Optional[bool]`, `skip_reason: Optional[str]`, and `sheet_row_key: Optional[str]`.",
+        "priority": "CRITICAL"
+      },
+      {
+        "endpoint": "POST /api/smart-paste (SmartPasteRequest schema)",
+        "issue": "SmartPasteRequest (server.py:2125) does not declare `sheet_row_key`. Any top-level `sheet_row_key` sent by the frontend is dropped at the request boundary before the dedup pre-check can use it — the sheet_row_key branch of the dedup can therefore never match on smart-paste rows (only the order_id branch works).",
+        "priority": "HIGH"
+      },
+      {
+        "endpoint": "PendingOrder model",
+        "issue": "PendingOrder (server.py:2030) has no `sheet_row_key` field, whereas Shipment (server.py:646) does. The **fields unpack at server.py:3183 filters by PendingOrder.model_fields so sheet_row_key never lands on the persisted doc (Mongo A1 diagnostic: sheet_row_key=None). Add `sheet_row_key: str = ''` to PendingOrder or set it directly on the doc dict before insert.",
+        "priority": "HIGH"
+      }
+    ],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_phase_f45_sheet_row_dedupe.py",
+    "/app/test_reports/pytest/pytest_iteration_28_f45.xml"
+  ],
+  "action_items": [
+    "Remove `response_model=PendingOrder` from routers/smart_paste.py line 436 OR replace with a wrapper model that includes `skipped`, `skip_reason`, `sheet_row_key`.",
+    "Add `sheet_row_key: Optional[str] = ''` to SmartPasteRequest (server.py:2125).",
+    "Add `sheet_row_key: str = ''` to PendingOrder (server.py:2030) so the frontend-supplied key is actually persisted on smart-paste rows.",
+    "Re-run /app/backend/tests/test_phase_f45_sheet_row_dedupe.py after fixes — expected 10/10.",
+    "Note: the review request mentioned endpoint `POST /api/pending/smart-paste-create` which does NOT exist. The actual smart-paste create endpoint is `POST /api/smart-paste` (routers/smart_paste.py). Confirm this is the intended target."
+  ],
+  "critical_code_review_comments": [
+    "Response model mismatch is a common bug pattern — `response_model` on FastAPI silently sanitises extra fields. Consider always using a dedicated *Response schema when returning augmented dicts.",
+    "The dedup helper `find_existing_pending_for_sheet_row` correctly queries with a `$or` and a partial index-friendly filter; the DB-level unique index is present with the exact requested spec.",
+    "Import-log write is non-fatal (try/except swallow) — good. Audit row schema matches spec (id, user_id, reason, source, sheet_row_key, order_id, existing_pending_id, created_at)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_phase_f45_sheet_row_dedupe.py (new)",
+    "/app/test_result.md (appended Phase F4.5 task block)"
+  ],
+  "success_rate": {"backend": "80% (8/10)", "frontend": "not tested (per instructions)"},
+  "seed_data_creation": "No permanent seed data. Test fixture creates 1 fresh TEST_ user for E1 and inserts TEST_ pending orders — all cleaned up in module teardown.",
+  "retest_needed": true,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Only 2 tests failing; both share ONE root cause (response_model stripping). After main agent removes response_model=PendingOrder (or swaps to a wrapper) and adds sheet_row_key to SmartPasteRequest + PendingOrder, re-run the F4.5 test file — expected 10/10. Also confirm the endpoint intent (spec said /api/pending/smart-paste-create but actual code path is /api/smart-paste).",
+  "rca_of_issue": "The dedup pre-check runs correctly (proven by B3 = import_log audit row created, B2 = only one pending row exists). But FastAPI serialises the returned dict through response_model=PendingOrder (declared at routers/smart_paste.py:436). PendingOrder does not declare `skipped`, `skip_reason`, or `sheet_row_key`, so Pydantic strips them before the response is sent. Client sees a normal PendingOrder JSON and cannot distinguish a fresh insert from a dedup hit. Additionally SmartPasteRequest never accepts sheet_row_key (silently dropped) and PendingOrder never persists sheet_row_key (also silently dropped), so the sheet_row_key branch of the dedup can never trigger a hit against a smart-paste-created row — only the order_id branch works today."
+}

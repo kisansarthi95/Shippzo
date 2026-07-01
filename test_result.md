@@ -23660,3 +23660,123 @@ agent_communication:
         Admin@12345).
 
         DO NOT test the frontend — user will visually verify on device.
+
+# ================================================================
+# Phase F4.5 — Sheet-Row Dedupe + Import Log
+# ================================================================
+backend:
+  - task: "Sheet-Row Dedupe + Import Log (Phase F4.5)"
+    implemented: true
+    working: false
+    file: "/app/backend/server.py + /app/backend/routers/smart_paste.py"
+    stuck_count: 1
+    priority: "high"
+    needs_retesting: true
+    status_history:
+        -working: false
+        -agent: "testing"
+        -comment: |
+            Ran /app/backend/tests/test_phase_f45_sheet_row_dedupe.py
+            (10 tests, 8 passed / 2 failed).
+
+            PASSING:
+              A1  fresh smart-paste insert works (200 OK, no `skipped`).
+              B2  pending list still shows exactly ONE row per identifier.
+              B3  `import_log` collection DOES receive a
+                   `reason=duplicate_sheet_row` audit row — the dedup
+                   pre-check IS firing internally.
+              C2  no phantom new row created for duplicate order_id call.
+              D1  when both sheet_row_key AND order_id are empty, two
+                   inserts create two separate rows (dedup correctly bypassed).
+              E1  multi-user isolation — user2 can reuse user1's identifiers
+                   without collision.
+              F1  MongoDB unique partial index `uniq_user_sheetRowKey`
+                   exists with exact spec: keys=[("user_id",1),("sheet_row_key",1)],
+                   unique=True, partialFilterExpression={sheet_row_key: {$exists:true,$gt:""}}.
+              G1  GET /api/shipments?limit=5 still returns 200.
+
+            FAILING (SAME ROOT CAUSE):
+              B1  duplicate sheet_row_key POST returns 200 but body has
+                   NO `skipped:true` / `skip_reason` fields. Body is a
+                   plain PendingOrder shape.
+              C1  duplicate order_id POST — same symptom: no `skipped` /
+                   `skip_reason` on the response.
+
+            ── ROOT CAUSE ─────────────────────────────────────────────
+            The route is registered in /app/backend/routers/smart_paste.py:436
+            as:
+                smart_paste_router.post(
+                    "/smart-paste",
+                    response_model=PendingOrder,          # <-- BUG
+                )(smart_paste_create)
+
+            FastAPI serialises the return value through PendingOrder,
+            which does NOT declare `skipped`, `skip_reason` (nor
+            `sheet_row_key`). Pydantic strips every unknown key BEFORE
+            the client sees it. The dedup pre-check fires correctly
+            server-side (proven by B3 — import_log row created — and
+            by B2 — no duplicate row inserted), but the client can
+            never observe the `skipped:true` marker, breaking the
+            contract described in the F4.5 spec.
+
+            Additional gap discovered during RCA:
+              • SmartPasteRequest (server.py:2125) has NO `sheet_row_key`
+                field. Any top-level `sheet_row_key` sent by the frontend
+                is silently dropped by Pydantic at request time.
+              • PendingOrder (server.py:2030) also has NO `sheet_row_key`
+                field. Even if `fields["sheet_row_key"]` were populated,
+                the ** unpack at server.py:3183 filters by
+                `PendingOrder.model_fields`, so it never lands on `po`.
+                The A1 diagnostic confirmed Mongo persists
+                `sheet_row_key=None` on smart-paste rows.
+
+            Practical consequence: the sheet_row_key branch of the
+            dedup pre-check can NEVER match on a smart-paste-created
+            row (only the order_id branch works). If the caller ever
+            posts with a non-empty sheet_row_key + empty order_id, the
+            dedup will not fire on the second call.
+
+            ── SUGGESTED FIX (main agent) ─────────────────────────────
+            1. Drop `response_model=PendingOrder` from
+               smart_paste_router.post(...) OR replace with a wrapper
+               model, e.g.:
+                   class SmartPasteResponse(PendingOrder):
+                       skipped: Optional[bool] = None
+                       skip_reason: Optional[str] = None
+                       sheet_row_key: Optional[str] = None
+               and use `response_model=SmartPasteResponse`.
+            2. Add `sheet_row_key: Optional[str] = ""` to
+               `SmartPasteRequest` (server.py:2125) so the client
+               payload actually makes it into `fields` / on to `po`.
+            3. Either add `sheet_row_key: str = ""` to `PendingOrder`
+               (preferred — matches Shipment.sheet_row_key at
+               server.py:646) OR set the field on the `doc` dict
+               directly before insert_one.
+            4. Re-run /app/backend/tests/test_phase_f45_sheet_row_dedupe.py
+               — expected 10/10.
+
+            ── EVIDENCE ───────────────────────────────────────────────
+            A1 diagnostic (persisted Mongo row):
+              order_id='ORDA1_4ff687f9a4'
+              sheet_row_key=None
+              master_order_id='26070103419'
+
+            B1 second POST /api/smart-paste response body
+            (relevant keys only):
+              {
+                "id": "b9b16d92-...",
+                "order_id": "ORDA1_4ff687f9a4",
+                "master_order_id": "26070103419",   # ← SAME as A1
+                # no "skipped"
+                # no "skip_reason"
+                # no "sheet_row_key"
+              }
+
+            The identical master_order_id proves the endpoint DID
+            return the pre-existing A1 doc (dedup fired internally),
+            but `response_model=PendingOrder` stripped the flags.
+
+            Test files:
+              /app/backend/tests/test_phase_f45_sheet_row_dedupe.py
+              /app/test_reports/pytest/pytest_iteration_28_f45.xml
+              /app/test_reports/iteration_28.json

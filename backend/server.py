@@ -1466,6 +1466,83 @@ def _row_key(row: Dict[str, str], mapping: Dict[str, str], idx: int) -> str:
     return "|".join(parts).strip()[:200]
 
 
+# ─────────────────────────────────────────────────────────────
+# Phase F4.5 — Sheet-row dedup helper (application-level).
+#
+# The unique-partial index on (user_id, sheet_row_key) is the
+# atomic backstop, but we also want a friendly application-level
+# pre-check that:
+#   • returns 200 + `skipped: true` on dupe (no scary DuplicateKeyError)
+#   • records an audit row in the new `import_log` collection so we
+#     can trace exactly WHICH sheet row was skipped and why.
+#
+# `find_existing_pending_for_sheet_row` returns the matching
+# pending_order doc (or None) if either:
+#   (a) (user_id, sheet_row_key) is already present with the same key
+#   (b) (user_id, order_id) is already present AND order_id is non-empty
+#
+# Callers should:
+#   1. call this before insert_one
+#   2. if it returns a doc → call `log_import_skip(...)` and short-circuit
+#   3. else → insert normally
+#
+# Order-id match is a secondary safety net for cases where the
+# sheet_row_key changes (e.g., the user renamed the customer in the
+# sheet between imports) but the storefront order_id is unchanged.
+# ─────────────────────────────────────────────────────────────
+async def find_existing_pending_for_sheet_row(
+    user_id: str,
+    sheet_row_key: str,
+    order_id: str = "",
+) -> Optional[Dict[str, Any]]:
+    if not user_id:
+        return None
+    or_clauses: List[Dict[str, Any]] = []
+    if sheet_row_key:
+        or_clauses.append({"sheet_row_key": sheet_row_key})
+    if order_id:
+        or_clauses.append({"order_id": order_id})
+    if not or_clauses:
+        return None
+    return await db.pending_orders.find_one(
+        {"user_id": user_id, "$or": or_clauses},
+        {"_id": 0},
+    )
+
+
+async def log_import_skip(
+    user_id: str,
+    reason: str,
+    *,
+    sheet_row_key: str = "",
+    order_id: str = "",
+    existing_pending_id: str = "",
+    source: str = "sheet",
+    extra: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Append one audit row to `import_log`.
+
+    Never raises — the caller has already decided to skip the import,
+    so a logging failure must not turn success into a 500.
+    """
+    try:
+        doc = {
+            "id":                  str(uuid.uuid4()),
+            "user_id":             user_id,
+            "reason":              reason,          # e.g. "duplicate_sheet_row"
+            "source":              source,          # "sheet" | "smart_paste" | "webhook" | "file"
+            "sheet_row_key":       sheet_row_key,
+            "order_id":            order_id,
+            "existing_pending_id": existing_pending_id,
+            "created_at":          utcnow_iso(),
+        }
+        if extra:
+            doc["extra"] = extra
+        await db.import_log.insert_one(doc)
+    except Exception:
+        logger.exception("import_log write failed (non-fatal)")
+
+
 # ---------------------------------------------------------------------------
 # Background: User-Sheet → Master-Sheet auto-backup
 # ---------------------------------------------------------------------------
@@ -3119,7 +3196,68 @@ async def smart_paste_create(
     doc = po.model_dump()
     doc["_sheet_meta"] = sheet_meta
     doc["user_id"] = current_user["id"]
-    await db.pending_orders.insert_one(doc)
+
+    # ─── Phase F4.5 — Sheet-row dedup pre-check ───────────────────────
+    # If this smart-paste payload carries a sheet_row_key (populated
+    # when the frontend imports a row from the connected Google Sheet
+    # via the /api/sheets/orders list), verify no earlier import has
+    # already landed the same row. Silent success + audit row keeps
+    # the frontend flow trivial — the caller can just re-tap "Ship
+    # this row" without seeing an error.
+    incoming_row_key = str(getattr(po, "sheet_row_key", "") or "").strip()
+    incoming_order_id = str(getattr(po, "order_id", "") or "").strip()
+    if incoming_row_key or incoming_order_id:
+        dupe = await find_existing_pending_for_sheet_row(
+            user_id=current_user["id"],
+            sheet_row_key=incoming_row_key,
+            order_id=incoming_order_id,
+        )
+        if dupe:
+            await log_import_skip(
+                user_id=current_user["id"],
+                reason="duplicate_sheet_row",
+                sheet_row_key=incoming_row_key,
+                order_id=incoming_order_id,
+                existing_pending_id=str(dupe.get("id") or ""),
+                source="smart_paste",
+                extra={"phone": (po.customer_phone or "")[:15]},
+            )
+            # Return the EXISTING row (200) with a `skipped` marker so
+            # the client can decide whether to show a "Already imported"
+            # toast or silently continue.
+            dupe["skipped"] = True
+            dupe["skip_reason"] = "duplicate_sheet_row"
+            return dupe
+
+    try:
+        await db.pending_orders.insert_one(doc)
+    except Exception as _insert_exc:
+        # If the unique partial index kicks in (race with a concurrent
+        # sibling request that inserted between our pre-check and this
+        # insert), degrade gracefully: re-read the existing row, log the
+        # skip, and return it. Any OTHER insert failure re-raises.
+        from pymongo.errors import DuplicateKeyError
+        if isinstance(_insert_exc, DuplicateKeyError) and (
+            incoming_row_key or incoming_order_id
+        ):
+            existing = await find_existing_pending_for_sheet_row(
+                user_id=current_user["id"],
+                sheet_row_key=incoming_row_key,
+                order_id=incoming_order_id,
+            )
+            if existing:
+                await log_import_skip(
+                    user_id=current_user["id"],
+                    reason="duplicate_sheet_row_race",
+                    sheet_row_key=incoming_row_key,
+                    order_id=incoming_order_id,
+                    existing_pending_id=str(existing.get("id") or ""),
+                    source="smart_paste",
+                )
+                existing["skipped"] = True
+                existing["skip_reason"] = "duplicate_sheet_row_race"
+                return existing
+        raise
     # Best-effort: write per-user custom field values to the user's
     # personal Google Sheet (column letters from user_custom_fields).
     # Failures are swallowed inside the helper — never blocks the order.
@@ -5512,6 +5650,68 @@ async def _ensure_pending_orders_dedup_index() -> None:
         #     still guards against replays.
         logger.exception(
             "pending_orders unique index creation skipped (non-fatal)",
+        )
+
+    # ---- Step 3: sheet-row dedup (Phase-F4.5) ------------------------
+    # The existing (user_id, external_order_id, source_app) index
+    # covers WEBHOOK replays. Sheet imports go through a DIFFERENT
+    # code path (smart-paste + sheet-orders) that stamps
+    # `sheet_row_key` instead of `external_order_id`. Without a
+    # dedicated index the same Google Sheet row could be imported
+    # twice — once when the user smart-pastes it, and again when a
+    # future sheet-orders "Ship" click imports the same row through
+    # the /orders/pending/... pipeline. Add a separate partial-unique
+    # index scoped to non-empty sheet_row_key so any second insert
+    # for the same (user_id, sheet_row_key) pair is atomically
+    # rejected at the DB layer even if the application forgets to
+    # pre-check.
+    #
+    # One-time cleanup first: drop any pre-existing duplicates that
+    # would prevent the unique index from being created (older rows
+    # win — same policy as external_order_id above).
+    try:
+        pipeline_sheet = [
+            {"$match": {"sheet_row_key": {"$nin": [None, ""]}}},
+            {"$group": {
+                "_id": {
+                    "user_id":       "$user_id",
+                    "sheet_row_key": "$sheet_row_key",
+                },
+                "ids":   {"$push": {"_id": "$_id", "created_at": "$created_at"}},
+                "count": {"$sum": 1},
+            }},
+            {"$match": {"count": {"$gt": 1}}},
+        ]
+        removed_sheet = 0
+        async for grp in coll.aggregate(pipeline_sheet, allowDiskUse=True):
+            entries = grp.get("ids") or []
+            entries.sort(key=lambda e: e.get("created_at") or "")
+            to_drop = [e["_id"] for e in entries[1:]]
+            if to_drop:
+                res = await coll.delete_many({"_id": {"$in": to_drop}})
+                removed_sheet += int(res.deleted_count or 0)
+        if removed_sheet:
+            logger.info(
+                "pending_orders sheet_row_key cleanup: removed %d duplicate row(s)",
+                removed_sheet,
+            )
+    except Exception:
+        logger.exception(
+            "pending_orders sheet_row_key duplicate cleanup failed (non-fatal)",
+        )
+
+    try:
+        await coll.create_index(
+            [("user_id", 1), ("sheet_row_key", 1)],
+            name="uniq_user_sheetRowKey",
+            unique=True,
+            partialFilterExpression={
+                "sheet_row_key": {"$exists": True, "$gt": ""},
+            },
+        )
+    except Exception:
+        logger.exception(
+            "pending_orders sheet_row_key unique index creation skipped (non-fatal)",
         )
 
 
