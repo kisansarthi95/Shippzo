@@ -220,6 +220,12 @@ export type Shipment = {
   shipment_notes?: string;
   custom_values?: Record<string, string>;
   status: "Pending" | "Delivered" | "Cancelled";
+  // Phase F4.3 — persistent Print Status. "" means Not Printed;
+  // "Printed" means the operator confirmed the label print.
+  print_status?: "" | "Printed";
+  printed_at?: string | null;
+  // Phase F4.1 — assigned label ids (see /api/labels).
+  labels?: string[];
   created_at: string;
   delivered_at?: string | null;
   sheet_row_key?: string;
@@ -1478,6 +1484,16 @@ export const Api = {
     api.post<Shipment>("/shipments", data).then((r) => r.data),
   updateShipment: (id: string, data: Partial<Shipment>) =>
     api.put<Shipment>(`/shipments/${id}`, data).then((r) => r.data),
+  // Phase F4.3 — persistent Print Status. Additive endpoint that
+  // sets ONLY the `print_status` field on the shipment; other
+  // update paths are untouched. Server also stamps `printed_at`
+  // when `printed: true`. Server-side guard rejects with 422 if
+  // the shipment has no tracking id yet.
+  setPrintStatus: (id: string, printed: boolean) =>
+    api.put<{ ok: boolean; print_status: string; printed_at: string }>(
+      `/shipments/${id}/print-status`,
+      { printed },
+    ).then((r) => r.data),
   deleteShipment: (id: string) =>
     api.delete(`/shipments/${id}`).then((r) => r.data),
   csvUrl: () => `${BASE}/api/shipments/export/csv`,

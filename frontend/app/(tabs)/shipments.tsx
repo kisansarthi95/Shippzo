@@ -377,16 +377,24 @@ export default function Shipments() {
     couriers.find((c) => c.id === s.courier_id) || null;
 
   const dateFilteredItems = useMemo(() => {
-    // Client-side compound filter: status (8 tabs) + date range.
+    // Client-side compound filter: status (8 tabs) + date range +
+    // print status (Phase F4.3). All three combine — an item must
+    // pass every filter to be visible.
     const byStatus = status === "All"
       ? items
       : items.filter((s) => matchesStatusFilter(s.status || "", status));
-    if (dateFilter === "all") return byStatus;
+    const byPrint = printFilter === "All"
+      ? byStatus
+      : byStatus.filter((s) => {
+          const isPrinted = (s.print_status || "") === "Printed";
+          return printFilter === "Printed" ? isPrinted : !isPrinted;
+        });
+    if (dateFilter === "all") return byPrint;
     if (dateFilter === "custom") {
-      if (!customFrom && !customTo) return byStatus;
+      if (!customFrom && !customTo) return byPrint;
       const from = customFrom ? new Date(customFrom.getFullYear(), customFrom.getMonth(), customFrom.getDate()).getTime() : 0;
       const to = customTo ? new Date(customTo.getFullYear(), customTo.getMonth(), customTo.getDate(), 23, 59, 59, 999).getTime() : Number.MAX_SAFE_INTEGER;
-      return byStatus.filter((s) => {
+      return byPrint.filter((s) => {
         const t = Date.parse(s.created_at || "");
         return !isNaN(t) && t >= from && t <= to;
       });
@@ -398,11 +406,11 @@ export default function Shipments() {
         : dateFilter === "week"
         ? now - 7 * 24 * 60 * 60 * 1000
         : now - 30 * 24 * 60 * 60 * 1000;
-    return byStatus.filter((s) => {
+    return byPrint.filter((s) => {
       const t = Date.parse(s.created_at || "");
       return !isNaN(t) && t >= cutoff;
     });
-  }, [items, dateFilter, customFrom, customTo, status]);
+  }, [items, dateFilter, customFrom, customTo, status, printFilter]);
 
   const toggleSelect = (id: string) => {
     setSelectedIds((prev) => {
@@ -716,7 +724,84 @@ export default function Shipments() {
     };
   };
 
-  const [advancingId, setAdvancingId] = useState<string | null>(null);
+  // ── Phase F4.3 — Persistent Print Status ─────────────────────
+  // `pendingPrintConfirmId` is set when the user taps the orange
+  // "Print Now" and we navigate to /label/[id]. When they navigate
+  // back the useFocusEffect below fires the "Confirm Print" alert.
+  const [pendingPrintConfirmId, setPendingPrintConfirmId] = useState<string | null>(null);
+  // "All" | "Printed" | "Not Printed" — client-side filter, plays
+  // nicely with every other filter (status / labels / search / dates).
+  const [printFilter, setPrintFilter] = useState<"All" | "Printed" | "Not Printed">("All");
+
+  const onPrintButtonPress = useCallback((s: Shipment) => {
+    // State 1 — no tracking id: keep the legacy Add-Tracking redirect.
+    if (!s.tracking_id && !((s as any).manual_tracking_id)) {
+      router.push(`/shipment-details/${s.id}` as any);
+      return;
+    }
+    const isPrinted = (s.print_status || "") === "Printed";
+    // State 3 — already printed: show Reprint dialog FIRST.
+    if (isPrinted) {
+      Alert.alert(
+        "Reprint Shipment Label",
+        "This shipment has already been marked as Printed.\nDo you want to print another copy of this label?",
+        [
+          { text: "Cancel", style: "cancel" },
+          {
+            text: "Reprint",
+            onPress: () => {
+              // Execute the existing print workflow. Do NOT queue a
+              // Confirm-Print dialog on return; the button stays green.
+              router.push(`/label/${s.id}`);
+            },
+          },
+        ],
+      );
+      return;
+    }
+    // State 2 — ready to print. Kick the existing label preview /
+    // print flow and queue the Confirm-Print dialog for when they
+    // come back to this tab.
+    setPendingPrintConfirmId(s.id);
+    router.push(`/label/${s.id}`);
+  }, [router]);
+
+  // Show the "Confirm Print" alert when the user returns to the
+  // Shipments tab after opening a label preview via the orange
+  // Print Now button.
+  useFocusEffect(useCallback(() => {
+    if (!pendingPrintConfirmId) return;
+    const sid = pendingPrintConfirmId;
+    // Reset immediately so a second focus (e.g., quick re-tap) doesn't
+    // re-fire the alert.
+    setPendingPrintConfirmId(null);
+    Alert.alert(
+      "Confirm Print",
+      "Did you successfully print this shipment label?",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Yes, Printed",
+          onPress: async () => {
+            try {
+              await Api.setPrintStatus(sid, true);
+              // Optimistic UI — flip the local row's print_status so
+              // the button turns green without waiting for a refetch.
+              setItems((prev) => prev.map((r) =>
+                r.id === sid ? { ...r, print_status: "Printed" as any } : r,
+              ));
+              load().catch(() => {});
+            } catch (e: any) {
+              Alert.alert(
+                "Couldn't save print status",
+                e?.response?.data?.detail || e?.message || "Try again.",
+              );
+            }
+          },
+        },
+      ],
+    );
+  }, [pendingPrintConfirmId, load]));
 
   // ─────────────────────────────────────────────────────────────
   // Phase F4.2 — Tracking-ID-required client-side gate.
@@ -1441,6 +1526,47 @@ export default function Shipments() {
         </ScrollView>
       </View>
 
+      {/* Phase F4.3 — Print Status filter row. Sits below the date
+          filters and combines with every other filter (status,
+          labels, dates, search). Same pill styling as the date
+          filters so it feels native to the existing bar. */}
+      <View style={styles.filterRowWrap}>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false}
+          contentContainerStyle={[styles.filterRow, { paddingTop: 0 }]}>
+          {(["All", "Not Printed", "Printed"] as const).map((f) => {
+            const active = printFilter === f;
+            const accent = f === "Printed" ? "#10B981" : colors.primary;
+            return (
+              <TouchableOpacity
+                key={f}
+                testID={`printfilter-${f.toLowerCase().replace(/\s/g, "-")}`}
+                onPress={() => setPrintFilter(f)}
+                style={[
+                  styles.filterPill,
+                  { borderColor: accent, flexDirection: "row", gap: 4 },
+                  active && { backgroundColor: accent, borderColor: accent },
+                ]}
+              >
+                {f === "Printed" ? (
+                  <PhIcon
+                    name="checkmark"
+                    size={12}
+                    color={active ? "#fff" : accent}
+                  />
+                ) : null}
+                <Text
+                  numberOfLines={1}
+                  allowFontScaling={false}
+                  style={[styles.filterText, { color: active ? "#fff" : accent }]}
+                >
+                  {f}
+                </Text>
+              </TouchableOpacity>
+            );
+          })}
+        </ScrollView>
+      </View>
+
       {/* Phase-9 / Phase-11 removed (2026-05-12):
           Both the contextual "Scan & Ready to Ship" / "Scan to
           Shipped" card AND the "Need Delivery Confirmation" card
@@ -1863,40 +1989,46 @@ export default function Shipments() {
                   )}
                 </View>
                 {/* Phase-20 — Replaced the top-right StatusChip with a
-                    direct "Print Now" CTA. Phase-25 — disabled when
-                    tracking_id is empty (cannot print without it). */}
-                {flagPrint && !selectMode ? (
-                  <TouchableOpacity
-                    onPress={() => {
-                      if (!item.tracking_id) {
-                        router.push(`/shipment-details/${item.id}` as any);
-                        return;
-                      }
-                      router.push(`/label/${item.id}`);
-                    }}
-                    activeOpacity={0.7}
-                    style={[
-                      styles.printNowBtn,
-                      !item.tracking_id && styles.printNowBtnDisabled,
-                    ]}
-                    testID={`print-now-${item.tracking_id || item.id}`}
-                    hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
-                  >
-                    <PhIcon
-                      name="print"
-                      size={14}
-                      color={item.tracking_id ? "#fff" : "#9CA3AF"}
-                    />
-                    <Text
+                    direct "Print Now" CTA.
+                    Phase F4.3 — Now a 3-state button:
+                      • disabled grey  → tracking_id empty
+                      • orange         → ready to print (not printed yet)
+                      • green + ✓      → already printed (opens Reprint dialog)
+                    Sizing / padding / layout kept EXACTLY the same via
+                    the shared `styles.printNowBtn`. */}
+                {flagPrint && !selectMode ? (() => {
+                  const isPrinted = (item.print_status || "") === "Printed";
+                  const hasTracking = !!(item.tracking_id || (item as any).manual_tracking_id);
+                  return (
+                    <TouchableOpacity
+                      onPress={() => onPrintButtonPress(item)}
+                      activeOpacity={0.7}
                       style={[
-                        styles.printNowTxt,
-                        !item.tracking_id && { color: "#6B7280" },
+                        styles.printNowBtn,
+                        !hasTracking && styles.printNowBtnDisabled,
+                        hasTracking && isPrinted && styles.printNowBtnPrinted,
                       ]}
+                      testID={`print-now-${item.tracking_id || item.id}`}
+                      hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
                     >
-                      Print Now
-                    </Text>
-                  </TouchableOpacity>
-                ) : null}
+                      <PhIcon
+                        name={isPrinted ? "checkmark" : "print"}
+                        size={14}
+                        color={
+                          !hasTracking ? "#9CA3AF" : "#fff"
+                        }
+                      />
+                      <Text
+                        style={[
+                          styles.printNowTxt,
+                          !hasTracking && { color: "#6B7280" },
+                        ]}
+                      >
+                        {isPrinted ? "Printed" : "Print Now"}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })() : null}
               </View>
               <Text style={styles.name}>{item.customer_name}</Text>
               {!!item.order_id && (
@@ -2769,6 +2901,13 @@ const styles = StyleSheet.create({
   // routes to /shipment-details where the user can scan/type.
   printNowBtnDisabled: {
     backgroundColor: "#E5E7EB",
+  },
+  // Phase F4.3 — "Printed" state. Same width/padding/text-style as
+  // the orange button so the card layout doesn't shift when a
+  // shipment transitions from Not Printed → Printed. Only the
+  // background color + leading icon change (see JSX above).
+  printNowBtnPrinted: {
+    backgroundColor: "#10B981",
   },
   trackingMissingPill: {
     flexDirection: "row",

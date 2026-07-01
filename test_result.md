@@ -256,6 +256,115 @@ agent_communication:
 #====================================================================================================
 # Testing Data - Main Agent and testing sub agent both should log testing data below this section
 #====================================================================================================
+
+## Backend Test Run: Persistent Print Status (Phase F4.3) (2026-07-01)
+
+backend:
+  - task: "Persistent Print Status (Phase F4.3)"
+    implemented: true
+    working: true
+    file: "/app/backend/routers/print_status.py, /app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "testing"
+        -comment: |
+            10/10 pytest assertions PASSED against
+            https://logistics-hub-740.preview.emergentagent.com/api
+            via /app/backend/tests/test_phase_f43_print_status.py.
+            JUnit: /app/test_reports/pytest/pytest_iteration_25_f43.xml.
+
+            A — Basic mark / persist / unmark
+              A0. POST /api/shipments with tracking_id="AWB-PRINT-1"
+                  → GET returns print_status:"" ✅
+              A1. PUT .../print-status {printed:true} → 200
+                  {ok:true, print_status:"Printed", printed_at:"2026-07-01T…"} ✅
+              A2. GET /api/shipments finds row with print_status="Printed"
+                  and printed_at matching A1 ✅
+              A3. PUT .../print-status {printed:false} → 200
+                  {print_status:""} and GET confirms ✅
+              A4. printed_at REMAINS populated after unmark (audit trail
+                  survives) — verified equal to A1's timestamp ✅
+
+            B — Idempotency
+              B1. Mark→sleep(1.1s)→mark again: both 200; second call's
+                  printed_at is > first call's printed_at (refreshed) ✅
+              B2. Unmark→unmark: both 200 with print_status:"" ✅
+
+            C — Tracking-ID guard
+              C1. POST /api/shipments with tracking_id="" → GET confirms
+                  both tracking_id and manual_tracking_id empty ✅
+              C2. PUT .../print-status {printed:true} on untracked row →
+                  HTTP 422 with detail starting "Tracking ID Required" ✅
+              C3. Same shipment, {printed:false} → 200 (unmark always
+                  allowed regardless of tracking) ✅
+              C4. PUT /api/shipments {tracking_id:"AWB-C-2"} → 200; then
+                  PUT .../print-status {printed:true} → 200
+                  {print_status:"Printed"} ✅
+
+            D — Scoping / 404
+              D1. PUT /api/shipments/does-not-exist-<uuid>/print-status
+                  {printed:true} → 404 ✅
+              D2. user2 attempts to mark admin's shipment printed → 404
+                  (scoped by user_id, not 403) ✅
+
+            E — Regression on unrelated endpoints
+              E1. GET /api/shipments?limit=10 → 200, list unchanged;
+                  print_status field surfaced in response schema ✅
+              E2. POST /api/shipments without print_status field → 200;
+                  created row has print_status:"" default ✅
+              E3. PUT /api/shipments {status:"Pending"} on a Printed row
+                  → 200; follow-up GET confirms print_status still
+                  "Printed" (existing update path does NOT touch the new
+                  field) ✅
+              E5. DELETE /api/shipments/{id} on Printed row → 200 (soft
+                  cancel by DELETE handler; no error) ✅
+
+            Cleanup: 6 TEST_F43_* shipments soft-deleted via DELETE in
+            test finally blocks (all DELETEs returned 200). No dangling
+            state; no F4.1/F4.2 regression suite re-run per review
+            guardrail.
+
+            Backend logs (grep of live traffic during the run) show:
+              PUT /api/shipments/.../print-status HTTP/1.1 200 OK
+              PUT /api/shipments/.../print-status HTTP/1.1 404 Not Found (D1, D2)
+              PUT /api/shipments/does-not-exist-*/print-status → 404
+            All expected — no 5xx anywhere. Sub-second latency on every
+            call (except the intentional 1.1s sleep in B1).
+
+            NO regressions observed. Router is small (~100 LOC),
+            well-documented, and correctly reuses server.py's db +
+            get_current_user via lazy init(). Shipment Pydantic model
+            exposes print_status and printed_at as Optional[str]="",
+            so older clients that never set the field see empty
+            strings instead of missing keys.
+
+agent_communication:
+    -agent: "testing"
+    -message: |
+        Phase F4.3 Persistent Print Status backend — 10/10 GREEN.
+        All A/B/C/D/E scenarios from the review request PASSED.
+        printed_at correctly survives unmark (audit trail),
+        idempotency verified (printed_at refreshes on re-mark),
+        tracking-ID guard fires ONLY on mark (unmark always allowed),
+        cross-tenant scoping returns 404 not 403.
+
+        Endpoint: PUT /api/shipments/{id}/print-status.
+        Router: /app/backend/routers/print_status.py (already mounted
+        via server.py:5324 lazy init).
+        Model: Shipment.print_status + Shipment.printed_at as
+        Optional[str]="" on server.py:687-688.
+
+        No code changes needed. Test file:
+        /app/backend/tests/test_phase_f43_print_status.py.
+        JUnit XML: /app/test_reports/pytest/pytest_iteration_25_f43.xml.
+        Main agent can mark this task working:true and finish.
+
+---
+
+
 ## Backend Test Run: Tracking-ID Required Validation (Phase F4.2) (2026-07-01)
 
 backend:

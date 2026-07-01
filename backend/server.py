@@ -678,6 +678,15 @@ class Shipment(BaseModel):
     # exclusively via PUT /api/shipments/{id}/labels; POST/PUT
     # /api/shipments do NOT accept this field so the label workflow
     # stays isolated from the shipment write path.
+    # Phase F4.3 — Persistent Print Status.
+    # Set to "Printed" ONLY when the operator confirms the label was
+    # printed successfully via the "Confirm Print" dialog. Managed
+    # exclusively by the new PUT /api/shipments/{id}/print-status
+    # endpoint so the existing shipment update path stays untouched.
+    # A subsequent Reprint DOES NOT clear this field.
+    print_status: Optional[str] = ""
+    printed_at:   Optional[str] = ""
+
     labels: List[str] = Field(default_factory=list)
 
 
@@ -5309,6 +5318,22 @@ except Exception as _lbl_exc:
     import logging as _lg
     _lg.getLogger("server.bootstrap").exception(
         f"Failed to mount labels router: {_lbl_exc}",
+    )
+
+# Phase F4.3 — Persistent Print Status on shipments (Printed / Not
+# Printed) toggled by PUT /api/shipments/{id}/print-status. Additive-
+# only — no existing endpoint touched.
+try:
+    from routers.print_status import (
+        print_status_router as _print_status_router,
+        init as _init_print_status_router,
+    )
+    _init_print_status_router()
+    app.include_router(_print_status_router)
+except Exception as _ps_exc:
+    import logging as _lg
+    _lg.getLogger("server.bootstrap").exception(
+        f"Failed to mount print_status router: {_ps_exc}",
     )
 
 
