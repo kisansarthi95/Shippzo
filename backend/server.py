@@ -665,6 +665,14 @@ class Shipment(BaseModel):
     last_courier_status_source:  Optional[str] = ""   # "auto_sync_sms" | "auto_sync_push" | ...
     last_courier_status_partner: Optional[str] = ""   # partner_key (e.g. "india_post")
 
+    # Phase F4.1 — Shipment Labels. Array of label ids (from
+    # `labels` collection) applied to this shipment. Additive-only —
+    # every existing endpoint continues to work unchanged. Managed
+    # exclusively via PUT /api/shipments/{id}/labels; POST/PUT
+    # /api/shipments do NOT accept this field so the label workflow
+    # stays isolated from the shipment write path.
+    labels: List[str] = Field(default_factory=list)
+
 
 class ShipmentCreate(BaseModel):
     tracking_id: str
