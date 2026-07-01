@@ -27,7 +27,7 @@ import { fillFromShipment } from "../../lib/templateVariables";
 import { useAuth } from "../../lib/auth";
 import { buildLabelHtml, pageDimensionsFor } from "../../lib/label";
 import { colors } from "../../lib/theme";
-import { LabelsApi, ShipmentLabel } from "../../lib/labels";
+import { LabelsApi, ShipmentLabel, LABEL_ICON_MAP } from "../../lib/labels";
 import LabelChip from "../../components/LabelChip";
 import LabelPickerSheet from "../../components/LabelPickerSheet";
 import { useFeatureFlag } from "../../lib/feature_flags";
@@ -214,6 +214,11 @@ export default function Shipments() {
   const [advancingId, setAdvancingId] = useState<string | null>(null);
   const [pendingPrintConfirmId, setPendingPrintConfirmId] = useState<string | null>(null);
   const [printFilter, setPrintFilter] = useState<"All" | "Printed" | "Not Printed">("All");
+  // ── Phase F4.6 — Label filter chip. "" (empty) = All; otherwise a
+  // label id that shipments must carry in their labels[] array to
+  // be visible. Piggybacks the existing dateFilteredItems memo so
+  // it composes cleanly with status + date + print filters.
+  const [labelFilter, setLabelFilter] = useState<string>("");
   // perPage matches what the LabelViewer accepts so we can route every
   // option (A4, A6, Thermal 4×6, Barcode 2×1) through the same printer.
   type BulkPerPage = 1 | 2 | 4 | "thermal" | "barcode";
@@ -385,8 +390,8 @@ export default function Shipments() {
 
   const dateFilteredItems = useMemo(() => {
     // Client-side compound filter: status (8 tabs) + date range +
-    // print status (Phase F4.3). All three combine — an item must
-    // pass every filter to be visible.
+    // print status (Phase F4.3) + label (Phase F4.6). All four combine
+    // — an item must pass every filter to be visible.
     const byStatus = status === "All"
       ? items
       : items.filter((s) => matchesStatusFilter(s.status || "", status));
@@ -396,12 +401,23 @@ export default function Shipments() {
           const isPrinted = (s.print_status || "") === "Printed";
           return printFilter === "Printed" ? isPrinted : !isPrinted;
         });
-    if (dateFilter === "all") return byPrint;
+    // Phase F4.6 — Label filter. Empty labelFilter = show all. When
+    // a label id is set, only shipments whose labels[] contains that
+    // exact id survive. Uses the same `shipmentLabels` map that the
+    // card row uses for chip rendering, so the filter set is
+    // guaranteed to match what the user sees on each card.
+    const byLabel = !labelFilter
+      ? byPrint
+      : byPrint.filter((s) => {
+          const arr = shipmentLabels[s.id] || (s as any).labels || [];
+          return Array.isArray(arr) && arr.includes(labelFilter);
+        });
+    if (dateFilter === "all") return byLabel;
     if (dateFilter === "custom") {
-      if (!customFrom && !customTo) return byPrint;
+      if (!customFrom && !customTo) return byLabel;
       const from = customFrom ? new Date(customFrom.getFullYear(), customFrom.getMonth(), customFrom.getDate()).getTime() : 0;
       const to = customTo ? new Date(customTo.getFullYear(), customTo.getMonth(), customTo.getDate(), 23, 59, 59, 999).getTime() : Number.MAX_SAFE_INTEGER;
-      return byPrint.filter((s) => {
+      return byLabel.filter((s) => {
         const t = Date.parse(s.created_at || "");
         return !isNaN(t) && t >= from && t <= to;
       });
@@ -413,11 +429,11 @@ export default function Shipments() {
         : dateFilter === "week"
         ? now - 7 * 24 * 60 * 60 * 1000
         : now - 30 * 24 * 60 * 60 * 1000;
-    return byPrint.filter((s) => {
+    return byLabel.filter((s) => {
       const t = Date.parse(s.created_at || "");
       return !isNaN(t) && t >= cutoff;
     });
-  }, [items, dateFilter, customFrom, customTo, status, printFilter]);
+  }, [items, dateFilter, customFrom, customTo, status, printFilter, labelFilter, shipmentLabels]);
 
   const toggleSelect = (id: string) => {
     setSelectedIds((prev) => {
@@ -1629,6 +1645,84 @@ export default function Shipments() {
           })}
         </ScrollView>
       </View>
+
+      {/* Phase F4.6 — Label filter row. Empty state (no labels
+          created yet) collapses entirely. Selecting a label filters
+          the list to shipments whose labels[] array contains that
+          label id. Chips render in the label's own color so the
+          filter is instantly recognisable. */}
+      {Object.keys(labelDefs).length > 0 && (
+        <View style={styles.filterRowWrap}>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false}
+            contentContainerStyle={[styles.filterRow, { paddingTop: 0 }]}>
+            {(() => {
+              const chips: React.ReactElement[] = [];
+              chips.push(
+                <TouchableOpacity
+                  key="__all__"
+                  testID="labelfilter-all"
+                  onPress={() => setLabelFilter("")}
+                  style={[
+                    styles.filterPill,
+                    { borderColor: colors.primary, flexDirection: "row", gap: 4 },
+                    !labelFilter && { backgroundColor: colors.primary, borderColor: colors.primary },
+                  ]}
+                >
+                  <PhIcon
+                    name="pricetag"
+                    size={12}
+                    color={!labelFilter ? "#fff" : colors.primary}
+                  />
+                  <Text
+                    numberOfLines={1}
+                    allowFontScaling={false}
+                    style={[styles.filterText, { color: !labelFilter ? "#fff" : colors.primary }]}
+                  >
+                    All Labels
+                  </Text>
+                </TouchableOpacity>
+              );
+              Object.values(labelDefs)
+                .sort((a, b) => {
+                  const kindOrder: Record<string, number> = { order: 0, priority: 1, custom: 2 };
+                  const ka = kindOrder[a.kind] ?? 3;
+                  const kb = kindOrder[b.kind] ?? 3;
+                  if (ka !== kb) return ka - kb;
+                  return a.name.localeCompare(b.name);
+                })
+                .forEach((l) => {
+                  const active = labelFilter === l.id;
+                  chips.push(
+                    <TouchableOpacity
+                      key={l.id}
+                      testID={`labelfilter-${l.id}`}
+                      onPress={() => setLabelFilter(active ? "" : l.id)}
+                      style={[
+                        styles.filterPill,
+                        { borderColor: l.color, flexDirection: "row", gap: 4 },
+                        active && { backgroundColor: l.color, borderColor: l.color },
+                      ]}
+                    >
+                      <PhIcon
+                        name={(LABEL_ICON_MAP[l.icon] || l.icon || "pricetag") as any}
+                        size={12}
+                        color={active ? "#fff" : l.color}
+                      />
+                      <Text
+                        numberOfLines={1}
+                        allowFontScaling={false}
+                        style={[styles.filterText, { color: active ? "#fff" : l.color }]}
+                      >
+                        {l.name}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                });
+              return chips;
+            })()}
+          </ScrollView>
+        </View>
+      )}
 
       {/* Phase-9 / Phase-11 removed (2026-05-12):
           Both the contextual "Scan & Ready to Ship" / "Scan to
