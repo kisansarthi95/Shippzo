@@ -34,12 +34,15 @@ type Props = {
   selectedIds: string[];
   onClose: () => void;
   onApply: (ids: string[]) => void;
+  /** Optional: start the sheet directly on the Create form (used by
+   *  the Filter Bottom Sheet's "+ Create new label" shortcut). */
+  initialView?: "select" | "create";
 };
 
 export default function LabelPickerSheet({
-  visible, selectedIds, onClose, onApply,
+  visible, selectedIds, onClose, onApply, initialView = "select",
 }: Props) {
-  const [view, setView] = useState<"select" | "create">("select");
+  const [view, setView] = useState<"select" | "create">(initialView);
   const [labels, setLabels] = useState<ShipmentLabel[]>([]);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -52,14 +55,14 @@ export default function LabelPickerSheet({
 
   useEffect(() => {
     if (!visible) return;
-    setView("select");
+    setView(initialView);
     setIds(selectedIds);
     setLoading(true);
     LabelsApi.list()
       .then(setLabels)
       .catch(() => {})
       .finally(() => setLoading(false));
-  }, [visible, selectedIds]);
+  }, [visible, selectedIds, initialView]);
 
   const grouped = useMemo(() => {
     const g: Record<string, ShipmentLabel[]> = { order: [], priority: [], custom: [] };

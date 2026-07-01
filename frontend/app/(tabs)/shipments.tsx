@@ -30,6 +30,8 @@ import { colors } from "../../lib/theme";
 import { LabelsApi, ShipmentLabel, LABEL_ICON_MAP } from "../../lib/labels";
 import LabelChip from "../../components/LabelChip";
 import LabelPickerSheet from "../../components/LabelPickerSheet";
+import QuickPickerSheet, { QuickPickerOption } from "../../components/QuickPickerSheet";
+import ShipmentsFilterSheet from "../../components/ShipmentsFilterSheet";
 import { useFeatureFlag } from "../../lib/feature_flags";
 import { requestWhatsAppSend } from "../../lib/whatsappGuard";
 import DailyLimitBanner from "../../components/DailyLimitBanner";
@@ -219,6 +221,21 @@ export default function Shipments() {
   // be visible. Piggybacks the existing dateFilteredItems memo so
   // it composes cleanly with status + date + print filters.
   const [labelFilter, setLabelFilter] = useState<string>("");
+  // ── Phase A — Quick Filter dropdown chips + Filter Bottom Sheet
+  // paymentFilter: "" = All | "COD" | "Prepaid" (Set covers both)
+  // courierFilter: "" = All | courier_id
+  // quickPicker:   which dropdown chip's picker sheet is open
+  // filterSheetOpen: main Filters bottom sheet open flag
+  const [paymentFilter, setPaymentFilter] = useState<Set<string>>(new Set());
+  const [courierFilter, setCourierFilter] = useState<string>("");
+  const [quickPicker, setQuickPicker] = useState<"print" | "label" | "courier" | null>(null);
+  const [filterSheetOpen, setFilterSheetOpen] = useState(false);
+  // Phase B — when the "+ Create new label" button in the Filter
+  // Bottom Sheet is tapped we open LabelPickerSheet in a special
+  // "create-mode-only" state.  We reuse the existing sheet by
+  // pointing labelPickerFor at a synthetic sentinel id so the sheet
+  // opens but no shipment is affected.
+  const [labelCreateOpen, setLabelCreateOpen] = useState(false);
   // ── Phase F4.8 — Contact-saved visual indicator ────────────────
   // Set of shipment ids that were successfully saved as contacts in
   // this session (single tap OR bulk vcf). UI-only — the "Already
@@ -417,23 +434,26 @@ export default function Shipments() {
           const isPrinted = (s.print_status || "") === "Printed";
           return printFilter === "Printed" ? isPrinted : !isPrinted;
         });
-    // Phase F4.6 — Label filter. Empty labelFilter = show all. When
-    // a label id is set, only shipments whose labels[] contains that
-    // exact id survive. Uses the same `shipmentLabels` map that the
-    // card row uses for chip rendering, so the filter set is
-    // guaranteed to match what the user sees on each card.
+    // Phase F4.6 — Label filter.
     const byLabel = !labelFilter
       ? byPrint
       : byPrint.filter((s) => {
           const arr = shipmentLabels[s.id] || (s as any).labels || [];
           return Array.isArray(arr) && arr.includes(labelFilter);
         });
-    if (dateFilter === "all") return byLabel;
+    // Phase A — Payment (COD/Prepaid) + Courier Partner filters.
+    const byPay = paymentFilter.size === 0
+      ? byLabel
+      : byLabel.filter((s) => paymentFilter.has(String((s as any).payment_mode || "").trim()));
+    const byCourier = !courierFilter
+      ? byPay
+      : byPay.filter((s) => String((s as any).courier_id || "") === courierFilter);
+    if (dateFilter === "all") return byCourier;
     if (dateFilter === "custom") {
-      if (!customFrom && !customTo) return byLabel;
+      if (!customFrom && !customTo) return byCourier;
       const from = customFrom ? new Date(customFrom.getFullYear(), customFrom.getMonth(), customFrom.getDate()).getTime() : 0;
       const to = customTo ? new Date(customTo.getFullYear(), customTo.getMonth(), customTo.getDate(), 23, 59, 59, 999).getTime() : Number.MAX_SAFE_INTEGER;
-      return byLabel.filter((s) => {
+      return byCourier.filter((s) => {
         const t = Date.parse(s.created_at || "");
         return !isNaN(t) && t >= from && t <= to;
       });
@@ -445,11 +465,11 @@ export default function Shipments() {
         : dateFilter === "week"
         ? now - 7 * 24 * 60 * 60 * 1000
         : now - 30 * 24 * 60 * 60 * 1000;
-    return byLabel.filter((s) => {
+    return byCourier.filter((s) => {
       const t = Date.parse(s.created_at || "");
       return !isNaN(t) && t >= cutoff;
     });
-  }, [items, dateFilter, customFrom, customTo, status, printFilter, labelFilter, shipmentLabels]);
+  }, [items, dateFilter, customFrom, customTo, status, printFilter, labelFilter, shipmentLabels, paymentFilter, courierFilter]);
 
   const toggleSelect = (id: string) => {
     setSelectedIds((prev) => {
@@ -1492,25 +1512,43 @@ export default function Shipments() {
         </View>
       </View>
 
-      <SearchBar
-        testID="search"
-        placeholder="Search tracking, name, city, order..."
-        value={search}
-        onChangeText={setSearch}
-        onClear={() => {
-          // Phase-32 one-tap clear UX:
-          //   • wipe the search box (handled by SearchBar)
-          //   • reset Status filter back to "All"
-          //   • reset Date filter back to "all"
-          //   • drop any custom-date window
-          // List reloads automatically via the existing effect-on-state.
-          setStatus("All");
-          setDateFilter("all");
-          setCustomFrom(null);
-          setCustomTo(null);
-        }}
-        onSubmitEditing={load}
-      />
+      <View style={{ flexDirection: "row", alignItems: "center", paddingHorizontal: 12, gap: 8 }}>
+        <View style={{ flex: 1 }}>
+          <SearchBar
+            testID="search"
+            placeholder="Search tracking, name, city, order..."
+            value={search}
+            onChangeText={setSearch}
+            onClear={() => {
+              setStatus("All");
+              setDateFilter("all");
+              setCustomFrom(null);
+              setCustomTo(null);
+            }}
+            onSubmitEditing={load}
+          />
+        </View>
+        {/* Phase A — Filter icon opens the Filter Bottom Sheet with
+            Date + Payment + Labels sections. Red dot when any filter
+            (managed inside the sheet) is currently active. */}
+        <TouchableOpacity
+          testID="filter-icon"
+          onPress={() => setFilterSheetOpen(true)}
+          style={{
+            width: 44, height: 44, borderRadius: 10, borderWidth: 1,
+            borderColor: "#E5E7EB", alignItems: "center", justifyContent: "center",
+            backgroundColor: "#fff",
+          }}
+        >
+          <PhIcon name="filter" size={20} color={colors.primary} />
+          {(dateFilter !== "all" || paymentFilter.size > 0 || labelFilter) ? (
+            <View style={{
+              position: "absolute", top: 8, right: 8, width: 8, height: 8,
+              borderRadius: 4, backgroundColor: "#DC2626",
+            }} />
+          ) : null}
+        </TouchableOpacity>
+      </View>
 
       <View style={styles.filterRowWrap}>
         <ScrollView horizontal showsHorizontalScrollIndicator={false}
@@ -1574,195 +1612,52 @@ export default function Shipments() {
         </ScrollView>
       </View>
 
+      {/* Phase A — New 3-chip Quick Filter row (All Print / All
+          Labels / Courier Partner). Replaces the three older filter
+          rows below (which are wrapped in `false && …` and can be
+          removed once QA signs off). */}
       <View style={styles.filterRowWrap}>
         <ScrollView horizontal showsHorizontalScrollIndicator={false}
-          contentContainerStyle={[styles.filterRow, { paddingTop: 0 }]}>
-          {([
-            { key: "all", label: "All dates" },
-            { key: "today", label: "Last 24h" },
-            { key: "week", label: "Last 7 days" },
-            { key: "month", label: "Last 30 days" },
-          ] as const).map((f) => {
-            const active = dateFilter === f.key;
-            return (
-              <TouchableOpacity
-                key={f.key}
-                testID={`datefilter-${f.key}`}
-                onPress={() => setDateFilter(f.key)}
-                style={[
-                  styles.filterPill,
-                  { borderColor: colors.primary },
-                  active && { backgroundColor: colors.primary, borderColor: colors.primary },
-                ]}
-              >
-                <Text
-                  numberOfLines={1}
-                  allowFontScaling={false}
-                  style={[styles.filterText, { color: active ? "#fff" : colors.primary }]}
-                >
-                  {f.label}
-                </Text>
-              </TouchableOpacity>
-            );
-          })}
-          {/* Custom date range pill */}
-          {(() => {
-            const active = dateFilter === "custom";
-            const rangeLabel = (() => {
-              if (!active) return "Custom";
-              const fmt = (d: Date | null) =>
-                d ? `${d.getDate()}/${d.getMonth() + 1}` : "…";
-              return `${fmt(customFrom)} – ${fmt(customTo)}`;
-            })();
-            return (
-              <TouchableOpacity
-                testID="datefilter-custom"
-                onPress={() => {
-                  setDateFilter("custom");
-                  setShowDateModal(true);
-                }}
-                style={[
-                  styles.filterPill,
-                  { borderColor: colors.primary, flexDirection: "row", gap: 4 },
-                  active && { backgroundColor: colors.primary, borderColor: colors.primary },
-                ]}
-              >
-                <PhIcon
-                  name="calendar-outline"
-                  size={13}
-                  color={active ? "#fff" : colors.primary}
-                />
-                <Text
-                  numberOfLines={1}
-                  allowFontScaling={false}
-                  style={[styles.filterText, { color: active ? "#fff" : colors.primary }]}
-                >
-                  {rangeLabel}
-                </Text>
-              </TouchableOpacity>
-            );
-          })()}
+          contentContainerStyle={[styles.filterRow, { paddingTop: 0, gap: 8 }]}>
+          {[
+            { key: "print" as const, icon: "print",
+              lbl: printFilter === "All" ? "All Print" : printFilter,
+              active: printFilter !== "All" },
+            { key: "label" as const, icon: "pricetag",
+              lbl: labelFilter ? (labelDefs[labelFilter]?.name || "Label") : "All Labels",
+              active: !!labelFilter },
+            { key: "courier" as const, icon: "car",
+              lbl: courierFilter ? (couriers.find((c) => c.id === courierFilter)?.name || "Courier") : "Courier Partner",
+              active: !!courierFilter },
+          ].map((chip) => (
+            <TouchableOpacity
+              key={chip.key}
+              testID={`quickchip-${chip.key}`}
+              onPress={() => setQuickPicker(chip.key)}
+              style={[
+                styles.filterPill,
+                { borderColor: colors.primary, flexDirection: "row", gap: 6, alignItems: "center" },
+                chip.active && { backgroundColor: colors.primary, borderColor: colors.primary },
+              ]}
+            >
+              <PhIcon name={chip.icon} size={14} color={chip.active ? "#fff" : colors.primary} />
+              <Text style={[styles.filterText, { color: chip.active ? "#fff" : colors.primary }]}
+                numberOfLines={1} allowFontScaling={false}>{chip.lbl}</Text>
+              <PhIcon name="chevron-down" size={14} color={chip.active ? "#fff" : colors.primary} />
+            </TouchableOpacity>
+          ))}
         </ScrollView>
       </View>
 
-      {/* Phase F4.3 — Print Status filter row. Sits below the date
-          filters and combines with every other filter (status,
-          labels, dates, search). Same pill styling as the date
-          filters so it feels native to the existing bar. */}
-      <View style={styles.filterRowWrap}>
-        <ScrollView horizontal showsHorizontalScrollIndicator={false}
-          contentContainerStyle={[styles.filterRow, { paddingTop: 0 }]}>
-          {(["All", "Not Printed", "Printed"] as const).map((f) => {
-            const active = printFilter === f;
-            const accent = f === "Printed" ? "#10B981" : colors.primary;
-            return (
-              <TouchableOpacity
-                key={f}
-                testID={`printfilter-${f.toLowerCase().replace(/\s/g, "-")}`}
-                onPress={() => setPrintFilter(f)}
-                style={[
-                  styles.filterPill,
-                  { borderColor: accent, flexDirection: "row", gap: 4 },
-                  active && { backgroundColor: accent, borderColor: accent },
-                ]}
-              >
-                {f === "Printed" ? (
-                  <PhIcon
-                    name="checkmark"
-                    size={12}
-                    color={active ? "#fff" : accent}
-                  />
-                ) : null}
-                <Text
-                  numberOfLines={1}
-                  allowFontScaling={false}
-                  style={[styles.filterText, { color: active ? "#fff" : accent }]}
-                >
-                  {f}
-                </Text>
-              </TouchableOpacity>
-            );
-          })}
-        </ScrollView>
-      </View>
+      {/* Phase B — Date filter row moved into the Filter Bottom Sheet
+          (opened via the funnel icon next to the SearchBar). This
+          keeps the top of the screen clean and gives more room to
+          shipment cards. */}
 
-      {/* Phase F4.6 — Label filter row. Empty state (no labels
-          created yet) collapses entirely. Selecting a label filters
-          the list to shipments whose labels[] array contains that
-          label id. Chips render in the label's own color so the
-          filter is instantly recognisable. */}
-      {Object.keys(labelDefs).length > 0 && (
-        <View style={styles.filterRowWrap}>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false}
-            contentContainerStyle={[styles.filterRow, { paddingTop: 0 }]}>
-            {(() => {
-              const chips: React.ReactElement[] = [];
-              chips.push(
-                <TouchableOpacity
-                  key="__all__"
-                  testID="labelfilter-all"
-                  onPress={() => setLabelFilter("")}
-                  style={[
-                    styles.filterPill,
-                    { borderColor: colors.primary, flexDirection: "row", gap: 4 },
-                    !labelFilter && { backgroundColor: colors.primary, borderColor: colors.primary },
-                  ]}
-                >
-                  <PhIcon
-                    name="pricetag"
-                    size={12}
-                    color={!labelFilter ? "#fff" : colors.primary}
-                  />
-                  <Text
-                    numberOfLines={1}
-                    allowFontScaling={false}
-                    style={[styles.filterText, { color: !labelFilter ? "#fff" : colors.primary }]}
-                  >
-                    All Labels
-                  </Text>
-                </TouchableOpacity>
-              );
-              Object.values(labelDefs)
-                .sort((a, b) => {
-                  const kindOrder: Record<string, number> = { order: 0, priority: 1, custom: 2 };
-                  const ka = kindOrder[a.kind] ?? 3;
-                  const kb = kindOrder[b.kind] ?? 3;
-                  if (ka !== kb) return ka - kb;
-                  return a.name.localeCompare(b.name);
-                })
-                .forEach((l) => {
-                  const active = labelFilter === l.id;
-                  chips.push(
-                    <TouchableOpacity
-                      key={l.id}
-                      testID={`labelfilter-${l.id}`}
-                      onPress={() => setLabelFilter(active ? "" : l.id)}
-                      style={[
-                        styles.filterPill,
-                        { borderColor: l.color, flexDirection: "row", gap: 4 },
-                        active && { backgroundColor: l.color, borderColor: l.color },
-                      ]}
-                    >
-                      <PhIcon
-                        name={(LABEL_ICON_MAP[l.icon] || l.icon || "pricetag") as any}
-                        size={12}
-                        color={active ? "#fff" : l.color}
-                      />
-                      <Text
-                        numberOfLines={1}
-                        allowFontScaling={false}
-                        style={[styles.filterText, { color: active ? "#fff" : l.color }]}
-                      >
-                        {l.name}
-                      </Text>
-                    </TouchableOpacity>
-                  );
-                });
-              return chips;
-            })()}
-          </ScrollView>
-        </View>
-      )}
+      {/* Phase A — Old Print Status & Label filter rows removed.
+          Both are now surfaced through the new Quick Filter chips
+          above ("All Print" and "All Labels") which open a picker
+          bottom-sheet on tap. */}
 
       {/* Phase-9 / Phase-11 removed (2026-05-12):
           Both the contextual "Scan & Ready to Ship" / "Scan to
@@ -2823,6 +2718,96 @@ export default function Shipments() {
           setShipmentLabels((prev) => ({ ...prev, [sid]: ids }));
           LabelsApi.setForShipment(sid, ids).catch(() => {});
           // Refresh label defs so a just-created label's chip shows up.
+          loadLabels().catch(() => {});
+        }}
+      />
+
+      {/* ── Phase A — Quick Filter picker sheets. One shared modal
+             per chip; only one can be open at a time (quickPicker). */}
+      <QuickPickerSheet
+        visible={quickPicker === "print"}
+        title="Print Status"
+        options={[
+          { id: "All", label: "All Print", icon: "print" },
+          { id: "Not Printed", label: "Not Printed", icon: "print", color: colors.primary },
+          { id: "Printed", label: "Printed", icon: "checkmark", color: "#10B981" },
+        ]}
+        value={printFilter}
+        onChange={(id) => setPrintFilter(id as "All" | "Printed" | "Not Printed")}
+        onClose={() => setQuickPicker(null)}
+      />
+      <QuickPickerSheet
+        visible={quickPicker === "label"}
+        title="Filter by Label"
+        options={[
+          { id: "", label: "All Labels", icon: "pricetag" } as QuickPickerOption,
+          ...Object.values(labelDefs)
+            .sort((a, b) => {
+              const kindOrder: Record<string, number> = { order: 0, priority: 1, custom: 2 };
+              const ka = kindOrder[a.kind] ?? 3;
+              const kb = kindOrder[b.kind] ?? 3;
+              if (ka !== kb) return ka - kb;
+              return a.name.localeCompare(b.name);
+            })
+            .map((l) => ({
+              id: l.id,
+              label: l.name,
+              icon: (LABEL_ICON_MAP[l.icon] || l.icon || "pricetag") as string,
+              color: l.color,
+            })),
+        ]}
+        value={labelFilter}
+        onChange={(id) => setLabelFilter(id)}
+        onClose={() => setQuickPicker(null)}
+      />
+      <QuickPickerSheet
+        visible={quickPicker === "courier"}
+        title="Courier Partner"
+        options={[
+          { id: "", label: "All Couriers", icon: "car" } as QuickPickerOption,
+          ...couriers.map((c) => ({
+            id: c.id,
+            label: c.name,
+            icon: "car",
+            color: colors.primary,
+          })),
+        ]}
+        value={courierFilter}
+        onChange={(id) => setCourierFilter(id)}
+        onClose={() => setQuickPicker(null)}
+      />
+
+      {/* ── Phase B — Filter Bottom Sheet (funnel icon opens this). */}
+      <ShipmentsFilterSheet
+        visible={filterSheetOpen}
+        onClose={() => setFilterSheetOpen(false)}
+        dateFilter={dateFilter}
+        setDateFilter={(v) => setDateFilter(v)}
+        customFrom={customFrom}
+        customTo={customTo}
+        onOpenCustomDate={() => setShowDateModal(true)}
+        paymentFilter={paymentFilter}
+        setPaymentFilter={setPaymentFilter}
+        onCreateLabel={() => setLabelCreateOpen(true)}
+        onClearAll={() => {
+          setDateFilter("all");
+          setCustomFrom(null);
+          setCustomTo(null);
+          setPaymentFilter(new Set());
+        }}
+      />
+
+      {/* ── Phase B — Create-label shortcut. Opens LabelPickerSheet
+             straight in Create mode; on save the new label refreshes
+             the labelDefs map (via loadLabels) so it appears in the
+             All Labels picker + card chips immediately. */}
+      <LabelPickerSheet
+        visible={labelCreateOpen}
+        selectedIds={[]}
+        initialView="create"
+        onClose={() => setLabelCreateOpen(false)}
+        onApply={() => {
+          setLabelCreateOpen(false);
           loadLabels().catch(() => {});
         }}
       />
