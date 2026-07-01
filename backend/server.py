@@ -562,6 +562,13 @@ class SettingsUpdate(BaseModel):
 class Shipment(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     tracking_id: str
+    # Phase F4.2 — for couriers configured with `manual_tracking: true`
+    # the operator saves an AWB into `manual_tracking_id` instead of the
+    # auto-generated `tracking_id`. The Shipment write model has always
+    # accepted it and the DB stores it, but the read model was silently
+    # dropping the field on response. Declaring it here ensures GET
+    # /api/shipments and the tracking-required gate on PUT can see it.
+    manual_tracking_id: Optional[str] = ""
     courier_id: Optional[str] = None
     courier_name: str = ""
     # Phase-7d Order ID System
@@ -720,6 +727,13 @@ class ShipmentCreate(BaseModel):
 
 class ShipmentUpdate(BaseModel):
     tracking_id: Optional[str] = None
+    # Phase F4.2 — manual_tracking_id was already accepted by the DB but
+    # the Pydantic ShipmentUpdate model didn't declare it, so PUT
+    # /api/shipments/{id} payloads that included manual_tracking_id
+    # were silently dropped before reaching the router body. Add it
+    # here so the tracking-required gate in shipments_write.py can
+    # correctly detect an incoming manual tracking id in the same PUT.
+    manual_tracking_id: Optional[str] = None
     courier_id: Optional[str] = None
     courier_name: Optional[str] = None
     order_id: Optional[str] = None
