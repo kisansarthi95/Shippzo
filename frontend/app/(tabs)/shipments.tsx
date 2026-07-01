@@ -490,6 +490,59 @@ export default function Shipments() {
     setBulkPerPage(null);  // reset so next session starts at "choose layout"
   };
 
+  // Shared helper — mark N shipments as Printed and reconcile UI.
+  // Reused by both bulkPrint (native print dialog flow) and
+  // bulkPreviewPdf (PDF Preview / Share flow) so a successful share
+  // is treated the same as a successful print.
+  const markShipmentsPrinted = useCallback(async (ids: string[]) => {
+    if (!ids || ids.length === 0) return;
+    try {
+      const results = await Promise.allSettled(
+        ids.map((sid) => Api.setPrintStatus(sid, true)),
+      );
+      const okIds = new Set<string>();
+      results.forEach((r, i) => {
+        if (r.status === "fulfilled") okIds.add(ids[i]);
+      });
+      setItems((prev) => prev.map((row) =>
+        okIds.has(row.id) ? { ...row, print_status: "Printed" as any } : row,
+      ));
+      const failed = ids.length - okIds.size;
+      if (failed > 0) {
+        Alert.alert(
+          "Some shipments could not be marked",
+          `${okIds.size} marked as Printed, ${failed} failed. The failed ones will stay orange — retry from their cards.`,
+        );
+      }
+      load().catch(() => {});
+    } catch (e: any) {
+      Alert.alert(
+        "Couldn't save print status",
+        e?.response?.data?.detail || e?.message || "Try again.",
+      );
+    }
+  }, [load]);
+
+  // Reusable "Are all selected shipments printed successfully?"
+  // confirmation. Whichever bulk export path the user takes (native
+  // Print dialog OR PDF Preview/Share), we ask exactly once at the
+  // end and, on Yes, mark everything Printed in one fan-out.
+  const confirmAndMarkBulkPrinted = useCallback((ids: string[]) => {
+    if (!ids || ids.length === 0) return;
+    const n = ids.length;
+    Alert.alert(
+      "Confirm Bulk Print",
+      `Are all ${n} selected shipment${n === 1 ? "" : "s"} printed successfully?`,
+      [
+        { text: "Not yet", style: "cancel" },
+        {
+          text: "Yes, All Printed",
+          onPress: () => { markShipmentsPrinted(ids); },
+        },
+      ],
+    );
+  }, [markShipmentsPrinted]);
+
   const bulkPrint = async () => {
     if (selectedIds.size === 0 || !settings) {
       Alert.alert("Select shipments", "Tap shipments to select first.");
@@ -524,59 +577,9 @@ export default function Shipments() {
       persistLastUsedPerPage(bulkPerPage);
 
       // ── Phase F4.4 — ONE Confirm-Bulk-Print dialog after the
-      //    entire batch completes. Unlike the single-print flow, we
-      //    do NOT queue one confirmation per shipment; a single
-      //    "Yes, All Printed" tap marks every selected shipment as
-      //    Printed in one Promise.all fan-out.
-      const batchCount = idsSnapshot.length;
-      Alert.alert(
-        "Confirm Bulk Print",
-        `Did all ${batchCount} shipment ${batchCount === 1 ? "label" : "labels"} print successfully?`,
-        [
-          { text: "Cancel", style: "cancel" },
-          {
-            text: "Yes, All Printed",
-            onPress: async () => {
-              try {
-                // Parallel fan-out — one PUT per shipment. Failures
-                // are per-id and never block the rest of the batch;
-                // a failed id simply stays "Not Printed" and the
-                // user can retry from its card. `allSettled` gives
-                // us the count of survivors for the summary toast.
-                const results = await Promise.allSettled(
-                  idsSnapshot.map((sid) => Api.setPrintStatus(sid, true)),
-                );
-                const okIds = new Set<string>();
-                results.forEach((r, i) => {
-                  if (r.status === "fulfilled") okIds.add(idsSnapshot[i]);
-                });
-                // Optimistic UI — flip the Printed state locally on
-                // every successful id so cards turn green before the
-                // background refetch reconciles.
-                setItems((prev) => prev.map((row) =>
-                  okIds.has(row.id)
-                    ? { ...row, print_status: "Printed" as any }
-                    : row,
-                ));
-                // Surface partial failures without blocking success.
-                const failed = idsSnapshot.length - okIds.size;
-                if (failed > 0) {
-                  Alert.alert(
-                    "Some shipments could not be marked",
-                    `${okIds.size} marked as Printed, ${failed} failed. The failed ones will stay orange — retry from their cards.`,
-                  );
-                }
-                load().catch(() => {});
-              } catch (e: any) {
-                Alert.alert(
-                  "Couldn't save print status",
-                  e?.response?.data?.detail || e?.message || "Try again.",
-                );
-              }
-            },
-          },
-        ],
-      );
+      //    entire batch completes. Unified into the shared helper so
+      //    the PDF-Share flow (bulkPreviewPdf) behaves identically.
+      confirmAndMarkBulkPrinted(idsSnapshot);
     } catch (e: any) {
       Alert.alert("Error", e?.message || "Failed");
     }
@@ -591,8 +594,11 @@ export default function Shipments() {
       Alert.alert("Choose layout", "Pick a print layout (Thermal / A4 / A6) first.");
       return;
     }
+    // Snapshot before the OS Share sheet so touch events during share
+    // don't mutate the ids we mark Printed.
+    const idsSnapshot = Array.from(selectedIds);
     try {
-      const shipments = await Api.bulkFetch(Array.from(selectedIds));
+      const shipments = await Api.bulkFetch(idsSnapshot);
       const html = buildLabelHtml(shipments, settings.sender, {
         perPage: bulkPerPage,
         showSenderContact: settings.sender.show_contact,
@@ -613,6 +619,12 @@ export default function Shipments() {
       }
       // Remember this layout for next time.
       persistLastUsedPerPage(bulkPerPage);
+
+      // Bug fix (Jul-2026): PDF Preview / Share now triggers the SAME
+      // "Confirm Bulk Print" dialog as the native Print flow. From the
+      // user's perspective, generating/sharing a PDF IS a successful
+      // print action — we just need to confirm before flipping status.
+      confirmAndMarkBulkPrinted(idsSnapshot);
     } catch (e: any) {
       Alert.alert("Error", e?.message || "Failed");
     }
@@ -884,38 +896,17 @@ export default function Shipments() {
   // Show the "Confirm Print" alert when the user returns to the
   // Shipments tab after opening a label preview via the orange
   // Print Now button.
+  //
+  // Bug fix (Jul-2026): Per user request, single-shipment prints no
+  // longer show a confirmation dialog — the label screen itself
+  // auto-marks the shipment as Printed after a successful
+  // print/share. This effect is retained as a light "refresh the
+  // list" so the newly-flipped Printed badge shows up instantly on
+  // return without waiting for the next background poll.
   useFocusEffect(useCallback(() => {
     if (!pendingPrintConfirmId) return;
-    const sid = pendingPrintConfirmId;
-    // Reset immediately so a second focus (e.g., quick re-tap) doesn't
-    // re-fire the alert.
     setPendingPrintConfirmId(null);
-    Alert.alert(
-      "Confirm Print",
-      "Did you successfully print this shipment label?",
-      [
-        { text: "Cancel", style: "cancel" },
-        {
-          text: "Yes, Printed",
-          onPress: async () => {
-            try {
-              await Api.setPrintStatus(sid, true);
-              // Optimistic UI — flip the local row's print_status so
-              // the button turns green without waiting for a refetch.
-              setItems((prev) => prev.map((r) =>
-                r.id === sid ? { ...r, print_status: "Printed" as any } : r,
-              ));
-              load().catch(() => {});
-            } catch (e: any) {
-              Alert.alert(
-                "Couldn't save print status",
-                e?.response?.data?.detail || e?.message || "Try again.",
-              );
-            }
-          },
-        },
-      ],
-    );
+    load().catch(() => {});
   }, [pendingPrintConfirmId, load]));
 
   // ─────────────────────────────────────────────────────────────

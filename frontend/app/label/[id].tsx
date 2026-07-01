@@ -266,6 +266,13 @@ export default function LabelScreen() {
     try {
       const dims = pageDimensionsFor(perPage);
       await Print.printAsync({ html, ...(dims || {}) });
+      // Auto-mark this single shipment as Printed (per user request:
+      // no confirmation dialog for single-print — printing/sharing IS
+      // the confirmation). Fire-and-forget so a slow network doesn't
+      // block the UI from returning to the Shipments tab.
+      if (shipment?.id) {
+        Api.setPrintStatus(shipment.id, true).catch(() => {});
+      }
     } catch (e: any) {
       Alert.alert("Print error", e?.message || "Failed to print");
     }
@@ -279,9 +286,7 @@ export default function LabelScreen() {
       const { uri } = await Print.printToFileAsync({ html, ...(dims || {}) });
       if (Platform.OS === "web") {
         if (typeof window !== "undefined") window.open(uri, "_blank");
-        return;
-      }
-      if (await Sharing.isAvailableAsync()) {
+      } else if (await Sharing.isAvailableAsync()) {
         await Sharing.shareAsync(uri, {
           mimeType: "application/pdf",
           dialogTitle: "Preview label PDF",
@@ -289,6 +294,12 @@ export default function LabelScreen() {
         });
       } else {
         Alert.alert("Saved", `PDF saved to ${uri}`);
+      }
+      // Auto-mark Printed after a successful PDF generation/share.
+      // Generating the PDF is a valid "print action" — the user may
+      // save it and print it later; either way the shipment is done.
+      if (shipment?.id) {
+        Api.setPrintStatus(shipment.id, true).catch(() => {});
       }
     } catch (e: any) {
       Alert.alert("Error", e?.message || "Failed to generate PDF");
