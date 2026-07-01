@@ -1,0 +1,28 @@
+{
+  "summary": "PASS — Shipments tab TDZ regression RETEST. Initial retest still saw the same ReferenceError: 'Cannot access printFilter before initialization' red screen. RCA: Metro dev-server bundle was STALE — even though the source was correctly hoisted (line 216, above the useMemo at line 386), the served bundle contained BOTH the new hoisted declarations AND the old ones near line 740 (bundle line 299622), so the useMemo at bundle line 299325 read printFilter before the second (real) declaration ran. Restarting expo (sudo supervisorctl restart expo) forced a clean Metro re-bundle from disk, after which: (a) the Shipments tab renders cleanly with cards + filter chips, (b) the new Print status filter row shows all three chips ('All' / 'Not Printed' / 'Printed'), (c) card Print-button states are visible (green 'Printed' badge and orange 'Print Now' button), and (d) tapping between the three chips does NOT crash the tab and correctly filters the list (Not Printed shows only Print-Now cards; Printed shows only green-badge cards). Zero ReferenceError/TDZ entries in the browser console after the restart.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "Print status filter chips", "issue": "Chips ('All' / 'Not Printed' / 'Printed') do NOT have testID attributes (expected data-testid=\"print-filter-all\", \"print-filter-not-printed\", \"print-filter-printed\"). Automated tests must fall back to text lookup, which is fragile because the word 'All' also appears in the status-filter row. Reference: /app/frontend/app/(tabs)/shipments.tsx around line 1540 (the chip .map()).", "testID": "missing", "priority": "LOW"}
+    ],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [],
+  "action_items": [
+    "OPTIONAL: Add testID props to the three Print-status filter chips in shipments.tsx (around line 1540) — e.g., testID={`print-filter-${f.replace(' ', '-').toLowerCase()}`} — so future retests can target them deterministically.",
+    "OPTIONAL / process: When code changes touch hook ordering, main agent should follow up with `sudo supervisorctl restart expo` (Metro runs in CI mode = watch disabled) — otherwise the served bundle can retain stale duplicate declarations even after edits.",
+    "OPTIONAL cleanup: Remove the now-obsolete stale comment block at lines 734-737 (it references the old location of the moved useState hooks) — pure hygiene, no functional impact."
+  ],
+  "critical_code_review_comments": [
+    "Metro is started with CI=true (see /var/log/supervisor/expo.out.log: 'Metro is running in CI mode, reloads are disabled'). This means edits to source files WILL NOT be picked up unless expo is restarted. This is the direct cause of the retest showing the same TDZ error even though the source was already fixed. Consider documenting this in AGENTS/README so future main-agent fixes always restart expo after edits."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "n/a (not tested per request)", "frontend": "100% for scoped items (tab renders, chips visible, chips tappable, no ReferenceError)"},
+  "seed_data_creation": "None. Used existing admin@test.com / Admin@12345 seed (~259 shipments visible).",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "The Metro dev server runs with CI=true (watch mode disabled). Whenever main agent edits frontend files and asks for a retest, verify the change is actually in the served bundle. Quick check: fetch '/node_modules/expo-router/entry.bundle?platform=web&dev=true&hot=false&lazy=true&transform.routerRoot=app' from within the page and grep for the changed symbol; if not present or duplicated, `sudo supervisorctl restart expo` before rerunning the UI test. Login flow for this app: welcome screen → tap 'I already have an account' → fill 2 inputs (email, password) → tap testID='login-submit'. Admin creds are in /app/memory/test_credentials.md.",
+  "rca_of_issue": "Report claimed the fix was applied and Metro re-bundled clean, but the served bundle still had a second, later declaration of printFilter (bundle line 299622) because Metro runs in CI mode (reloads disabled). The new hoisted useState at source line 216 was present in the bundle, but so was the OLD declaration at the old location (leftover from a prior in-memory bundle state). React executes the component body top-to-bottom; the useMemo at bundle line 299320 read `printFilter` before ANY declaration ran (both the top one and the leftover lower one were hoisted as `const` bindings, and the FIRST binding-in-scope wins for TDZ — but since only the LATER declaration was inside a duplicated block that was actually executed first via some odd ordering, TDZ fired). Mitigation: `sudo supervisorctl restart expo` fully recreated the bundle from the current on-disk source, eliminating the duplicate. Verified post-restart: bundle now has only one printFilter declaration, tab renders, all three chips work, no console errors."
+}

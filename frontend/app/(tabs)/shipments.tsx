@@ -207,6 +207,13 @@ export default function Shipments() {
   const [labelPickerFor, setLabelPickerFor] = useState<string | null>(null);
   const [labelDefs, setLabelDefs] = useState<Record<string, ShipmentLabel>>({});
   const [shipmentLabels, setShipmentLabels] = useState<Record<string, string[]>>({});
+  // ── Phase F4.3 — Persistent Print Status state
+  // MUST be declared BEFORE the `dateFilteredItems` useMemo below,
+  // which reads `printFilter`. Previously declared further down and
+  // hit a TDZ ReferenceError on first render → ErrorBoundary.
+  const [advancingId, setAdvancingId] = useState<string | null>(null);
+  const [pendingPrintConfirmId, setPendingPrintConfirmId] = useState<string | null>(null);
+  const [printFilter, setPrintFilter] = useState<"All" | "Printed" | "Not Printed">("All");
   // perPage matches what the LabelViewer accepts so we can route every
   // option (A4, A6, Thermal 4×6, Barcode 2×1) through the same printer.
   type BulkPerPage = 1 | 2 | 4 | "thermal" | "barcode";
@@ -725,19 +732,9 @@ export default function Shipments() {
   };
 
   // ── Phase F4.3 — Persistent Print Status ─────────────────────
-  // Row-level "advancing" spinner id (kept — used by advanceStage
-  // below and the render path at CellRenderer). Was accidentally
-  // dropped in the F4.3 rewrite; restoring here so the render can
-  // read `advancingId` without a ReferenceError.
-  const [advancingId, setAdvancingId] = useState<string | null>(null);
-
-  // `pendingPrintConfirmId` is set when the user taps the orange
-  // "Print Now" and we navigate to /label/[id]. When they navigate
-  // back the useFocusEffect below fires the "Confirm Print" alert.
-  const [pendingPrintConfirmId, setPendingPrintConfirmId] = useState<string | null>(null);
-  // "All" | "Printed" | "Not Printed" — client-side filter, plays
-  // nicely with every other filter (status / labels / search / dates).
-  const [printFilter, setPrintFilter] = useState<"All" | "Printed" | "Not Printed">("All");
+  // useState hooks are hoisted to the top of the component (see
+  // near `selectedIds`) so `printFilter` is available to the
+  // `dateFilteredItems` useMemo above. Only the callbacks stay here.
 
   const onPrintButtonPress = useCallback((s: Shipment) => {
     // State 1 — no tracking id: keep the legacy Add-Tracking redirect.
