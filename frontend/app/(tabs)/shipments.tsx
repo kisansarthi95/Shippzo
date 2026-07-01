@@ -725,6 +725,12 @@ export default function Shipments() {
   };
 
   // ── Phase F4.3 — Persistent Print Status ─────────────────────
+  // Row-level "advancing" spinner id (kept — used by advanceStage
+  // below and the render path at CellRenderer). Was accidentally
+  // dropped in the F4.3 rewrite; restoring here so the render can
+  // read `advancingId` without a ReferenceError.
+  const [advancingId, setAdvancingId] = useState<string | null>(null);
+
   // `pendingPrintConfirmId` is set when the user taps the orange
   // "Print Now" and we navigate to /label/[id]. When they navigate
   // back the useFocusEffect below fires the "Confirm Print" alert.
