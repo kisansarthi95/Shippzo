@@ -1,0 +1,35 @@
+{
+  "summary": "Iteration 33 — Verified defence-in-depth fix on the LIVE `/api/sheets/orders` handler (routers/sheets.py). All requested checks green. T1 (case-drift reproduction): mutated admin's settings.sheet.column_mapping to UPPERCASE variants ('ORDER ID', 'NAME', 'PHONE', 'TRACKING ID') in Mongo, then hit GET /api/sheets/orders — result total=331 shipped=313 not_shipped=18, IDENTICAL to the canonical-cased baseline (total=331 shipped=313 not_shipped=18). Before the iter-33 hardening this would have collapsed to shipped=0. Mapping fully restored to migrated title-case after the test in a finally block (verified via /api/settings). T2 (canonical regression): shipped=313/331 (~94.6%) — matches iter-32 baseline (~311/329, sheet has grown by 2 rows since). T3 (existing suites): 8/8 smart_search + 12/12 sheet_orders_case_fix all pass (20 total, 14.13s). Fix confirmed reaching the LIVE handler — mapping_lc + _row_lc + mapped_field fast/slow path all effective.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_sheet_orders_case_drift.py",
+    "/app/backend/tests/test_sheet_orders_case_fix.py",
+    "/app/backend/tests/test_smart_search.py",
+    "/app/test_reports/pytest/pytest_iteration_33_case_drift.xml",
+    "/app/test_reports/pytest/pytest_iteration_33_regression.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "routers/sheets.py:273-326 — mapping_lc pre-computed once per request; mapped_field tries exact-case row.get(col) first (fast path), then falls back to lower-cased header lookup via _row_lc(row). Alias resolution (phone ↔ customer_phone, items ↔ item, timestamp ↔ created_at_override) preserved in both paths. Clean, correct.",
+    "Verified case-insensitive fallback via live end-to-end: mutating column_mapping to fully-uppercase spellings still produced shipped=313/331 (identical to canonical). The fallback IS active on the registered handler.",
+    "server.py:sheets_orders() dead-code copy remains — iter-32 flagged this. Not a functional issue but a stale-code maintenance risk. Non-blocking."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_sheet_orders_case_drift.py (new — 2 tests: T1 drift-reproduction + T2 canonical-regression, with Mongo-level mutate + finally-restore)"
+  ],
+  "success_rate": {"backend": "100% (2/2 new + 20/20 regression = 22/22)", "frontend": "not tested (out of scope)"},
+  "seed_data_creation": "None (mutation of admin's settings.sheet.column_mapping is done inside the test's try/finally with guaranteed restoration back to canonical title-case values).",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Run:  export EXPO_PUBLIC_BACKEND_URL=$(grep EXPO_PUBLIC_BACKEND_URL /app/frontend/.env | cut -d= -f2); cd /app/backend && pytest tests/test_sheet_orders_case_drift.py tests/test_sheet_orders_case_fix.py tests/test_smart_search.py -v -s. The new drift test flips admin's column_mapping to uppercase → asserts shipped>=200 and <=20 apart from canonical baseline → restores. Admin creds admin@test.com / Admin@12345. If Google Sheets 429s spike, the T1 baseline call may take >30s but the timeout is 90s.",
+  "rca_of_issue": "Iter-32 discovered the case-insensitive hardening applied earlier lived on a dead-code copy in server.py (function defined but never route-mounted). The registered handler in routers/sheets.py:194 only used exact-case row.get(col). Iter-33 fix ports mapping_lc + _row_lc + mapped_field fast/slow-path into the live routers/sheets.py (lines 273-326). Verification: with mapping deliberately set to UPPERCASE while the actual sheet headers stay title-case, shipped count stays at 313/331 vs baseline 313/331 (0 drift). Prior to the fix, shipped would have been 0 (fast-path miss, no fallback). Defence-in-depth guarantee: future header renames or manual mapping edits with case variation no longer break dedupe."
+}

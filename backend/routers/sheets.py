@@ -272,6 +272,21 @@ def init() -> None:
 
         mapping = cfg.column_mapping or {}
 
+        # Bug-fix (Jul-2026 iter-32): defence-in-depth against Google
+        # Sheet header casing drift.  When a user renames the header
+        # "ORDER ID" → "Order Id" in the sheet UI but the stored
+        # column_mapping still points at "ORDER ID", the fast-path
+        # `row.get(col)` returns "" for every row and every shipment
+        # gets treated as new — the "New Orders" tab shows 329/329
+        # even after the same 329 rows have been shipped.  Build a
+        # lower-cased view of the mapping once here, plus a
+        # per-row lower-cased lookup, so the fallback rescues the
+        # dedupe when the fast path misses.
+        mapping_lc: Dict[str, str] = {
+            k: (str(v).strip().lower() if v else "")
+            for k, v in mapping.items()
+        }
+
         SHEET_KEY_ALIASES = {
             "phone":                "customer_phone",
             "customer_phone":       "phone",
@@ -281,15 +296,34 @@ def init() -> None:
             "created_at_override":  "timestamp",
         }
 
+        def _row_lc(row: Dict[str, str]) -> Dict[str, str]:
+            return {
+                (str(k).strip().lower() if k is not None else ""): v
+                for k, v in row.items()
+            }
+
         def mapped_field(row: Dict[str, str], key: str) -> str:
+            # Fast path — exact-case mapping hit against the raw row.
             col = mapping.get(key)
             if not col:
                 alias = SHEET_KEY_ALIASES.get(key)
                 if alias:
                     col = mapping.get(alias)
-            if not col:
+            if col:
+                v = row.get(col)
+                if v is not None and v != "":
+                    return v
+            # Fallback — lower-cased header lookup.  Handles the
+            # drift scenario above without breaking any existing
+            # correctly-cased setup.
+            col_lc = mapping_lc.get(key)
+            if not col_lc:
+                alias = SHEET_KEY_ALIASES.get(key)
+                if alias:
+                    col_lc = mapping_lc.get(alias)
+            if not col_lc:
                 return ""
-            return row.get(col, "")
+            return _row_lc(row).get(col_lc, "")
 
         imported_keys: set = set()
         tracking_ids:  set = set()
