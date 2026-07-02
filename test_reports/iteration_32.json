@@ -1,0 +1,41 @@
+{
+  "summary": "Iteration 32 — Backend verification of Google Sheets column-mapping case-sensitivity fix. All 12/12 new tests pass in /app/backend/tests/test_sheet_orders_case_fix.py and all 8/8 smart_search regression tests pass. T1 (data migration): admin's settings.sheet.column_mapping now has 'Tracking Id' and 'Master Order Id' (title-case, no uppercase 'ID' variants left). T2 (the reported bug): GET /api/sheets/orders on admin's 329-row sheet now returns total=329 shipped=311 not_shipped=18 (94.5% flagged already_shipped) — massive drop from the pre-fix state where all 329 were 'New Orders'. T3 (_row_key case-insensitive): identical row_key across 'Order ID' vs 'Order Id' vs 'order id' casing confirmed. T4 (canonical casing regression): fast-path still returns correct values. T5 (alias resolution): customer_phone ↔ phone still resolves after the case fix. T6 (smart_search regression): 8/8 pass, no collateral damage.  IMPORTANT FINDING: server.sheets_orders (server.py lines 1197-1485) is orphan code — it is NOT registered on any route. The live handler is routers/sheets.py lines 194-395 which was NOT updated with the case-insensitive mapped_field fallback. It only benefits from the _row_key fix (imported from server.py). Today's data works because Fix-1 (the DB migration) aligned the stored mapping with the sheet's actual header casing — so the router's exact-case row.get(col, '') succeeds. If a user renames a header again in future, the router's mapped_field will silently return '' for tracking_id / master_order_id / order_id, and dedupe by those keys will regress. Recommend porting the case-insensitive fallback + mapping_lc from server.py:1290-1370 into routers/sheets.py:273-292 for defence-in-depth.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "GET /api/sheets/orders (routers/sheets.py)", "issue": "The live handler's mapped_field (line 284-292) does exact-case row.get(col, '') only — the case-insensitive fallback added in server.py:1337-1351 was NOT ported. Works today only because Fix-1 (DB migration) aligned mapping casing with actual sheet headers. Any future header rename will re-break tracking_id/master_order_id/order_id dedupe. Suggested action: mirror the mapping_lc + _row_lc fallback from server.py:1290-1370 into routers/sheets.py."},
+      {"endpoint": "server.py sheets_orders", "issue": "server.py:1197-1485 defines sheets_orders() but no @api_router.get decorator is attached — this function is dead code. All the case-insensitive hardening documented in the fix summary sits here and is never executed. The registered handler is in routers/sheets.py."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_sheet_orders_case_fix.py",
+    "/app/test_reports/pytest/pytest_iteration_32.xml",
+    "/app/test_reports/pytest/pytest_iteration_32_smart_search.xml"
+  ],
+  "action_items": [
+    "OPTIONAL/DEFENSIVE: Port the mapping_lc + _row_lc + mapped_field case-insensitive fallback (server.py:1309-1351) into routers/sheets.py:273-292 so a future header rename can't regress dedupe again. Currently working purely because of the DB migration.",
+    "OPTIONAL/CLEANUP: Delete the orphan server.sheets_orders function (server.py:1197-1485) or add a comment explaining it's kept only as a reference implementation — right now it's misleading to future readers who assume it is live."
+  ],
+  "critical_code_review_comments": [
+    "server.py:1488-1519 _row_key correctly builds row_lc once with strip().lower() keys and uses it as fallback — this fix IS live because routers/sheets.py:69 imports _row_key from server.py.",
+    "routers/sheets.py:284-292 mapped_field uses only row.get(col, '') — NO case-insensitive fallback. This is the sole remaining exposure surface for the same class of bug.",
+    "Migration script (referenced in review request Fix-1) successfully applied to all admin data — confirmed via GET /api/settings: tracking_id='Tracking Id', master_order_id='Master Order Id', headers list contains both new columns.",
+    "Live end-to-end validation: GET /api/sheets/orders on admin's real 329-row sheet shows 311/329 shipped (94.5%) — up from ~0 pre-fix."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_sheet_orders_case_fix.py (new — 12 tests)",
+    "/app/backend/tests/test_smart_search.py (login fixture timeout: 15s → 60s to survive transient Google Sheets 429s that slow the login round-trip via async workers)"
+  ],
+  "success_rate": {"backend": "100% (20/20 — 12 new + 8 smart_search regression)", "frontend": "not tested (out of scope)"},
+  "seed_data_creation": "None. Tests only READ /api/settings and /api/sheets/orders and import _row_key from server for unit-style probes.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "New sheets case-fix suite at /app/backend/tests/test_sheet_orders_case_fix.py. Run: `export EXPO_PUBLIC_BACKEND_URL=$(grep EXPO_PUBLIC_BACKEND_URL /app/frontend/.env | cut -d= -f2); pytest /app/backend/tests/test_sheet_orders_case_fix.py /app/backend/tests/test_smart_search.py -v`. If sheet reads hit Google 429s (visible in backend.err.log) the T2 live-check may transiently skip — rerun once after 10-15s. Admin creds admin@test.com / Admin@12345.",
+  "rca_of_issue": "Reported: /api/sheets/orders returned 329/329 as 'New Orders' after all 329 shipments were created. Root cause: settings.sheet.column_mapping stored uppercase 'Order ID' etc., but the actual sheet header is title-case 'Order Id'. The live handler in routers/sheets.py did an exact-case row.get(col, '') → returned '' for every field → sheet_order_id / sheet_tracking / sheet_master were all empty → the dedupe `if sheet_order_id and sheet_order_id in order_ids` short-circuited to False → every row was flagged not_shipped. Fix-1 (DB migration) rewrote every column_mapping value from 'X ID' → 'X Id' and injected the missing tracking_id/master_order_id entries — this ALONE resolves the live bug because now mapping matches sheet headers exactly. Fix-2 (server.py hardening) adds a case-insensitive fallback in the SERVER copy of the handler + _row_key, but only _row_key is actually reachable from the router; the server-side mapped_field lives on a dead code path. Verified end-to-end via GET /api/sheets/orders → 311/329 shipped correctly."
+}

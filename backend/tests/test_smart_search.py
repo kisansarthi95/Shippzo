@@ -26,7 +26,7 @@ def token() -> str:
     r = requests.post(
         f"{BASE_URL}/api/auth/login",
         json={"email": ADMIN_EMAIL, "password": ADMIN_PASSWORD},
-        timeout=15,
+        timeout=60,
     )
     assert r.status_code == 200, f"login failed {r.status_code}: {r.text}"
     tok = r.json().get("token")

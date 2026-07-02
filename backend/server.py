@@ -1291,6 +1291,26 @@ async def sheets_orders(
 
     mapping = cfg.column_mapping or {}
 
+    # Bug-fix (Jul-2026): Google Sheet headers drift in casing over
+    # time — a seller may rename "ORDER ID" → "Order Id" in the
+    # sheet UI, but the stored `column_mapping` still holds the old
+    # spelling.  When we then look up the row dict (which has the
+    # NEW casing), the lookup returns "" and every row shows up as
+    # "not imported" — the "New Orders" tab keeps showing 329 rows
+    # even after all 329 shipments have been created.
+    #
+    # We defend against this by:
+    #   • Lower-casing every mapping value once, up-front.
+    #   • Building a lower-cased view of every row dict just before
+    #     `mapped_field()` looks it up.
+    # This way "Order Id" / "ORDER ID" / "order id" all resolve to
+    # the same cell contents.  We keep the ORIGINAL `mapping` /
+    # `row` untouched for anything that still expects raw casing.
+    mapping_lc: Dict[str, str] = {
+        k: (str(v).strip().lower() if v else "")
+        for k, v in mapping.items()
+    }
+
     # Phase F2.3 — Legacy mapping keys (phone, item, timestamp) ↔
     # canonical keys (customer_phone, items, created_at_override).
     # Both spellings are accepted on read so users with old saved
@@ -1305,15 +1325,30 @@ async def sheets_orders(
         "created_at_override": "timestamp",
     }
 
+    def _row_lc(row: Dict[str, str]) -> Dict[str, str]:
+        """Return a case-insensitive view of `row` keyed by lower-cased
+        header — cheap enough per row (dicts are small) and localises
+        the fix to the read path."""
+        return {
+            (str(k).strip().lower() if k is not None else ""): v
+            for k, v in row.items()
+        }
+
     def mapped_field(row: Dict[str, str], key: str) -> str:
-        col = mapping.get(key)
+        col = mapping_lc.get(key)
         if not col:
             alias = SHEET_KEY_ALIASES.get(key)
             if alias:
-                col = mapping.get(alias)
+                col = mapping_lc.get(alias)
         if not col:
             return ""
-        return row.get(col, "")
+        # Fast path — exact-case hit.
+        v = row.get(col)
+        if v is not None and v != "":
+            return v
+        # Fallback — case-insensitive header match. Handles the drift
+        # scenario described above.
+        return _row_lc(row).get(col.lower(), "")
 
     # Find shipments that were originally imported from this sheet
     # OR were created from any other source (paste / file / webhook /
@@ -1451,16 +1486,34 @@ async def sheets_orders(
 
 
 def _row_key(row: Dict[str, str], mapping: Dict[str, str], idx: int) -> str:
+    # Bug-fix (Jul-2026): case-insensitive header lookup so that a
+    # sheet whose header casing was renamed (e.g. "ORDER ID" →
+    # "Order Id") still yields the same stable row-key.  Otherwise
+    # every existing shipment would be treated as a fresh import
+    # after a header rename, breaking dedupe entirely.
+    row_lc = {
+        (str(k).strip().lower() if k is not None else ""): v
+        for k, v in row.items()
+    }
+
+    def _get(col_name: Optional[str]) -> str:
+        if not col_name:
+            return ""
+        v = row.get(col_name, "")
+        if v:
+            return v
+        return row_lc.get(str(col_name).strip().lower(), "")
+
     order_col = mapping.get("order_id")
-    phone_col = mapping.get("phone")
+    phone_col = mapping.get("phone") or mapping.get("customer_phone")
     name_col = mapping.get("customer_name")
     parts = []
-    if order_col and row.get(order_col):
-        parts.append(row[order_col])
-    if phone_col and row.get(phone_col):
-        parts.append(row[phone_col])
-    if name_col and row.get(name_col):
-        parts.append(row[name_col])
+    if _get(order_col):
+        parts.append(_get(order_col))
+    if _get(phone_col):
+        parts.append(_get(phone_col))
+    if _get(name_col):
+        parts.append(_get(name_col))
     if not parts:
         parts.append(str(idx))
     return "|".join(parts).strip()[:200]
