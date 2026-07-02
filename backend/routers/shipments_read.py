@@ -61,6 +61,7 @@ def init() -> None:
     from utils.search_normalize import (  # noqa: WPS433 — same rationale
         normalize_text,
         normalize_tokens,
+        normalize_tokens_grouped,
         build_search_blob,
     )
 
@@ -120,7 +121,6 @@ def init() -> None:
             #      shipments that haven't been backfilled yet — they
             #      get their blob computed lazily on the next write.
             n_query = normalize_text(search)
-            n_tokens = normalize_tokens(search)
             or_branches = [
                 {"tracking_id":   {"$regex": search, "$options": "i"}},
                 {"customer_name": {"$regex": search, "$options": "i"}},
@@ -128,31 +128,17 @@ def init() -> None:
                 {"city":          {"$regex": search, "$options": "i"}},
                 {"order_id":      {"$regex": search, "$options": "i"}},
             ]
-            if n_tokens:
-                # Deduplicate the query tokens.  For each *raw* input
-                # token we generate BOTH its Latin form and its
-                # schwa-compact skeleton (via normalize_text — the
-                # helper already emits both).  When we split the
-                # normalised query into `n_tokens`, sibling forms of
-                # the same source word land as separate list items.
-                # Grouping the alternates in an inner `$or` fixes the
-                # multilingual AND-vs-OR bug (T7 in the audit): a
-                # query "Bhavnagar" produced by the normaliser as
-                # {bhavnagar, bhvngr} must be satisfied by either
-                # form appearing in the blob, not both.
-                from utils.search_normalize import _schwa_compact
-                seen = set()
+            # Group query tokens with their schwa-compact siblings —
+            # produced by ONE call to normalize_text on the FULL
+            # query so cross-word collapses fire ("100 gram" → "100g")
+            # BEFORE the multilingual OR-grouping.  Each group is
+            # OR-ed internally, groups are AND-ed together.
+            grouped = normalize_tokens_grouped(search)
+            if grouped:
                 and_groups = []
-                for src in [t for t in search.split() if t]:
-                    # For each source word, expand to its normalised
-                    # tokens (may be 1 or 2 forms).
-                    variants = normalize_tokens(src)
+                for variants in grouped:
                     if not variants:
                         continue
-                    key = tuple(sorted(variants))
-                    if key in seen:
-                        continue
-                    seen.add(key)
                     inner_or = [
                         {"_search_blob": {
                             "$regex": _re.escape(v),
@@ -314,29 +300,20 @@ def init() -> None:
         # Second pass — resolve the TRUE match count using the same
         # blob regex as the search endpoint, so tap-through never
         # shows fewer results than the badge promises.  Mirrors the
-        # AND-of-OR grouping used by list_shipments (multilingual
-        # fold): each *source* token becomes an inner $or of its
-        # normalised variants, then all groups are AND-ed.
-        from utils.search_normalize import _schwa_compact
+        # AND-of-OR grouping used by list_shipments via the shared
+        # `normalize_tokens_grouped` helper so cross-word collapses
+        # ("100 gram" → "100g") fire before multilingual OR-grouping.
         results = []
         for g in groups.values():
             if g["raw_count"] < min_count:
                 continue
-            # Reconstruct the same query the client would send when
-            # tapping this chip — the untouched display string.
-            src_tokens = [t for t in str(g["display"]).split() if t]
-            if not src_tokens:
+            grouped = normalize_tokens_grouped(str(g["display"]))
+            if not grouped:
                 continue
             and_groups = []
-            seen = set()
-            for src in src_tokens:
-                variants = normalize_tokens(src)
+            for variants in grouped:
                 if not variants:
                     continue
-                key = tuple(sorted(variants))
-                if key in seen:
-                    continue
-                seen.add(key)
                 inner_or = [
                     {"_search_blob": {
                         "$regex": _re.escape(v),
@@ -353,8 +330,6 @@ def init() -> None:
                 and_groups[0] if len(and_groups) == 1
                 else {"$and": and_groups}
             )
-            # Fold the combined tokens condition into the tenant
-            # base query.
             if "$and" in combined:
                 q["$and"] = combined["$and"]
             else:

@@ -1,0 +1,30 @@
+{
+  "summary": "Iteration 31 — Backend-only re-verify of Smart Search after T5 regression fix. Ran pytest /app/backend/tests/test_smart_search.py. All 8/8 tests PASSED in 14.18s including the critical T5 (weight-unit collapse: 100 gram == 100gm == 100g), T7 (multilingual: Gujarati ભાવનગર → English 'Bhavnagar' via schwa-compact skeleton), and T6 (suggestion parity: suggestion.count == len(GET /shipments?search=display)). normalize_tokens_grouped helper works end-to-end via list_shipments and product_suggestions AND-of-OR query builder. No regressions in T1–T4, T8, T9.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_smart_search.py",
+    "/app/test_reports/pytest/pytest_iteration_31_smart_search.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "normalize_tokens_grouped correctly runs normalize_text on the full query FIRST so cross-word normalisations ('100 gram' → '100g') execute before the per-word grouping walk — this is what fixed the T5 regression.",
+    "Group dedupe uses tuple(sorted(set(g))) as key, which is order-insensitive and safe for the AND-of-OR builder.",
+    "Test suite reads BASE_URL from EXPO_PUBLIC_BACKEND_URL or EXPO_BACKEND_URL — currently only EXPO_PUBLIC_BACKEND_URL is defined in /app/frontend/.env, so tests must be run with that env var exported. Consider adding a small conftest.py that auto-loads /app/frontend/.env for CI convenience (non-blocking)."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "100% (8/8)", "frontend": "not tested (out of scope)"},
+  "seed_data_creation": "None. T9 and T7 self-manage their own test shipments (create + soft-delete in finally).",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Smart-search test suite is at /app/backend/tests/test_smart_search.py. To run: `export EXPO_PUBLIC_BACKEND_URL=$(grep EXPO_PUBLIC_BACKEND_URL /app/frontend/.env | cut -d= -f2); pytest /app/backend/tests/test_smart_search.py -v`. Admin creds admin@test.com / Admin@12345.",
+  "rca_of_issue": "N/A — regression already fixed by main agent. T5 root cause (pre-fix): grouping was performed BEFORE normalize_text ran on the full query, so cross-word collapses ('100 gram' → '100g') never fired. Fix: normalize_tokens_grouped now calls normalize_text(text) on the entire query once, then walks the resulting tokens pairing each token with its _schwa_compact sibling. Verified: 100 gram / 100gm / 100g now return identical id sets."
+}

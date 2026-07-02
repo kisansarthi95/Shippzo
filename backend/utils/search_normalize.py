@@ -185,6 +185,56 @@ def normalize_tokens(text: Optional[str]) -> List[str]:
     return sorted({t for t in n.split(" ") if t})
 
 
+def normalize_tokens_grouped(text: Optional[str]) -> List[List[str]]:
+    """Return the per-source-word variant groups for a query.
+
+    Unlike `normalize_tokens` (which flattens and dedupes everything
+    into a single sorted set), this walks the *joined* normalised
+    string and pairs each token with its schwa-compact sibling —
+    exactly the way `normalize_text` emits them.  The result is a
+    list of groups; each group holds every equivalent form of a
+    single source word.  The query-builder in `list_shipments` /
+    `product_suggestions` then AND-s across groups and OR-s inside
+    each group, which lets a user's query match either the raw
+    Latin form OR its Indic-transliterated compact skeleton.
+
+    Called on the FULL query string so cross-word normalisations
+    (e.g. "100 gram" → "100g") fire before we start grouping.
+    """
+    n = normalize_text(text)
+    if not n:
+        return []
+    tokens = [t for t in n.split(" ") if t]
+    groups: List[List[str]] = []
+    i = 0
+    while i < len(tokens):
+        t = tokens[i]
+        compact = _schwa_compact(t)
+        if (
+            compact
+            and compact != t
+            and i + 1 < len(tokens)
+            and tokens[i + 1] == compact
+        ):
+            # (raw, compact) pair produced by the fold — group them.
+            groups.append([t, compact])
+            i += 2
+        else:
+            groups.append([t])
+            i += 1
+    # Dedupe identical groups so "kids kids" doesn't AND against
+    # itself twice.
+    seen = set()
+    out: List[List[str]] = []
+    for g in groups:
+        key = tuple(sorted(set(g)))
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(list(key))
+    return out
+
+
 def build_search_blob(shipment: dict) -> str:
     """Concatenate every searchable field of a shipment into one
     normalised blob suitable for `$regex` substring matching.
