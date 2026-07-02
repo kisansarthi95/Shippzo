@@ -129,16 +129,45 @@ def init() -> None:
                 {"order_id":      {"$regex": search, "$options": "i"}},
             ]
             if n_tokens:
-                # AND across tokens (subset match) via one $regex
-                # per token — cheap on Mongo when the collection is
-                # tenant-scoped and small.
-                and_tokens = [
-                    {"_search_blob": {
-                        "$regex": _re.escape(t),
-                        "$options": "i",
-                    }} for t in n_tokens
-                ]
-                or_branches.append({"$and": and_tokens})
+                # Deduplicate the query tokens.  For each *raw* input
+                # token we generate BOTH its Latin form and its
+                # schwa-compact skeleton (via normalize_text — the
+                # helper already emits both).  When we split the
+                # normalised query into `n_tokens`, sibling forms of
+                # the same source word land as separate list items.
+                # Grouping the alternates in an inner `$or` fixes the
+                # multilingual AND-vs-OR bug (T7 in the audit): a
+                # query "Bhavnagar" produced by the normaliser as
+                # {bhavnagar, bhvngr} must be satisfied by either
+                # form appearing in the blob, not both.
+                from utils.search_normalize import _schwa_compact
+                seen = set()
+                and_groups = []
+                for src in [t for t in search.split() if t]:
+                    # For each source word, expand to its normalised
+                    # tokens (may be 1 or 2 forms).
+                    variants = normalize_tokens(src)
+                    if not variants:
+                        continue
+                    key = tuple(sorted(variants))
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    inner_or = [
+                        {"_search_blob": {
+                            "$regex": _re.escape(v),
+                            "$options": "i",
+                        }} for v in variants
+                    ]
+                    and_groups.append(
+                        inner_or[0] if len(inner_or) == 1 else {"$or": inner_or}
+                    )
+                if and_groups:
+                    combined = (
+                        and_groups[0] if len(and_groups) == 1
+                        else {"$and": and_groups}
+                    )
+                    or_branches.append(combined)
             q["$or"] = or_branches
         docs = await db.shipments.find(q, {"_id": 0}).sort(
             "created_at", -1
@@ -284,23 +313,52 @@ def init() -> None:
 
         # Second pass — resolve the TRUE match count using the same
         # blob regex as the search endpoint, so tap-through never
-        # shows fewer results than the badge promises.
+        # shows fewer results than the badge promises.  Mirrors the
+        # AND-of-OR grouping used by list_shipments (multilingual
+        # fold): each *source* token becomes an inner $or of its
+        # normalised variants, then all groups are AND-ed.
+        from utils.search_normalize import _schwa_compact
         results = []
         for g in groups.values():
             if g["raw_count"] < min_count:
                 continue
-            tokens = [t for t in g["norm"].split(" ") if t]
-            if not tokens:
+            # Reconstruct the same query the client would send when
+            # tapping this chip — the untouched display string.
+            src_tokens = [t for t in str(g["display"]).split() if t]
+            if not src_tokens:
                 continue
-            and_clauses = [
-                {"_search_blob": {"$regex": _re.escape(t), "$options": "i"}}
-                for t in tokens
-            ]
+            and_groups = []
+            seen = set()
+            for src in src_tokens:
+                variants = normalize_tokens(src)
+                if not variants:
+                    continue
+                key = tuple(sorted(variants))
+                if key in seen:
+                    continue
+                seen.add(key)
+                inner_or = [
+                    {"_search_blob": {
+                        "$regex": _re.escape(v),
+                        "$options": "i",
+                    }} for v in variants
+                ]
+                and_groups.append(
+                    inner_or[0] if len(inner_or) == 1 else {"$or": inner_or}
+                )
+            if not and_groups:
+                continue
             q = {**base}
-            if len(and_clauses) == 1:
-                q.update(and_clauses[0])
+            combined = (
+                and_groups[0] if len(and_groups) == 1
+                else {"$and": and_groups}
+            )
+            # Fold the combined tokens condition into the tenant
+            # base query.
+            if "$and" in combined:
+                q["$and"] = combined["$and"]
             else:
-                q["$and"] = and_clauses
+                q.update(combined)
             match_count = await db.shipments.count_documents(q)
             if match_count < min_count:
                 continue

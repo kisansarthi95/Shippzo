@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="0" failures="1" skipped="0" tests="8" time="14.372" timestamp="2026-07-02T16:52:26.010969+00:00" hostname="agent-env-36ddfdb9-e4d3-40a3-8a0d-82977140af50"><testcase classname="tests.test_smart_search" name="test_t1_search_blob_backfilled" time="2.279" /><testcase classname="tests.test_smart_search" name="test_t2_t3_items_search" time="0.163" /><testcase classname="tests.test_smart_search" name="test_t4_case_hyphen_insensitive" time="0.223" /><testcase classname="tests.test_smart_search" name="test_t5_weight_unit_collapse" time="0.224"><failure message="AssertionError: weight-unit collapse mismatch for 100: gm=60 gram=0 g=60&#10;assert {'008df92e-5d...aaf817e', ...} == set()&#10;  &#10;  Extra items in the left set:&#10;  '8db44546-68c1-485d-aa8d-5b676a2fa42b'&#10;  'acfabf2b-b2a7-4d05-a165-5b0a962d2376'&#10;  '64ef85a2-7445-41b7-a36b-f55d6b50171c'&#10;  '3b90e0c1-5c1c-4451-95e1-f4dee8465233'&#10;  '5d539379-061e-4e53-ad60-99971760172f'...&#10;  &#10;  ...Full output truncated (120 lines hidden), use '-vv' to show">tests/test_smart_search.py:173: in test_t5_weight_unit_collapse
+    assert a_ids == b_ids == c_ids, (
+E   AssertionError: weight-unit collapse mismatch for 100: gm=60 gram=0 g=60
+E   assert {'008df92e-5d...aaf817e', ...} == set()
+E     
+E     Extra items in the left set:
+E     '8db44546-68c1-485d-aa8d-5b676a2fa42b'
+E     'acfabf2b-b2a7-4d05-a165-5b0a962d2376'
+E     '64ef85a2-7445-41b7-a36b-f55d6b50171c'
+E     '3b90e0c1-5c1c-4451-95e1-f4dee8465233'
+E     '5d539379-061e-4e53-ad60-99971760172f'...
+E     
+E     ...Full output truncated (120 lines hidden), use '-vv' to show</failure></testcase><testcase classname="tests.test_smart_search" name="test_t6_suggestions_parity" time="0.653" /><testcase classname="tests.test_smart_search" name="test_t8_combined_filters" time="0.202" /><testcase classname="tests.test_smart_search" name="test_t9_write_path_updates_blob" time="7.065" /><testcase classname="tests.test_smart_search" name="test_t7_multilingual_best_effort" time="3.486" /></testsuite></testsuites>

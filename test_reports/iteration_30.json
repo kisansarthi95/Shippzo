@@ -1,0 +1,43 @@
+{
+  "summary": "Universal Smart Search re-verification after T7 (multilingual AND-of-OR) fix. Result: 7/8 pass. T7 NOW PASSES — Gujarati-stored city 'ભાવનગર' correctly matches English 'Bhavnagar' via the schwa-compact skeleton wrapped inside the inner $or. T6 (suggestion count parity) still PASSES. However, T5 (weight-unit collapse '100gm' == '100 gram' == '100g') has REGRESSED as a direct side-effect of the same fix: the query builder now iterates `search.split()` word-by-word and calls normalize_tokens on EACH word in isolation. That breaks the cross-word weight-unit regex (`(\\d)\\s*grams? → \\1g`) which requires the digit and unit to be in the same string. As a result 'gram' alone stays 'gram' (with its schwa-compact 'grm'), and the query for '100 gram' becomes `AND('100', OR('gram','grm'))` which never hits blobs storing the collapsed '100g'.  Fix path is in rca_of_issue.",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "GET /api/shipments?search=<multi-word weight query>",
+        "issue": "T5 REGRESSION. The iter-30 fix for T7 changed the query builder to split `search` on whitespace BEFORE normalisation. That defeats the multi-word weight-unit collapse in normalize_text ('100 gram' → '100g'), because normalize_tokens('gram') returns ['gram','grm'] instead. Effect: search='100 gram' now returns 0 rows while search='100gm' returns 60 rows against the exact same data. Per T5 test log: gm=60, gram=0, g=60. This is a real user-facing regression — sellers commonly type '500 gram' with a space.",
+        "priority": "HIGH"
+      }
+    ],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_smart_search.py",
+    "/app/test_reports/pytest/pytest_iteration_30_smart_search.xml"
+  ],
+  "action_items": [
+    "In routers/shipments_read.py list_shipments AND product_suggestions, do NOT iterate `search.split()` (or `display.split()`). Instead: (a) call normalize_text(search) ONCE on the full string so cross-word collapses like '100 gram'→'100g' apply, (b) walk the resulting token list and detect (token, schwa_compact(token)) consecutive pairs — those become an inner $or group, standalone tokens become individual AND clauses. This preserves BOTH the T5 unit-collapse AND the T7 multilingual OR-grouping.",
+    "Alternative simpler fix: after normalize_text(search) collapses units, split the result and for EACH token compute its schwa_compact; if compact != token AND the compact already appears somewhere in the token list, group them as $or, else AND the token alone. This is O(n) and keeps the change localised.",
+    "Regression test to add once fixed: assert search='100 gram' returns the same id-set as search='100g' AND that search='Bhavnagar' still finds Gujarati-stored 'ભાવનગર' (both T5 and T7 pass together)."
+  ],
+  "critical_code_review_comments": [
+    "shipments_read.py:146 iterates `search.split()` (raw source words) — this is the root cause of the T5 regression. Any pre-processing done by normalize_text on the *whole* query string (weight collapse, punctuation joining, quantity suffix strip) is bypassed when normalize_tokens is called per-word. The same bug exists in product_suggestions (line ~327 using `str(g['display']).split()`) but is masked because chip displays are single-item strings that rarely contain multi-word units.",
+    "The inner-OR grouping logic itself is correct and elegant — only the input tokenisation is wrong. Moving the whitespace split to AFTER normalize_text() would preserve every other invariant.",
+    "Suggestion: extract the token-grouping algorithm into utils/search_normalize.py as `def build_query_groups(query: str) -> list[list[str]]` returning a list of OR-groups, then both list_shipments and product_suggestions consume it. Prevents future divergence."
+  ],
+  "updated_files": [],
+  "success_rate": {
+    "backend": "87.5% (7/8) — T1, T2/T3, T4, T6, T7 (fixed), T8, T9 pass; T5 regressed",
+    "frontend": "not tested (backend-only request)"
+  },
+  "seed_data_creation": "T9 creates+deletes 1 shipment (TEST-*). T7 creates+deletes 1 shipment with Gujarati city 'ભાવનગર' (now cleaned up because T7 passes and finally-block runs).",
+  "retest_needed": true,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Admin creds: admin@test.com / Admin@12345. Backend URL from frontend/.env EXPO_PUBLIC_BACKEND_URL. Test file: /app/backend/tests/test_smart_search.py. Prev iter 29 had T7 failing / T5 passing; iter 30 flipped: T7 passes / T5 regressed. After next fix, must verify BOTH pass simultaneously — that is the acceptance bar.",
+  "rca_of_issue": "RCA — T5 regression caused by iter-30 T7 fix:\n\n1. Iter-29 code: `normalize_tokens(search)` was called ONCE on the whole query string. `normalize_text('100 gram')` runs the weight regex `(\\d)\\s*grams? → \\1g` and yields '100g'. So `normalize_tokens('100 gram') == ['100g']`, matching the stored blob '100g' → 60 rows.\n\n2. Iter-30 code (shipments_read.py:146): switched to `for src in search.split()` and calls `normalize_tokens(src)` on each word in isolation.  'gram' by itself does NOT trigger the weight regex (no digit prefix), so `normalize_tokens('gram') == ['gram','grm']` (raw + schwa-compact).  Query builder becomes `$and:[{blob:/100/}, {$or:[{blob:/gram/},{blob:/grm/}]}]`. Blobs store '100g' — neither 'gram' nor 'grm' substrings exist → 0 rows.\n\n3. Verified with python probe:\n   normalize_tokens('100 gram') = ['100g']              (correct, full-string)\n   normalize_tokens('100')      = ['100']               (per-word, iter-30)\n   normalize_tokens('gram')     = ['gram','grm']        (per-word, iter-30)\n\n4. T7 still works because 'Bhavnagar' is a single word, so per-word vs full-string are identical for it. Only multi-word queries where a cross-word regex fires are broken.\n\n5. Fix (already spelled out in action_items): run normalize_text on the FULL query once, THEN split into tokens, THEN pair adjacent (token, schwa_compact(token)) into OR-groups. Preserves both T5 and T7 semantics.  Files: /app/backend/routers/shipments_read.py list_shipments (~L122-171) and product_suggestions (~L322-360)."
+}
