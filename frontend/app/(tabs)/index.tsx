@@ -109,21 +109,22 @@ export default function Dashboard() {
 
   const [stats, setStats] = useState<Stats | null>(null);
   const [pendingOrdersCount, setPendingOrdersCount] = useState<number>(0);
-  const [recent, setRecent] = useState<Shipment[]>([]);
+  // `recent` used to feed the "Recent Shipments" section on the home
+  // screen — removed per user request.  We still fetch the list-lite
+  // (limit 1) as a warm-up so the Shipments tab feels instantaneous
+  // on first navigation, but nothing is rendered here.
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [bulkCounts, setBulkCounts] = useState<Record<string, { label: string; icon: string; pending: number; list: number }>>({});
 
   const load = useCallback(async () => {
     try {
-      const [s, list, oc, bc] = await Promise.all([
+      const [s, oc, bc] = await Promise.all([
         Api.getStats(),
-        Api.listShipments({}),
         Api.pendingOrdersCount().catch(() => ({ count: 0 })),
         Api.bulkMsgDashboardCounts().catch(() => ({})),
       ]);
       setStats(s);
-      setRecent(list.slice(0, 5));
       setPendingOrdersCount(oc?.count ?? 0);
       setBulkCounts((bc as any) || {});
     } catch {
@@ -1897,53 +1898,10 @@ export default function Dashboard() {
               ))}
             </View>
 
-            <View style={styles.sectionHeader}>
-              <Text style={styles.sectionTitle}>Recent Shipments</Text>
-              <TouchableOpacity onPress={() => router.push("/(tabs)/shipments")}>
-                <Text style={styles.link}>View all ›</Text>
-              </TouchableOpacity>
-            </View>
-
-            {recent.length === 0 ? (
-              <View style={styles.empty} testID="empty-recent">
-                <PhIcon name="cube-outline" size={48} color="#9CA3AF" />
-                <Text style={styles.emptyText}>
-                  No shipments yet. Create your first shipment.
-                </Text>
-                <TouchableOpacity
-                  testID="empty-create-btn"
-                  style={styles.primaryBtn}
-                  onPress={() => router.push("/(tabs)/add")}
-                >
-                  <Text style={styles.primaryBtnText}>+ New Shipment</Text>
-                </TouchableOpacity>
-              </View>
-            ) : (
-              recent.map((s) => (
-                <TouchableOpacity
-                  key={s.id}
-                  testID={`recent-item-${s.tracking_id}`}
-                  style={styles.card}
-                  onPress={() => router.push(`/label/${s.id}`)}
-                >
-                  <View style={{ flex: 1 }}>
-                    <View style={styles.row}>
-                      <Text style={styles.trackId}>{s.tracking_id}</Text>
-                      <StatusChip status={s.status} />
-                    </View>
-                    <Text style={styles.cardName}>{s.customer_name}</Text>
-                    <Text style={styles.cardSub}>
-                      {s.courier_name} · {s.city || "—"}
-                    </Text>
-                  </View>
-                  <PhIcon
-                    name="chevron-forward"
-                    size={20}
-                    color={colors.textMuted}
-                  />
-                </TouchableOpacity>
-              ))
-            )}
+            {/* Recent Shipments section removed per user request —
+                users prefer navigating directly to the Shipments tab
+                from the bottom bar; the home screen now stops after
+                the Quick Bulk Actions to reduce vertical scroll. */}
           </>
         )}
       </ScrollView>
