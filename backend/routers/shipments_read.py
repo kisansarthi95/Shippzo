@@ -359,19 +359,22 @@ def init() -> None:
     class _ExportCsvBody(BaseModel):
         ids: Optional[List[str]] = None
 
-    async def _build_csv_for_user(user_id: str, ids: Optional[List[str]] = None) -> str:
+    async def _build_shipment_rows_for_user(
+        user_id: str,
+        ids: Optional[List[str]] = None,
+    ) -> tuple[List[str], List[List[Any]]]:
+        """Return (COLUMNS, rows) for the current user's shipments.
+
+        Shared engine for BOTH the CSV and XLSX exporters — the same
+        rows drive both file formats so there is one source of truth
+        for column order + value coercion.
+        """
         mongo_q: Dict[str, Any] = {"user_id": user_id}
         if ids:
-            # Cap defensively at 10_000 to avoid huge $in queries.
             mongo_q["id"] = {"$in": list(ids)[:10_000]}
-        docs = await db.shipments.find(mongo_q, {"_id": 0}).sort("created_at", -1).to_list(10_000)
-        buf = io.StringIO()
-        writer = csv.writer(buf)
-        # 2026-05-25 — Expanded column set: every field visible on the
-        # in-app Shipment Details screen is now present in the CSV,
-        # so the user gets a true backup-grade export (Token Amount,
-        # Master Order ID, Shipment ID, AWB, alt phone, email, timestamps,
-        # courier service, payment_type, notes, status sub-fields …).
+        docs = await db.shipments.find(mongo_q, {"_id": 0}).sort(
+            "created_at", -1
+        ).to_list(10_000)
         COLUMNS = [
             "Shipment ID",          "Tracking ID",          "Master Order ID",
             "Order ID",             "AWB Number",
@@ -392,16 +395,10 @@ def init() -> None:
             "Shipped At",           "Out For Delivery At",  "Delivered At",
             "Cancelled At",         "Returned At",
         ]
-        writer.writerow(COLUMNS)
-
+        rows: List[List[Any]] = []
         for d in docs:
             items = d.get("items") or []
             items_str = "; ".join(items) if items else d.get("item_description", "")
-            # Phase-31 — `cod_amount` is now the canonical "balance the
-            # courier collects" (= max(0, amount − token) on the
-            # backend). Prefer it directly; fall back to the legacy
-            # amount−token math only for ancient rows that pre-date
-            # the cod_amount field.
             amount = float(d.get("amount") or 0)
             token  = float(d.get("token_amount") or d.get("token") or 0)
             cod_balance = ""
@@ -411,7 +408,7 @@ def init() -> None:
                     cod_balance = f"{float(d['cod_amount'] or 0):.2f}"
                 else:
                     cod_balance = f"{max(amount - token, 0):.2f}"
-            writer.writerow([
+            rows.append([
                 d.get("id", ""),
                 d.get("tracking_id", ""),
                 d.get("master_order_id", ""),
@@ -458,9 +455,20 @@ def init() -> None:
                 d.get("cancelled_at", ""),
                 d.get("returned_at", ""),
             ])
+        return COLUMNS, rows
+
+    async def _build_csv_for_user(user_id: str, ids: Optional[List[str]] = None) -> str:
+        cols, rows = await _build_shipment_rows_for_user(user_id, ids)
+        buf = io.StringIO()
+        writer = csv.writer(buf)
+        writer.writerow(cols)
+        for r in rows:
+            writer.writerow(r)
         # Prepend a UTF-8 BOM so Excel / Numbers / LibreOffice open the
         # download with the correct encoding and Indic / accented
-        # characters render right out of the box.
+        # characters render right out of the box.  For pre-2016 Excel
+        # (Windows-1252 default), users should prefer the XLSX export
+        # below — see `/api/shipments/export/xlsx`.
         return "\ufeff" + buf.getvalue()
 
     @shipments_read_router.get(
@@ -484,6 +492,105 @@ def init() -> None:
         # visible on screen (after applying status + date filters).
         body = await _build_csv_for_user(current_user["id"], payload.ids)
         return PlainTextResponse(body, media_type="text/csv")
+
+    # =================  XLSX export (Excel-native encoding)  ==========
+    #
+    # Root cause for the "garbage Gujarati/Hindi names in Excel" bug:
+    # Windows Excel < 2016 ignores UTF-8 BOM in .csv files and reads
+    # them using the system's ANSI code page (Windows-1252 on IN/UK/
+    # US locales).  UTF-8 encoded Indic characters then show up as
+    # sequences like "àn àn¥‹àn'" which is UTF-8 bytes displayed as
+    # CP-1252.
+    #
+    # .xlsx is a ZIP of UTF-8 XML — the encoding is *baked into the
+    # file format itself*, so Excel of any version renders every
+    # script correctly.  We surface this as a companion endpoint next
+    # to the CSV, keep the CSV path intact (Numbers / LibreOffice /
+    # modern Excel handle it fine), and let the frontend expose an
+    # "Excel (.xlsx)" button alongside the existing CSV button.
+
+    from io import BytesIO as _BytesIO
+
+    def _build_xlsx_bytes(
+        columns: List[str], rows: List[List[Any]],
+    ) -> bytes:
+        # Lazy import — openpyxl loads a fair amount of XML machinery.
+        from openpyxl import Workbook
+        from openpyxl.utils import get_column_letter
+
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Shipments"
+
+        # Header row with a subtle bold formatting.
+        from openpyxl.styles import Font, Alignment
+        header_font = Font(bold=True)
+        ws.append(columns)
+        for cell in ws[1]:
+            cell.font = header_font
+            cell.alignment = Alignment(horizontal="left", vertical="center")
+
+        # Data rows — coerce everything to str-safe values; openpyxl
+        # supports Indic strings out of the box.
+        for r in rows:
+            ws.append([("" if v is None else v) for v in r])
+
+        # Freeze the header + auto-size the first 10 columns to a
+        # readable width; skipping the full auto-fit pass to keep
+        # generation fast on large exports.
+        ws.freeze_panes = "A2"
+        for i, col_name in enumerate(columns[:10], start=1):
+            ws.column_dimensions[get_column_letter(i)].width = max(
+                12, min(30, len(str(col_name)) + 4)
+            )
+
+        buf = _BytesIO()
+        wb.save(buf)
+        buf.seek(0)
+        return buf.getvalue()
+
+    @shipments_read_router.get("/shipments/export/xlsx")
+    async def export_xlsx(
+        current_user: Dict[str, Any] = Depends(_get_current_user),
+    ):
+        from fastapi.responses import Response
+        cols, rows = await _build_shipment_rows_for_user(
+            current_user["id"], None,
+        )
+        data = _build_xlsx_bytes(cols, rows)
+        return Response(
+            content=data,
+            media_type=(
+                "application/vnd.openxmlformats-officedocument."
+                "spreadsheetml.sheet"
+            ),
+            headers={
+                "Content-Disposition":
+                    'attachment; filename="shipments_export.xlsx"',
+            },
+        )
+
+    @shipments_read_router.post("/shipments/export/xlsx")
+    async def export_xlsx_filtered(
+        payload: _ExportCsvBody,
+        current_user: Dict[str, Any] = Depends(_get_current_user),
+    ):
+        from fastapi.responses import Response
+        cols, rows = await _build_shipment_rows_for_user(
+            current_user["id"], payload.ids,
+        )
+        data = _build_xlsx_bytes(cols, rows)
+        return Response(
+            content=data,
+            media_type=(
+                "application/vnd.openxmlformats-officedocument."
+                "spreadsheetml.sheet"
+            ),
+            headers={
+                "Content-Disposition":
+                    'attachment; filename="shipments_export.xlsx"',
+            },
+        )
 
     @shipments_read_router.get("/shipments/by-tracking/{tracking_id}")
     async def get_shipment_by_tracking(

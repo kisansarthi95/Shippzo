@@ -1542,6 +1542,25 @@ export const Api = {
     } as any).then((r) => r.data as string);
   },
 
+  // Excel-native (.xlsx) export.  Uses `arraybuffer` so the response
+  // stays binary end-to-end — no character decoding step that could
+  // corrupt Indic script.  Consumers hand the ArrayBuffer straight
+  // to `new Blob([buf], { type: XLSX_MIME })` for web downloads or
+  // `FileSystem.writeAsStringAsync(path, base64, { encoding: 'base64'})`
+  // on native (after a Buffer→base64 conversion).
+  exportShipmentsXlsx: (ids?: string[]) => {
+    if (ids && ids.length > 0) {
+      return api.post<ArrayBuffer>(
+        "/shipments/export/xlsx",
+        { ids },
+        { responseType: "arraybuffer" } as any,
+      ).then((r) => r.data as ArrayBuffer);
+    }
+    return api.get<ArrayBuffer>("/shipments/export/xlsx", {
+      responseType: "arraybuffer",
+    } as any).then((r) => r.data as ArrayBuffer);
+  },
+
   // Smart Paste & Pending Orders
   smartPasteParse: (text: string) =>
     api.post<{

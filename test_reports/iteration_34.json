@@ -1,0 +1,35 @@
+{
+  "summary": "Iteration 34 — XLSX export endpoint (Gujarati/Hindi encoding fix). All 7 test cases (T1-T6) PASSED and both T7 regression suites (test_smart_search 8/8, test_sheet_orders_case_fix 12/12) PASSED. XLSX export returns 200 with correct MIME + Content-Disposition and ZIP magic bytes; workbook has exactly one 'Shipments' sheet with 45 columns, correct headers, freeze_panes='A2'. CRITICAL Unicode round-trip: Gujarati customer name 'સોનુ કુશવાહ' and city 'ભાવનગર' preserved byte-perfectly through POST /api/shipments/export/xlsx → openpyxl.load_workbook round-trip — the mojibake bug is definitively fixed. Filter-aware POST body {ids:[...]} correctly exports only requested rows; nonexistent-id-only lists return 200 with header-only workbook (max_row==1) rather than 4xx. CSV regression: still returns UTF-8 BOM prefix (EF BB BF) and text/csv media type.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_xlsx_export.py",
+    "/app/test_reports/pytest/pytest_iteration_34_xlsx.xml",
+    "/app/test_reports/pytest/pytest_iteration_34_regression.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "shipments_read.py is now 817 lines — approaching the 700-line split threshold. Consider extracting the export helpers (_build_shipment_rows_for_user / _build_csv_for_user / _build_xlsx_bytes and their 4 route handlers) into routers/shipments_export.py in a future iteration.",
+    "Minor: _build_xlsx_bytes only sets widths for first 10 columns; the remaining 35 columns fall back to default 8-char width and may look cramped when opened. Not a bug — noted for future polish."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_xlsx_export.py (new)"
+  ],
+  "success_rate": {
+    "backend": "100% (7/7 new XLSX tests + 8/8 smart_search + 12/12 sheet_orders_case_fix = 27/27)",
+    "frontend": "not tested (per review request — backend only)"
+  },
+  "seed_data_creation": "T3 fixture creates one shipment with Gujarati customer_name='સોનુ કુશવાહ' city='ભાવનગર' tracking_id='TEST_XLSX_<uuid8>' and deletes it in teardown. No residual data.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "test_xlsx_export.py is the canonical regression file for the XLSX export path. Uses openpyxl.load_workbook to verify byte-perfect Unicode round-trip. Also useful as reference for creating shipments via POST — note that tracking_id is REQUIRED (not auto-generated on create). All tests are idempotent and scoped to admin@test.com. Combined pytest runs of test_smart_search + test_sheet_orders_case_fix have shown occasional flaky skips due to shared state; run each file individually for reliable pass counts (8/8 + 12/12).",
+  "rca_of_issue": "N/A — this iteration is a fix VERIFICATION, not a bug hunt. Original mojibake RCA (documented in review request): pre-2016 Windows Excel ignores UTF-8 BOM in .csv and defaults to CP-1252, so UTF-8 encoded Indic bytes render as CP-1252 mojibake ('àn àn¥‹àn'…'). Fix: add .xlsx export path (ZIP+XML with UTF-8 baked into the file format), which every Excel version reads correctly. Verified in T3 by creating a Gujarati-named shipment, exporting to XLSX, and asserting exact byte match after openpyxl round-trip."
+}

@@ -1448,9 +1448,101 @@ export default function Shipments() {
   // doesn't get a 0-byte file silently.
   // ────────────────────────────────────────────────────────────────
   const [exportCsvBusy, setExportCsvBusy] = useState<boolean>(false);
+
+  // Helper — turn an ArrayBuffer into a base64 string without pulling
+  // in a Buffer polyfill on RN.  Used by the XLSX writer on native
+  // since expo-file-system needs base64 for binary payloads.
+  const _abToBase64 = (buf: ArrayBuffer): string => {
+    const bytes = new Uint8Array(buf);
+    let bin = "";
+    for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+    // eslint-disable-next-line no-undef
+    return typeof btoa !== "undefined" ? btoa(bin) : "";
+  };
+
+  // ── Excel-native export (Jul-2026) ─────────────────────────────
+  // XLSX baked-in encoding = correct rendering of Gujarati / Hindi
+  // in every Excel version — sidesteps the Windows-1252 CSV mojibake
+  // ("àn àn¥‹àn'" garbage) old Excel showed when opening our CSV
+  // exports.  Same filter-aware ID list as the CSV path.
+  const _doExportXlsx = async () => {
+    const visibleIds = dateFilteredItems.map((s) => s.id).filter(Boolean);
+    const buf = await Api.exportShipmentsXlsx(
+      visibleIds.length > 0 ? visibleIds : undefined,
+    );
+    if (!buf || buf.byteLength < 200) {
+      // A truly-empty workbook is ~2.5KB; anything < 200 bytes is a
+      // "no data / server error" signal.
+      Alert.alert("No data", "You don't have any shipments to export yet.");
+      return;
+    }
+    const stamp = new Date().toISOString().slice(0, 10).replace(/-/g, "");
+    const filterTag =
+      (status !== "All" ? `_${status.toLowerCase().replace(/\s+/g, "")}` : "") +
+      (dateFilter !== "all" ? `_${dateFilter}` : "");
+    const filename = `shipments${filterTag}_${stamp}.xlsx`;
+    const mime =
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+
+    if (Platform.OS === "web") {
+      const blob = new Blob([buf], { type: mime });
+      const url  = URL.createObjectURL(blob);
+      const a    = document.createElement("a");
+      a.href = url; a.download = filename;
+      document.body.appendChild(a); a.click();
+      a.remove(); URL.revokeObjectURL(url);
+    } else {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const FileSystem = require("expo-file-system/legacy");
+      const path = `${FileSystem.cacheDirectory || ""}${filename}`;
+      await FileSystem.writeAsStringAsync(path, _abToBase64(buf), {
+        encoding: FileSystem.EncodingType.Base64,
+      });
+      if (await Sharing.isAvailableAsync()) {
+        await Sharing.shareAsync(path, {
+          mimeType: mime,
+          dialogTitle: "Export Shipments (Excel)",
+          UTI: "org.openxmlformats.spreadsheetml.sheet",
+        });
+      } else {
+        Alert.alert("Export ready", `Saved to ${path}`);
+      }
+    }
+  };
+
   const handleExportCsv = async () => {
     if (exportCsvBusy) return;
-    setExportCsvBusy(true);
+    // Give users the choice: Excel-native XLSX (Recommended for
+    // Gujarati / Hindi customer names — never breaks in old Windows
+    // Excel) OR the classic CSV (compact, works in any spreadsheet
+    // app that respects UTF-8 BOM).
+    Alert.alert(
+      "Export Shipments",
+      "Excel (.xlsx) preserves Gujarati / Hindi names in every Excel version. Choose CSV only if you specifically need a comma-separated file.",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Excel (.xlsx) — Recommended",
+          onPress: async () => {
+            setExportCsvBusy(true);
+            try { await _doExportXlsx(); }
+            catch (e: any) {
+              Alert.alert(
+                "Export failed",
+                e?.response?.data?.detail || e?.message || "Try again.",
+              );
+            } finally { setExportCsvBusy(false); }
+          },
+        },
+        {
+          text: "CSV",
+          onPress: () => { setExportCsvBusy(true); _doExportCsv().finally(() => setExportCsvBusy(false)); },
+        },
+      ],
+    );
+  };
+
+  const _doExportCsv = async () => {
     try {
       // 2026-05-25 — Filter-aware export. We send the EXACT ID list
       // that's currently visible on screen — `dateFilteredItems` is
@@ -1513,8 +1605,6 @@ export default function Shipments() {
         "Export failed",
         e?.response?.data?.detail || e?.message || "Try again.",
       );
-    } finally {
-      setExportCsvBusy(false);
     }
   };
 
