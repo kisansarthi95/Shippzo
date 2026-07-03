@@ -1,0 +1,35 @@
+{
+  "summary": "Iteration 36 — Frontend UI verification of WhatsApp Provider Manager screen (Playwright, viewport 390x844) confirms ALL FOUR reported changes are LIVE. T1 (Out for Delivery card visible between Shipped and Delivered): PASS. T2 (WhatsApp Provider Name free-text + Enable Advanced Endpoint toggle hides/shows Endpoint Template): PASS. T3 (Per-event Enable Template toggle hides/shows Template Preview + Copy in OFD editor modal): PASS. T4 (old FlowConnect/WATI/Interakt/Gupshup/Custom chip picker fully removed): PASS. The user's complaint is a stale JS bundle on their Expo Go client — the fresh Metro build at http://localhost:3000 renders every new element correctly. Note: because the DB already had `endpoint_template` and `template_preview` values from prior testing, both toggles start in the ON position on first render (intentional behavior per code comments at lines 410-416 and 658-665 — 'auto-open when a template is already saved so existing data is never hidden without warning'). Toggling flips visibility in both directions, confirming full functionality.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/tmp/wp_loaded.png",
+    "/tmp/t1_ofd.png",
+    "/tmp/t2_expanded.png",
+    "/tmp/t2_after_toggle.png",
+    "/tmp/t3_modal.png",
+    "/tmp/t3_after_toggle.png",
+    "/tmp/t2_recheck.png",
+    "/tmp/t3_recheck.png"
+  ],
+  "action_items": [
+    "Instruct the user (in Gujarati) to force-reload their Expo Go client — pull-to-refresh in Expo Go, or shake device → 'Reload'. On web preview, hard refresh with Ctrl+Shift+R / Cmd+Shift+R to bust the cached bundle.",
+    "OPTIONAL UX enhancement: currently both the `Enable Advanced Endpoint` and per-event `Enable Template` toggles auto-open when DB has existing content. This is intentional but may confuse users who expect a fixed default. Consider adding a small caption like 'Auto-enabled because a value already exists' when the toggle initializes ON — purely optional polish."
+  ],
+  "critical_code_review_comments": [
+    "whatsapp-provider.tsx is 1191 lines — over the 700-line guideline. Consider extracting `ProviderConfigCard`, `EventCard`, and `EventEditorModal` into separate files under `/app/frontend/components/admin/whatsapp/` for maintainability.",
+    "Interactive elements in this screen (Switches, Configure/Test Send buttons, TextInputs) lack `testID` props — makes automated testing brittle. Recommend adding testIDs like `testID='wpp-provider-conn-header'`, `testID='wpp-adv-endpoint-switch'`, `testID='wpp-event-<key>-configure'`, `testID='wpp-enable-template-switch'`."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "N/A (not tested per request)", "frontend": "100% (4/4)"},
+  "seed_data_creation": "None. Reused existing admin@test.com credentials and the pre-seeded WhatsApp Provider config (which already had endpoint_template and template_preview values, causing toggles to initialize ON — this is by design).",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "The whatsapp-provider screen has two toggle-controlled sub-fields whose initial state depends on DB content: (1) Provider Connection card > Enable Advanced Endpoint toggle controls Endpoint Template field; auto-ON when cfg.endpoint_template is non-empty. (2) Event editor modal > Enable Template toggle controls Template Preview + Copy button; auto-ON when event.template_preview is non-empty. If writing regression tests, either (a) reset DB to blank values first, or (b) assert toggle behavior by capturing initial state and checking that toggling FLIPS visibility (rather than assuming default OFF). Playwright note: React Native <Switch/> renders as role=switch but did not expose aria-checked in this build — read state via testID or the switch's thumb color/transform if strict state assertions are needed.",
+  "rca_of_issue": "USER COMPLAINT ROOT CAUSE: Stale Expo JS bundle cached on the user's device (Expo Go does not auto-invalidate bundles between Metro restarts). The three new UI elements (Out for Delivery stage card, WhatsApp Provider Name free-text field with Enable Advanced Endpoint toggle, per-event Enable Template toggle) are all present and functional in the freshly built bundle served at http://localhost:3000. MITIGATION: User must force-reload — in Expo Go: shake device → Reload, or pull-to-refresh on the developer menu; on web preview: hard refresh (Ctrl/Cmd + Shift + R). Verified via 4 independent Playwright tests + 8 screenshots that the code changes ARE live in the current Metro build."
+}
