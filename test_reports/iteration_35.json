@@ -1,0 +1,32 @@
+{
+  "summary": "Iteration 35 backend-only verification of the new WhatsApp Provider 'Out for Delivery' event. Created /app/backend/tests/test_whatsapp_out_for_delivery.py covering all four requested checks: (T1) catalogue exposure and ordering via GET /api/admin/whatsapp-provider/events, (T2) STAGE_TO_EVENT_KEY direct-import mapping incl. non-regression of prior status keys, (T3) seeded Mongo row in whatsapp_event_triggers with correct default fields, (T4) regression check that all 8 pre-existing events remain. All 7 tests passed (7/7, 100%).",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_whatsapp_out_for_delivery.py",
+    "/app/test_reports/pytest/pytest_iteration_35.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "Catalogue ordering is enforced by list_events() iterating EVENT_CATALOG, so the shipped→out_for_delivery→delivered ordering is guaranteed by source-code order — safe.",
+    "Seed is idempotent (find_one before insert), so subsequent restarts won't duplicate the new event.",
+    "STAGE_TO_EVENT_KEY dict preserves insertion order in Python 3.7+, but the mapping's correctness does not depend on order — value equality is what matters."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_whatsapp_out_for_delivery.py (new)"
+  ],
+  "success_rate": {"backend": "100%", "frontend": "not tested (backend-only per request)"},
+  "seed_data_creation": "None. Startup seed already inserted the new stage_out_for_delivery row (confirmed in backend logs: 'Seeded 1 WhatsApp event triggers').",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Reusable regression: pytest /app/backend/tests/test_whatsapp_out_for_delivery.py covers WhatsApp event catalogue schema and STAGE_TO_EVENT_KEY mapping. Admin creds admin@test.com / Admin@12345. Backend URL from EXPO_PUBLIC_BACKEND_URL env var.",
+  "rca_of_issue": "N/A — this is a feature-verification iteration, no defects found."
+}

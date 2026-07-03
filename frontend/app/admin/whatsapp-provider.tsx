@@ -83,13 +83,10 @@ type EventRow = {
 
 type AvailableField = { key: string; label: string };
 
-const PROVIDERS = [
-  { slug: "flowconnect", label: "FlowConnect" },
-  { slug: "wati",        label: "WATI" },
-  { slug: "interakt",    label: "Interakt" },
-  { slug: "gupshup",     label: "Gupshup" },
-  { slug: "custom",      label: "Custom" },
-];
+// Provider chip list retired (Jul-2026) — the WhatsApp Provider Name
+// is now a free-text field.  Kept the constant deliberately absent
+// so a lingering import/reference triggers a compile-time nudge.
+
 
 // ─── Main screen ────────────────────────────────────────────────────
 export default function AdminWhatsAppProviderScreen() {
@@ -410,6 +407,13 @@ function ProviderConfigCard({
 }) {
   const [expanded, setExpanded] = useState(false);
   const [draft, setDraft] = useState<ProviderConfig>(cfg);
+  // Advanced-Endpoint toggle (Jul-2026): the Endpoint Template field
+  // is hidden by default now.  We auto-open the section when the
+  // stored config already has a template so we never silently drop
+  // a user's existing custom endpoint on first render.
+  const [advancedEndpointOn, setAdvancedEndpointOn] = useState<boolean>(
+    !!(cfg.endpoint_template && cfg.endpoint_template.trim().length > 0),
+  );
 
   useEffect(() => { setDraft(cfg); }, [cfg]);
 
@@ -450,24 +454,22 @@ function ProviderConfigCard({
 
       {expanded && (
         <View style={styles.cardBody}>
-          {/* Provider slug picker */}
-          <Text style={styles.fieldLabel}>Provider</Text>
-          <View style={styles.chipRow}>
-            {PROVIDERS.map((p) => {
-              const active = draft.provider === p.slug;
-              return (
-                <TouchableOpacity
-                  key={p.slug}
-                  onPress={() => setDraft({ ...draft, provider: p.slug })}
-                  style={[styles.chip, active && styles.chipActive]}
-                >
-                  <Text style={[styles.chipTxt, active && styles.chipTxtActive]}>
-                    {p.label}
-                  </Text>
-                </TouchableOpacity>
-              );
-            })}
-          </View>
+          {/* Provider Name — free-text label per user request
+              (Jul-2026).  The old FlowConnect / WATI / Interakt /
+              Gupshup / Custom chip picker all landed on the exact
+              same downstream config, so the chip picker was noise
+              rather than signal.  Users can now type any provider
+              name they use ("FlowConnect", "WATI", …, or anything
+              else).  Value still persists to `provider` on save so
+              existing backend logic stays untouched. */}
+          <Text style={styles.fieldLabel}>WhatsApp Provider Name</Text>
+          <TextInput
+            value={draft.provider}
+            onChangeText={(v) => setDraft({ ...draft, provider: v })}
+            placeholder="e.g. FlowConnect, WATI, Interakt, Gupshup, Custom…"
+            autoCapitalize="words"
+            style={styles.input}
+          />
 
           <Text style={styles.fieldLabel}>Base URL</Text>
           <TextInput
@@ -478,18 +480,40 @@ function ProviderConfigCard({
             style={styles.input}
           />
 
-          <Text style={styles.fieldLabel}>Endpoint Template</Text>
-          <TextInput
-            value={draft.endpoint_template}
-            onChangeText={(v) => setDraft({ ...draft, endpoint_template: v })}
-            placeholder="{base_url}/{automation_id}/execute"
-            autoCapitalize="none"
-            style={styles.input}
-          />
-          <Text style={styles.hint}>
-            Use placeholders <Text style={styles.code}>{"{base_url}"}</Text> and{" "}
-            <Text style={styles.code}>{"{automation_id}"}</Text>.
-          </Text>
+          {/* Enable Advanced Endpoint toggle — hides the Endpoint
+              Template field by default. Most providers only need
+              Base URL + API Token; only power users touch this. */}
+          <View style={[styles.rowBetween, { marginTop: 14, marginBottom: 4 }]}>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.fieldLabel}>Enable Advanced Endpoint</Text>
+              <Text style={styles.hint}>
+                Turn on only if your provider needs a custom endpoint
+                path (e.g. <Text style={styles.code}>{"{base_url}/{automation_id}/execute"}</Text>).
+              </Text>
+            </View>
+            <Switch
+              value={advancedEndpointOn}
+              onValueChange={setAdvancedEndpointOn}
+              thumbColor={advancedEndpointOn ? colors.primary : "#94A3B8"}
+            />
+          </View>
+
+          {advancedEndpointOn && (
+            <>
+              <Text style={styles.fieldLabel}>Endpoint Template</Text>
+              <TextInput
+                value={draft.endpoint_template}
+                onChangeText={(v) => setDraft({ ...draft, endpoint_template: v })}
+                placeholder="{base_url}/{automation_id}/execute"
+                autoCapitalize="none"
+                style={styles.input}
+              />
+              <Text style={styles.hint}>
+                Use placeholders <Text style={styles.code}>{"{base_url}"}</Text> and{" "}
+                <Text style={styles.code}>{"{automation_id}"}</Text>.
+              </Text>
+            </>
+          )}
 
           <Text style={styles.fieldLabel}>API Token</Text>
           <TextInput
@@ -631,6 +655,14 @@ function EventEditorModal({
   saving: boolean;
 }) {
   const [draft, setDraft] = useState<EventRow>(event);
+  // Enable/Disable Template toggle (Jul-2026) — the Template Preview
+  // + Copy fields are OPTIONAL now.  Our system sends the structured
+  // JSON regardless of whether the admin has filled in a template.
+  // We open the toggle automatically when a template is already
+  // saved so existing data is never hidden without warning.
+  const [templateEnabled, setTemplateEnabled] = useState<boolean>(
+    !!(event.template_preview && event.template_preview.trim().length > 0),
+  );
 
   const toggleField = (key: string) => {
     setDraft((d) => ({
@@ -718,26 +750,50 @@ function EventEditorModal({
               style={styles.input}
             />
 
-            {/* Template preview + copy */}
+            {/* Enable Template toggle + Template preview + copy.
+                Toggle is OFF by default and hides the template
+                fields entirely — the structured JSON payload is
+                sent regardless, so the template is purely a
+                reference for the admin to paste inside the
+                provider's own dashboard. */}
             <View style={[styles.rowBetween, { marginTop: 16 }]}>
-              <Text style={styles.fieldLabel}>Template Preview</Text>
-              <TouchableOpacity style={styles.copyBtn} onPress={copyTemplate}>
-                <PhIcon name="copy-outline" size={14} color="#1E40AF" />
-                <Text style={styles.copyTxt}>Copy</Text>
-              </TouchableOpacity>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.fieldLabel}>Enable Template</Text>
+                <Text style={styles.hint}>
+                  Turn on if you want to keep a reference template
+                  here (to paste into the provider's dashboard).
+                  Off = only the structured JSON is sent.
+                </Text>
+              </View>
+              <Switch
+                value={templateEnabled}
+                onValueChange={setTemplateEnabled}
+                thumbColor={templateEnabled ? colors.primary : "#94A3B8"}
+              />
             </View>
-            <Text style={styles.hint}>
-              Reference text — paste this into your provider's template
-              editor. Use placeholders like <Text style={styles.code}>{"{customer_name}"}</Text>.
-            </Text>
-            <TextInput
-              value={draft.template_preview}
-              onChangeText={(v) => setDraft({ ...draft, template_preview: v })}
-              placeholder="Hello {customer_name}, your order…"
-              multiline
-              numberOfLines={6}
-              style={[styles.input, styles.inputArea]}
-            />
+            {templateEnabled && (
+              <>
+                <View style={[styles.rowBetween, { marginTop: 10 }]}>
+                  <Text style={styles.fieldLabel}>Template Preview</Text>
+                  <TouchableOpacity style={styles.copyBtn} onPress={copyTemplate}>
+                    <PhIcon name="copy-outline" size={14} color="#1E40AF" />
+                    <Text style={styles.copyTxt}>Copy</Text>
+                  </TouchableOpacity>
+                </View>
+                <Text style={styles.hint}>
+                  Reference text — paste this into your provider's template
+                  editor. Use placeholders like <Text style={styles.code}>{"{customer_name}"}</Text>.
+                </Text>
+                <TextInput
+                  value={draft.template_preview}
+                  onChangeText={(v) => setDraft({ ...draft, template_preview: v })}
+                  placeholder="Hello {customer_name}, your order…"
+                  multiline
+                  numberOfLines={6}
+                  style={[styles.input, styles.inputArea]}
+                />
+              </>
+            )}
 
             {/* Selected fields */}
             <Text style={[styles.fieldLabel, { marginTop: 16 }]}>

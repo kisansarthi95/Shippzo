@@ -135,6 +135,15 @@ EVENT_CATALOG: List[Dict[str, Any]] = [
         "🚚 Hi {customer_name}, your order *{order_id}* has shipped via "
         "*{courier_name}*.\nTracking: {tracking_id}\nETA: {eta_days} "
         "days.\n— {business_name}"},
+    {"event_key": "stage_out_for_delivery", "category": "stage",
+     "label":   "Stage: Out for Delivery",
+     "sub":     "Sent when the parcel is out for delivery from the local hub",
+     "default_fields": ["customer_name", "customer_phone", "order_id",
+                        "tracking_id", "courier_name", "business_name"],
+     "default_template":
+        "📦 Hi {customer_name}, your order *{order_id}* is out for "
+        "delivery today.\nTracking: {tracking_id}\nCourier: "
+        "*{courier_name}*.\n— {business_name}"},
     {"event_key": "stage_delivered",     "category": "stage",
      "label":   "Stage: Delivered",
      "sub":     "Sent when the courier marks the parcel as delivered",
@@ -156,12 +165,13 @@ EVENT_CATALOG: List[Dict[str, Any]] = [
 
 # Map between Shipment.status (canonical) and event_key.
 STAGE_TO_EVENT_KEY: Dict[str, str] = {
-    "Pending":       "stage_pending",
-    "Processing":    "stage_processing",
-    "Ready to Ship": "stage_ready_to_ship",
-    "Shipped":       "stage_shipped",
-    "Delivered":     "stage_delivered",
-    "Feedback":      "stage_feedback",
+    "Pending":          "stage_pending",
+    "Processing":       "stage_processing",
+    "Ready to Ship":    "stage_ready_to_ship",
+    "Shipped":          "stage_shipped",
+    "Out for Delivery": "stage_out_for_delivery",
+    "Delivered":        "stage_delivered",
+    "Feedback":         "stage_feedback",
 }
 
 
