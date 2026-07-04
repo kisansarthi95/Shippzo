@@ -912,6 +912,28 @@ export default function SettingsScreen() {
                     <PhIcon name="chevron-forward" size={22} color="#9CA3AF" />
                   </TouchableOpacity>
                 ))}
+                {/* Phase F4.7 — Team Members hub card. Surfaced at the
+                    top level of Settings so shop-owners don't have to
+                    scroll through 2000+ lines inside `Business` to
+                    find staff management. Hidden for team-member
+                    sessions — only owners see + manage staff.
+                    Directly deep-links to /settings/team-members
+                    (the screen already exists — this card just makes
+                    it discoverable). */}
+                {!isTeamMember && (
+                  <TouchableOpacity
+                    testID="settings-hub-team"
+                    style={styles.hubRow}
+                    onPress={() => router.push("/settings/team-members" as any)}
+                    activeOpacity={0.6}
+                  >
+                    <View style={[styles.hubIconWrap, { backgroundColor: "#7C3AED" + "1A" }]}>
+                      <PhIcon name="people" size={22} color="#7C3AED" />
+                    </View>
+                    <Text style={styles.hubTitle}>Team Members</Text>
+                    <PhIcon name="chevron-forward" size={22} color="#9CA3AF" />
+                  </TouchableOpacity>
+                )}
                 {/* Admin Panel — only for is_admin users (and never for team-member sessions) */}
                 {isAdminUI ? (
                   <>
