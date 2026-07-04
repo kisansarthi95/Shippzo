@@ -187,8 +187,9 @@ class TestOfdIngest:
 # ----------------------------------------------------------------------
 class TestOfdAlerts:
     def test_4_alerts_endpoint_lists_shipment(self, admin_session, shipment):
-        # Tiny threshold so the just-created shipment qualifies.
-        r = admin_session.get(f"{API}/courier-sync/ofd-alerts?hours=0.001", timeout=15)
+        # Zero-hour threshold — freshly ingested OFD (moments ago) MUST
+        # appear. Endpoint floor is 0.0 so this doesn't get clamped.
+        r = admin_session.get(f"{API}/courier-sync/ofd-alerts?hours=0", timeout=15)
         assert r.status_code == 200, r.text
         data = r.json()
         assert "alerts" in data and "threshold_hours" in data, data

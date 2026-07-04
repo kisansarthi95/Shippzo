@@ -658,7 +658,10 @@ def init() -> None:
         hours: float = 2.0,
         current_user: Dict[str, Any] = Depends(_get_current_user),
     ):
-        hours = max(0.001, min(float(hours or 2.0), 48.0))
+        # `hours or 2.0` would clobber the intent when the caller
+        # explicitly passes 0 (test / debug harnesses do this).
+        hours = 2.0 if hours is None else float(hours)
+        hours = max(0.0, min(hours, 48.0))
         cutoff = datetime.now(timezone.utc).timestamp() - (hours * 3600)
         # Fetch all OFD shipments and filter in Python (out_for_delivery_at
         # is a string ISO stamp — Mongo comparison via $lt would work but
