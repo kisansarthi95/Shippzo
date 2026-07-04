@@ -16,6 +16,7 @@ import React, {
 } from "react";
 import { View, Text, StyleSheet } from "react-native";
 import { Api } from "./api";
+import { useAuth } from "./auth";
 import PhIcon from "../components/PhIcon";
 
 type AuthContextPayload = {
@@ -35,6 +36,7 @@ const PermCtx = createContext<AuthContextPayload>({
 });
 
 export function PermissionsProvider({ children }: { children: React.ReactNode }) {
+  const { user } = useAuth();
   const [state, setState] = useState<{
     isTeamMember: boolean; permissions: string[];
     teamMember: any; parentBusiness: string | null; loading: boolean;
@@ -54,11 +56,22 @@ export function PermissionsProvider({ children }: { children: React.ReactNode })
         loading: false,
       });
     } catch {
-      setState((s) => ({ ...s, loading: false }));
+      // Phase F4.7 — if the fetch fails (401 / offline), reset to
+      // a NEUTRAL owner-like state so we don't accidentally leak
+      // permission-restricted UI from a previous team session.
+      setState({
+        isTeamMember: false, permissions: [],
+        teamMember: null, parentBusiness: null, loading: false,
+      });
     }
   }, []);
 
-  useEffect(() => { refresh(); }, [refresh]);
+  // Phase F4.7 — Refresh whenever the auth state changes (login,
+  // logout, token refresh). Without this, the provider mounts BEFORE
+  // login → gets 401 → stays default (isTeamMember=false) → team
+  // members appear to have owner-level access even though their
+  // token is a team token. Re-running when `user` changes fixes it.
+  useEffect(() => { refresh(); }, [refresh, user?.id, (user as any)?.kind]);
 
   const hasPerm = useCallback((key: string) => {
     // Owners (and admins) bypass gating entirely.

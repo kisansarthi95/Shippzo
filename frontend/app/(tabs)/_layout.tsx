@@ -10,7 +10,14 @@ export default function TabsLayout() {
   // Phase B+C — hide tabs the active team-member doesn't have
   // permission for. Owners pass through hasPerm() unconditionally.
   const { hasPerm, isTeamMember } = usePermissions();
-  const canAdd = hasPerm("shipments_create");
+  // Phase F4.7 — `shipments_create` isn't a key in FEATURE_REGISTRY.
+  // Fall back to any of the standard "can add data" permissions so
+  // Sales staff (who own Smart Paste / File Import via the preset)
+  // still see the + tab. Owners always pass hasPerm().
+  const canAdd =
+    hasPerm("shipments_create") ||
+    hasPerm("smart_paste_ai") ||
+    hasPerm("file_import_csv");
   return (
     <NewOrderAlertProvider>
     <OfdAlertProvider>
