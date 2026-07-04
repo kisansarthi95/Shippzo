@@ -162,7 +162,7 @@ class TestTestParse:
         assert d.get("matched") is True
         assert d.get("tracking_id") == "EG350860840IN"
         assert d.get("canonical_status") == "Out for Delivery"
-        assert d.get("shipment_status") == "Shipped"
+        assert d.get("shipment_status") == "Out for Delivery"
 
     def test_delivered_with_date(self, admin_session):
         body = {

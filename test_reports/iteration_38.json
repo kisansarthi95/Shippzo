@@ -1,0 +1,40 @@
+{
+  "summary": "Re-ran the three courier-sync suites after fixes for Bug 1, Bug 2, and stale assertions. Result: 54/55 green — one test still fails: test_phase_f44_ofd_alerts.py::TestOfdAlerts::test_4_alerts_endpoint_lists_shipment. RCA: Bug 2 fix (floor 0.25 → 0.001) is INSUFFICIENT. hours=0.001 == 3.6-second grace window, but the F44 fixture creates the shipment and calls /ofd-alerts within <1 second, so the shipment's out_for_delivery_at is younger than the cutoff and is filtered out as 'still within grace period'. All other fixes verified: Bug 1 (meaningful_change on push_ops / attempt_count) works — second OFD returns action='updated' (test_3 passes), and both stale-assertion fixes (test_out_for_delivery and PARSE_CASES A3) pass. TestParserWhitelist, TestIngestWhitelist, TestStructuredLogs, TestParse, TestIngest, TestEvents, TestPartners, TestConfigs, TestAuthGate — all green.",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "GET /api/courier-sync/ofd-alerts",
+        "issue": "Floor of 0.001 hours (=3.6 s) is still too large for the F44 test that creates a shipment and immediately queries alerts. Confirmed via a direct reproduction script (/tmp/debug_test4.py): DB filter matches the shipment (Filter matches directly? True) yet the endpoint response omits it because ofd_dt.timestamp() > cutoff (out_for_delivery_at is only ~0.2 s old, cutoff is 3.6 s ago). Other older shipments (hours_elapsed ~0.09 h) show up correctly. Fix requires lowering `max(0.001, …)` further (e.g. `max(0.0, …)` or `max(0.00001, …)`) at /app/backend/routers/courier_sync.py:661 — OR having the test sleep(4) between the second ingest and the alerts poll. Recommendation: change floor to 0.0 (or a nominal 1e-6) since the endpoint already clamps upper bound to 48 h and non-negative floats are safe.",
+        "priority": "HIGH"
+      }
+    ],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/test_reports/pytest/phase_f44_reverify.xml",
+    "/app/backend/tests/test_phase_f44_ofd_alerts.py",
+    "/app/backend/tests/test_courier_sync.py",
+    "/app/backend/tests/test_courier_sync_whitelist.py"
+  ],
+  "action_items": [
+    "Lower the `/ofd-alerts` hours floor further at /app/backend/routers/courier_sync.py:661 — change `hours = max(0.001, min(float(hours or 2.0), 48.0))` to `hours = max(0.0, min(float(hours or 2.0), 48.0))` (or use 1e-6). This lets tests pass `hours=0.001` and still have the just-created shipment surface (elapsed ≈ 0.2 s > 0 s cutoff).",
+    "Alternative: keep the 0.001 floor and insert `time.sleep(4)` between test_3 and test_4 in test_phase_f44_ofd_alerts.py — but code-side fix is preferred since the endpoint should honour the caller's request.",
+    "No other changes needed — 54/55 tests are green after the applied fixes."
+  ],
+  "critical_code_review_comments": [
+    "The /ofd-alerts endpoint uses a Python-side grace-period filter (`if ofd_dt.timestamp() > cutoff: continue`). The intent (skip freshly-stamped OFD until N hours pass) is correct, but the 0.001-hour floor still blocks legitimate test flows that want zero-grace behaviour. Consider adding an explicit `hours=0` short-circuit that skips the grace filter entirely."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "98.2% (54/55)", "frontend": "n/a"},
+  "seed_data_creation": "None — used existing admin@test.com credentials. Fixtures self-clean via module-scoped teardown.",
+  "retest_needed": true,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "After main agent lowers the `hours` floor, re-run: `cd /app/backend && python -m pytest tests/test_phase_f44_ofd_alerts.py tests/test_courier_sync.py tests/test_courier_sync_whitelist.py -v`. Target 55/55 green. The failure is deterministic (reproduced twice); the RCA is verified by a direct API repro at /tmp/debug_test4.py which showed the DB filter matches but the endpoint response drops the shipment due to the 3.6 s grace floor.",
+  "rca_of_issue": "GET /api/courier-sync/ofd-alerts clamps `hours` with `max(0.001, …)` at courier_sync.py:661. With hours=0.001 the cutoff = now − 3.6 s. The F44 fixture creates the shipment, sends first OFD SMS, sends second OFD SMS, then immediately GETs /ofd-alerts — total elapsed ≈ 0.2–1.0 s, i.e. `out_for_delivery_at > cutoff`, so the loop at line 701 (`if ofd_dt.timestamp() > cutoff: continue`) skips it. Verified by /tmp/debug_test4.py: direct MongoDB `find_one` with the same filter returns the doc (Filter matches directly? True), but the HTTP endpoint response omits it. Mitigation: change floor to 0.0 (or nominal 1e-6) at line 661."
+}

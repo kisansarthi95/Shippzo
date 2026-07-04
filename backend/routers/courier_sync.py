@@ -560,6 +560,17 @@ def init() -> None:
             (k in update_set and update_set[k] != ship.get(k))
             for k in meaningful_fields
         )
+        # OFD attempt-count increments and history $push are also
+        # user-visible mutations even when the top-level status is
+        # already 'Out for Delivery' — flag them as meaningful so
+        # the ingest response says action='updated' (not
+        # 'already_in_sync').
+        if push_ops or (
+            "delivery_attempt_count" in update_set
+            and update_set["delivery_attempt_count"]
+            != int(ship.get("delivery_attempt_count") or 0)
+        ):
+            meaningful_change = True
 
         _logger.info(
             "%s step=6 update_decision=APPLY current=%r → new=%r "
@@ -647,7 +658,7 @@ def init() -> None:
         hours: float = 2.0,
         current_user: Dict[str, Any] = Depends(_get_current_user),
     ):
-        hours = max(0.25, min(float(hours or 2.0), 48.0))
+        hours = max(0.001, min(float(hours or 2.0), 48.0))
         cutoff = datetime.now(timezone.utc).timestamp() - (hours * 3600)
         # Fetch all OFD shipments and filter in Python (out_for_delivery_at
         # is a string ISO stamp — Mongo comparison via $lt would work but

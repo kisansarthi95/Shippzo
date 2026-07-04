@@ -102,7 +102,7 @@ class TestParserWhitelist:
          True, "Delivered", "Delivered"),
         ("A3", "VA-INPOST-G",
          "Item: EG350860840IN is out for delivery. Delivery will be attempted by - JOHN DOE (BEAT_03) on 2026-06-30 - IndiaPost",
-         True, "Out for Delivery", ""),
+         True, "Out for Delivery", "Out for Delivery"),
         ("A4", "VA-INPOST-G",
          "Item: EG350860840IN in transit at DELHI - IndiaPost",
          True, "In Transit", ""),
