@@ -389,7 +389,7 @@ export default function ShipmentDetailsScreen() {
             India Post "Out for Delivery" SMS is matched. Only shown
             when we have an OFD anchor (avoids empty card noise). */}
         {!!(ship as any).out_for_delivery_at && (
-          <Section title="Out for Delivery" icon="truck">
+          <Section title="Out for Delivery" icon="car">
             <Row
               label="Out since"
               value={fmtDate((ship as any).out_for_delivery_at)}

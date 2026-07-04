@@ -11,7 +11,8 @@ import * as Print from "expo-print";
 import * as Sharing from "expo-sharing";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useFocusEffect, useRouter, useLocalSearchParams } from "expo-router";
-import DateTimePicker from "@react-native-community/datetimepicker";
+// DateTimePicker moved to `components/shipments/DateRangeModal.tsx`
+// (Phase F4.6). No longer imported here.
 import { Api, Shipment, Settings, Courier } from "../../lib/api";
 import { SyncQueue } from "../../lib/syncQueue";
 import {
@@ -25,6 +26,8 @@ import {
   labelStyles,
 } from "../../components/shipments/status_meta";
 import ActionBtn from "../../components/shipments/ActionBtn";
+import DateRangeModal from "../../components/shipments/DateRangeModal";
+import BulkPrintActionModal from "../../components/shipments/BulkPrintActionModal";
 import { buildCopyText, buildWhatsAppText, cleanPhone } from "../../lib/format";
 import { fillFromShipment } from "../../lib/templateVariables";
 import { useAuth } from "../../lib/auth";
@@ -1893,65 +1896,14 @@ export default function Shipments() {
       {/* Bulk Action Popup — opens after the user taps a layout card.
           Shows just two big buttons (Preview / Print) so the next step
           is impossible to miss. Backdrop tap or Cancel dismisses. */}
-      <Modal
+      <BulkPrintActionModal
         visible={actionPopupOpen}
-        animationType="fade"
-        transparent
-        onRequestClose={() => setActionPopupOpen(false)}
-      >
-        <TouchableOpacity
-          activeOpacity={1}
-          style={styles.bulkPopupBackdrop}
-          onPress={() => setActionPopupOpen(false)}
-        >
-          <TouchableOpacity activeOpacity={1} style={styles.bulkPopupCard}>
-            <View style={styles.bulkPopupHeaderRow}>
-              <PhIcon name="print" size={18} color={colors.primary} />
-              <Text style={styles.bulkPopupTitle}>
-                {selectedIds.size} shipment{selectedIds.size !== 1 ? "s" : ""} •{" "}
-                {bulkPerPage === "thermal" ? "Thermal 4×6" :
-                 bulkPerPage === "barcode" ? "Thermal 2×1" :
-                 bulkPerPage === 1 ? "A4" :
-                 bulkPerPage === 4 ? "A6" :
-                 bulkPerPage === 2 ? "½A4" : "Layout"}
-              </Text>
-              <TouchableOpacity onPress={() => setActionPopupOpen(false)} hitSlop={10}>
-                <PhIcon name="close" size={22} color={colors.text} />
-              </TouchableOpacity>
-            </View>
-            <Text style={styles.bulkPopupSub}>
-              Tap Preview to check the PDF before printing, or Print to send
-              directly to your printer.
-            </Text>
-            <View style={styles.bulkPopupActions}>
-              <TouchableOpacity
-                testID="bulk-preview-btn"
-                style={[styles.bulkPopupBtn, styles.bulkPopupBtnSecondary]}
-                onPress={() => {
-                  setActionPopupOpen(false);
-                  bulkPreviewPdf();
-                }}
-              >
-                <PhIcon name="eye-outline" size={20} color={colors.text} />
-                <Text style={[styles.bulkPopupBtnText, { color: colors.text }]}>
-                  Preview
-                </Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                testID="bulk-print-btn"
-                style={[styles.bulkPopupBtn, { backgroundColor: colors.primary }]}
-                onPress={() => {
-                  setActionPopupOpen(false);
-                  bulkPrint();
-                }}
-              >
-                <PhIcon name="print" size={20} color="#fff" />
-                <Text style={styles.bulkPopupBtnText}>Print</Text>
-              </TouchableOpacity>
-            </View>
-          </TouchableOpacity>
-        </TouchableOpacity>
-      </Modal>
+        onClose={() => setActionPopupOpen(false)}
+        selectedCount={selectedIds.size}
+        bulkPerPage={bulkPerPage}
+        onPreview={() => bulkPreviewPdf()}
+        onPrint={() => bulkPrint()}
+      />
 
       {/* Phase-16/P2: Bulk Save-Contacts category picker. Opens after
           the user taps the "Save Contacts" card. Asks which category
@@ -2422,91 +2374,17 @@ export default function Shipments() {
         }}
       />
 
-      {/* Custom date range modal */}
-      <Modal
+      {/* Custom date range modal — extracted Phase F4.6 */}
+      <DateRangeModal
         visible={showDateModal}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setShowDateModal(false)}
-      >
-        <View style={styles.modalOverlay}>
-          <View style={styles.dateModalCard}>
-            <View style={styles.dateModalHdr}>
-              <PhIcon name="calendar" size={18} color={colors.primary} />
-              <Text style={styles.dateModalTitle}>Custom Date Range</Text>
-              <TouchableOpacity onPress={() => setShowDateModal(false)} hitSlop={10}>
-                <PhIcon name="close" size={22} color={colors.text} />
-              </TouchableOpacity>
-            </View>
-            <Text style={styles.dateHint}>Select From &amp; To dates to filter shipments.</Text>
-
-            <TouchableOpacity
-              testID="picker-from"
-              style={styles.dateField}
-              onPress={() => setPickerField("from")}
-            >
-              <Text style={styles.dateFieldLabel}>From</Text>
-              <Text style={styles.dateFieldValue}>
-                {customFrom
-                  ? customFrom.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" })
-                  : "Tap to pick date"}
-              </Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              testID="picker-to"
-              style={styles.dateField}
-              onPress={() => setPickerField("to")}
-            >
-              <Text style={styles.dateFieldLabel}>To</Text>
-              <Text style={styles.dateFieldValue}>
-                {customTo
-                  ? customTo.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" })
-                  : "Tap to pick date"}
-              </Text>
-            </TouchableOpacity>
-
-            {pickerField && Platform.OS !== "web" && (
-              <DateTimePicker
-                value={(pickerField === "from" ? customFrom : customTo) || new Date()}
-                mode="date"
-                display={Platform.OS === "ios" ? "inline" : "default"}
-                maximumDate={new Date()}
-                onChange={(event: any, selected?: Date) => {
-                  // On Android native dialog, it dismisses automatically.
-                  if (Platform.OS === "android") setPickerField(null);
-                  if (event?.type === "dismissed") return;
-                  if (!selected) return;
-                  if (pickerField === "from") setCustomFrom(selected);
-                  else setCustomTo(selected);
-                }}
-              />
-            )}
-
-            <View style={styles.dateModalActions}>
-              <TouchableOpacity
-                style={styles.dateClearBtn}
-                onPress={() => {
-                  setCustomFrom(null);
-                  setCustomTo(null);
-                }}
-              >
-                <Text style={styles.dateClearText}>Clear</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                testID="apply-date-range"
-                style={styles.dateApplyBtn}
-                onPress={() => {
-                  setShowDateModal(false);
-                  setPickerField(null);
-                }}
-              >
-                <Text style={styles.dateApplyText}>Apply</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-        </View>
-      </Modal>
+        onClose={() => setShowDateModal(false)}
+        from={customFrom}
+        to={customTo}
+        setFrom={setCustomFrom}
+        setTo={setCustomTo}
+        pickerField={pickerField}
+        setPickerField={setPickerField}
+      />
 
       {/* ============================================================
           Status Picker — bottom sheet with the 7 status options.
@@ -3301,134 +3179,11 @@ const styles = StyleSheet.create({
   },
 
   /* Bulk Action Popup — Preview / Print step opened after a layout pick. */
-  bulkPopupBackdrop: {
-    flex: 1,
-    backgroundColor: "rgba(0,0,0,0.45)",
-    justifyContent: "center",
-    alignItems: "center",
-    paddingHorizontal: 24,
-  },
-  bulkPopupCard: {
-    width: "100%",
-    maxWidth: 380,
-    backgroundColor: "#fff",
-    borderRadius: 16,
-    padding: 18,
-    elevation: 8,
-  },
-  bulkPopupHeaderRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-    marginBottom: 6,
-  },
-  bulkPopupTitle: {
-    flex: 1,
-    fontSize: 15,
-    fontWeight: "800",
-    color: colors.text,
-  },
-  bulkPopupSub: {
-    fontSize: 12,
-    color: "#6B7280",
-    lineHeight: 17,
-    marginBottom: 14,
-  },
-  bulkPopupActions: {
-    flexDirection: "row",
-    gap: 10,
-  },
-  bulkPopupBtn: {
-    flex: 1,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 8,
-    paddingVertical: 14,
-    borderRadius: 12,
-  },
-  bulkPopupBtnSecondary: {
-    backgroundColor: "#F3F4F6",
-    borderWidth: 1,
-    borderColor: "#E5E7EB",
-  },
-  bulkPopupBtnText: {
-    color: "#fff",
-    fontWeight: "800",
-    fontSize: 14,
-    letterSpacing: 0.3,
-  },
-
-  /* ----- Date Range Modal ----- */
-  modalOverlay: {
-    flex: 1,
-    backgroundColor: "rgba(0,0,0,0.45)",
-    justifyContent: "center",
-    alignItems: "center",
-    padding: 16,
-  },
-  dateModalCard: {
-    width: "100%",
-    maxWidth: 400,
-    backgroundColor: "#fff",
-    borderRadius: 16,
-    padding: 18,
-  },
-  dateModalHdr: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-    marginBottom: 4,
-  },
-  dateModalTitle: {
-    flex: 1,
-    fontSize: 17,
-    fontWeight: "800",
-    color: colors.text,
-  },
-  dateHint: { fontSize: 12, color: colors.textMuted, marginBottom: 12 },
-  dateField: {
-    borderWidth: 2,
-    borderColor: "#E5E7EB",
-    borderRadius: 10,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    marginBottom: 10,
-  },
-  dateFieldLabel: {
-    fontSize: 11,
-    fontWeight: "700",
-    color: colors.textMuted,
-    marginBottom: 2,
-  },
-  dateFieldValue: {
-    fontSize: 15,
-    fontWeight: "700",
-    color: colors.text,
-  },
-  dateModalActions: {
-    flexDirection: "row",
-    gap: 10,
-    marginTop: 8,
-  },
-  dateClearBtn: {
-    flex: 1,
-    paddingVertical: 12,
-    borderRadius: 10,
-    borderWidth: 2,
-    borderColor: "#E5E7EB",
-    alignItems: "center",
-    backgroundColor: "#fff",
-  },
-  dateClearText: { color: colors.text, fontWeight: "700" },
-  dateApplyBtn: {
-    flex: 1,
-    paddingVertical: 12,
-    borderRadius: 10,
-    backgroundColor: colors.primary,
-    alignItems: "center",
-  },
-  dateApplyText: { color: "#fff", fontWeight: "800" },
+  // Bulk-Print action popup + Date-Range modal styles have been
+  // moved to their respective component files under
+  // `components/shipments/` (Phase F4.6). Nothing here references
+  // them any more, so they've been dropped from this stylesheet to
+  // keep the file lean.
 
   // ─── Bulk WhatsApp Packing Summary modal styles ──────────────────
   modalBackdrop: {

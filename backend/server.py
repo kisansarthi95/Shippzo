@@ -5385,6 +5385,24 @@ except Exception as _pb_exc:
         f"Failed to mount plans_billing router: {_pb_exc}",
     )
 
+# Phase F4.6 modular: shipment export endpoints (CSV + XLSX) — split
+# out of shipments_read.py so a single router file doesn't grow into a
+# grab-bag. MUST be included BEFORE shipments_read.py below because the
+# read router still owns the catch-all "/shipments/{shipment_id}" GET
+# which would otherwise swallow /shipments/export/csv|xlsx.
+try:
+    from routers.shipments_export import (
+        shipments_export_router as _shipments_export_router,
+        init as _init_shipments_export_router,
+    )
+    _init_shipments_export_router()
+    app.include_router(_shipments_export_router)
+except Exception as _se_exc:
+    import logging as _lg
+    _lg.getLogger("server.bootstrap").exception(
+        f"Failed to mount shipments_export router: {_se_exc}",
+    )
+
 # Phase-4c modular: read-only shipments + lookup endpoints.
 try:
     from routers.shipments_read import (
