@@ -39,6 +39,99 @@ const ROLE_SUGGESTIONS = [
   "Owner",
 ];
 
+// ─── Phase F4.7 — Role presets (permission templates) ───────────────
+// Tapping one of these preset roles in the Add/Edit Member modal
+// auto-fills the permission toggles. The idea is to save owners the
+// pain of picking 100+ granular permissions one-by-one every time
+// they hire a new staff member.
+//
+// Two presets ship out of the box (user request, Jul-2026):
+//   • "Operations Manager"  — full owner-level access
+//   • "Sales Executive"     — daily-work only (view/print/mark/WhatsApp),
+//                             NO settings-heavy or destructive actions
+//
+// The `role` string is matched case-insensitively against these keys
+// AND their aliases so "Sales", "Sales Staff", "Sales Person" all
+// resolve to the Sales preset.
+type RolePresetName = "operations" | "sales" | null;
+
+const ROLE_ALIASES: Record<string, RolePresetName> = {
+  // Operations aliases — everything an owner does (settings, sheets,
+  // labels, reports, everything).
+  "operations":            "operations",
+  "operations manager":    "operations",
+  "operations lead":       "operations",
+  "logistics manager":     "operations",
+  "manager":               "operations",
+  "warehouse manager":     "operations",
+  "admin":                 "operations",
+  "owner":                 "operations",
+  // Sales aliases — daily front-line work only. NO settings, NO
+  // Google Sheets link changes, NO delete, NO reports.
+  "sales":                 "sales",
+  "sales staff":           "sales",
+  "sales executive":       "sales",
+  "sales person":          "sales",
+  "customer service":      "sales",
+  "cs executive":          "sales",
+  "packer":                "sales",
+  "packing staff":         "sales",
+};
+
+// Categories that Sales Staff should NEVER get (heavy setup / rare
+// changes). Anything OUTSIDE this list AND owned by the parent is
+// granted to Sales by default.
+const SALES_EXCLUDED_CATEGORIES = new Set<string>([
+  "Google Sheets",       // link URL, mapping, sync — configured once
+  "Webhooks",            // endpoint plumbing
+  "Label Design",        // brand logo, size, custom fields — rare
+  "Master Order ID",     // counter customization
+  "Business Profile",    // company info / branding
+  "Form Fields",         // schema customization
+  "Team & RBAC",         // don't let staff add more staff
+  "Reports",             // heavy analytics — owner tool
+]);
+
+// Individual keys hard-excluded from Sales regardless of category —
+// these are destructive or irreversibly change data.
+const SALES_EXCLUDED_KEYS = new Set<string>([
+  "shipment_delete_btn",       // destructive
+  "shipment_terminal_states",  // Cancel / Return workflow (major)
+  "credit_packages_buy",       // spending
+]);
+
+function detectRolePreset(role: string): RolePresetName {
+  const norm = (role || "").trim().toLowerCase();
+  if (!norm) return null;
+  if (ROLE_ALIASES[norm]) return ROLE_ALIASES[norm];
+  // Loose contains-check as a final fallback so weird variants like
+  // "Sr. Sales Executive" still map.
+  for (const [alias, target] of Object.entries(ROLE_ALIASES)) {
+    if (norm.includes(alias)) return target;
+  }
+  return null;
+}
+
+function computePresetPermissions(
+  presetName: RolePresetName,
+  myFeatures: string[],
+  registryFeatures: RegistryFeature[],
+): string[] {
+  if (!presetName) return [];
+  // Only grant keys the OWNER actually has (never over-grant).
+  const owned = new Set(myFeatures);
+  const owned_and_defined = registryFeatures.filter((f) => owned.has(f.key));
+  if (presetName === "operations") {
+    // Full owner-clone — every owned feature.
+    return owned_and_defined.map((f) => f.key);
+  }
+  // Sales — everything EXCEPT excluded categories & keys.
+  return owned_and_defined
+    .filter((f) => !SALES_EXCLUDED_CATEGORIES.has(f.category))
+    .filter((f) => !SALES_EXCLUDED_KEYS.has(f.key))
+    .map((f) => f.key);
+}
+
 type Member = {
   id: string;
   name: string;
@@ -439,13 +532,47 @@ export default function TeamMembersScreen() {
               placeholder="e.g. Operations Manager"
               placeholderTextColor="#9CA3AF"
               value={form.role}
-              onChangeText={(t) => setForm({ ...form, role: t })}
+              onChangeText={(t) => {
+                setForm({ ...form, role: t });
+                // Phase F4.7 — Auto-apply preset when the typed role
+                // resolves to a known preset (and the perms set is
+                // empty). Editing an existing member with tweaked
+                // perms is left alone so the operator doesn't
+                // accidentally overwrite their custom selection.
+                const target = detectRolePreset(t);
+                const isNewOrEmpty = !editing || perms.size === 0;
+                if (target && registry && isNewOrEmpty) {
+                  setPerms(new Set(computePresetPermissions(
+                    target,
+                    registry.my_features,
+                    registry.registry.features,
+                  )));
+                }
+              }}
             />
             <View style={styles.chipsWrap}>
               {ROLE_SUGGESTIONS.map((r) => (
                 <Pressable
                   key={r}
-                  onPress={() => setForm({ ...form, role: r })}
+                  onPress={() => {
+                    // Phase F4.7 — Tapping a role chip also applies
+                    // its permission preset (Operations = full,
+                    // Sales = daily-work only). For editing an
+                    // existing member we ONLY apply the preset when
+                    // the current perms set is empty — otherwise a
+                    // careful re-selection would silently wipe
+                    // manual tweaks.
+                    setForm({ ...form, role: r });
+                    const target = detectRolePreset(r);
+                    const isNewOrEmpty = !editing || perms.size === 0;
+                    if (target && registry && isNewOrEmpty) {
+                      setPerms(new Set(computePresetPermissions(
+                        target,
+                        registry.my_features,
+                        registry.registry.features,
+                      )));
+                    }
+                  }}
                   style={[
                     styles.roleChip,
                     form.role === r && styles.roleChipActive,
@@ -458,6 +585,52 @@ export default function TeamMembersScreen() {
                 </Pressable>
               ))}
             </View>
+
+            {/* Phase F4.7 — Role preset info + reset button. Only
+                shown when the typed / picked role maps to a known
+                preset (Operations / Sales), so custom roles keep the
+                original blank-slate behaviour. */}
+            {(() => {
+              const p = detectRolePreset(form.role);
+              if (!p || !registry) return null;
+              const isOps = p === "operations";
+              return (
+                <View style={styles.presetInfoCard}>
+                  <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+                    <PhIcon
+                      name={isOps ? "shield-checkmark" : "briefcase"}
+                      size={16}
+                      color={isOps ? "#166534" : "#1E40AF"}
+                    />
+                    <Text style={[styles.presetInfoTitle, {
+                      color: isOps ? "#166534" : "#1E40AF",
+                    }]}>
+                      {isOps ? "Operations preset" : "Sales preset"}
+                    </Text>
+                  </View>
+                  <Text style={styles.presetInfoTxt}>
+                    {isOps
+                      ? "Full access — all features you own are granted, except billing & team management."
+                      : "Daily-work only — view, print, mark delivered, WhatsApp send. NO settings changes, NO delete, NO Google Sheets link edits."}
+                  </Text>
+                  <TouchableOpacity
+                    style={styles.presetResetBtn}
+                    onPress={() => {
+                      setPerms(new Set(computePresetPermissions(
+                        p,
+                        registry.my_features,
+                        registry.registry.features,
+                      )));
+                    }}
+                  >
+                    <PhIcon name="refresh" size={14} color="#1F4FBF" />
+                    <Text style={styles.presetResetTxt}>
+                      Load {isOps ? "Operations" : "Sales"} defaults
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+              );
+            })()}
 
             {/* Phase B+C — login credentials. When provided the team
                 member can log in to the app via "Team Member" toggle. */}
@@ -687,6 +860,43 @@ const styles = StyleSheet.create({
   },
   roleChipActive: { backgroundColor: "#1F4FBF", borderColor: "#1F4FBF" },
   roleChipTxt: { fontSize: 11.5, fontWeight: "700", color: "#374151" },
+  // Phase F4.7 — Role-preset info card
+  presetInfoCard: {
+    marginTop: 10,
+    padding: 10,
+    borderRadius: 10,
+    backgroundColor: "#F8FAFC",
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+  },
+  presetInfoTitle: {
+    fontSize: 12,
+    fontWeight: "800",
+    letterSpacing: 0.3,
+    textTransform: "uppercase",
+  },
+  presetInfoTxt: {
+    marginTop: 4,
+    fontSize: 12,
+    lineHeight: 17,
+    color: "#475569",
+  },
+  presetResetBtn: {
+    marginTop: 8,
+    alignSelf: "flex-start",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 8,
+    backgroundColor: "#EEF2FF",
+  },
+  presetResetTxt: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: "#1F4FBF",
+  },
 
   permsHelper: { fontSize: 12, color: "#6B7280", lineHeight: 17, marginTop: 4 },
   permCategory: {
