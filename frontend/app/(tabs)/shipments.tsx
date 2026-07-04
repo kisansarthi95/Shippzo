@@ -14,14 +14,17 @@ import { useFocusEffect, useRouter, useLocalSearchParams } from "expo-router";
 import DateTimePicker from "@react-native-community/datetimepicker";
 import { Api, Shipment, Settings, Courier } from "../../lib/api";
 import { SyncQueue } from "../../lib/syncQueue";
-
-// Helper: detect axios "no server reachable" type errors so we can route
-// the operation to the offline queue instead of surfacing a scary alert.
-function isNetworkErrish(err: any): boolean {
-  if (!err) return false;
-  if (err?.response) return false; // server replied — definitive failure
-  return /network|timeout|abort|err_network/i.test(String(err?.message || ""));
-}
+import {
+  StatusFilter,
+  DateFilter,
+  STATUS_META,
+  STATUS_FILTER_ORDER,
+  matchesStatusFilter,
+  formatTimestamp,
+  isNetworkErrish,
+  labelStyles,
+} from "../../components/shipments/status_meta";
+import ActionBtn from "../../components/shipments/ActionBtn";
 import { buildCopyText, buildWhatsAppText, cleanPhone } from "../../lib/format";
 import { fillFromShipment } from "../../lib/templateVariables";
 import { useAuth } from "../../lib/auth";
@@ -47,154 +50,6 @@ import {
   PACKING_LANG_OPTIONS,
   type PackingLang,
 } from "../../lib/packingSummary";
-
-type StatusFilter =
-  | "All"
-  | "Pending"
-  | "Processing"
-  | "Ready to Ship"
-  | "Shipped"
-  | "Out for Delivery"
-  | "Delivered"
-  | "Feedback"
-  | "Modified"
-  | "Cancel by buyer"
-  | "Cancelled"
-  | "Returned";
-type DateFilter = "all" | "today" | "week" | "month" | "custom";
-
-// Status meta (label, backend value, color). `value` is the string stored
-// in `shipment.status` in Mongo and sent to the PUT /shipments/{id} endpoint.
-// The Two-Way Sync propagates every change to the Master Sheet automatically.
-// Phase-9 color palette (locked): Pending = BLACK active (warehouse emphasis),
-// Dispatch = soft CREAM (#F4E3CF / #8B5E34), Shipped = lavender, Delivered = green.
-// `activeBg` / `activeFg` override the default black pill when a bucket is selected.
-// `label` overrides the visible chip text — used to rename "Dispatch" to
-// "Ready to Ship" without breaking historic DB rows still tagged "Dispatch".
-const STATUS_META: Record<
-  Exclude<StatusFilter, "All">,
-  {
-    value: string;
-    label?: string;
-    bg: string;
-    fg: string;
-    aliases?: string[];
-    activeBg?: string;
-    activeFg?: string;
-  }
-> = {
-  "Pending": {
-    value: "Pending",
-    bg: "#F8ECC2",      // soft yellow-cream pill badge on the card
-    fg: "#8B6B00",
-    activeBg: "#000000",
-    activeFg: "#FFFFFF",
-  },
-  // NEW: Processing — between Pending and Ready-to-Ship. Used for parcels
-  // that are currently being packed / labelled but not yet handed over.
-  "Processing": {
-    value: "Processing",
-    bg: "#FEF3C7",
-    fg: "#92400E",
-    activeBg: "#FCD34D",
-    activeFg: "#7C2D12",
-  },
-  // Phase F2.2 (2026-05-09) — formerly keyed as "Dispatch" with a
-  // label override. Renamed to canonical "Ready to Ship" everywhere.
-  // Legacy DB rows still tagged "Dispatch" / "Dispatched" surface
-  // here via the alias list below.
-  "Ready to Ship": {
-    value: "Ready to Ship",
-    bg: "#F4E3CF",
-    fg: "#8B5E34",
-    activeBg: "#F4E3CF",
-    activeFg: "#8B5E34",
-    aliases: ["Dispatch", "Dispatched", "ReadyToShip", "READY_TO_SHIP"],
-  },
-  "Shipped": {
-    value: "Shipped",
-    bg: "#EEE9FF",
-    fg: "#6B5BFF",
-    activeBg: "#EEE9FF",
-    activeFg: "#6B5BFF",
-  },
-  // Phase-F5 (Jul-2026) — Out for Delivery is a first-class stage now.
-  // Sits between Shipped (violet) and Delivered (green) in the pipeline
-  // and uses a warm amber palette so the "en-route, arriving today"
-  // vibe reads at a glance.  Aliases keep legacy DB rows and the
-  // various courier webhook spellings mapping to the same status.
-  "Out for Delivery": {
-    value: "Out for Delivery",
-    bg: "#FEF3C7",
-    fg: "#B45309",
-    activeBg: "#FEF3C7",
-    activeFg: "#B45309",
-    aliases: [
-      "OFD", "ofd",
-      "Out for delivery", "out for delivery",
-      "Out_for_delivery", "out_for_delivery",
-      "OutForDelivery", "outfordelivery",
-      "On the way", "on the way", "on_the_way",
-    ],
-  },
-  "Delivered": {
-    value: "Delivered",
-    bg: "#E6F7EE",
-    fg: "#1F9D55",
-    activeBg: "#E6F7EE",
-    activeFg: "#1F9D55",
-  },
-  // NEW: Feedback — terminal stage. Customer has confirmed receipt and
-  // (optionally) given a rating/review. Lives after "Delivered" so the
-  // workflow flows linearly Pending → Processing → Ready → Shipped →
-  // Delivered → Feedback.
-  "Feedback": {
-    value: "Feedback",
-    bg: "#DBEAFE",
-    fg: "#1E40AF",
-    activeBg: "#1E40AF",
-    activeFg: "#FFFFFF",
-  },
-  "Modified":        { value: "Modified",       bg: "#FEF9C3", fg: "#854D0E" },
-  "Cancel by buyer": { value: "Cancel by buyer", bg: "#FCE7F3", fg: "#9D174D" },
-  "Cancelled":       { value: "Cancelled",      bg: "#FEE2E2", fg: "#991B1B" },
-  "Returned":        { value: "Returned",       bg: "#FFEDD5", fg: "#9A3412" },
-};
-const STATUS_FILTER_ORDER: StatusFilter[] = [
-  "All", "Pending", "Processing", "Ready to Ship", "Shipped",
-  "Out for Delivery", "Delivered", "Feedback",
-  "Modified", "Cancel by buyer", "Cancelled", "Returned",
-];
-
-// Return true when a shipment's stored status matches the selected filter.
-function matchesStatusFilter(shipStatus: string, filter: StatusFilter): boolean {
-  if (filter === "All") return true;
-  const meta = STATUS_META[filter];
-  if (!meta) return false;
-  if (shipStatus === meta.value) return true;
-  if (meta.aliases && meta.aliases.includes(shipStatus)) return true;
-  return false;
-}
-
-/** Phase F2.2 — render an ISO timestamp as a glanceable, locale-aware
- *  "29 Apr 2026 · 02:30 PM" string. Empty/garbage input returns "" so
- *  the caller can short-circuit. The label intentionally uses 12-hour
- *  format because that matches how Indian shop owners read receipts. */
-function formatTimestamp(iso: string | undefined | null): string {
-  if (!iso) return "";
-  const t = Date.parse(iso);
-  if (Number.isNaN(t)) return "";
-  const d = new Date(t);
-  const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-  const day = String(d.getDate()).padStart(2, "0");
-  const mon = months[d.getMonth()];
-  const yr  = d.getFullYear();
-  let hh = d.getHours();
-  const mm = String(d.getMinutes()).padStart(2, "0");
-  const ampm = hh >= 12 ? "PM" : "AM";
-  hh = hh % 12 || 12;
-  return `${day} ${mon} ${yr} · ${String(hh).padStart(2, "0")}:${mm} ${ampm}`;
-}
 
 export default function Shipments() {
   const router = useRouter();
@@ -3006,107 +2861,10 @@ export default function Shipments() {
   );
 }
 
-// ── Phase F4.1 — Label section styles (kept separate from `styles`
-// so a future refactor can move them into a shared module without
-// touching the giant existing stylesheet).
-const labelStyles = StyleSheet.create({
-  dividerRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-    marginTop: 6,
-    marginBottom: 2,
-  },
-  divider: {
-    flex: 1,
-    height: StyleSheet.hairlineWidth,
-    backgroundColor: "#E5E7EB",
-  },
-  plusBtn: {
-    width: 24,
-    height: 24,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: "#E5E7EB",
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: "#F8FAFC",
-  },
-  chipRow: {
-    marginTop: 6,
-    marginBottom: 2,
-  },
-});
-
-function ActionBtn({
-  icon, color, onPress, testID, bg, iconColor,
-}: {
-  icon: string;
-  color: string;
-  onPress: () => void;
-  testID?: string;
-  // Phase F4.8 — Optional filled-background variant for state
-  // indicators (e.g., Contact Saved). Falls back to the standard
-  // outline pill when omitted so every existing call-site keeps
-  // its exact appearance.
-  bg?: string;
-  iconColor?: string;
-}) {
-  return (
-    <TouchableOpacity
-      testID={testID}
-      onPress={onPress}
-      style={[
-        styles.actionBtn,
-        bg ? { backgroundColor: bg, borderColor: bg } : null,
-      ]}
-    >
-      <PhIcon name={icon} size={18} color={iconColor || color} />
-    </TouchableOpacity>
-  );
-}
-
-function StatusChip({
-  status,
-  onPress,
-}: {
-  status: string;
-  onPress?: () => void;
-}) {
-  // Walk STATUS_META to find a match (exact value OR one of its aliases).
-  // Phase-12: prefer meta.label so legacy DB rows tagged "Dispatch" still
-  // render as the user-facing "READY TO SHIP" badge.
-  let bg = colors.warningBg;
-  let fg = colors.warningText;
-  let label = status || "Pending";
-  for (const [, meta] of Object.entries(STATUS_META)) {
-    if (meta.value === status || (meta.aliases && meta.aliases.includes(status))) {
-      bg = meta.bg;
-      fg = meta.fg;
-      label = meta.label || meta.value;
-      break;
-    }
-  }
-  const content = (
-    <View style={[styles.chip, { backgroundColor: bg }]}>
-      <Text style={[styles.chipText, { color: fg }]}>{label.toUpperCase()}</Text>
-      {onPress && (
-        <PhIcon
-          name="chevron-down"
-          size={11}
-          color={fg}
-          style={{ marginLeft: 2 }}
-        />
-      )}
-    </View>
-  );
-  if (!onPress) return content;
-  return (
-    <TouchableOpacity onPress={onPress} activeOpacity={0.7} hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}>
-      {content}
-    </TouchableOpacity>
-  );
-}
+// Note: `labelStyles`, `ActionBtn`, and `StatusChip` were extracted into
+// `../../components/shipments/{status_meta.ts, ActionBtn.tsx, StatusChip.tsx}`
+// during Phase F4.5 to keep this file under the agent-tool string-match
+// ceiling. All three symbols are still imported at the top.
 
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: colors.background },
@@ -3330,34 +3088,11 @@ const styles = StyleSheet.create({
   // with the NEXT stage's palette + a chevron-right. Replaces the
   // earlier orange-outline `nextStageBtn` that was always orange
   // regardless of where the workflow was heading.
-  stageRow: {
-    flexDirection: "row",
-    paddingHorizontal: 12,
-    paddingTop: 4,
-    paddingBottom: 12,
-    gap: 10,
-  },
-  // Phase-22b (2026-05-17) — Responsive stage pills.
-  //   • `flex: 1` keeps both buttons equal-width regardless of
-  //     screen size (no fixed widths).
-  //   • Lower horizontal padding + slightly smaller letterSpacing
-  //     reclaims ~12 px so "READY TO SHIP" no longer truncates on
-  //     360 dp phones. Touch-target stays >= 44 dp via minHeight.
-  stagePill: {
-    flex: 1,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    paddingHorizontal: 8,
-    paddingVertical: 12,
-    borderRadius: 8,
-    borderWidth: 1.5,
-    minHeight: 44,
-    minWidth: 0,            // lets flex:1 children shrink inside row
-  },
-  stagePillOutline: {
-    borderWidth: 1.5,
-  },
+  //
+  // Phase-22b (2026-05-17) — Responsive stage pills tuned for 360 dp
+  // phones. `flex: 1` keeps both buttons equal-width; tight padding +
+  // 12 px font + minHeight 44 preserves the touch target while
+  // fitting "READY TO SHIP" without truncation.
   stageRow: {
     flexDirection: "row",
     paddingHorizontal: 10,
@@ -3365,12 +3100,6 @@ const styles = StyleSheet.create({
     paddingBottom: 12,
     gap: 8,
   },
-  // Phase-22b (2026-05-17) — Responsive stage pills.
-  //   • `flex: 1` keeps both buttons equal-width regardless of
-  //     screen size (no fixed widths).
-  //   • Tight padding + smaller letterSpacing + 12 px font reclaims
-  //     enough space so "READY TO SHIP" fits on 360 dp phones.
-  //   • Touch-target preserved via minHeight: 44.
   stagePill: {
     flex: 1,
     flexDirection: "row",
@@ -3381,7 +3110,7 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     borderWidth: 1.5,
     minHeight: 44,
-    minWidth: 0,
+    minWidth: 0,            // lets flex:1 children shrink inside row
   },
   stagePillOutline: {
     borderWidth: 1.5,
@@ -3480,8 +3209,10 @@ const styles = StyleSheet.create({
   items: { marginTop: 3, color: colors.text, fontSize: 12, fontWeight: "600" },
   // Phase F2.2 — Created-at timestamp shown discreetly under each card.
   timestamp: { marginTop: 4, color: "#94A3B8", fontSize: 11, fontWeight: "500" },
-  chip: { paddingHorizontal: 8, paddingVertical: 3, borderRadius: 4 },
-  chipText: { fontSize: 10, fontWeight: "800", letterSpacing: 0.5 },
+  // NOTE: `chip` / `chipText` are declared earlier in this stylesheet
+  // (defined once, used everywhere the tiny status pill is rendered).
+  // The duplicates that used to live here were left over from the
+  // pre-extraction StatusChip component — safe to drop.
   actions: {
     flexDirection: "row", justifyContent: "flex-end", gap: 6,
     marginTop: 12, borderTopWidth: 1, borderTopColor: "#F1F1F1", paddingTop: 10,
