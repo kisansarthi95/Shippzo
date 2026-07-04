@@ -54,6 +54,7 @@ type StatusFilter =
   | "Processing"
   | "Ready to Ship"
   | "Shipped"
+  | "Out for Delivery"
   | "Delivered"
   | "Feedback"
   | "Modified"
@@ -117,6 +118,25 @@ const STATUS_META: Record<
     activeBg: "#EEE9FF",
     activeFg: "#6B5BFF",
   },
+  // Phase-F5 (Jul-2026) — Out for Delivery is a first-class stage now.
+  // Sits between Shipped (violet) and Delivered (green) in the pipeline
+  // and uses a warm amber palette so the "en-route, arriving today"
+  // vibe reads at a glance.  Aliases keep legacy DB rows and the
+  // various courier webhook spellings mapping to the same status.
+  "Out for Delivery": {
+    value: "Out for Delivery",
+    bg: "#FEF3C7",
+    fg: "#B45309",
+    activeBg: "#FEF3C7",
+    activeFg: "#B45309",
+    aliases: [
+      "OFD", "ofd",
+      "Out for delivery", "out for delivery",
+      "Out_for_delivery", "out_for_delivery",
+      "OutForDelivery", "outfordelivery",
+      "On the way", "on the way", "on_the_way",
+    ],
+  },
   "Delivered": {
     value: "Delivered",
     bg: "#E6F7EE",
@@ -141,7 +161,8 @@ const STATUS_META: Record<
   "Returned":        { value: "Returned",       bg: "#FFEDD5", fg: "#9A3412" },
 };
 const STATUS_FILTER_ORDER: StatusFilter[] = [
-  "All", "Pending", "Processing", "Ready to Ship", "Shipped", "Delivered", "Feedback",
+  "All", "Pending", "Processing", "Ready to Ship", "Shipped",
+  "Out for Delivery", "Delivered", "Feedback",
   "Modified", "Cancel by buyer", "Cancelled", "Returned",
 ];
 
@@ -844,13 +865,14 @@ export default function Shipments() {
   // Returned). For correction the Current-Stage button still opens
   // the manual picker via openStatusPicker.
   const NEXT_STAGE: Record<string, string> = {
-    "Pending":       "Processing",
-    "Processing":    "Ready to Ship",
-    "Ready to Ship": "Shipped",
-    "Dispatch":      "Shipped",          // legacy alias for Ready to Ship
-    "Dispatched":    "Shipped",
-    "Shipped":       "Delivered",
-    "Delivered":     "Feedback",
+    "Pending":          "Processing",
+    "Processing":       "Ready to Ship",
+    "Ready to Ship":    "Shipped",
+    "Dispatch":         "Shipped",          // legacy alias for Ready to Ship
+    "Dispatched":       "Shipped",
+    "Shipped":          "Out for Delivery",
+    "Out for Delivery": "Delivered",
+    "Delivered":        "Feedback",
   };
   const nextStageOf = (status: string): string => NEXT_STAGE[status || ""] || "";
 
@@ -1071,6 +1093,7 @@ export default function Shipments() {
     const counts: Record<StatusFilter, number> = {
       "All": countableItems.length,
       "Pending": 0, "Processing": 0, "Ready to Ship": 0, "Shipped": 0,
+      "Out for Delivery": 0,
       "Delivered": 0, "Feedback": 0, "Modified": 0,
       "Cancel by buyer": 0, "Cancelled": 0, "Returned": 0,
     };

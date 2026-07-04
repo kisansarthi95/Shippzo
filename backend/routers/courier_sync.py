@@ -512,6 +512,7 @@ def init() -> None:
             "last_courier_status_partner":  partner_key,
             "updated_at":                   now_iso,
         }
+        push_ops: Dict[str, Any] = {}
         if new_status and current_status != new_status:
             update_set["status"] = new_status
         if canonical == "Delivered" and not ship.get("delivered_at"):
@@ -519,7 +520,42 @@ def init() -> None:
                 result.get("event_date") or now_iso
             )
 
-        meaningful_fields = {"status", "delivered_at"}
+        # ── Out for Delivery — append attempt history + set anchor. ───
+        # First-attempt anchor `out_for_delivery_at` is only set if
+        # missing; subsequent attempts push a new history entry but
+        # leave the anchor (used for the 2-hour alert) untouched so
+        # the timer keeps counting from the original OFD moment.
+        if canonical == "Out for Delivery":
+            postman = result.get("postman") or {}
+            attempt_iso = (
+                result.get("event_date") or now_iso
+            )
+            attempt_entry = {
+                "postman_name":  str(postman.get("postman_name") or ""),
+                "beat":          str(postman.get("beat") or ""),
+                "attempted_on":  str(attempt_iso),
+                "received_at":   now_iso,
+                "raw_phrase":    (result.get("matched_phrase") or "")[:80],
+            }
+            push_ops["out_for_delivery_history"] = attempt_entry
+            update_set["last_delivery_person"]     = attempt_entry["postman_name"]
+            update_set["last_delivery_beat"]       = attempt_entry["beat"]
+            update_set["last_delivery_attempt_at"] = now_iso
+            update_set["delivery_attempt_count"]   = int(
+                ship.get("delivery_attempt_count") or 0,
+            ) + 1
+            if not ship.get("out_for_delivery_at"):
+                update_set["out_for_delivery_at"] = now_iso
+                # Reset the alert flag so a fresh 2h timer starts.
+                update_set["ofd_alert_fired_at"]  = None
+
+        # If shipment transitioned back into Delivered, clear the
+        # pending-alert flag so a future OFD (very unusual) can
+        # re-arm cleanly.
+        if canonical == "Delivered":
+            update_set["ofd_alert_fired_at"] = None
+
+        meaningful_fields = {"status", "delivered_at", "out_for_delivery_at"}
         meaningful_change = any(
             (k in update_set and update_set[k] != ship.get(k))
             for k in meaningful_fields
@@ -527,16 +563,20 @@ def init() -> None:
 
         _logger.info(
             "%s step=6 update_decision=APPLY current=%r → new=%r "
-            "meaningful=%s set_keys=%s",
+            "meaningful=%s set_keys=%s push_keys=%s",
             log_tag, current_status, new_status, meaningful_change,
             sorted(list(update_set.keys())),
+            sorted(list(push_ops.keys())),
         )
 
         # ── Step 7: apply update ───────────────────────────────────
+        mongo_update: Dict[str, Any] = {"$set": update_set}
+        if push_ops:
+            mongo_update["$push"] = push_ops
         try:
             upd_result = await db.shipments.update_one(
                 {"id": ship["id"], "user_id": current_user["id"]},
-                {"$set": update_set},
+                mongo_update,
             )
         except Exception:
             _logger.exception(
@@ -595,7 +635,96 @@ def init() -> None:
         )
         return {"events": rows, "count": len(rows)}
 
+    # ── GET /ofd-alerts ────────────────────────────────────────────
+    # Returns Out-for-Delivery shipments where more than `hours` have
+    # passed since the FIRST OFD SMS landed AND the shipment is still
+    # NOT delivered. Used by the frontend to fire a local push
+    # notification "still not delivered after 2h" — the client stamps
+    # `ofd_alert_fired_at` via PUT /ofd-alert-fired/{id} so the same
+    # shipment doesn't re-alert on every poll.
+    @courier_sync_router.get("/ofd-alerts")
+    async def ofd_alerts_endpoint(
+        hours: float = 2.0,
+        current_user: Dict[str, Any] = Depends(_get_current_user),
+    ):
+        hours = max(0.25, min(float(hours or 2.0), 48.0))
+        cutoff = datetime.now(timezone.utc).timestamp() - (hours * 3600)
+        # Fetch all OFD shipments and filter in Python (out_for_delivery_at
+        # is a string ISO stamp — Mongo comparison via $lt would work but
+        # keeping it simple + defensive against timezone / format drift).
+        rows = await db.shipments.find(
+            {
+                "user_id":                 current_user["id"],
+                "out_for_delivery_at":     {"$nin": [None, ""], "$exists": True},
+                "status":                  {"$ne": "Delivered"},
+                "delivered_at":            {"$in": [None, ""]},
+                "ofd_alert_fired_at":      {"$in": [None, ""]},
+            },
+            {
+                "_id":                      0,
+                "id":                       1,
+                "tracking_id":              1,
+                "manual_tracking_id":       1,
+                "order_id":                 1,
+                "customer_name":            1,
+                "customer_phone":           1,
+                "courier_name":             1,
+                "status":                   1,
+                "out_for_delivery_at":      1,
+                "last_delivery_person":     1,
+                "last_delivery_beat":       1,
+                "delivery_attempt_count":   1,
+                "out_for_delivery_history": 1,
+            },
+        ).to_list(length=200)
+
+        alerts: List[Dict[str, Any]] = []
+        for r in rows:
+            ofd_at_raw = str(r.get("out_for_delivery_at") or "")
+            try:
+                ofd_dt = datetime.fromisoformat(ofd_at_raw.replace("Z", "+00:00"))
+            except Exception:
+                continue
+            if ofd_dt.tzinfo is None:
+                ofd_dt = ofd_dt.replace(tzinfo=timezone.utc)
+            if ofd_dt.timestamp() > cutoff:
+                continue   # still within grace period
+            alerts.append({
+                "shipment_id":            r.get("id"),
+                "tracking_id":            r.get("tracking_id") or r.get("manual_tracking_id") or r.get("order_id"),
+                "customer_name":          r.get("customer_name") or "",
+                "customer_phone":         r.get("customer_phone") or "",
+                "courier_name":           r.get("courier_name") or "",
+                "out_for_delivery_at":    ofd_at_raw,
+                "hours_elapsed":          round(
+                    (datetime.now(timezone.utc).timestamp() - ofd_dt.timestamp()) / 3600,
+                    2,
+                ),
+                "delivery_person":        r.get("last_delivery_person") or "",
+                "delivery_beat":          r.get("last_delivery_beat") or "",
+                "attempts":               int(r.get("delivery_attempt_count") or 1),
+            })
+        return {"alerts": alerts, "count": len(alerts), "threshold_hours": hours}
+
+    # ── PUT /ofd-alerts/{shipment_id}/fired ────────────────────────
+    # Called by the frontend AFTER it has fired the local push
+    # notification. Stamps `ofd_alert_fired_at` on the shipment so
+    # the same alert doesn't repeat on every subsequent poll.
+    @courier_sync_router.put("/ofd-alerts/{shipment_id}/fired")
+    async def ofd_alert_fired_endpoint(
+        shipment_id: str,
+        current_user: Dict[str, Any] = Depends(_get_current_user),
+    ):
+        now_iso = utcnow_iso()
+        res = await db.shipments.update_one(
+            {"id": shipment_id, "user_id": current_user["id"]},
+            {"$set": {"ofd_alert_fired_at": now_iso, "updated_at": now_iso}},
+        )
+        if getattr(res, "matched_count", 0) == 0:
+            raise HTTPException(status_code=404, detail="Shipment not found")
+        return {"ok": True, "shipment_id": shipment_id, "fired_at": now_iso}
+
     _logger.info(
-        "courier_sync router mounted: 6 endpoints, partners=%s",
+        "courier_sync router mounted: 8 endpoints, partners=%s",
         list(_cs_pkg.PARTNERS.keys()),
     )

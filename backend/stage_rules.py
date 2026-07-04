@@ -32,6 +32,7 @@ STAGES: List[str] = [
     "Processing",
     "Ready to Ship",
     "Shipped",
+    "Out for Delivery",
     "Delivered",
     "Feedback",
 ]
@@ -39,12 +40,13 @@ STAGES: List[str] = [
 # Map every stage → the bulk-message ttype it sends (None when no
 # customer message). Mirrors the existing bulk-message router types.
 STAGE_TO_TEMPLATE: Dict[str, Optional[str]] = {
-    "Pending":       None,                       # no auto customer msg (spec)
-    "Processing":    None,
-    "Ready to Ship": None,
-    "Shipped":       "dispatch_confirmation",    # optional delay-info / tracking
-    "Delivered":     "delivery_confirmation",    # 3-variant "did you receive?"
-    "Feedback":      "feedback_request",         # 3-variant review ask
+    "Pending":          None,                       # no auto customer msg (spec)
+    "Processing":       None,
+    "Ready to Ship":    None,
+    "Shipped":          "dispatch_confirmation",    # optional delay-info / tracking
+    "Out for Delivery": None,                       # optional — no default template yet
+    "Delivered":        "delivery_confirmation",    # 3-variant "did you receive?"
+    "Feedback":         "feedback_request",         # 3-variant review ask
 }
 
 # Sensible per-stage defaults (mirrors the user's spec verbatim).
@@ -110,6 +112,21 @@ DEFAULT_STAGE_RULES: Dict[str, Dict[str, Any]] = {
         "escalation": [
             {"day_after_sla": 0, "recipients": ["admin"], "priority": "medium"},
             {"day_after_sla": 2, "recipients": ["admin"], "priority": "high"},
+        ],
+    },
+    "Out for Delivery": {
+        "sla_days":              1,           # short — parcel is at local hub
+        "alert_enabled":         True,
+        "alert_priority":        "medium",
+        "alert_channel":         "app",
+        "alert_recipients":      ["admin"],
+        "customer_msg_enabled":  False,       # optional customer msg
+        "template_type":         None,
+        "auto_trigger":          False,
+        "cooldown_hours":        12,
+        "escalation": [
+            {"day_after_sla": 0, "recipients": ["admin"], "priority": "low"},
+            {"day_after_sla": 1, "recipients": ["admin"], "priority": "medium"},
         ],
     },
     "Delivered": {

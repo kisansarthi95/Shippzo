@@ -1,0 +1,62 @@
+{
+  "summary": "Phase F4.4 (Out-for-Delivery auto-detect + 2h alert) backend testing. 5/7 new F4.4 tests PASS; 2 real backend bugs found. Regression suite: 46/48 pass; 2 stale test assertions in existing files were not updated for the new OFD whitelist behavior (E1 missed them).",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "POST /api/courier-sync/ingest (2nd OFD SMS on same shipment)",
+        "issue": "Response returns action='already_in_sync' instead of 'updated' on the 2nd OFD attempt. Underlying data write IS correct (history array grows to 2 entries, delivery_attempt_count increments to 2, last_delivery_person/beat update, anchor out_for_delivery_at stays the same, ofd_alert_fired_at remains null). Root cause: routers/courier_sync.py lines 558-562 — `meaningful_change` heuristic only inspects {status, delivered_at, out_for_delivery_at}. On a repeat OFD none of those change, so the action label falls through to 'already_in_sync'. Fix: when canonical=='Out for Delivery' and push_ops contains out_for_delivery_history (i.e. a new attempt entry is being pushed), the update should be considered meaningful and action='updated'. Impact: Android client may treat the 2nd OFD as a no-op and skip UI refresh even though the data changed.",
+        "priority": "HIGH"
+      },
+      {
+        "endpoint": "GET /api/courier-sync/ofd-alerts?hours=0.001",
+        "issue": "The `hours` query param is clamped to a MINIMUM of 0.25 (15 minutes) — routers/courier_sync.py line 650: `hours = max(0.25, min(float(hours or 2.0), 48.0))`. This defeats the user-story's exact ask ('hours=0.001 so recent shipment appears') and makes it impossible for the frontend / a test to poll for freshly-created OFD alerts within the first 15 min. Verified: a just-created OFD shipment IS present in the DB with all fields, but the endpoint returns empty alerts because cutoff = now - 15min and ofd_dt (now-ish) > cutoff → filtered out. Suggested fix: lower minimum to ~0.001 (or 0), or drop the min-clamp entirely so operators/tests can pass small thresholds.",
+        "priority": "HIGH"
+      }
+    ],
+    "minor": [
+      {
+        "endpoint": "test_courier_sync.py::TestTestParse::test_out_for_delivery (regression)",
+        "issue": "Stale assertion: expects shipment_status=='Shipped' for OFD SMS, but per Phase F4.4 spec 'Out for Delivery' is now whitelisted and returns shipment_status=='Out for Delivery'. E1 updated the ingest test in this file but forgot the parser preview test. Update expected value to 'Out for Delivery'."
+      },
+      {
+        "endpoint": "test_courier_sync_whitelist.py::TestParserWhitelist::PARSE_CASES A3 (regression)",
+        "issue": "Stale tuple: `('A3', ..., True, 'Out for Delivery', '')` expects ship_status='' but parser now returns 'Out for Delivery'. Update the last element of the A3 tuple to 'Out for Delivery' to match the intentional Phase F4.4 whitelist change."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_phase_f44_ofd_alerts.py (NEW)",
+    "/app/test_reports/pytest/pytest_iteration_37_f44.xml",
+    "/app/test_reports/pytest/pytest_iteration_37_regression.xml"
+  ],
+  "action_items": [
+    "Fix ingest response label: treat 2nd/Nth OFD as meaningful (canonical=='Out for Delivery' with a push into out_for_delivery_history OR delivery_attempt_count change) so action='updated' — routers/courier_sync.py ~line 558.",
+    "Relax /ofd-alerts `hours` min-clamp from 0.25 to ~0.001 (or 0) so recent OFDs can be polled and the endpoint is testable — routers/courier_sync.py line 650.",
+    "Update stale test assertions in test_courier_sync.py::TestTestParse::test_out_for_delivery ('Shipped' → 'Out for Delivery') and test_courier_sync_whitelist.py::PARSE_CASES A3 (last tuple element '' → 'Out for Delivery').",
+    "After fixes, re-run: pytest /app/backend/tests/test_phase_f44_ofd_alerts.py /app/backend/tests/test_courier_sync.py /app/backend/tests/test_courier_sync_whitelist.py"
+  ],
+  "critical_code_review_comments": [
+    "The `meaningful_change` heuristic in routers/courier_sync.py is too narrow — it only inspects three top-level fields and misses $push operations and counter increments. Consider computing meaningful_change from the actual mongo update result (upd_result.modified_count > 0) or explicitly including push_ops non-emptiness.",
+    "The min-clamp on /ofd-alerts (`max(0.25, ...)`) is undocumented and blocks the spec's own example (hours=0.001). Either document the min or lower it.",
+    "PARSER OK: `parse` correctly extracts postman_name + beat, event_date, canonical/shipment status. Regex tolerates the sample SMS variants.",
+    "DB WRITE OK: $push on out_for_delivery_history works, counter increments, anchor is preserved, ofd_alert_fired_at correctly resets to null on first OFD and clears on Delivered."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_phase_f44_ofd_alerts.py (created — 7 new tests)"
+  ],
+  "success_rate": {
+    "backend": "5/7 F4.4 tests (71%) + 46/48 regression (95.8%) — 51/55 overall = 92.7%",
+    "frontend": "N/A (frontend not tested per request)"
+  },
+  "seed_data_creation": "One test shipment + one test courier created per test run under admin@test.com (prefixed TEST_IP_F44_ and TEST F44 Customer). Shipment auto-deleted on teardown; courier persists.",
+  "retest_needed": true,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "The F4.4 test file /app/backend/tests/test_phase_f44_ofd_alerts.py is authoritative. After main agent fixes the two backend bugs (meaningful_change label + hours clamp), re-run this file + the two regression files. All 55 tests should pass.",
+  "rca_of_issue": "Bug 1 (action label): The router's meaningful_change guard (lines 558-562) predates the new OFD $push logic. When only push_ops fire (repeat OFD), no key in {'status','delivered_at','out_for_delivery_at'} differs so meaningful_change=False → action='already_in_sync'. Data write IS correct — only the response label is wrong. Bug 2 (hours clamp): `hours = max(0.25, ...)` on line 650 was a defensive floor to avoid pathological cutoffs, but it also blocks the spec's own request (hours=0.001) and prevents any newly-received OFD shipment from surfacing in the first 15 minutes. Lower the floor to ~0 (or 0.001) so freshly-received alerts can be polled and tested."
+}

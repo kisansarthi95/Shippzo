@@ -129,6 +129,7 @@ CANONICAL_STATUSES: List[str] = [
     "Processing",
     "Ready to Ship",
     "Shipped",
+    "Out for Delivery",
     "Delivered",
     "Feedback",
     "Modified",
@@ -169,11 +170,19 @@ STATUS_ALIASES: Dict[str, str] = {
     "in_transit":           "Shipped",
     "in transit":           "Shipped",
     "intransit":            "Shipped",
-    "out for delivery":     "Shipped",  # we don't track OFD separately
-    "out_for_delivery":     "Shipped",
-    "ofd":                  "Shipped",
     "picked_up":            "Shipped",
     "picked up":            "Shipped",
+
+    # Phase F5 — OFD is a first-class stage now (was collapsed into
+    # "Shipped" earlier). Kept every input variant we've seen from
+    # courier webhooks so historical rows land on the right stage.
+    "out for delivery":     "Out for Delivery",
+    "out_for_delivery":     "Out for Delivery",
+    "outfordelivery":       "Out for Delivery",
+    "ofd":                  "Out for Delivery",
+    "out-for-delivery":     "Out for Delivery",
+    "on the way":           "Out for Delivery",
+    "on_the_way":           "Out for Delivery",
 
     "delivered":            "Delivered",
     "complete":             "Delivered",

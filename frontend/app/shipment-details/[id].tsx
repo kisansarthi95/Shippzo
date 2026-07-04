@@ -384,6 +384,67 @@ export default function ShipmentDetailsScreen() {
           )}
         </Section>
 
+        {/* Out for Delivery — postman details + attempt history + 2h alert.
+            Phase F4.4 — populated by /api/courier-sync/ingest when an
+            India Post "Out for Delivery" SMS is matched. Only shown
+            when we have an OFD anchor (avoids empty card noise). */}
+        {!!(ship as any).out_for_delivery_at && (
+          <Section title="Out for Delivery" icon="truck">
+            <Row
+              label="Out since"
+              value={fmtDate((ship as any).out_for_delivery_at)}
+            />
+            {(() => {
+              // Compute hours elapsed for the 2h "still not delivered" hint.
+              try {
+                const ofdMs = Date.parse((ship as any).out_for_delivery_at);
+                const now   = Date.now();
+                const hours = Math.max(0, (now - ofdMs) / 3600000);
+                const delivered = !!(ship as any).delivered_at || ship.status === "Delivered";
+                const overdue = hours >= 2 && !delivered;
+                const label = overdue
+                  ? `⚠️  ${hours.toFixed(1)}h — please contact courier/customer`
+                  : delivered
+                    ? `Delivered after ${hours.toFixed(1)}h`
+                    : `${hours.toFixed(1)}h elapsed`;
+                return <Row label="Elapsed" value={label} />;
+              } catch { return null; }
+            })()}
+            {!!(ship as any).last_delivery_person && (
+              <Row
+                label="Delivery Person"
+                value={(ship as any).last_delivery_person}
+              />
+            )}
+            {!!(ship as any).last_delivery_beat && (
+              <Row label="Beat" value={(ship as any).last_delivery_beat} />
+            )}
+            <Row
+              label="Attempts"
+              value={String((ship as any).delivery_attempt_count || 1)}
+            />
+            {/* Attempt history — one line per SMS-parsed attempt. */}
+            {Array.isArray((ship as any).out_for_delivery_history) &&
+              (ship as any).out_for_delivery_history.length > 1 && (
+                <View style={{ marginTop: 6 }}>
+                  <Text style={styles.kvKey}>Attempt History</Text>
+                  {(ship as any).out_for_delivery_history.map(
+                    (h: any, i: number) => (
+                      <Text
+                        key={`ofd-h-${i}`}
+                        style={[styles.kvVal, { marginTop: 4, fontSize: 12 }]}
+                        selectable
+                      >
+                        #{i + 1} · {h.postman_name || "—"}
+                        {h.beat ? ` (${h.beat})` : ""} · {h.attempted_on || fmtDate(h.received_at)}
+                      </Text>
+                    ),
+                  )}
+                </View>
+              )}
+          </Section>
+        )}
+
         {/* Timestamps */}
         <Section title="Timeline" icon="time-outline">
           <Row label="Order Date / Time" value={fmtDate(ship.created_at)} />

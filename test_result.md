@@ -23780,3 +23780,137 @@ backend:
               /app/backend/tests/test_phase_f45_sheet_row_dedupe.py
               /app/test_reports/pytest/pytest_iteration_28_f45.xml
               /app/test_reports/iteration_28.json
+
+## Phase F4.4 — Out for Delivery Auto-Detection + 2h Alert (Jul-2026)
+
+backend:
+  - task: "OFD Whitelist expansion — parser + router now update shipment.status to 'Out for Delivery' and persist postman details (name, beat), attempt count, and out_for_delivery_at anchor"
+    implemented: true
+    working: "NA"
+    file: "/app/backend/courier_sync/india_post.py /app/backend/routers/courier_sync.py /app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: |
+            Parser: STATUS_UPDATE_WHITELIST now includes 'Out for Delivery'.
+            Rule for `out for delivery` maps to shipment_status='Out for Delivery'.
+            Router: on canonical=='Out for Delivery' appends {postman_name, beat,
+            attempted_on, received_at, raw_phrase} to $push out_for_delivery_history,
+            sets last_delivery_person/beat/attempt_at, increments delivery_attempt_count,
+            stamps out_for_delivery_at (only if missing) and resets ofd_alert_fired_at.
+            server.Shipment schema gained: out_for_delivery_at, out_for_delivery_history,
+            delivery_attempt_count, last_delivery_person, last_delivery_beat,
+            last_delivery_attempt_at, ofd_alert_fired_at.
+            Existing whitelist tests updated (test_courier_sync_whitelist.py B2 now
+            expects action='updated' instead of 'ignored_intermediate_status';
+            test_courier_sync.test_happy_path_out_for_delivery updated similarly).
+
+  - task: "New endpoints GET /api/courier-sync/ofd-alerts?hours=2 and PUT /api/courier-sync/ofd-alerts/{id}/fired"
+    implemented: true
+    working: "NA"
+    file: "/app/backend/routers/courier_sync.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: |
+            /ofd-alerts returns OFD shipments older than `hours` (default 2)
+            not yet Delivered AND without ofd_alert_fired_at.
+            Response: alerts[{shipment_id, tracking_id, customer_name,
+            customer_phone, courier_name, out_for_delivery_at, hours_elapsed,
+            delivery_person, delivery_beat, attempts}].
+            /ofd-alerts/{id}/fired marks the shipment so the same alert is
+            not re-fired on subsequent polls.
+
+frontend:
+  - task: "Shipment Details page — Out for Delivery section (postman name, beat, attempt count, attempt history, elapsed hours + 2h overdue hint)"
+    implemented: true
+    working: "NA"
+    file: "/app/frontend/app/shipment-details/[id].tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: |
+            New Section 'Out for Delivery' (truck icon) rendered ONLY when
+            out_for_delivery_at is present. Shows: Out since, Elapsed hours
+            (with ⚠️ overdue label when >=2h AND not delivered), Delivery Person,
+            Beat, Attempt count, and full history list when attempts>1.
+
+  - task: "OfdAlertProvider — 5-min polling loop, red banner, local expo-notifications push at 2h SLA breach, marks fired via backend PUT"
+    implemented: true
+    working: "NA"
+    file: "/app/frontend/lib/ofd_alerts.tsx /app/frontend/app/(tabs)/_layout.tsx /app/frontend/lib/api.ts"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: |
+            Provider mounted inside <NewOrderAlertProvider> in tabs layout.
+            Polls Api.courierSyncOfdAlerts(2) every 5 minutes, fires local push
+            via expo-notifications for each new alert (title/body: AWB +
+            postman + hours elapsed + call-to-action), calls
+            Api.courierSyncMarkOfdAlertFired(id) to prevent re-alerts.
+            Notification data.type='ofd_alert' deep-links via
+            NotificationDeepLinker in app/_layout.tsx to
+            /shipment-details/{id}.
+
+metadata:
+  created_by: "main_agent"
+  version: "1.35"
+  test_sequence: 36
+  run_ui: false
+
+test_plan:
+  current_focus:
+    - "OFD Whitelist expansion — parser + router now update shipment.status to 'Out for Delivery' and persist postman details"
+    - "New endpoints GET /api/courier-sync/ofd-alerts and PUT /api/courier-sync/ofd-alerts/{id}/fired"
+    - "Shipment Details page — Out for Delivery section"
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"
+
+agent_communication:
+    - agent: "main"
+      message: |
+        Phase F4.4 — Out for Delivery Auto-Detection + 2h Alert implemented.
+        Backend changes (india_post.py, courier_sync.py, server.py) enable OFD
+        SMS to now flip shipment.status to 'Out for Delivery' AND persist
+        postman details in out_for_delivery_history array. Two new endpoints
+        added: GET /api/courier-sync/ofd-alerts?hours=2 returns overdue
+        shipments; PUT /api/courier-sync/ofd-alerts/{id}/fired marks them
+        as alerted. Frontend has a new OfdAlertProvider that polls every
+        5min, fires local expo-notifications (red banner + system push),
+        and shipment-details page renders a new 'Out for Delivery' section
+        with postman name, beat, attempts, and elapsed-time overdue warning.
+
+        Please test:
+        1. POST /api/courier-sync/ingest with the sample India Post OFD SMS
+           (see samples in test_courier_sync.py:311). Verify:
+           - action='updated', canonical='Out for Delivery',
+             new_status='Out for Delivery'
+           - Shipment doc gets out_for_delivery_at, out_for_delivery_history
+             (1 entry), last_delivery_person, last_delivery_beat,
+             delivery_attempt_count=1
+           - A second OFD ingest for the SAME shipment appends a 2nd
+             history entry, keeps out_for_delivery_at unchanged, sets
+             delivery_attempt_count=2
+        2. GET /api/courier-sync/ofd-alerts?hours=0.001 immediately after
+           step 1 — should return at least the shipment with hours_elapsed,
+           delivery_person, attempts fields.
+        3. PUT /api/courier-sync/ofd-alerts/{id}/fired then GET again —
+           the shipment should NOT appear in alerts list.
+        4. Re-run existing test_courier_sync_whitelist.py — B2 test
+           expectations changed (now 'updated' + shipment.status='Out for
+           Delivery' + out_for_delivery_at stamped).
+        5. Regression: Booked/Delivered flows and no_downgrade_after_delivered
+           still work unchanged.

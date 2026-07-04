@@ -317,13 +317,20 @@ class TestIngest:
         assert d["matched"] is True
         assert d["action"] == "updated", f"Expected updated, got: {d}"
         assert d["shipment_id"] == shipment_eg["id"]
-        assert d["new_status"] == "Shipped"
+        assert d["new_status"] == "Out for Delivery"
 
         # Verify shipment actually updated
         gr = admin_session.get(f"{API}/shipments/{shipment_eg['id']}", timeout=15)
         assert gr.status_code == 200, gr.text
         ship = gr.json()
-        assert ship["status"] == "Shipped"
+        assert ship["status"] == "Out for Delivery"
+        # Phase F4.4 — Out for Delivery details persisted from parser.
+        assert ship.get("out_for_delivery_at"), "out_for_delivery_at not stamped"
+        assert ship.get("last_delivery_person") == "Ramesh Kumar", ship
+        assert ship.get("last_delivery_beat") == "BEAT_05", ship
+        assert int(ship.get("delivery_attempt_count") or 0) >= 1, ship
+        assert isinstance(ship.get("out_for_delivery_history"), list) and \
+               len(ship.get("out_for_delivery_history") or []) >= 1, ship
         # Phase F4.0 — last_courier_status_* audit fields now round-trip
         # through the Shipment Pydantic response_model.
         assert ship.get("last_courier_status_text") == "Out for Delivery", ship

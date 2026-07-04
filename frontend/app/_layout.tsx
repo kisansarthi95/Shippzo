@@ -361,6 +361,17 @@ function NotificationDeepLinker() {
               /* router not ready yet — ignore */
             }
           }, 0);
+        } else if (data?.type === "ofd_alert" && data?.shipment_id) {
+          // Phase F4.4 — Out-for-Delivery 2h alert deep-link.
+          setTimeout(() => {
+            try {
+              router.push(
+                `/shipment-details/${String(data.shipment_id)}` as any,
+              );
+            } catch {
+              /* router not ready yet */
+            }
+          }, 0);
         }
       } catch {
         /* swallow — deep-linking is best-effort */

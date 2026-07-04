@@ -2634,6 +2634,32 @@ export const Api = {
         params,
       })
       .then((r) => r.data),
+  // Phase F4.4 — OFD alerts (2h "still not delivered" polling).
+  courierSyncOfdAlerts: (hours: number = 2) =>
+    api
+      .get<{
+        alerts: {
+          shipment_id:         string;
+          tracking_id:         string;
+          customer_name:       string;
+          customer_phone:      string;
+          courier_name:        string;
+          out_for_delivery_at: string;
+          hours_elapsed:       number;
+          delivery_person:     string;
+          delivery_beat:       string;
+          attempts:            number;
+        }[];
+        count: number;
+        threshold_hours: number;
+      }>("/courier-sync/ofd-alerts", { params: { hours } })
+      .then((r) => r.data),
+  courierSyncMarkOfdAlertFired: (shipmentId: string) =>
+    api
+      .put<{ ok: boolean; shipment_id: string; fired_at: string }>(
+        `/courier-sync/ofd-alerts/${encodeURIComponent(shipmentId)}/fired`,
+      )
+      .then((r) => r.data),
 };
 
 export type CourierSyncPartner = {

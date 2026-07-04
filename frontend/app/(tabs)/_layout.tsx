@@ -4,6 +4,7 @@ import { colors } from "../../lib/theme";
 import { View } from "react-native";
 import { usePermissions } from "../../lib/permissions";
 import { NewOrderAlertProvider } from "../../lib/new_order_alert";
+import { OfdAlertProvider } from "../../lib/ofd_alerts";
 
 export default function TabsLayout() {
   // Phase B+C — hide tabs the active team-member doesn't have
@@ -12,6 +13,7 @@ export default function TabsLayout() {
   const canAdd = hasPerm("shipments_create");
   return (
     <NewOrderAlertProvider>
+    <OfdAlertProvider>
     <Tabs
       screenOptions={{
         headerShown: false,
@@ -96,6 +98,7 @@ export default function TabsLayout() {
         }}
       />
     </Tabs>
+    </OfdAlertProvider>
     </NewOrderAlertProvider>
   );
 }

@@ -178,18 +178,22 @@ class TestIngestWhitelist:
             f"{TestIngestWhitelist._state['initial_status']!r}, now={ship.get('status')!r}"
         )
 
-    def test_B2_out_for_delivery_ignored(self, admin_session, test_shipment):
+    def test_B2_out_for_delivery_updates(self, admin_session, test_shipment):
+        """Phase F4.4 — OFD is now whitelisted and MUST update the
+        shipment status (was previously ignored_intermediate_status)."""
         d = self._ingest(
             admin_session,
             f"Item: {TEST_AWB} is out for delivery by - X (BEAT_01) - IndiaPost",
         )
         TestIngestWhitelist._state["ingest_results"]["B2"] = d
-        assert d.get("action") == "ignored_intermediate_status", f"B2: {d}"
+        assert d.get("action") == "updated", f"B2: {d}"
         assert d.get("canonical") == "Out for Delivery", f"B2 canonical: {d}"
+        assert d.get("new_status") == "Out for Delivery", f"B2 new_status: {d}"
         ship = _get_shipment(admin_session, test_shipment["id"])
-        assert ship.get("status") == TestIngestWhitelist._state["initial_status"], (
-            f"B2: shipment status changed unexpectedly to {ship.get('status')!r}"
+        assert ship.get("status") == "Out for Delivery", (
+            f"B2: shipment status must be Out for Delivery, got {ship.get('status')!r}"
         )
+        assert ship.get("out_for_delivery_at"), "B2: out_for_delivery_at not stamped"
 
     def test_B3_booked_updates(self, admin_session, test_shipment):
         d = self._ingest(
@@ -238,7 +242,7 @@ class TestIngestWhitelist:
 
         expected = {
             "B1": ("In Transit", "ignored_intermediate_status"),
-            "B2": ("Out for Delivery", "ignored_intermediate_status"),
+            "B2": ("Out for Delivery", "updated"),
             "B3": ("Booked", "updated"),
             "B4": ("Delivered", "updated"),
         }

@@ -77,7 +77,7 @@ export default function SlaActionWidget({ isAdmin = false }: Props) {
   if (!loading && alerts.length === 0) return null;
 
   // Per-stage counts for the chip row (sorted by stage workflow order).
-  const STAGE_ORDER = ["Pending", "Processing", "Ready to Ship", "Shipped", "Delivered", "Feedback"];
+  const STAGE_ORDER = ["Pending", "Processing", "Ready to Ship", "Shipped", "Out for Delivery", "Delivered", "Feedback"];
   const counts: Record<string, number> = {};
   for (const a of alerts) counts[a.stage] = (counts[a.stage] || 0) + 1;
   const sortedStages = Object.entries(counts).sort(

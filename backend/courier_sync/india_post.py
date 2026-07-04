@@ -76,7 +76,7 @@ _POSTMAN_RE = re.compile(
 # the whitelist for Phase 1 (manual confirmation required) and may
 # be added in a later phase.
 # --------------------------------------------------------------------
-STATUS_UPDATE_WHITELIST: frozenset[str] = frozenset({"Booked", "Delivered"})
+STATUS_UPDATE_WHITELIST: frozenset[str] = frozenset({"Booked", "Out for Delivery", "Delivered"})
 
 # --------------------------------------------------------------------
 # Status keyword map  (canonical_status, shipment_status)
@@ -96,7 +96,11 @@ _STATUS_RULES = [
     (r"return(ed)?\s+to\s+sender",       "RTO",               ""),
     (r"\brto\b",                         "RTO",               ""),
     # ── Intermediate transit / scan events — parsed but ignored
-    (r"out\s+for\s+delivery",            "Out for Delivery",  ""),
+    # Note: "Out for Delivery" IS whitelisted (see STATUS_UPDATE_WHITELIST)
+    #       so we DO set shipment_status="Out for Delivery" — the router
+    #       then also appends to `out_for_delivery_history` with postman
+    #       details for the 2-hour SLA alert.
+    (r"out\s+for\s+delivery",            "Out for Delivery",  "Out for Delivery"),
     (r"in\s+transit",                    "In Transit",        ""),
     (r"dispatched",                      "In Transit",        ""),
     (r"arrived\s+at",                    "In Transit",        ""),

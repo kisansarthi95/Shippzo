@@ -672,6 +672,29 @@ class Shipment(BaseModel):
     last_courier_status_source:  Optional[str] = ""   # "auto_sync_sms" | "auto_sync_push" | ...
     last_courier_status_partner: Optional[str] = ""   # partner_key (e.g. "india_post")
 
+    # Phase F4.4 — Out for Delivery detailed tracking (India Post + others).
+    # Populated by courier_sync ingest when a "Out for Delivery" SMS is
+    # parsed. `out_for_delivery_at` stamps the FIRST OFD event we saw
+    # (used for the 2-hour "still not delivered" alert). Each subsequent
+    # OFD attempt appends to `out_for_delivery_history` — postman name,
+    # beat code, and the attempt date/time — so operators can see who
+    # took it out, how many attempts happened, and whether they need
+    # to phone the customer / post office proactively.
+    out_for_delivery_at:      Optional[str] = None
+    out_for_delivery_history: List[Dict[str, Any]] = Field(default_factory=list)
+    # "0" until first OFD SMS lands; incremented on every subsequent
+    # "out for delivery" event for the same shipment.
+    delivery_attempt_count:   int = 0
+    # Cached for fast card render — mirrors the LAST entry in the history
+    # array. Kept as top-level fields so list queries / exports don't
+    # need to dig into the nested array.
+    last_delivery_person:     Optional[str] = ""
+    last_delivery_beat:       Optional[str] = ""
+    last_delivery_attempt_at: Optional[str] = None
+    # Set to the ISO ts we fired the "2h since OFD" local push. Prevents
+    # re-alerting on every backend scan.
+    ofd_alert_fired_at:       Optional[str] = None
+
     # Phase F4.1 — Shipment Labels. Array of label ids (from
     # `labels` collection) applied to this shipment. Additive-only —
     # every existing endpoint continues to work unchanged. Managed
