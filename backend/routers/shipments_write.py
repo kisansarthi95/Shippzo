@@ -42,6 +42,9 @@ def init() -> None:
     """Register routes after server.py finishes initialising."""
     import logging
     _logger = logging.getLogger("routers.shipments_write")
+    # Phase F4.7 — permission enforcement helpers. Owners always pass;
+    # team-member sessions get gated per feature key.
+    from auth import has_permission as _has_perm, is_team_member as _is_team
     from server import (  # noqa: WPS433 — intentional late import
         db,
         get_current_user as _get_current_user,
@@ -603,6 +606,47 @@ def init() -> None:
         from lib.terminal_states import (
             is_terminal_shipment_status, TERMINAL_LOCK_DETAIL,
         )
+        # ─── Phase F4.7 — Team-member permission gate ─────────────
+        # We intentionally split "status change" vs "everything else":
+        #   • A Sales staff SHOULD be able to mark a shipment
+        #     Delivered / Shipped / Ready-to-Ship (daily work).
+        #   • But they should NOT be able to (a) edit address /
+        #     customer / amount fields, or (b) flip status to a
+        #     terminal state (Cancelled / Returned).
+        # This mirrors how the frontend Sales preset hides those
+        # buttons in the card.
+        if _is_team(current_user):
+            payload_dict = payload.model_dump(exclude_none=True)
+            wants_terminal = str(payload_dict.get("status") or "") in {
+                "Cancelled", "Cancel by buyer", "Returned",
+            }
+            # Non-status field being edited? Require the general
+            # edit permission.
+            other_field_edit = any(
+                k != "status" for k in payload_dict.keys()
+            )
+            if wants_terminal and not _has_perm(
+                current_user, "shipment_terminal_states",
+            ):
+                raise HTTPException(
+                    status_code=403,
+                    detail=(
+                        "Your role cannot cancel or return shipments. "
+                        "Ask the owner to grant the "
+                        "'shipment_terminal_states' permission."
+                    ),
+                )
+            if other_field_edit and not _has_perm(
+                current_user, "shipment_edit_btn",
+            ):
+                raise HTTPException(
+                    status_code=403,
+                    detail=(
+                        "Your role cannot edit shipment details. "
+                        "Ask the owner to grant the "
+                        "'shipment_edit_btn' permission."
+                    ),
+                )
         existing = await db.shipments.find_one(
             {"id": shipment_id, "user_id": current_user["id"]},
             {
@@ -902,6 +946,19 @@ def init() -> None:
             integrations still run so the source-of-truth row stays
             in lock-step.
         """
+        # Phase F4.7 — Cancel is a terminal-state change. Sales staff
+        # must NOT be able to unilaterally cancel a live shipment.
+        if _is_team(current_user) and not _has_perm(
+            current_user, "shipment_terminal_states",
+        ):
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    "Your role cannot cancel or return shipments. "
+                    "Ask the owner to grant the "
+                    "'shipment_terminal_states' permission."
+                ),
+            )
         from lib.terminal_states import is_terminal_shipment_status
 
         doc = await db.shipments.find_one(

@@ -18,6 +18,8 @@ from auth import (
     hash_password, verify_password, make_token, user_public,
     get_current_user_factory, utcnow_iso as auth_utcnow_iso,
     seed_demo_shipments, seed_default_courier, claim_legacy_data_for_admin,
+    # Phase F4.7 — team-member permission helpers.
+    is_team_member, has_permission,
 )
 # Phase-3a subscription plans + usage enforcement
 from plans import (
@@ -1043,6 +1045,23 @@ async def update_settings(
     payload: SettingsUpdate,
     current_user: Dict[str, Any] = Depends(get_current_user),
 ):
+    # Phase F4.7 — Team-member gate. PUT /api/settings is where
+    # brand, sender, WhatsApp templates, Google Sheet URL, label
+    # design, Smart-Paste instructions, custom fields, etc. all get
+    # persisted. Sales staff should NEVER be able to change these.
+    # Rule: unless the team member holds the `sheet_column_mapping`
+    # permission (which our Sales preset explicitly EXCLUDES),
+    # deny any settings mutation. Owners always pass this check.
+    if is_team_member(current_user):
+        if not has_permission(current_user, "sheet_column_mapping"):
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    "Your role cannot change global settings "
+                    "(brand, templates, Google Sheets, labels). "
+                    "Ask the shop owner."
+                ),
+            )
     update: Dict[str, Any] = {}
     if payload.sender is not None:
         update["sender"] = payload.sender.model_dump()

@@ -96,6 +96,7 @@ const SALES_EXCLUDED_CATEGORIES = new Set<string>([
 // these are destructive or irreversibly change data.
 const SALES_EXCLUDED_KEYS = new Set<string>([
   "shipment_delete_btn",       // destructive
+  "shipment_edit_btn",          // edit address / customer / amount
   "shipment_terminal_states",  // Cancel / Return workflow (major)
   "credit_packages_buy",       // spending
 ]);
@@ -598,7 +599,7 @@ export default function TeamMembersScreen() {
                 <View style={styles.presetInfoCard}>
                   <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
                     <PhIcon
-                      name={isOps ? "shield-checkmark" : "briefcase"}
+                      name={isOps ? "shield-checkmark" : "business"}
                       size={16}
                       color={isOps ? "#166534" : "#1E40AF"}
                     />

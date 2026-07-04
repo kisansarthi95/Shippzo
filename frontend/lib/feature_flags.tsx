@@ -84,13 +84,28 @@ export function FeatureFlagsProvider({ children }: { children: React.ReactNode }
   );
 }
 
-/** Returns `true` when the feature is enabled for the current user. */
+/** Returns `true` when the feature is enabled for the current user.
+ *  Phase F4.7 — for TEAM MEMBER sessions, also checks that the
+ *  member has the specific permission. This means the same hook
+ *  transparently gates the UI at both levels:
+ *    1. Owner's plan must include the feature (existing behavior)
+ *    2. Team member must have the permission (new)
+ *  Owners always pass the second gate. */
 export function useFeatureFlag(key: string): boolean {
   const { features, isAdmin } = useContext(FeatureFlagsContext);
   // Admin gets EVERY feature regardless of plan. This guarantees the
   // admin can always reach the panel itself + diagnose toggles.
   if (isAdmin) return true;
-  return features.has(key);
+  // Phase F4.7 — Import inline to avoid a circular dep with
+  // permissions.tsx (which itself imports Api that goes through this
+  // provider). React allows hooks called at the top of a component
+  // — this line runs inside the caller's render, so it's safe.
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { usePermissions } = require("./permissions");
+  const { isTeamMember, hasPerm } = usePermissions();
+  if (!features.has(key)) return false;
+  if (isTeamMember && !hasPerm(key)) return false;
+  return true;
 }
 
 export function useFeatureFlags() {
