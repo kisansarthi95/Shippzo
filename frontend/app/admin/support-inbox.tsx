@@ -28,6 +28,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import PhIcon from "../../components/PhIcon";
 import SearchBar from "../../components/SearchBar";
+import FilterChipRow from "../../components/FilterChipRow";
 import { colors } from "../../lib/theme";
 import { Api, SupportTicket } from "../../lib/api";
 import { useAuth } from "../../lib/auth";
@@ -194,24 +195,14 @@ export default function AdminSupportInbox() {
         testID="admin-support-search"
       />
 
-      {/* Status filter tabs */}
-      <View style={styles.tabsRow}>
-        {TABS.map((t) => {
-          const active = t.k === tab;
-          return (
-            <TouchableOpacity
-              key={t.k}
-              onPress={() => setTab(t.k)}
-              activeOpacity={0.85}
-              style={[styles.tab, active && styles.tabActive]}
-            >
-              <Text style={[styles.tabTxt, active && styles.tabTxtActive]}>
-                {t.label}
-              </Text>
-            </TouchableOpacity>
-          );
-        })}
-      </View>
+      {/* Status filter tabs — Phase F3.9 canonical FilterChipRow. */}
+      <FilterChipRow
+        testIDPrefix="support-tab"
+        selected={tab}
+        onSelect={setTab}
+        items={TABS.map((t) => ({ key: t.k, label: t.label }))}
+        style={styles.chipRowWrap}
+      />
 
       <FlatList
         data={filtered}
@@ -267,19 +258,12 @@ const styles = StyleSheet.create({
     paddingVertical: 10, paddingLeft: 8,
   },
 
-  tabsRow: {
-    flexDirection: "row", flexWrap: "wrap",
-    paddingHorizontal: 16, paddingTop: 10, paddingBottom: 6, gap: 8,
+  // Phase F5.1 — Filter-Chip Consolidation. Legacy `tabsRow/tab/...`
+  // styles retired in favor of the canonical <FilterChipRow>. Only
+  // `chipRowWrap` here provides the row's outer horizontal padding.
+  chipRowWrap: {
+    paddingHorizontal: 16, paddingTop: 10, paddingBottom: 6,
   },
-  tab: {
-    paddingHorizontal: 14, paddingVertical: 8,
-    borderRadius: 10, backgroundColor: "#fff",
-    borderWidth: 1, borderColor: "#E5E7EB",
-    minWidth: 64, alignItems: "center", justifyContent: "center",
-  },
-  tabActive:    { backgroundColor: colors.primary, borderColor: colors.primary },
-  tabTxt:       { fontSize: 12.5, fontWeight: "700", color: "#475569" },
-  tabTxtActive: { color: "#fff" },
 
   card: {
     backgroundColor: "#fff", borderRadius: 14,

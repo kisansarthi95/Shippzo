@@ -23981,3 +23981,25 @@ agent_communication:
             compile errors. All 4 report screens share the same pattern
             for consistency; different cache key per screen so they don't
             trample each other.
+
+## Phase F5.1 Extended — Filter-Chip Consolidation + Analytics SWR (2026-06-27)
+
+    - task: "Filter-Chip Consolidation on Support Inbox + Analytics SWR"
+      implemented: true
+      working: true
+      file: /app/frontend/app/admin/support-inbox.tsx, /app/frontend/app/analytics.tsx
+      status_history:
+        - working: true
+          agent: "main"
+          comment: |
+            Support Inbox migrated from custom `tabsRow/tab/tabActive` styled
+            TouchableOpacity buttons to the canonical `<FilterChipRow>`
+            component. Legacy styles retired (Phase F3.9 alignment). Chip row
+            now horizontally scrolls when tabs overflow the viewport, meets
+            the 40px minimum touch target, and honours Android font-scaling.
+            Analytics screen switched to SWR + SkeletonReport pattern —
+            re-visits render instantly with the previously-fetched overview
+            (charts, KPIs, distribution) while a fresh fetch runs in the
+            background. Verified both screens render correctly via
+            screenshot: Support Inbox shows 5-tab filter row, Analytics
+            shows 363 orders / ₹1.8L revenue / chart. No compile errors.

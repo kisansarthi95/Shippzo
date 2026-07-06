@@ -19,13 +19,15 @@ import React, { useCallback, useEffect, useMemo, useState } from "react";
 import PhIcon from "../components/PhIcon";
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity,
-  ActivityIndicator, Alert, Dimensions, RefreshControl,
+  Alert, Dimensions, RefreshControl,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Stack, router } from "expo-router";
 import { LineChart } from "react-native-chart-kit";
 import { Api } from "../lib/api";
 import { useAuth } from "../lib/auth";
+import { screenCache } from "../lib/screenCache";
+import { SkeletonReport } from "../components/Skeleton";
 
 type Range = "today" | "7d" | "30d" | "90d" | "all";
 type Scope = "mine" | "platform";
@@ -65,9 +67,11 @@ export default function AnalyticsScreen() {
   const { user } = useAuth();
   const isAdmin = !!user?.is_admin;
 
-  const [loading, setLoading]       = useState(true);
+  // Phase F5.1 SWR — seed from cache so re-visits are instant.
+  const _cached = screenCache.get<Overview>("analytics:overview");
+  const [loading, setLoading]       = useState(!_cached);
   const [refreshing, setRefreshing] = useState(false);
-  const [data, setData]             = useState<Overview | null>(null);
+  const [data, setData]             = useState<Overview | null>(_cached);
 
   // Filter state -------------------------------------------------
   const [range, setRange]   = useState<Range>("30d");
@@ -93,6 +97,7 @@ export default function AnalyticsScreen() {
         state:        stateFilter  === "all" ? undefined : stateFilter,
       });
       setData(d);
+      screenCache.set("analytics:overview", d);
     } catch (e: any) {
       Alert.alert("Error", e?.response?.data?.detail || e?.message || "Failed");
     } finally {
@@ -115,9 +120,9 @@ export default function AnalyticsScreen() {
 
   if (loading || !data) {
     return (
-      <SafeAreaView style={styles.center}>
+      <SafeAreaView style={{ flex: 1, backgroundColor: "#F7F7F9" }}>
         <Stack.Screen options={{ title: "Analytics", headerShown: true }} />
-        <ActivityIndicator color="#6B5BFF" />
+        <SkeletonReport rows={6} headerHeight={80} />
       </SafeAreaView>
     );
   }
