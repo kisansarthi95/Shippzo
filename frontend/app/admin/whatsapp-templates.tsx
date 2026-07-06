@@ -25,6 +25,7 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Stack } from "expo-router";
 import { Api } from "../../lib/api";
+import FilterChipRow from "../../components/FilterChipRow";
 // Phase-29 — shared template-variable catalogue (replaces the 5-var
 // hardcoded list that used to live in this file).
 import {
@@ -277,31 +278,19 @@ export default function AdminWhatsAppTemplates() {
                 </View>
 
                 <View style={styles.langTabs}>
-                  {languages.map((l) => {
-                    const active = activeLang === l;
-                    const has = !!edits[activeType]?.[l];
-                    return (
-                      <TouchableOpacity
-                        key={l}
-                        style={[styles.langTab, active && styles.langTabActive]}
-                        onPress={() => setActiveLang(l)}
-                      >
-                        <Text
-                          style={[styles.langTabText, active && styles.langTabTextActive]}
-                        >
-                          {LANG_META[l]?.label || l}
-                        </Text>
-                        {has && (
-                          <View
-                            style={[
-                              styles.dot,
-                              { backgroundColor: active ? "#fff" : "#6B5BFF" },
-                            ]}
-                          />
-                        )}
-                      </TouchableOpacity>
-                    );
-                  })}
+                  {/* Phase F5.1 — canonical FilterChipRow. Custom
+                      lang tabs retained the "has-override dot" via
+                      the count-badge convention (` · ✓`). */}
+                  <FilterChipRow
+                    testIDPrefix="lang-tab"
+                    selected={activeLang}
+                    onSelect={setActiveLang}
+                    items={languages.map((l) => ({
+                      key:   l,
+                      label: (LANG_META[l]?.label || l) +
+                             (edits[activeType]?.[l] ? " ✎" : ""),
+                    }))}
+                  />
                 </View>
 
                 <TextInput

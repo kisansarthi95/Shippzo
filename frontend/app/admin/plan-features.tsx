@@ -23,6 +23,7 @@ import { api } from "../../lib/api";
 import { useAuth } from "../../lib/auth";
 import { useFeatureFlags } from "../../lib/feature_flags";
 import { colors } from "../../lib/theme";
+import FilterChipRow from "../../components/FilterChipRow";
 
 type Feature = { key: string; label: string; category: string };
 type PlanKey = "free_trial" | "silver" | "gold" | "platinum";
@@ -206,38 +207,19 @@ export default function AdminPlanFeaturesScreen() {
         </View>
       </View>
 
-      {/* Plan Tabs */}
-      <ScrollView
-        horizontal
-        showsHorizontalScrollIndicator={false}
+      {/* Plan Tabs — Phase F5.1 canonical FilterChipRow */}
+      <FilterChipRow
+        testIDPrefix="plan-tab"
+        selected={activePlan}
+        onSelect={(k) => setActivePlan(k as PlanKey)}
+        items={PLAN_TABS.map((p) => ({
+          key:           p.key,
+          label:         `${p.label} · ${plans[p.key].size}`,
+          selectedColor: "#fff",
+          selectedBg:    p.color,
+        }))}
         style={styles.tabsScroll}
-        contentContainerStyle={styles.tabs}
-      >
-        {PLAN_TABS.map((p) => {
-          const active = p.key === activePlan;
-          const count = plans[p.key].size;
-          return (
-            <TouchableOpacity
-              key={p.key}
-              onPress={() => setActivePlan(p.key)}
-              style={[
-                styles.tab,
-                active && { backgroundColor: p.color, borderColor: p.color },
-              ]}
-              testID={`plan-tab-${p.key}`}
-            >
-              <Text style={[styles.tabTxt, active && { color: "#fff" }]}>
-                {p.label}
-              </Text>
-              <View style={[styles.tabCount, active && { backgroundColor: "rgba(255,255,255,0.3)" }]}>
-                <Text style={[styles.tabCountTxt, active && { color: "#fff" }]}>
-                  {count}
-                </Text>
-              </View>
-            </TouchableOpacity>
-          );
-        })}
-      </ScrollView>
+      />
 
       {/* Feature list grouped by category */}
       <ScrollView

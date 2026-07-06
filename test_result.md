@@ -24003,3 +24003,29 @@ agent_communication:
             background. Verified both screens render correctly via
             screenshot: Support Inbox shows 5-tab filter row, Analytics
             shows 363 orders / ₹1.8L revenue / chart. No compile errors.
+
+## Phase F5.1 Round 3 — Filter-Chip Consolidation Extended (2026-06-27)
+
+    - task: "Filter-Chip Consolidation on Plan Features + WhatsApp Templates"
+      implemented: true
+      working: true
+      file: /app/frontend/app/admin/plan-features.tsx, /app/frontend/app/admin/whatsapp-templates.tsx
+      status_history:
+        - working: true
+          agent: "main"
+          comment: |
+            Two more admin screens migrated to the canonical <FilterChipRow>:
+            (a) plan-features.tsx — 4 plan tabs (Free/Silver/Gold/Platinum)
+                with per-plan colored chip (`selectedBg` prop), count badge
+                appended to label ("Free Trial · 64" pattern) so the FilterChipRow
+                stays simple.
+            (b) whatsapp-templates.tsx — language tabs (ગુ/हि/English)
+                migrated. The "has-override" dot indicator collapsed into a
+                ✎ pencil suffix on the label so the row stays single-height.
+            Message Type list was NOT migrated — it's an accordion-style
+            expandable list with icons + subtitles, not a flat filter row.
+            FilterChipRow is intentionally single-line/pill; forcing this
+            list into it would degrade UX.
+            Verified via screenshots: both screens render correctly.
+            Zero compile errors. Only pre-existing unescaped-entity lint
+            warnings remain (unrelated to these changes).
