@@ -24067,3 +24067,37 @@ agent_communication:
             requests all render correctly. Recent Requests confirms
             otp=123456 IS being sent — user must update FlowConnect
             template to include {{otp}} placeholder.
+
+## Phase F5.3 — WhatsApp Provider UX Simplification (2026-06-27)
+
+    - task: "Simplify WhatsApp Provider config — hide advanced fields behind toggle"
+      implemented: true
+      working: true
+      file: /app/frontend/app/admin/whatsapp-provider.tsx, /app/backend/routers/whatsapp_provider.py
+      status_history:
+        - working: true
+          agent: "main"
+          comment: |
+            User feedback: over-engineered UI (Automation ID, Fields to
+            Send, Variable Mapping, Custom Fields, Enable Template, Phase
+            F5.2 warning/cheatsheet/recent-requests) was confusing and
+            blocking the happy path — they just want to give API key +
+            Base URL and have backend POST data there.
+            Fix:
+            - Frontend: Wrapped the ENTIRE advanced config block (from
+              Automation ID down through Custom Fields, including all
+              Phase F5.2 additions) inside `{advancedOpen && <>...</>}`.
+              Modal now defaults to a clean "Simple Mode" info card
+              explaining: standard fields are POSTed to Base URL as
+              query params. Advanced Settings toggle at top opens the
+              full editor for future needs — preserving all previously
+              built features without deleting any code.
+            - Backend: `dispatch_event()` now treats empty automation_id
+              as "use base_url directly". Fallback: if endpoint_template
+              contains no `{automation_id}` placeholder, base_url is used
+              as-is. Existing configs with populated automation_id keep
+              working unchanged.
+            Verified via screenshot: default modal shows only Simple
+            Mode card + Advanced toggle; tapping toggle reveals the
+            full editor with all fields intact.
+            All 8 whatsapp provider tests still pass.

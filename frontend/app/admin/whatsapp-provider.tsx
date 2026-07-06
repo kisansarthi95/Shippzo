@@ -663,6 +663,10 @@ function EventEditorModal({
   saving: boolean;
 }) {
   const [draft, setDraft] = useState<EventRow>(event);
+  // Phase F5.3 — Simple/Advanced toggle. Everything beyond "Enable"
+  // + "Test Send" is now advanced. Default OFF so the happy path
+  // (API key + Base URL → just send data) is un-blocked by config.
+  const [advancedOpen, setAdvancedOpen] = useState(false);
   // Phase F5.2 — Detect if this OTP event's automation_id is SHARED
   // with any non-OTP event. This is the #1 cause of "OTP delivered
   // without the code" bug reports.
@@ -787,16 +791,62 @@ function EventEditorModal({
             contentContainerStyle={{ padding: 16, paddingBottom: 80 }}
             keyboardShouldPersistTaps="handled"
           >
+            {/* Phase F5.3 — SIMPLE MODE (default). Just tell the
+                operator that this event will POST all standard
+                data to the Base URL configured up top. No template,
+                no fields picker, no automation_id. If they need
+                advanced control (rare) they can open the toggle
+                below. Fixes the "over-engineered — data not going"
+                complaint by removing every knob that could break
+                the happy path. */}
+            <View style={styles.simpleModeBox}>
+              <View style={styles.simpleHeader}>
+                <PhIcon name="checkmark-circle" size={22} color="#059669" />
+                <Text style={styles.simpleTitle}>Simple Mode</Text>
+              </View>
+              <Text style={styles.simpleBody}>
+                When this event fires, all standard fields
+                (customer_name, customer_phone
+                {isOtpEvent ? ", otp, event_type" : ", order_id, tracking_id, courier_name, business_name, current_stage"})
+                are POSTed as query parameters to the WhatsApp
+                Provider's Base URL. Nothing else to configure —
+                just hit <Text style={{ fontWeight: "700" }}>Enable</Text> and
+                <Text style={{ fontWeight: "700" }}> Test Send</Text>.
+              </Text>
+            </View>
+
+            {/* Advanced Settings toggle. Hidden by default so the
+                simple flow above is the primary UX. Everything the
+                user asked to "disable for now" lives inside — kept
+                intact so it can be re-enabled without a redeploy
+                when future automations need it. */}
+            <TouchableOpacity
+              style={styles.advToggleBtn}
+              onPress={() => setAdvancedOpen((v) => !v)}
+              testID="advanced-toggle"
+            >
+              <PhIcon
+                name={advancedOpen ? "chevron-up" : "chevron-down"}
+                size={16}
+                color="#64748B"
+              />
+              <Text style={styles.advToggleTxt}>
+                {advancedOpen ? "Hide Advanced Settings" : "Advanced Settings (optional)"}
+              </Text>
+            </TouchableOpacity>
+
+            {advancedOpen && <>
             {/* Automation ID */}
-            <Text style={styles.fieldLabel}>Automation ID *</Text>
+            <Text style={styles.fieldLabel}>Automation ID (optional)</Text>
             <Text style={styles.hint}>
-              Get this from your provider's dashboard. The full endpoint
-              becomes: <Text style={styles.code}>{"{base_url}/{automation_id}/execute"}</Text>
+              Only needed if your provider requires a per-event
+              automation ID separate from the Base URL. Leave blank
+              to POST directly to the Base URL.
             </Text>
             <TextInput
               value={draft.automation_id}
               onChangeText={(v) => setDraft({ ...draft, automation_id: v })}
-              placeholder="e.g. 69ff6d211a1dc"
+              placeholder="Leave blank if not needed"
               autoCapitalize="none"
               style={styles.input}
             />
@@ -1171,6 +1221,7 @@ function EventEditorModal({
                 </TouchableOpacity>
               </View>
             ))}
+            </>}
           </ScrollView>
 
           <View style={styles.modalActions}>
@@ -1555,6 +1606,22 @@ const styles = StyleSheet.create({
   },
   testTitle: { fontSize: 17, fontWeight: "800", color: "#0F172A" },
   testSub:   { fontSize: 12, color: "#64748B", marginTop: 2, marginBottom: 10 },
+
+  // ── Phase F5.3 — Simple mode header + Advanced toggle ─────────
+  simpleModeBox: {
+    marginTop: 4, marginBottom: 12,
+    backgroundColor: "#ECFDF5", borderColor: "#A7F3D0", borderWidth: 1,
+    borderRadius: 12, padding: 14,
+  },
+  simpleHeader: { flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 6 },
+  simpleTitle:  { fontSize: 14, fontWeight: "800", color: "#065F46" },
+  simpleBody:   { fontSize: 12, color: "#065F46", lineHeight: 17 },
+  advToggleBtn: {
+    flexDirection: "row", alignItems: "center", justifyContent: "center",
+    gap: 6, paddingVertical: 10, marginTop: 2, marginBottom: 10,
+    backgroundColor: "#F1F5F9", borderRadius: 10,
+  },
+  advToggleTxt: { fontSize: 12, fontWeight: "700", color: "#64748B" },
 
   // ── Phase F5.2 — OTP warning + cheat-sheet + recent-requests ────
   otpWarn: {

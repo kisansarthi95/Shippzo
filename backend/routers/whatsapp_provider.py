@@ -557,10 +557,24 @@ async def dispatch_event(
         api_token     = (cfg.get("api_token") or "").strip()
         base_url      = (cfg.get("base_url") or "").strip()
         template      = (cfg.get("endpoint_template") or "").strip()
-        if not (automation_id and api_token and base_url and template):
+        # Phase F5.3 — Simple mode. If the operator hasn't set a
+        # per-event automation_id, we treat the Base URL as the full
+        # endpoint (POST data straight to it). This is the recommended
+        # happy path for providers like FlowConnect where each
+        # automation is a distinct URL that already contains all
+        # routing info. The template + automation_id fields are kept
+        # for advanced integrations (e.g. Twilio-style with sub-paths).
+        if not (api_token and base_url):
             result["skipped"] = True
             result["reason"]  = "provider not fully configured"
             return result
+        if not automation_id or "{automation_id}" not in template:
+            endpoint = base_url
+        else:
+            endpoint = template.format(
+                base_url=base_url.rstrip("/"),
+                automation_id=automation_id.strip("/"),
+            )
 
         target_phone = phone or context.get("customer_phone") or ""
         if not target_phone:
@@ -568,10 +582,7 @@ async def dispatch_event(
             result["reason"]  = "no destination phone"
             return result
 
-        endpoint = template.format(
-            base_url=base_url.rstrip("/"),
-            automation_id=automation_id.strip("/"),
-        )
+        endpoint = endpoint  # already computed above (Phase F5.3)
         payload  = _build_payload(
             cfg=cfg, trigger=trigger, context=context, phone=target_phone,
         )
