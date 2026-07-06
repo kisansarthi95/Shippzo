@@ -30,6 +30,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 import courier_sync as _cs_pkg  # noqa: WPS433 — local pkg
+from courier_sync import generic_parser as _generic_parser  # noqa: WPS433 — local pkg
 
 _logger = logging.getLogger("routers.courier_sync")
 
@@ -289,11 +290,53 @@ def init() -> None:
         )
 
         try:
-            result = _cs_pkg.parse_notification(
-                sender = payload.sender,
-                title  = payload.title,
-                text   = payload.text,
-            )
+            # Phase F5.0 — per-courier config takes priority. We fetch
+            # all of the caller's couriers with auto_sync_enabled=True
+            # and try each one's config. Only if NONE match do we fall
+            # back to the legacy hardcoded partners registry (so old
+            # in-code partners like the built-in India Post keep working
+            # for users who haven't customised anything).
+            user_couriers = await db.couriers.find(
+                {
+                    "user_id":            current_user["id"],
+                    "auto_sync_enabled":  True,
+                },
+                {"_id": 0},
+            ).to_list(length=None)
+            result: Dict[str, Any] = {"matched": False, "reason": "", "partner_key": ""}
+            if user_couriers:
+                result = _generic_parser.parse_with_couriers(
+                    couriers = user_couriers,
+                    sender   = payload.sender,
+                    text     = payload.text,
+                    title    = payload.title,
+                )
+                # Backward-compat: also expose a name-derived slug via
+                # `partner_slug` (india_post, nandan_courier, etc.) so
+                # tests + audit fields that grep by partner slug keep
+                # working. The primary partner_key stays the courier UUID
+                # (needed by the /couriers/{id}/sync-events lookup).
+                if result.get("matched"):
+                    result["partner_slug"] = _generic_parser.partner_slug_for_name(
+                        str(result.get("partner_name") or "")
+                    )
+            # Legacy fallback — only tried when the per-courier path
+            # didn't match. This keeps the existing hardcoded India
+            # Post partner working for users who haven't opted-in to
+            # the new per-courier config UI yet.
+            if not result.get("matched"):
+                legacy = _cs_pkg.parse_notification(
+                    sender = payload.sender,
+                    title  = payload.title,
+                    text   = payload.text,
+                )
+                if legacy.get("matched"):
+                    result = legacy
+                    result["_source"] = "legacy_hardcoded_partner"
+                elif not user_couriers:
+                    # Preserve legacy failure reason (more actionable)
+                    # when the user has no auto-sync couriers at all.
+                    result = legacy
         except Exception:
             _logger.exception("%s step=parse_error parser_crashed", log_tag)
             result = {
@@ -358,17 +401,26 @@ def init() -> None:
         )
 
         # ── Partner config gate — user must have enabled it.
-        try:
-            cfg = await db.courier_partner_configs.find_one(
-                {
-                    "user_id":      current_user["id"],
-                    "partner_key":  partner_key,
-                },
-                {"_id": 0},
-            )
-        except Exception:
-            _logger.exception("%s step=db_error config_lookup", log_tag)
-            cfg = None
+        # Phase F5.0 — per-courier configs are self-gating (matched
+        # only when auto_sync_enabled=True), so skip this check when
+        # the parser matched via a courier UUID (not a legacy in-code
+        # partner key). Legacy partner_key strings ("india_post" etc.)
+        # still go through the courier_partner_configs table.
+        is_courier_id = bool(_cs_pkg.get_partner(partner_key)) is False
+        if is_courier_id:
+            cfg = {"enabled": True}
+        else:
+            try:
+                cfg = await db.courier_partner_configs.find_one(
+                    {
+                        "user_id":      current_user["id"],
+                        "partner_key":  partner_key,
+                    },
+                    {"_id": 0},
+                )
+            except Exception:
+                _logger.exception("%s step=db_error config_lookup", log_tag)
+                cfg = None
 
         if not cfg or not cfg.get("enabled"):
             _logger.info(
@@ -441,11 +493,23 @@ def init() -> None:
         # Resolve the per-partner whitelist (falls back to a safe
         # default of {"Booked", "Delivered"} if a partner ever ships
         # without one — defensive).
+        # Phase F5.0 — new per-courier configs carry the whitelist
+        # per-rule (`result["whitelisted"]`). When present, that flag
+        # takes priority over the registry lookup.
         partner_cfg     = _cs_pkg.get_partner(partner_key) or {}
         status_whitelist = partner_cfg.get(
             "status_update_whitelist",
-            frozenset({"Booked", "Delivered"}),
+            frozenset({"Booked", "Delivered", "Out for Delivery"}),
         )
+        # For per-courier matches the parser embeds the whitelisted
+        # bit directly; synthesise a whitelist that always contains
+        # the canonical iff the rule was flagged whitelisted.
+        rule_whitelisted = result.get("whitelisted")
+        if rule_whitelisted is not None:
+            status_whitelist = (
+                frozenset({canonical}) if bool(rule_whitelisted)
+                else frozenset()
+            )
 
         _logger.info(
             "%s step=5 status_identified canonical=%r ship_status=%r "
@@ -504,12 +568,20 @@ def init() -> None:
                 "event_id":        event_id,
             }
 
+        # Phase F5.0 — for the audit trail we prefer the human-friendly
+        # partner slug (e.g. "india_post") over the courier UUID so the
+        # data stays comparable with pre-F5.0 rows AND survives if a
+        # courier is deleted+recreated.
+        partner_slug_display = str(
+            result.get("partner_slug") or partner_key
+        )
+
         # ── Step 6: build update set ───────────────────────────────
         update_set: Dict[str, Any] = {
             "last_courier_status_text":     canonical,
             "last_courier_status_at":       now_iso,
             "last_courier_status_source":   "auto_sync_sms",
-            "last_courier_status_partner":  partner_key,
+            "last_courier_status_partner":  partner_slug_display,
             "updated_at":                   now_iso,
         }
         push_ops: Dict[str, Any] = {}

@@ -220,6 +220,104 @@ def init() -> None:
         )
         return {"tracking_id": tid}
 
+    # ================  Phase F5.0 — Per-courier Auto SMS Sync  ============
+    # These endpoints power the "📡 Auto SMS Sync" section that lives
+    # inside the Courier Edit screen. They intentionally live on
+    # /couriers/{id}/... rather than /courier-sync/... so the standalone
+    # /courier-sync route can be dissolved (the config now lives with
+    # each courier, not centralised).
+
+    @couriers_router.get("/courier-sync/status-choices")
+    async def get_status_choices(  # noqa: D401 — imperative name is fine
+        current_user: Dict[str, Any] = Depends(_get_current_user),  # noqa: ARG001
+    ):
+        """Return the fixed list of Internal Stages that a courier
+        SMS keyword can map to. Populates the dropdown in the courier
+        edit screen's status-rules table."""
+        from courier_sync import generic_parser as _gp  # local pkg
+        return {"choices": _gp.canonical_status_choices()}
+
+    @couriers_router.get("/courier-sync/defaults")
+    async def get_sync_defaults(
+        name: str = "",
+        current_user: Dict[str, Any] = Depends(_get_current_user),  # noqa: ARG001
+    ):
+        """Return the built-in default auto_sync config for a courier
+        name (e.g. "India Post" → prefilled sender/regex/rules). Used
+        by the Add-Courier screen to prefill sensible defaults."""
+        from courier_sync import generic_parser as _gp  # local pkg
+        cfg = _gp.default_config_for_name(name or "")
+        return {"config": cfg, "matched": bool(cfg)}
+
+    @couriers_router.post("/couriers/{courier_id}/sync-test-parse")
+    async def sync_test_parse(
+        courier_id: str,
+        payload: Dict[str, Any] = Body(...),
+        current_user: Dict[str, Any] = Depends(_get_current_user),
+    ):
+        """Dry-run the parser for this courier ONLY. Does not touch
+        shipments or write audit rows. Used by the "Test Parse" box
+        in the courier edit screen so operators can verify the
+        sender/regex/status-rules config with a real SMS before
+        enabling."""
+        from courier_sync import generic_parser as _gp  # local pkg
+        courier = await db.couriers.find_one(
+            {"id": courier_id, "user_id": current_user["id"]}, {"_id": 0},
+        )
+        if not courier:
+            raise HTTPException(status_code=404, detail="Courier not found")
+        # Force-enable for the duration of the dry-run so operators
+        # can test BEFORE toggling `Enable Auto Sync` in the UI.
+        courier["auto_sync_enabled"] = True
+        result = _gp.parse_with_courier(
+            courier = courier,
+            sender  = str(payload.get("sender") or ""),
+            title   = str(payload.get("title") or ""),
+            text    = str(payload.get("text") or ""),
+        )
+        return result
+
+    @couriers_router.get("/couriers/{courier_id}/sync-events")
+    async def list_courier_sync_events(
+        courier_id: str,
+        limit: int = 50,
+        current_user: Dict[str, Any] = Depends(_get_current_user),
+    ):
+        """Recent SMS ingest events for this courier only. Falls back
+        to legacy-partner events (partner_key='india_post') for the
+        India Post courier so historical events remain visible after
+        the migration."""
+        courier = await db.couriers.find_one(
+            {"id": courier_id, "user_id": current_user["id"]},
+            {"_id": 0, "id": 1, "name": 1},
+        )
+        if not courier:
+            raise HTTPException(status_code=404, detail="Courier not found")
+        limit = max(1, min(int(limit or 50), 200))
+        # Match either the courier UUID (new path) or the legacy
+        # partner_key derived from the name (old path). Users who
+        # rename India Post won't lose event history that way.
+        legacy_key = (str(courier.get("name") or "")
+                      .lower()
+                      .replace(" ", "_"))
+        rows = await (
+            db.courier_sync_events
+            .find(
+                {
+                    "user_id":     current_user["id"],
+                    "$or": [
+                        {"partner_key": courier_id},
+                        {"partner_key": legacy_key},
+                    ],
+                },
+                {"_id": 0},
+            )
+            .sort("received_at", -1)
+            .limit(limit)
+            .to_list(length=limit)
+        )
+        return {"events": rows, "count": len(rows), "courier_name": courier.get("name") or ""}
+
     # ===================  Courier Packing Variants  =======================
 
     @couriers_router.get("/couriers/{courier_id}/variants")

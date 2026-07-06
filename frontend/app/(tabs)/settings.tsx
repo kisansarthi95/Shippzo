@@ -1675,27 +1675,11 @@ export default function SettingsScreen() {
               </View>
               <PhIcon name="chevron-forward" size={16} color="#4F46E5" />
             </TouchableOpacity>
-            {/* Phase F4.0 — Courier Status Auto Sync (India Post via DLT SMS). */}
-            <TouchableOpacity
-              testID="open-courier-sync"
-              onPress={() => router.push("/courier-sync" as any)}
-              style={{
-                flexDirection: "row", alignItems: "center", gap: 10,
-                backgroundColor: "#ECFDF5", borderColor: "#A7F3D0", borderWidth: 1,
-                borderRadius: 10, padding: 12, marginBottom: 12,
-              }}
-            >
-              <PhIcon name="sync-circle" size={18} color="#065F46" />
-              <View style={{ flex: 1 }}>
-                <Text style={{ fontWeight: "700", color: "#065F46", fontSize: 13 }}>
-                  Courier Auto Sync
-                </Text>
-                <Text style={{ fontSize: 11, color: "#059669", marginTop: 1 }}>
-                  Auto-update shipment status from India Post DLT SMS
-                </Text>
-              </View>
-              <PhIcon name="chevron-forward" size={16} color="#059669" />
-            </TouchableOpacity>
+            {/* Phase F5.0 — Courier Auto Sync is now configured
+                per-courier inside Courier Partner edit screens
+                (Settings → Courier Partners → open a courier).
+                The standalone entry was removed to keep the config
+                co-located with each partner. */}
             {sheetStatus !== "connected" && saEmail ? (
               <View style={styles.saShareBox} testID="sa-share-box">
                 <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>

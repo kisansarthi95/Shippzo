@@ -11,6 +11,9 @@ import { Api, Courier } from "../../lib/api";
 import { cleanPhone } from "../../lib/format";
 import { colors } from "../../lib/theme";
 import { useFeatureFlag } from "../../lib/feature_flags";
+import CourierAutoSyncSection, {
+  CourierSyncConfig,
+} from "../../components/courier/AutoSyncSection";
 
 export default function CourierEdit() {
   const router = useRouter();
@@ -45,6 +48,18 @@ export default function CourierEdit() {
   // labels, etc.). Default OFF preserves the historic auto-flow.
   const [manualTracking, setManualTracking] = useState(false);
 
+  // Phase F5.0 — per-courier Auto SMS Sync config.
+  const [syncCfg, setSyncCfg] = useState<CourierSyncConfig>({
+    auto_sync_enabled:         false,
+    auto_sync_sender_patterns: [],
+    auto_sync_tracking_regex:  "",
+    auto_sync_status_rules:    [],
+    auto_sync_case_sensitive:  false,
+  });
+  const patchSyncCfg = useCallback((patch: Partial<CourierSyncConfig>) => {
+    setSyncCfg((prev) => ({ ...prev, ...patch }));
+  }, []);
+
   const load = useCallback(async () => {
     if (isNew) return;
     try {
@@ -65,6 +80,18 @@ export default function CourierEdit() {
       setTidMinLen(String((c as any).tracking_id_min_length || "") === "0" ? "" : String((c as any).tracking_id_min_length || ""));
       setTidMaxLen(String((c as any).tracking_id_max_length || "") === "0" ? "" : String((c as any).tracking_id_max_length || ""));
       setManualTracking(Boolean((c as any).manual_tracking));
+      // Phase F5.0 — hydrate auto-sync config
+      setSyncCfg({
+        auto_sync_enabled:         Boolean((c as any).auto_sync_enabled),
+        auto_sync_sender_patterns: Array.isArray((c as any).auto_sync_sender_patterns)
+          ? ((c as any).auto_sync_sender_patterns as string[])
+          : [],
+        auto_sync_tracking_regex:  String((c as any).auto_sync_tracking_regex || ""),
+        auto_sync_status_rules:    Array.isArray((c as any).auto_sync_status_rules)
+          ? ((c as any).auto_sync_status_rules as any[])
+          : [],
+        auto_sync_case_sensitive:  Boolean((c as any).auto_sync_case_sensitive),
+      });
     } catch (e: any) {
       Alert.alert("Error", e?.message || "Failed to load");
       router.back();
@@ -99,6 +126,12 @@ export default function CourierEdit() {
         tracking_id_min_length: Number(tidMinLen) || 0,
         tracking_id_max_length: Number(tidMaxLen) || 0,
         manual_tracking: manualTracking,
+        // Phase F5.0 — persist the per-courier auto-sync config
+        auto_sync_enabled:         syncCfg.auto_sync_enabled,
+        auto_sync_sender_patterns: syncCfg.auto_sync_sender_patterns,
+        auto_sync_tracking_regex:  syncCfg.auto_sync_tracking_regex,
+        auto_sync_status_rules:    syncCfg.auto_sync_status_rules,
+        auto_sync_case_sensitive:  syncCfg.auto_sync_case_sensitive,
       } as any;
       if (isNew) {
         await Api.createCourier(payload);
@@ -218,6 +251,30 @@ export default function CourierEdit() {
           <Section title="Basic">
             <Field label="Courier Name *">
               <TextInput testID="courier-name-input" value={name} onChangeText={setName}
+                onBlur={async () => {
+                  // Phase F5.0 — On blur when creating a new courier
+                  // OR when auto-sync config is still empty, auto-fill
+                  // a well-known default (India Post etc.) so the
+                  // operator can just save & go.
+                  if (!name.trim()) return;
+                  const noSenders = (syncCfg.auto_sync_sender_patterns || []).length === 0;
+                  const noRules   = (syncCfg.auto_sync_status_rules || []).length === 0;
+                  if (!isNew && (!noSenders || !noRules)) return;
+                  try {
+                    const r = await Api.getCourierSyncDefaults(name.trim());
+                    if (r.matched && r.config) {
+                      setSyncCfg({
+                        auto_sync_enabled:         Boolean((r.config as any).auto_sync_enabled),
+                        auto_sync_sender_patterns: (r.config as any).auto_sync_sender_patterns || [],
+                        auto_sync_tracking_regex:  String((r.config as any).auto_sync_tracking_regex || ""),
+                        auto_sync_status_rules:    (r.config as any).auto_sync_status_rules || [],
+                        auto_sync_case_sensitive:  Boolean((r.config as any).auto_sync_case_sensitive),
+                      });
+                    }
+                  } catch {
+                    /* non-fatal — operator will fill in manually */
+                  }
+                }}
                 placeholder="e.g. Nandan Courier" placeholderTextColor="#9CA3AF" style={styles.input} />
             </Field>
           </Section>
@@ -446,6 +503,24 @@ export default function CourierEdit() {
               </View>
             )}
           </Section>
+
+          {!isNew && (
+            <Section title="📡 Auto SMS Sync">
+              <Text style={styles.hint}>
+                Configure how this courier's DLT SMS notifications are
+                parsed and mapped to your internal shipment stages. Once
+                enabled, incoming SMS on the Android device will
+                automatically update the shipment status without any
+                manual data entry.
+              </Text>
+              <CourierAutoSyncSection
+                courierId={String(id)}
+                courierName={name}
+                value={syncCfg}
+                onChange={patchSyncCfg}
+              />
+            </Section>
+          )}
 
           {!isNew && (
             <Section title="Packing Variants & Rates">

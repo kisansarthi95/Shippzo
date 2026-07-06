@@ -341,6 +341,19 @@ class Courier(BaseModel):
     # Defaults to False so existing shops & DB rows behave identically
     # to before; this is a purely opt-in flag per courier.
     manual_tracking: bool = False
+    # Phase F5.0 (2026-06-27) — Per-courier Auto SMS Sync.
+    # Previously a standalone `/courier-sync` screen with hardcoded
+    # India Post parser. Now every courier partner carries its own
+    # SMS ingest config so operators can onboard ANY courier by just
+    # adding the courier and filling these 4 fields.
+    auto_sync_enabled: bool = False
+    auto_sync_sender_patterns: List[str] = Field(default_factory=list)
+    auto_sync_tracking_regex: str = ""
+    # Each rule: {"keyword": "out for delivery", "canonical_status":
+    # "Out for Delivery", "shipment_status": "Out for Delivery",
+    # "whitelisted": True}. Order matters (evaluated top-to-bottom).
+    auto_sync_status_rules: List[Dict[str, Any]] = Field(default_factory=list)
+    auto_sync_case_sensitive: bool = False
     created_at: str = Field(default_factory=utcnow_iso)
 
 
@@ -363,6 +376,12 @@ class CourierCreate(BaseModel):
     tracking_id_pattern: Optional[str] = ""
     # Phase-23 — Manual tracking workflow (opt-in, default False).
     manual_tracking: Optional[bool] = False
+    # Phase F5.0 — Per-courier Auto SMS Sync (opt-in, defaults empty).
+    auto_sync_enabled: Optional[bool] = False
+    auto_sync_sender_patterns: Optional[List[str]] = Field(default_factory=list)
+    auto_sync_tracking_regex: Optional[str] = ""
+    auto_sync_status_rules: Optional[List[Dict[str, Any]]] = Field(default_factory=list)
+    auto_sync_case_sensitive: Optional[bool] = False
 
 
 class CourierUpdate(BaseModel):
@@ -383,6 +402,12 @@ class CourierUpdate(BaseModel):
     tracking_id_max_length: Optional[int] = None
     tracking_id_pattern: Optional[str] = None
     manual_tracking: Optional[bool] = None
+    # Phase F5.0 — Per-courier Auto SMS Sync.
+    auto_sync_enabled: Optional[bool] = None
+    auto_sync_sender_patterns: Optional[List[str]] = None
+    auto_sync_tracking_regex: Optional[str] = None
+    auto_sync_status_rules: Optional[List[Dict[str, Any]]] = None
+    auto_sync_case_sensitive: Optional[bool] = None
 
 
 class SenderAddress(BaseModel):
@@ -5907,6 +5932,59 @@ async def on_startup():
         _asyncio.create_task(_user_sheet_drain_worker())
     except Exception:
         logger.exception("Failed to start user-sheet drain worker (non-fatal)")
+    # Phase F5.0 — Migrate existing "India Post" couriers to the new
+    # per-courier auto_sync config. Zero-disruption: only touches
+    # couriers whose sender_patterns list is empty (i.e. not yet
+    # customised by an operator).
+    try:
+        from courier_sync import generic_parser as _gp
+        default_cfg = _gp.INDIA_POST_DEFAULT_CONFIG
+        # Match any name where BOTH "india" and "post" appear (case-
+        # insensitive, order-preserved). Covers "India Post", "IndiaPost",
+        # "Indian post", "India Post Speed Post", etc.
+        cursor = db.couriers.find(
+            {
+                "$expr": {
+                    "$regexMatch": {
+                        "input":   {"$ifNull": ["$name", ""]},
+                        "regex":   "india.*post",
+                        "options": "i",
+                    },
+                },
+            },
+            {"_id": 0, "id": 1, "user_id": 1, "auto_sync_sender_patterns": 1, "auto_sync_enabled": 1},
+        )
+        migrated = 0
+        async for c in cursor:
+            patterns = c.get("auto_sync_sender_patterns") or []
+            if patterns:
+                continue  # already customised — leave alone
+            # Auto-enable iff the user had the legacy india_post
+            # partner toggled ON in the old courier_partner_configs
+            # collection. Otherwise seed the config but leave
+            # enabled=False so operators explicitly opt-in.
+            prior = await db.courier_partner_configs.find_one(
+                {"user_id": c.get("user_id"), "partner_key": "india_post"},
+                {"_id": 0, "enabled": 1},
+            )
+            was_enabled = bool(prior and prior.get("enabled"))
+            await db.couriers.update_one(
+                {"id": c["id"]},
+                {"$set": {
+                    "auto_sync_enabled":         was_enabled,
+                    "auto_sync_sender_patterns": default_cfg["auto_sync_sender_patterns"],
+                    "auto_sync_tracking_regex":  default_cfg["auto_sync_tracking_regex"],
+                    "auto_sync_status_rules":    default_cfg["auto_sync_status_rules"],
+                    "auto_sync_case_sensitive":  default_cfg["auto_sync_case_sensitive"],
+                    "updated_at":                utcnow_iso(),
+                }},
+            )
+            migrated += 1
+        if migrated:
+            logger.info("India Post auto_sync migration seeded %d courier(s).", migrated)
+    except Exception:
+        logger.exception("India Post auto_sync migration failed (non-fatal)")
+
     logger.info("Courier Label Manager API started; defaults seeded.")
 
 

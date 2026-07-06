@@ -1,0 +1,38 @@
+{
+  "summary": "Phase F5.0 Per-Courier Auto SMS Sync backend tests — 64/64 pass (16 new F5.0 + 48 regression). All 4 new endpoints (status-choices, defaults, sync-test-parse, sync-events) work as specified; per-courier Courier model fields persist on POST/PUT/GET; end-to-end ingest with per-courier config successfully updates shipment.status. India Post migration confirmed (2 seeded couriers with 14 status rules and sender=['INPOST']). One notable behaviour to flag: parser tracking-ID extractor prefers regex capture-group(1) over group(0), so a natural regex like r'\\bND(\\d{6})\\b' extracts only '123456' (dropping the 'ND' prefix) and shipment lookup then fails. Workaround: capture the full ID e.g. r'\\b(ND\\d{6})\\b'.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "POST /api/courier-sync/ingest (generic_parser._extract_tracking_ids)",
+        "issue": "Parser uses `m.group(1) if m.groups() else m.group(0)` — when the user writes a regex where the capture group intentionally isolates part of the tracking ID (e.g. r'\\bND(\\d{6})\\b'), the parser extracts only the captured digits ('123456') and the shipment lookup fails. India Post default r'\\b([A-Z]{2}\\d{9}IN)\\b' happens to work only because group(1)==group(0). Recommend: (a) always use m.group(0), OR (b) document that the capture group MUST contain the full tracking id, OR (c) prefer named group 'tracking' over positional group(1)."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_phase_f50_per_courier_sync.py",
+    "/app/test_reports/pytest/pytest_iteration_40_f50.xml"
+  ],
+  "action_items": [
+    "OPTIONAL: Fix generic_parser._extract_tracking_ids to always return m.group(0) (or the widest match) so that natural regexes like r'\\bND(\\d{6})\\b' don't silently strip the 'ND' prefix from extracted tracking IDs. Alternatively, update the Add-Courier UI helper text to warn operators that the capture group must contain the full tracking id."
+  ],
+  "critical_code_review_comments": [
+    "generic_parser: tracking-id extraction semantics (group(1) preferred over group(0)) is a foot-gun for operators writing new courier configs.",
+    "sync-events fallback partner_key uses `name.lower().replace(' ', '_')` — India Post rename to e.g. 'India Post Ltd' would break legacy event visibility; consider using partner_slug_for_name() for symmetry."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_phase_f50_per_courier_sync.py (new)"
+  ],
+  "success_rate": {"backend": "100%", "frontend": "not tested (backend-only pass)"},
+  "seed_data_creation": "Each test creates its own courier + shipment with unique suffixes; all clean up on teardown. No permanent test data added.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Test file lives at tests/test_phase_f50_per_courier_sync.py. Run with `EXPO_PUBLIC_BACKEND_URL=<url> pytest tests/test_phase_f50_per_courier_sync.py tests/test_courier_sync.py tests/test_courier_sync_whitelist.py`. Note the parser tracking-regex gotcha: put the full tracking id inside the capture group.",
+  "rca_of_issue": "Bug: `_extract_tracking_ids` in courier_sync/generic_parser.py returns `m.group(1) if m.groups() else m.group(0)`. If operator writes r'\\bND(\\d{6})\\b' (a very natural capture-just-the-digits pattern), only 6 digits are returned — the ND prefix is dropped and the shipment.tracking_id='ND123456' lookup on POST /api/courier-sync/ingest returns no_shipment_found. Reproduction: create courier with auto_sync_tracking_regex=r'\\bND(\\d{6})\\b', shipment tracking_id='ND123456', POST /api/courier-sync/ingest with text 'parcel ND123456 delivered' — response is action=no_shipment_found with tracking_id='123456'. Fix: use m.group(0) always, or the LAST group, or require full-match capture."
+}

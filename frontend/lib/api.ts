@@ -105,6 +105,17 @@ export type Courier = {
    *  (India Post Speed Post stickers, Anjani physical labels, etc.)
    *  and skips the sequential auto-generated tracking number. */
   manual_tracking?: boolean;
+  // Phase F5.0 — Per-courier Auto SMS Sync.
+  auto_sync_enabled?: boolean;
+  auto_sync_sender_patterns?: string[];
+  auto_sync_tracking_regex?: string;
+  auto_sync_status_rules?: Array<{
+    keyword: string;
+    canonical_status: string;
+    shipment_status: string;
+    whitelisted: boolean;
+  }>;
+  auto_sync_case_sensitive?: boolean;
   created_at: string;
 };
 
@@ -444,6 +455,45 @@ export const Api = {
   consumeTracking: (id: string) =>
     api
       .post<{ tracking_id: string }>(`/couriers/${id}/consume-tracking`)
+      .then((r) => r.data),
+
+  // ───────────────────────────────────────────────────────────────────
+  // Phase F5.0 — Per-courier Auto SMS Sync
+  // ───────────────────────────────────────────────────────────────────
+  getCourierSyncStatusChoices: () =>
+    api
+      .get<{
+        choices: Array<{
+          label: string;
+          canonical: string;
+          shipment: string;
+          whitelisted: boolean;
+        }>;
+      }>(`/courier-sync/status-choices`)
+      .then((r) => r.data.choices),
+
+  getCourierSyncDefaults: (name: string) =>
+    api
+      .get<{ config: Courier | null; matched: boolean }>(
+        `/courier-sync/defaults`,
+        { params: { name } },
+      )
+      .then((r) => r.data),
+
+  courierSyncTestParse: (
+    courierId: string,
+    payload: { sender?: string; title?: string; text?: string },
+  ) =>
+    api
+      .post<any>(`/couriers/${courierId}/sync-test-parse`, payload)
+      .then((r) => r.data),
+
+  listCourierSyncEvents: (courierId: string, limit = 20) =>
+    api
+      .get<{ events: any[]; count: number; courier_name: string }>(
+        `/couriers/${courierId}/sync-events`,
+        { params: { limit } },
+      )
       .then((r) => r.data),
 
   // ───────────────────────────────────────────────────────────────────
