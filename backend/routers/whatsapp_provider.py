@@ -322,7 +322,14 @@ def _event_doc_to_dto(d: Dict[str, Any]) -> Dict[str, Any]:
         # bool. Prior versions derived this from `bool(template_preview)`
         # in the UI, so an operator toggling ON but not entering any
         # template text saw the switch snap back OFF on the next open.
-        "template_enabled": bool(d.get("template_enabled", False)),
+        # Back-compat: legacy docs (created before F4.9) never had
+        # this key; if they DO carry a non-empty `template_preview`
+        # the operator clearly meant it to be enabled — default to
+        # True so the toggle doesn't silently go OFF on first load.
+        "template_enabled": (
+            bool(d["template_enabled"]) if "template_enabled" in d
+            else bool((d.get("template_preview") or "").strip())
+        ),
         "selected_fields":  list(d.get("selected_fields") or []),
         "custom_fields":    list(d.get("custom_fields") or []),
         "variable_mapping": dict(d.get("variable_mapping") or {}),
