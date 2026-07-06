@@ -9,11 +9,13 @@ import React, { useCallback, useEffect, useMemo, useState } from "react";
 import PhIcon from "../../components/PhIcon";
 import {
   View, Text, TouchableOpacity, ScrollView, RefreshControl,
-  ActivityIndicator, Alert,
+  Alert,
 } from "react-native";
 import { Stack, router } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Api } from "../../lib/api";
+import { screenCache } from "../../lib/screenCache";
+import { SkeletonReport } from "../../components/Skeleton";
 import {
   PeriodPicker, RangeKey, reportStyles as S, downloadExcel,
 } from "../../components/ReportShared";
@@ -22,9 +24,11 @@ export default function WeightWiseScreen() {
   const [range, setRange] = useState<RangeKey>("this_month");
   const [customFrom, setCustomFrom] = useState<Date | null>(null);
   const [customTo, setCustomTo] = useState<Date | null>(null);
-  const [loading, setLoading] = useState(true);
+  // Phase F5.1 SWR — seed from cache so re-visits are instant.
+  const _cached = screenCache.get<any>("reports:weight-wise");
+  const [loading, setLoading] = useState(!_cached);
   const [refreshing, setRefreshing] = useState(false);
-  const [data, setData] = useState<any>(null);
+  const [data, setData] = useState<any>(_cached);
 
   const params = useMemo(() => {
     if (range === "custom" && customFrom && customTo) {
@@ -37,12 +41,13 @@ export default function WeightWiseScreen() {
     try {
       const res = await Api.meWeightWise(params);
       setData(res);
+      screenCache.set("reports:weight-wise", res);
     } catch (e: any) {
       Alert.alert("Load failed", e?.response?.data?.detail || e?.message || "Try again");
     } finally { setLoading(false); setRefreshing(false); }
   }, [params]);
 
-  useEffect(() => { setLoading(true); load(); }, [load]);
+  useEffect(() => { load(); }, [load]);
 
   return (
     <SafeAreaView style={S.safe} edges={["top"]}>
@@ -68,7 +73,7 @@ export default function WeightWiseScreen() {
         />
 
         {loading ? (
-          <View style={S.loadWrap}><ActivityIndicator color="#0EA5E9" /></View>
+          <SkeletonReport rows={5} />
         ) : (
           <>
             <View style={S.kpiGrid}>

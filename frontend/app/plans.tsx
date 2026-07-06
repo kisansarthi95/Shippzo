@@ -40,6 +40,8 @@ import {
 import { useFeatureFlag } from "../lib/feature_flags";
 import { colors } from "../lib/theme";
 import { useAuth } from "../lib/auth";
+import { screenCache } from "../lib/screenCache";
+import { SkeletonPlanCards } from "../components/Skeleton";
 
 type PalKey = PlanKey;
 const PAL: Record<PalKey, { bg: string; border: string; accent: string; chipBg: string; chipTxt: string }> = {
@@ -71,18 +73,28 @@ export default function PlansScreen() {
   // don't bleed through.
   const flagCouponsApply = useFeatureFlag("coupons_apply");
   const { refresh } = useAuth();
-  const [plans, setPlans] = useState<PlanSpec[]>([]);
-  const [current, setCurrent] = useState<PlanKey>("free_trial");
-  const [usage, setUsage] = useState<UsageSummary | null>(null);
-  const [wallet, setWallet] = useState<Wallet | null>(null);
-  const [loading, setLoading] = useState(true);
+  // Phase F5.1 SWR — seed plan list from cache so re-visits are instant.
+  type PlansCache = {
+    plans: PlanSpec[];
+    current: PlanKey;
+    usage: UsageSummary | null;
+    wallet: Wallet | null;
+    pricing: Record<PlanKey, PlanPricingEntry> | null;
+    countdown: CountdownConfig | null;
+  };
+  const _cachedPlans = screenCache.get<PlansCache>("plans:list");
+  const [plans, setPlans] = useState<PlanSpec[]>(_cachedPlans?.plans || []);
+  const [current, setCurrent] = useState<PlanKey>(_cachedPlans?.current || "free_trial");
+  const [usage, setUsage] = useState<UsageSummary | null>(_cachedPlans?.usage || null);
+  const [wallet, setWallet] = useState<Wallet | null>(_cachedPlans?.wallet || null);
+  const [loading, setLoading] = useState(!_cachedPlans);
   const [busyKey, setBusyKey] = useState<PlanKey | null>(null);
   const [billing, setBilling] = useState<BillingMode>("yearly");
   // Track whether the user has manually toggled the cycle since this
   // mount — only auto-sync to their saved cycle when they haven't.
   const billingTouchedRef = useRef(false);
-  const [pricing, setPricing] = useState<Record<PlanKey, PlanPricingEntry> | null>(null);
-  const [countdown, setCountdown] = useState<CountdownConfig | null>(null);
+  const [pricing, setPricing] = useState<Record<PlanKey, PlanPricingEntry> | null>(_cachedPlans?.pricing || null);
+  const [countdown, setCountdown] = useState<CountdownConfig | null>(_cachedPlans?.countdown || null);
   const [secondsLeft, setSecondsLeft] = useState<number>(0);
 
   // 2026-04-30 — Coupon UX state. Stored only in memory; the user re-types
@@ -117,10 +129,25 @@ export default function PlansScreen() {
       if (!billingTouchedRef.current && u?.plan_billing_cycle) {
         setBilling(u.plan_billing_cycle === "yearly" ? "yearly" : "monthly");
       }
+      let nextPricing: Record<PlanKey, PlanPricingEntry> | null = null;
+      let nextCountdown: CountdownConfig | null = null;
       if (pp) {
-        setPricing(pp.plan_pricing);
-        setCountdown(pp.countdown);
+        nextPricing = pp.plan_pricing;
+        nextCountdown = pp.countdown;
+        setPricing(nextPricing);
+        setCountdown(nextCountdown);
       }
+      // Stale-while-revalidate cache — snapshot everything so a
+      // subsequent visit renders instantly with prior data while a
+      // fresh fetch runs in the background.
+      screenCache.set("plans:list", {
+        plans:     pl.plans,
+        current:   pl.current,
+        usage:     u,
+        wallet:    w,
+        pricing:   nextPricing,
+        countdown: nextCountdown,
+      });
     } catch (e: any) {
       Alert.alert("Could not load plans", e?.message || "Please try again");
     } finally {
@@ -546,7 +573,7 @@ export default function PlansScreen() {
         ) : null}
 
         {loading ? (
-          <ActivityIndicator style={{ marginTop: 40 }} color={colors.primary} />
+          <SkeletonPlanCards count={3} />
         ) : (
           plans.map((p) => {
             const isCurr = p.key === current;

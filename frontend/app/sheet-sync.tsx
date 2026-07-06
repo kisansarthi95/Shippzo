@@ -15,6 +15,8 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Stack, router } from "expo-router";
 import { Api } from "../lib/api";
+import { screenCache } from "../lib/screenCache";
+import { SkeletonReport } from "../components/Skeleton";
 
 type Status = {
   connected: boolean;
@@ -37,14 +39,19 @@ const TONE = {
 };
 
 export default function SheetSyncScreen() {
-  const [loading, setLoading] = useState(true);
-  const [status, setStatus]   = useState<Status | null>(null);
+  // Phase F5.1 SWR — seed from screenCache so re-visits are instant.
+  // Background load below refreshes silently and swaps the data once
+  // fresh; first-ever visit falls back to the skeleton.
+  const cachedStatus = screenCache.get<Status>("sheet-sync:status");
+  const [loading, setLoading] = useState(!cachedStatus);
+  const [status, setStatus]   = useState<Status | null>(cachedStatus);
   const [busy, setBusy]       = useState<keyof Status | "run" | null>(null);
 
   const load = useCallback(async () => {
     try {
       const s = await Api.meSheetSyncStatus();
       setStatus(s);
+      screenCache.set("sheet-sync:status", s);
     } catch (e: any) {
       Alert.alert("Error", e?.response?.data?.detail || e?.message || "Failed");
     } finally {
@@ -88,9 +95,9 @@ export default function SheetSyncScreen() {
 
   if (loading || !status) {
     return (
-      <SafeAreaView style={styles.center}>
+      <SafeAreaView style={{ flex: 1, backgroundColor: "#F7F7F9" }}>
         <Stack.Screen options={{ title: "Sheet Sync", headerShown: true }} />
-        <ActivityIndicator color="#6B5BFF" />
+        <SkeletonReport rows={5} headerHeight={60} />
       </SafeAreaView>
     );
   }

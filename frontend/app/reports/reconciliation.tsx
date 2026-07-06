@@ -8,11 +8,13 @@ import React, { useCallback, useEffect, useMemo, useState } from "react";
 import PhIcon from "../../components/PhIcon";
 import {
   View, Text, TouchableOpacity, ScrollView, RefreshControl,
-  ActivityIndicator, Alert,
+  Alert,
 } from "react-native";
 import { Stack, router } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Api } from "../../lib/api";
+import { screenCache } from "../../lib/screenCache";
+import { SkeletonReport } from "../../components/Skeleton";
 import {
   PeriodPicker, RangeKey, reportStyles as S, downloadExcel,
 } from "../../components/ReportShared";
@@ -21,9 +23,11 @@ export default function ReconciliationScreen() {
   const [range, setRange] = useState<RangeKey>("this_month");
   const [customFrom, setCustomFrom] = useState<Date | null>(null);
   const [customTo, setCustomTo] = useState<Date | null>(null);
-  const [loading, setLoading] = useState(true);
+  // Phase F5.1 SWR — seed from cache so re-visits are instant.
+  const _cached = screenCache.get<any>("reports:reconciliation");
+  const [loading, setLoading] = useState(!_cached);
   const [refreshing, setRefreshing] = useState(false);
-  const [data, setData] = useState<any>(null);
+  const [data, setData] = useState<any>(_cached);
 
   const params = useMemo(() => {
     if (range === "custom" && customFrom && customTo) {
@@ -36,12 +40,13 @@ export default function ReconciliationScreen() {
     try {
       const res = await Api.meReconciliation(params);
       setData(res);
+      screenCache.set("reports:reconciliation", res);
     } catch (e: any) {
       Alert.alert("Load failed", e?.response?.data?.detail || e?.message || "Try again");
     } finally { setLoading(false); setRefreshing(false); }
   }, [params]);
 
-  useEffect(() => { setLoading(true); load(); }, [load]);
+  useEffect(() => { load(); }, [load]);
 
   const t = data?.totals || {};
 
@@ -69,7 +74,7 @@ export default function ReconciliationScreen() {
         />
 
         {loading ? (
-          <View style={S.loadWrap}><ActivityIndicator color="#059669" /></View>
+          <SkeletonReport rows={5} />
         ) : (
           <>
             <View style={S.kpiGrid}>

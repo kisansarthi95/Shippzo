@@ -118,6 +118,93 @@ export function SkeletonStatsStrip({ boxes = 3 }: { boxes?: number }) {
   );
 }
 
+/** A vertically-stacked skeleton mirroring a typical settings / detail
+ * screen with a header card + N stat rows + a chart-like block. Used
+ * on Sheet Sync, Plans, and Reports pages so the layout is visible
+ * immediately while data fetches in the background. */
+export function SkeletonReport({
+  headerHeight = 96,
+  rows = 4,
+  showChart = true,
+}: {
+  headerHeight?: number;
+  rows?: number;
+  showChart?: boolean;
+}) {
+  return (
+    <View style={{ padding: 14 }}>
+      {/* Header card */}
+      <View style={styles.reportHeaderCard}>
+        <SkeletonBlock width={44} height={44} radius={22} />
+        <View style={{ flex: 1, marginLeft: 12, gap: 8 }}>
+          <SkeletonBlock width="55%" height={16} />
+          <SkeletonBlock width="80%" height={12} />
+          <SkeletonBlock width="35%" height={12} />
+        </View>
+      </View>
+      {/* Chart-like block */}
+      {showChart && (
+        <View style={[styles.reportBlock, { height: headerHeight + 40 }]}>
+          <SkeletonBlock width="30%" height={14} />
+          <SkeletonBlock
+            width="100%"
+            height={headerHeight - 20}
+            style={{ marginTop: 12 }}
+          />
+        </View>
+      )}
+      {/* Stat rows */}
+      <View style={styles.reportBlock}>
+        {Array.from({ length: rows }).map((_, i) => (
+          <View
+            key={i}
+            style={{
+              flexDirection: "row",
+              alignItems: "center",
+              paddingVertical: 10,
+              borderBottomWidth: i < rows - 1 ? 1 : 0,
+              borderBottomColor: "#F1F5F9",
+            }}
+          >
+            <SkeletonBlock width="45%" height={13} />
+            <View style={{ flex: 1 }} />
+            <SkeletonBlock width={60} height={13} />
+          </View>
+        ))}
+      </View>
+    </View>
+  );
+}
+
+/** Compact skeleton for a plan / subscription card grid — 3 cards
+ * stacked with title + 5 feature lines + CTA button placeholder. */
+export function SkeletonPlanCards({ count = 3 }: { count?: number }) {
+  return (
+    <View style={{ padding: 14, gap: 12 }}>
+      {Array.from({ length: count }).map((_, i) => (
+        <View key={i} style={styles.planCard}>
+          <SkeletonBlock width="40%" height={18} />
+          <SkeletonBlock width="60%" height={22} style={{ marginTop: 8 }} />
+          {Array.from({ length: 5 }).map((__, j) => (
+            <SkeletonBlock
+              key={j}
+              width={j === 4 ? "50%" : "80%"}
+              height={12}
+              style={{ marginTop: 10 }}
+            />
+          ))}
+          <SkeletonBlock
+            width="100%"
+            height={40}
+            radius={10}
+            style={{ marginTop: 14 }}
+          />
+        </View>
+      ))}
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
   card: {
     flexDirection: "row",
@@ -142,5 +229,30 @@ const styles = StyleSheet.create({
     flex: 1,
     alignItems: "center",
     paddingHorizontal: 8,
+  },
+  reportHeaderCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#fff",
+    borderRadius: 12,
+    padding: 14,
+    borderWidth: 1,
+    borderColor: "#F1F5F9",
+    marginBottom: 12,
+  },
+  reportBlock: {
+    backgroundColor: "#fff",
+    borderRadius: 12,
+    padding: 14,
+    borderWidth: 1,
+    borderColor: "#F1F5F9",
+    marginBottom: 12,
+  },
+  planCard: {
+    backgroundColor: "#fff",
+    borderRadius: 14,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: "#F1F5F9",
   },
 });

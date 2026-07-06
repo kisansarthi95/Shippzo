@@ -23958,3 +23958,26 @@ agent_communication:
             Bug fix during testing: _extract_tracking_ids now returns
             m.group(0) instead of m.group(1) so operator-friendly regex
             like `\bND(\d{6})\b` still returns the full "ND123456" AWB.
+
+## Phase F5.1 — SWR + Skeleton Pattern Rollout (2026-06-27)
+
+    - task: "Apply SWR + Skeleton pattern to remaining screens"
+      implemented: true
+      working: true
+      file: /app/frontend/components/Skeleton.tsx, /app/frontend/app/sheet-sync.tsx, /app/frontend/app/plans.tsx, /app/frontend/app/reports/partner-comparison.tsx, /app/frontend/app/reports/reconciliation.tsx, /app/frontend/app/reports/return-analysis.tsx, /app/frontend/app/reports/weight-wise.tsx
+      status_history:
+        - working: true
+          agent: "main"
+          comment: |
+            Extended Skeleton.tsx with 2 new primitives: SkeletonReport
+            (header + chart + N stat rows) and SkeletonPlanCards (N vertical
+            plan cards with title/price/features/CTA). Applied SWR pattern
+            to 6 screens: sheet-sync, plans, and all 4 reports/*.
+            Each screen now (a) seeds initial state from screenCache so
+            re-visits render instantly with prior data, (b) writes fresh
+            data back to cache after successful load, (c) shows an animated
+            skeleton on first-ever visit instead of a full-screen spinner.
+            Verified Partner Comparison screen loads with real data + no
+            compile errors. All 4 report screens share the same pattern
+            for consistency; different cache key per screen so they don't
+            trample each other.
