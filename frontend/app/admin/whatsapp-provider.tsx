@@ -75,6 +75,9 @@ type EventRow = {
   enabled: boolean;
   automation_id: string;
   template_preview: string;
+  // Phase F4.9 — persisted boolean so the Enable-Template switch state
+  // survives reload (previously derived from template_preview length).
+  template_enabled: boolean;
   selected_fields: string[];
   custom_fields: CustomField[];
   variable_mapping: Record<string, string>;
@@ -183,6 +186,8 @@ export default function AdminWhatsAppProviderScreen() {
       const r = await Api.adminWppUpdateEvent(draft.event_key, {
         automation_id:    draft.automation_id.trim(),
         template_preview: draft.template_preview,
+        // Phase F4.9 — persist Enable-Template toggle.
+        template_enabled: !!draft.template_enabled,
         selected_fields:  draft.selected_fields,
         custom_fields:    draft.custom_fields.filter((f) => f.name.trim()),
         variable_mapping: draft.variable_mapping,
@@ -655,14 +660,22 @@ function EventEditorModal({
   saving: boolean;
 }) {
   const [draft, setDraft] = useState<EventRow>(event);
-  // Enable/Disable Template toggle (Jul-2026) — the Template Preview
-  // + Copy fields are OPTIONAL now.  Our system sends the structured
-  // JSON regardless of whether the admin has filled in a template.
-  // We open the toggle automatically when a template is already
-  // saved so existing data is never hidden without warning.
-  const [templateEnabled, setTemplateEnabled] = useState<boolean>(
-    !!(event.template_preview && event.template_preview.trim().length > 0),
-  );
+  // Phase F4.9 — Enable-Template toggle now bound directly to the
+  // persisted `draft.template_enabled` bool. Previously we derived
+  // this from the length of `template_preview` which meant a toggle
+  // ON without any text was silently discarded — that reset UX bug
+  // is exactly what shop owners were reporting.
+  const setTemplateEnabled = (v: boolean) =>
+    setDraft((d) => ({ ...d, template_enabled: v }));
+  const templateEnabled = !!draft.template_enabled;
+
+  // Phase F4.9 — Available-field picker state. When the operator taps
+  // an existing mapping row (or the "+ Add Mapping" button), we open
+  // a bottom-sheet picker sourced from the backend's AVAILABLE_FIELDS
+  // registry. Zero manual typing — the entire mapping keyspace comes
+  // from the server, so any field added to the registry appears here
+  // automatically without a frontend deploy.
+  const [pickerOpen, setPickerOpen] = useState<null | { forFieldKey: string }>(null);
 
   const toggleField = (key: string) => {
     setDraft((d) => ({
@@ -823,30 +836,131 @@ function EventEditorModal({
               })}
             </View>
 
-            {/* Variable mapping (only for ticked fields) */}
+            {/* Variable mapping (only for ticked fields) — Phase F4.9
+                revamp: tap-to-pick from AVAILABLE_FIELDS instead of
+                free-text input. Prevents the "typed weird key name"
+                dispatches we've seen in production (e.g.
+                NayanBhut=Admin) and stays future-proof — anything
+                added to the backend registry appears here without a
+                frontend deploy. */}
             {draft.selected_fields.length > 0 && (
               <>
                 <Text style={[styles.fieldLabel, { marginTop: 18 }]}>
-                  Variable Mapping (optional)
+                  Variable Mapping ({draft.selected_fields.length})
                 </Text>
                 <Text style={styles.hint}>
-                  Rename a field's outgoing parameter (e.g. <Text style={styles.code}>customer_name → name</Text>).
-                  Leave blank to keep the original key.
+                  Left = app field (data source). Right = WhatsApp
+                  template variable name (what your provider expects).
+                  Tap the right side to pick from the available
+                  fields list. Empty = keep same key.
                 </Text>
-                {draft.selected_fields.map((fk) => (
-                  <View key={fk} style={styles.mapRow}>
-                    <Text style={styles.mapLeft}>{fk}</Text>
-                    <PhIcon name="arrow-forward" size={14} color="#94A3B8" />
-                    <TextInput
-                      value={draft.variable_mapping[fk] || ""}
-                      onChangeText={(v) => setMapping(fk, v)}
-                      placeholder={fk}
-                      autoCapitalize="none"
-                      style={[styles.input, { flex: 1, marginVertical: 0 }]}
-                    />
-                  </View>
-                ))}
+                {draft.selected_fields.map((fk) => {
+                  const targetKey = draft.variable_mapping[fk] || fk;
+                  const targetLabel =
+                    available.find((a) => a.key === targetKey)?.label
+                    || targetKey;
+                  const sourceLabel =
+                    available.find((a) => a.key === fk)?.label || fk;
+                  return (
+                    <View key={fk} style={styles.mapRow}>
+                      <View style={styles.mapCell}>
+                        <Text style={styles.mapLbl}>{sourceLabel}</Text>
+                        <Text style={styles.mapKey}>{fk}</Text>
+                      </View>
+                      <PhIcon name="arrow-forward" size={16} color="#94A3B8" />
+                      <TouchableOpacity
+                        testID={`map-picker-${fk}`}
+                        style={styles.mapPick}
+                        onPress={() => setPickerOpen({ forFieldKey: fk })}
+                      >
+                        <View style={{ flex: 1 }}>
+                          <Text style={styles.mapLbl}>{targetLabel}</Text>
+                          <Text style={styles.mapKey}>{targetKey}</Text>
+                        </View>
+                        <PhIcon name="chevron-down" size={16} color="#94A3B8" />
+                      </TouchableOpacity>
+                    </View>
+                  );
+                })}
+
+                {/* Bug 4 — Variable Mapping Preview: crystal-clear
+                    "what will be sent" summary that mirrors the
+                    payload the backend actually pushes. */}
+                <View style={styles.previewBox}>
+                  <Text style={styles.previewTitle}>Outgoing Variables Preview</Text>
+                  {draft.selected_fields.map((fk) => {
+                    const out = draft.variable_mapping[fk] || fk;
+                    const lbl =
+                      available.find((a) => a.key === fk)?.label || fk;
+                    return (
+                      <Text key={`p-${fk}`} style={styles.previewLine}>
+                        <Text style={{ color: "#0F172A" }}>{lbl}</Text>
+                        {"  →  "}
+                        <Text style={styles.code}>{out}</Text>
+                      </Text>
+                    );
+                  })}
+                  {draft.selected_fields.includes("otp") && (
+                    <Text style={[styles.previewLine, { marginTop: 6, color: "#166534" }]}>
+                      ✓ OTP is auto-supplied by the login/signup flow —
+                      no manual value needed. Just keep `otp` ticked.
+                    </Text>
+                  )}
+                </View>
               </>
+            )}
+
+            {/* Field picker sheet — Phase F4.9 */}
+            {pickerOpen && (
+              <View style={styles.pickerOverlay}>
+                <TouchableOpacity
+                  style={styles.pickerBackdrop}
+                  activeOpacity={1}
+                  onPress={() => setPickerOpen(null)}
+                />
+                <View style={styles.pickerSheet}>
+                  <View style={styles.pickerHeader}>
+                    <Text style={styles.pickerTitle}>
+                      {`Map "${available.find((a) => a.key === pickerOpen.forFieldKey)?.label
+                        || pickerOpen.forFieldKey}" to…`}
+                    </Text>
+                    <TouchableOpacity onPress={() => setPickerOpen(null)}>
+                      <PhIcon name="close" size={22} color="#0F172A" />
+                    </TouchableOpacity>
+                  </View>
+                  <ScrollView style={{ maxHeight: 420 }}>
+                    {available.map((f) => (
+                      <TouchableOpacity
+                        key={f.key}
+                        testID={`map-option-${f.key}`}
+                        style={styles.pickerRow}
+                        onPress={() => {
+                          setDraft((d) => {
+                            const next = { ...d.variable_mapping };
+                            if (f.key === pickerOpen.forFieldKey) {
+                              // Same key → identity mapping = clear
+                              // entry to keep the payload lean.
+                              delete next[pickerOpen.forFieldKey];
+                            } else {
+                              next[pickerOpen.forFieldKey] = f.key;
+                            }
+                            return { ...d, variable_mapping: next };
+                          });
+                          setPickerOpen(null);
+                        }}
+                      >
+                        <View style={{ flex: 1 }}>
+                          <Text style={styles.pickerLbl}>{f.label}</Text>
+                          <Text style={styles.pickerKey}>{f.key}</Text>
+                        </View>
+                        {(draft.variable_mapping[pickerOpen.forFieldKey] || pickerOpen.forFieldKey) === f.key && (
+                          <PhIcon name="checkmark" size={18} color="#166534" />
+                        )}
+                      </TouchableOpacity>
+                    ))}
+                  </ScrollView>
+                </View>
+              </View>
             )}
 
             {/* Custom fields */}
@@ -1112,6 +1226,87 @@ const styles = StyleSheet.create({
     color: "#1E40AF",
     minWidth: 110,
   },
+  // Phase F4.9 — mapping picker cell + preview styles.
+  mapCell: {
+    flex: 1,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderRadius: 8,
+    backgroundColor: "#EEF2FF",
+  },
+  mapPick: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "#CBD5E1",
+    backgroundColor: "#F8FAFC",
+    gap: 6,
+  },
+  mapLbl: { fontSize: 13, fontWeight: "700", color: "#0F172A" },
+  mapKey: { fontSize: 11, color: "#64748B", marginTop: 1 },
+  previewBox: {
+    marginTop: 12,
+    padding: 10,
+    borderRadius: 10,
+    backgroundColor: "#F1F5F9",
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+  },
+  previewTitle: {
+    fontSize: 11,
+    fontWeight: "800",
+    color: "#475569",
+    letterSpacing: 0.4,
+    textTransform: "uppercase",
+    marginBottom: 6,
+  },
+  previewLine: { fontSize: 12.5, lineHeight: 18, color: "#334155" },
+  pickerOverlay: {
+    position: "absolute",
+    top: 0, left: 0, right: 0, bottom: 0,
+    justifyContent: "flex-end",
+    zIndex: 9999,
+  },
+  pickerBackdrop: {
+    position: "absolute",
+    top: 0, left: 0, right: 0, bottom: 0,
+    backgroundColor: "rgba(0,0,0,0.5)",
+  },
+  pickerSheet: {
+    backgroundColor: "#fff",
+    borderTopLeftRadius: 16,
+    borderTopRightRadius: 16,
+    paddingHorizontal: 14,
+    paddingTop: 12,
+    paddingBottom: 24,
+    maxHeight: 540,
+  },
+  pickerHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: 8,
+  },
+  pickerTitle: {
+    flex: 1,
+    fontSize: 15,
+    fontWeight: "800",
+    color: "#0F172A",
+  },
+  pickerRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 8,
+    paddingVertical: 12,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderColor: "#E2E8F0",
+  },
+  pickerLbl: { fontSize: 14, fontWeight: "700", color: "#0F172A" },
+  pickerKey: { fontSize: 12, color: "#64748B", marginTop: 2 },
 
   addBtn: {
     flexDirection: "row",

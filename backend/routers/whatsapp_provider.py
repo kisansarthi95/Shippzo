@@ -226,6 +226,8 @@ class EventTriggerUpdate(BaseModel):
     enabled:          Optional[bool]              = None
     automation_id:    Optional[str]               = Field(None, max_length=120)
     template_preview: Optional[str]               = Field(None, max_length=3000)
+    # Phase F4.9 — first-class boolean so the toggle survives reloads.
+    template_enabled: Optional[bool]              = None
     selected_fields:  Optional[List[str]]         = None
     custom_fields:    Optional[List[CustomField]] = None
     variable_mapping: Optional[Dict[str, str]]    = None
@@ -316,6 +318,11 @@ def _event_doc_to_dto(d: Dict[str, Any]) -> Dict[str, Any]:
         "enabled":          bool(d.get("enabled", True)),
         "automation_id":    d.get("automation_id") or "",
         "template_preview": d.get("template_preview") or "",
+        # Phase F4.9 — `template_enabled` is a first-class persisted
+        # bool. Prior versions derived this from `bool(template_preview)`
+        # in the UI, so an operator toggling ON but not entering any
+        # template text saw the switch snap back OFF on the next open.
+        "template_enabled": bool(d.get("template_enabled", False)),
         "selected_fields":  list(d.get("selected_fields") or []),
         "custom_fields":    list(d.get("custom_fields") or []),
         "variable_mapping": dict(d.get("variable_mapping") or {}),
@@ -709,6 +716,9 @@ def init() -> None:
             patch["automation_id"] = payload.automation_id.strip()
         if payload.template_preview is not None:
             patch["template_preview"] = payload.template_preview
+        # Phase F4.9 — persist the Enable-Template toggle.
+        if payload.template_enabled is not None:
+            patch["template_enabled"] = bool(payload.template_enabled)
         if payload.selected_fields is not None:
             # De-duplicate while preserving order.
             seen: Dict[str, None] = {}

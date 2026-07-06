@@ -1,0 +1,32 @@
+{
+  "summary": "Phase F4.9 — WhatsApp Provider bug fixes verified. Backend-only. Bug #3 (template_enabled toggle now persists) and Bug #6 (all event-trigger settings survive reload) both fixed correctly. 8/8 new F4.9 tests + 55/55 courier-sync/OFD regression tests pass. No code changes needed.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_phase_f49_whatsapp_provider.py",
+    "/app/test_reports/pytest/pytest_iteration_39_f49.xml",
+    "/app/test_reports/pytest/pytest_iteration_39_regression.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "routers/whatsapp_provider.py line 325: template_enabled default is False. If any existing docs pre-date F4.9 (i.e. no template_enabled field in Mongo), they will now report template_enabled=false in GET responses even if they had a template_preview. This matches the design comment (`prior versions derived this from bool(template_preview)`), so the UI toggle will be OFF on first load after upgrade for existing configured triggers — main agent should confirm this is acceptable UX or add a one-time migration.",
+    "PUT /events/{event_key} silently drops empty-string keys/values in variable_mapping (line 738-740). This is fine but callers cannot explicitly clear one mapping key while keeping others — they must resend the full desired map."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_phase_f49_whatsapp_provider.py (new)"
+  ],
+  "success_rate": {"backend": "100% (8/8 new + 55/55 regression)", "frontend": "not tested (backend-only request)"},
+  "seed_data_creation": "None — tests read/mutate only the otp_login event trigger and clean up in test_cleanup_restore_defaults.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Phase F4.9 backend fully verified. New test file test_phase_f49_whatsapp_provider.py covers: (1) list events returns template_enabled bool on every item, (2) toggle True persists across GET, (3) toggle False persists, (4) full round-trip of automation_id + template_preview + template_enabled + selected_fields + variable_mapping, (5) cleanup restores defaults, (6) AVAILABLE_FIELDS endpoint shape + required keys, (7) unknown event_key → 404, (8) empty PUT → 400. Regression: 55/55 courier-sync + F4.4 OFD alerts still green.",
+  "rca_of_issue": "N/A — verification only. Fix in whatsapp_provider.py (EventTriggerUpdate.template_enabled field + _event_doc_to_dto reflection + PUT patch handler) was correct and complete."
+}

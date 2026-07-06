@@ -2206,6 +2206,8 @@ export const Api = {
           enabled: boolean;
           automation_id: string;
           template_preview: string;
+          // Phase F4.9 — persisted Enable-Template toggle
+          template_enabled: boolean;
           selected_fields: string[];
           custom_fields: { name: string; value: string }[];
           variable_mapping: Record<string, string>;
@@ -2221,6 +2223,8 @@ export const Api = {
       enabled?: boolean;
       automation_id?: string;
       template_preview?: string;
+      // Phase F4.9 — persisted Enable-Template toggle
+      template_enabled?: boolean;
       selected_fields?: string[];
       custom_fields?: { name: string; value: string }[];
       variable_mapping?: Record<string, string>;

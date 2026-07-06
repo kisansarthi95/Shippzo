@@ -110,7 +110,22 @@ export default function CourierSyncScreen() {
           backendUrl,
           authToken:     token,
           deviceId,
-          senderPattern: "INPOST",
+          // Phase F4.8 — Real India Post identifier.
+          //
+          // Every legitimate India Post SMS ends with "- IndiaPost"
+          // in the body regardless of the DLT sender prefix used
+          // (VA-INPOST-G / AD-IPOSTA / VM-IPOSTS / etc.) — the
+          // headers vary by telco but the brand tag in the body is
+          // constant. Using "IndiaPost" therefore matches EVERY
+          // real India Post notification via the native listener's
+          // `title + text` substring check, while safely rejecting
+          // unrelated messages.
+          //
+          // The backend regex (backend/courier_sync/india_post.py
+          // `_SENDER_RE`) is kept in lock-step — it accepts both
+          // this identifier AND the legacy IN?POST DLT prefixes so
+          // no historical events are dropped.
+          senderPattern: "IndiaPost",
         });
       }
       refreshNativeStatus();
