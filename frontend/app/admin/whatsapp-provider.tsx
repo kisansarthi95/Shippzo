@@ -836,20 +836,20 @@ function EventEditorModal({
             </TouchableOpacity>
 
             {advancedOpen && <>
-            {/* Automation ID */}
-            <Text style={styles.fieldLabel}>Automation ID (optional)</Text>
-            <Text style={styles.hint}>
-              Only needed if your provider requires a per-event
-              automation ID separate from the Base URL. Leave blank
-              to POST directly to the Base URL.
-            </Text>
-            <TextInput
-              value={draft.automation_id}
-              onChangeText={(v) => setDraft({ ...draft, automation_id: v })}
-              placeholder="Leave blank if not needed"
-              autoCapitalize="none"
-              style={styles.input}
-            />
+            {/* Phase F5.3 (2026-06-27) — Automation ID field removed.
+                Reason: Base URL configured up top ALREADY contains the
+                per-provider automation ID (FlowConnect gives one URL
+                per automation e.g.
+                https://…/api/automations/69ff6d.../execute). Asking
+                operators to re-enter it here caused endless "why isn't
+                it working" reports because they'd either paste the
+                whole URL or leave it blank and the template merge
+                would break. Backend now always POSTs to base_url
+                directly when the per-event automation_id is empty
+                (see whatsapp_provider.py dispatch_event). The advanced
+                fields below (Fields to Send, Variable Mapping,
+                Template, Custom Fields) stay so ops can revive them
+                if a future provider needs per-event overrides. */}
 
             {/* Phase F5.2 — OTP-specific warning. FlowConnect (and every
                 other BSP we've integrated) attaches ONE template per

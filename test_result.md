@@ -24101,3 +24101,35 @@ agent_communication:
             Mode card + Advanced toggle; tapping toggle reveals the
             full editor with all fields intact.
             All 8 whatsapp provider tests still pass.
+
+## Phase F5.3.1 — Automation ID Field Removed (2026-06-27)
+
+    - task: "Remove redundant Automation ID field from event editor"
+      implemented: true
+      working: true
+      file: /app/frontend/app/admin/whatsapp-provider.tsx, DB whatsapp_event_triggers cleared
+      status_history:
+        - working: true
+          agent: "main"
+          comment: |
+            User feedback: automation_id field is redundant because the
+            Base URL configured up top ALREADY contains the automation
+            ID (FlowConnect provides one full URL per automation).
+            Asking operators to re-enter it caused confusion + failed
+            dispatches when they pasted the full URL or left it blank.
+            Fix:
+            - Removed the entire "Automation ID (optional)" input from
+              the advanced settings block. Left a well-commented
+              placeholder explaining WHY it's gone.
+            - DB migration: cleared automation_id on all 9 triggers
+              (was polluted with pasted URLs on some rows).
+            - Backend already handles empty automation_id via the
+              Phase F5.3 fallback (POSTs directly to base_url).
+            - End-to-end verification: Test Send returned success:true,
+              status:200. Backend log shows POST to base_url with
+              otp=123456 as query param.
+            User must now only configure:
+              1. WhatsApp Provider dropdown
+              2. API Key (token)
+              3. Base URL (full endpoint including automation)
+            Nothing else per event — just Enable + Test Send.
