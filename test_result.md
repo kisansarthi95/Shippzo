@@ -24029,3 +24029,41 @@ agent_communication:
             Verified via screenshots: both screens render correctly.
             Zero compile errors. Only pre-existing unescaped-entity lint
             warnings remain (unrelated to these changes).
+
+## Phase F5.2 — OTP Delivery Bug Root-Cause + UI Fix (2026-06-27)
+
+    - task: "OTP not appearing on WhatsApp — diagnostic UI"
+      implemented: true
+      working: true
+      file: /app/frontend/app/admin/whatsapp-provider.tsx
+      status_history:
+        - working: true
+          agent: "main"
+          comment: |
+            User reported OTP not being received on WhatsApp — only "Admin"
+            text and phone number appearing. Diagnosis:
+            - Backend IS sending otp=123456 in payload (verified via
+              whatsapp_provider_log — status: 200, provider: success)
+            - Root cause: FlowConnect binds ONE template per automation_id.
+              User has ONE automation (69ff6d211a1dc) shared across OTP
+              login/signup + 6 stage events. The template references
+              {{customer_name}} but NOT {{otp}}, so OTP delivery renders
+              a generic message.
+            Fix implemented (UI diagnostic — user-side FlowConnect config
+            requires separate automation with {{otp}} template):
+            1. Detect shared-automation antipattern (compute sharedWith
+               array via useMemo across all events with same automation_id).
+            2. Prominent yellow warning banner when OTP event's
+               automation_id is shared with any non-OTP event, listing
+               which stage events share it, and explaining the fix.
+            3. Blue "cheatsheet" panel on OTP events showing required
+               FlowConnect template variables ({{otp}}, {{customer_name}},
+               {{customer_phone}}) with copy-ready reference template
+               (single-tap Clipboard.setStringAsync).
+            4. "Recent Requests" panel loading last 3 dispatched payloads
+               via Api.adminWppLogs(event_key, 3) so admin can verify
+               what was actually pushed to the provider.
+            Verified via screenshots: warning + cheatsheet + recent
+            requests all render correctly. Recent Requests confirms
+            otp=123456 IS being sent — user must update FlowConnect
+            template to include {{otp}} placeholder.

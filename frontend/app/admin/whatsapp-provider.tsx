@@ -351,6 +351,7 @@ export default function AdminWhatsAppProviderScreen() {
         <EventEditorModal
           event={editing}
           available={available}
+          allEvents={events}
           onClose={() => setEditing(null)}
           onSave={saveEvent}
           saving={savingEvent}
@@ -649,17 +650,54 @@ function EventCard({
 function EventEditorModal({
   event,
   available,
+  allEvents,
   onClose,
   onSave,
   saving,
 }: {
   event: EventRow;
   available: AvailableField[];
+  allEvents: EventRow[];
   onClose: () => void;
   onSave: (draft: EventRow) => void;
   saving: boolean;
 }) {
   const [draft, setDraft] = useState<EventRow>(event);
+  // Phase F5.2 — Detect if this OTP event's automation_id is SHARED
+  // with any non-OTP event. This is the #1 cause of "OTP delivered
+  // without the code" bug reports.
+  const isOtpEvent =
+    event.event_key === "otp_login" || event.event_key === "otp_signup";
+  const sharedWith = useMemo(() => {
+    const target = (draft.automation_id || "").trim();
+    if (!target) return [] as string[];
+    return allEvents
+      .filter(
+        (e) =>
+          e.event_key !== draft.event_key &&
+          (e.automation_id || "").trim() === target,
+      )
+      .map((e) => e.label);
+  }, [draft.automation_id, draft.event_key, allEvents]);
+  const otpSharedWithStage = isOtpEvent && sharedWith.length > 0;
+  // Phase F5.2 — Recent request payloads for THIS event (last 3).
+  const [logs, setLogs] = useState<any[]>([]);
+  const [logsLoading, setLogsLoading] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      setLogsLoading(true);
+      try {
+        const r = await Api.adminWppLogs(draft.event_key, 3);
+        if (alive) setLogs(r.items || []);
+      } catch {
+        if (alive) setLogs([]);
+      } finally {
+        if (alive) setLogsLoading(false);
+      }
+    })();
+    return () => { alive = false; };
+  }, [draft.event_key]);
   // Phase F4.9 — Enable-Template toggle now bound directly to the
   // persisted `draft.template_enabled` bool. Previously we derived
   // this from the length of `template_preview` which meant a toggle
@@ -762,6 +800,141 @@ function EventEditorModal({
               autoCapitalize="none"
               style={styles.input}
             />
+
+            {/* Phase F5.2 — OTP-specific warning. FlowConnect (and every
+                other BSP we've integrated) attaches ONE template per
+                automation_id. When the same automation is reused for
+                both OTP + stage messages, the OTP branch inherits the
+                stage template — which has no {{otp}} placeholder — so
+                customers get a generic message without the code. This
+                banner catches the shared-automation antipattern before
+                the operator ever tests it. */}
+            {isOtpEvent && otpSharedWithStage && (
+              <View style={styles.otpWarn} testID="otp-shared-warning">
+                <View style={styles.otpWarnHeader}>
+                  <PhIcon name="warning" size={20} color="#B45309" />
+                  <Text style={styles.otpWarnTitle}>
+                    Shared automation detected
+                  </Text>
+                </View>
+                <Text style={styles.otpWarnBody}>
+                  This OTP event shares its automation ID with:{" "}
+                  <Text style={{ fontWeight: "700" }}>
+                    {sharedWith.join(", ")}
+                  </Text>
+                  . FlowConnect binds ONE template per automation ID, so
+                  your OTP messages are being delivered using the stage
+                  template — which does not include the OTP code.
+                </Text>
+                <Text style={[styles.otpWarnBody, { marginTop: 8 }]}>
+                  <Text style={{ fontWeight: "700" }}>Fix:</Text>{" "}
+                  Create a NEW automation on FlowConnect dedicated to
+                  OTP delivery (template must reference{" "}
+                  <Text style={styles.code}>{"{{otp}}"}</Text>) and paste
+                  that automation ID here.
+                </Text>
+              </View>
+            )}
+
+            {/* Phase F5.2 — OTP variable cheat sheet + copy-ready
+                reference template. Shown for OTP events regardless of
+                shared-automation status so operators always know which
+                placeholders their FlowConnect template must reference. */}
+            {isOtpEvent && (
+              <View style={styles.otpCheatBox} testID="otp-cheatsheet">
+                <View style={styles.otpCheatHeader}>
+                  <PhIcon name="information-circle" size={18} color="#1E40AF" />
+                  <Text style={styles.otpCheatTitle}>
+                    Your FlowConnect template needs these variables
+                  </Text>
+                </View>
+                <View style={styles.otpVarRow}>
+                  <Text style={styles.otpVarChip}>{"{{otp}}"}</Text>
+                  <Text style={styles.otpVarDesc}>the one-time code (required)</Text>
+                </View>
+                <View style={styles.otpVarRow}>
+                  <Text style={styles.otpVarChip}>{"{{customer_name}}"}</Text>
+                  <Text style={styles.otpVarDesc}>recipient's name (optional)</Text>
+                </View>
+                <View style={styles.otpVarRow}>
+                  <Text style={styles.otpVarChip}>{"{{customer_phone}}"}</Text>
+                  <Text style={styles.otpVarDesc}>phone number (optional)</Text>
+                </View>
+                <TouchableOpacity
+                  style={styles.otpCopyBtn}
+                  testID="otp-copy-template"
+                  onPress={async () => {
+                    const t =
+                      "Hello {{customer_name}},\n\n" +
+                      "Your Shippzo verification code is *{{otp}}*.\n\n" +
+                      "This code expires in 5 minutes. Please do not share " +
+                      "it with anyone.\n\n— Shippzo";
+                    try {
+                      await Clipboard.setStringAsync(t);
+                      Alert.alert(
+                        "Template copied ✓",
+                        "Paste this into your FlowConnect automation " +
+                          "template. Make sure {{otp}} placeholder is preserved.",
+                      );
+                    } catch {
+                      Alert.alert("Copy failed", "Could not access clipboard.");
+                    }
+                  }}
+                >
+                  <PhIcon name="copy-outline" size={14} color="#1E40AF" />
+                  <Text style={styles.otpCopyBtnTxt}>
+                    Copy ready-made OTP template
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            )}
+
+            {/* Phase F5.2 — Recent Requests. Renders the last 3
+                payloads pushed to the provider so admins can verify
+                (a) that the OTP is being included, and (b) which
+                variables their template must reference. */}
+            <View style={styles.recentBox} testID="recent-requests">
+              <Text style={styles.recentTitle}>
+                📋 Recent Requests ({logsLoading ? "…" : logs.length})
+              </Text>
+              <Text style={styles.hint}>
+                Actual data pushed to the provider on the last few
+                dispatches. Cross-check these keys against your
+                FlowConnect template placeholders.
+              </Text>
+              {logs.length === 0 && !logsLoading && (
+                <Text style={styles.emptyRecent}>
+                  No requests logged yet — hit "Test Send" to trigger one.
+                </Text>
+              )}
+              {logs.map((r, i) => {
+                const req = r.request || {};
+                const shown = Object.entries(req)
+                  .filter(([k]) => k !== "api_token")
+                  .slice(0, 12);
+                return (
+                  <View key={i} style={styles.recentCard}>
+                    <View style={styles.rowBetween}>
+                      <Text style={[
+                        styles.recentStatus,
+                        r.success ? styles.recentOk : styles.recentBad,
+                      ]}>
+                        {r.success ? "✓" : "✗"} {r.status_code || "?"}
+                      </Text>
+                      <Text style={styles.recentTs}>
+                        {(r.ts || "").slice(0, 19).replace("T", " ")}
+                      </Text>
+                    </View>
+                    {shown.map(([k, v]) => (
+                      <Text key={k} style={styles.recentKV} numberOfLines={1}>
+                        <Text style={styles.recentKey}>{k}:</Text>{" "}
+                        <Text style={styles.code}>{String(v)}</Text>
+                      </Text>
+                    ))}
+                  </View>
+                );
+              })}
+            </View>
 
             {/* Enable Template toggle + Template preview + copy.
                 Toggle is OFF by default and hides the template
@@ -1382,4 +1555,78 @@ const styles = StyleSheet.create({
   },
   testTitle: { fontSize: 17, fontWeight: "800", color: "#0F172A" },
   testSub:   { fontSize: 12, color: "#64748B", marginTop: 2, marginBottom: 10 },
+
+  // ── Phase F5.2 — OTP warning + cheat-sheet + recent-requests ────
+  otpWarn: {
+    marginTop: 14,
+    backgroundColor: "#FFFBEB",
+    borderColor: "#FCD34D",
+    borderWidth: 1,
+    borderRadius: 10,
+    padding: 12,
+  },
+  otpWarnHeader:  { flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 6 },
+  otpWarnTitle:   { fontSize: 13, fontWeight: "800", color: "#92400E" },
+  otpWarnBody:    { fontSize: 12, color: "#78350F", lineHeight: 17 },
+
+  otpCheatBox: {
+    marginTop: 14,
+    backgroundColor: "#EFF6FF",
+    borderColor: "#BFDBFE",
+    borderWidth: 1,
+    borderRadius: 10,
+    padding: 12,
+  },
+  otpCheatHeader: { flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 8 },
+  otpCheatTitle:  { fontSize: 13, fontWeight: "800", color: "#1E40AF" },
+  otpVarRow:      { flexDirection: "row", alignItems: "center", gap: 8, marginTop: 6 },
+  otpVarChip:     {
+    fontFamily: Platform.select({ ios: "Menlo", android: "monospace" }) || "monospace",
+    fontSize: 11,
+    fontWeight: "700",
+    color: "#1E3A8A",
+    backgroundColor: "#DBEAFE",
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 4,
+  },
+  otpVarDesc: { flex: 1, fontSize: 11, color: "#3730A3" },
+  otpCopyBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    marginTop: 10,
+    paddingVertical: 9,
+    borderRadius: 8,
+    backgroundColor: "#fff",
+    borderColor: "#BFDBFE",
+    borderWidth: 1,
+  },
+  otpCopyBtnTxt: { fontSize: 12, fontWeight: "700", color: "#1E40AF" },
+
+  recentBox: {
+    marginTop: 16,
+    backgroundColor: "#F8FAFC",
+    borderColor: "#E5E7EB",
+    borderWidth: 1,
+    borderRadius: 10,
+    padding: 12,
+  },
+  recentTitle:  { fontSize: 13, fontWeight: "800", color: "#0F172A", marginBottom: 4 },
+  emptyRecent:  { fontSize: 11, color: "#94A3B8", fontStyle: "italic", marginTop: 6 },
+  recentCard:   {
+    marginTop: 8,
+    backgroundColor: "#fff",
+    borderColor: "#E5E7EB",
+    borderWidth: 1,
+    borderRadius: 8,
+    padding: 10,
+  },
+  recentStatus: { fontSize: 11, fontWeight: "800" },
+  recentOk:     { color: "#059669" },
+  recentBad:    { color: "#DC2626" },
+  recentTs:     { fontSize: 10, color: "#64748B" },
+  recentKV:     { fontSize: 11, color: "#0F172A", marginTop: 2 },
+  recentKey:    { fontWeight: "700", color: "#334155" },
 });
