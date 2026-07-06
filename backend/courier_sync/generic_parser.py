@@ -153,9 +153,15 @@ def _extract_tracking_ids(compiled: Dict[str, Any], text: str) -> List[str]:
     if not rx or not text:
         return []
     seen: List[str] = []
-    for m in rx.finditer(text.upper() if not compiled.get("case_sensitive") else text):
-        val = m.group(1) if m.groups() else m.group(0)
-        val = val.strip()
+    haystack = text if compiled.get("case_sensitive") else text.upper()
+    for m in rx.finditer(haystack):
+        # Always return the FULL match (group 0) so operators can
+        # write either `\b[A-Z]{2}\d{9}IN\b` or `\b([A-Z]{2}\d{9}IN)\b`
+        # — both extract the identical AWB. Using group(1) here would
+        # strip alpha prefixes when the operator wraps only the digits
+        # in a capture group (e.g. `\bND(\d{6})\b` would then return
+        # "123456" instead of "ND123456"), breaking shipment lookup.
+        val = m.group(0).strip()
         if val and val not in seen:
             seen.append(val)
     return seen

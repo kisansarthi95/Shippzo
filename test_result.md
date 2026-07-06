@@ -23914,3 +23914,47 @@ agent_communication:
            Delivery' + out_for_delivery_at stamped).
         5. Regression: Booked/Delivered flows and no_downgrade_after_delivered
            still work unchanged.
+
+## Phase F5.0 — Per-Courier Auto SMS Sync (2026-06-27)
+
+    - task: "Integrate SMS scanning config into each Courier Partner"
+      implemented: true
+      working: true
+      file: /app/backend/courier_sync/generic_parser.py, /app/backend/routers/couriers.py, /app/frontend/app/courier/[id].tsx, /app/frontend/components/courier/AutoSyncSection.tsx
+      stuck_count: 0
+      priority: "high"
+      needs_retesting: false
+      status_history:
+        - working: true
+          agent: "main"
+          comment: |
+            Phase F5.0 removes the standalone /courier-sync screen and moves
+            SMS scanning config into each Courier Partner edit screen. Backend
+            changes: added 5 fields to Courier model (auto_sync_enabled,
+            auto_sync_sender_patterns, auto_sync_tracking_regex,
+            auto_sync_status_rules, auto_sync_case_sensitive); new generic
+            DB-driven parser (courier_sync/generic_parser.py) replaces the
+            hardcoded India Post parser; startup migration seeds
+            INDIA_POST_DEFAULT_CONFIG into all existing "India Post" named
+            couriers (matched 27 couriers on the sandbox). Ingest now tries
+            per-courier configs FIRST, falls back to legacy hardcoded partners
+            for backward compat. New endpoints on couriers router:
+            GET  /api/courier-sync/status-choices   (6 canonical stages)
+            GET  /api/courier-sync/defaults?name=X  (well-known partner defaults)
+            POST /api/couriers/{id}/sync-test-parse (dry-run parser)
+            GET  /api/couriers/{id}/sync-events     (recent events for that courier)
+
+            Frontend added AutoSyncSection component with Enable toggle,
+            Sender Chips + Add, Tracking regex with live preview, Status
+            Rules table (14 pre-seeded India Post rules) with add/remove and
+            dropdown mapping to internal stages, Test Parse box, and Recent
+            Events list. Standalone "Courier Auto Sync" entry removed from
+            Settings screen. Auto-prefill on courier-name-blur for well-known
+            partners (India Post) so operators can just save & go.
+
+            Tested: 64/64 backend tests pass (16 new F5.0 + 48 regression).
+            Screenshot verified: Auto SMS Sync section renders with all
+            fields populated for the migrated Indian Post courier.
+            Bug fix during testing: _extract_tracking_ids now returns
+            m.group(0) instead of m.group(1) so operator-friendly regex
+            like `\bND(\d{6})\b` still returns the full "ND123456" AWB.
