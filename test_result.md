@@ -24133,3 +24133,37 @@ agent_communication:
               2. API Key (token)
               3. Base URL (full endpoint including automation)
             Nothing else per event — just Enable + Test Send.
+
+## Phase F5.4 — India Post Sender Regex Update (2026-06-27)
+
+    - task: "Verify India Post real sender ID + broaden regex"
+      implemented: true
+      working: true
+      file: /app/backend/courier_sync/india_post.py, /app/backend/courier_sync/generic_parser.py
+      status_history:
+        - working: true
+          agent: "main"
+          comment: |
+            User requested Kotlin Log.d instrumentation (already done in
+            Phase F4.8 — verified 12+ Log.d gates), and expanded India
+            Post sender regex to match real DLT variants.
+            - Kotlin `CourierNotificationListenerService.kt`: NO changes
+              needed — every gate already has Log.d (payload_empty,
+              enabled, config_present, sender_filter, sms_app_match,
+              http_POST_pre/response/exception). Frontend
+              `courier-sync.tsx` already sets senderPattern="IndiaPost".
+            - Backend `_SENDER_RE` broadened from just `INPOST` to
+              `(INPOST|IPOSTV|INDPOSTV)` to cover DLT header variants
+              (VA-INPOST-G / AD-IPOSTA / VM-IPOSTS / AX-IPOSTV etc.).
+              "IndiaPost" (freeform body brand tag) intentionally NOT
+              in the backend gate — the Kotlin listener filters on
+              title+text for that tag; the backend re-validates on the
+              DLT header only to prevent unrelated apps mentioning
+              "India Post" in their body from slipping through.
+            - `INDIA_POST_DEFAULT_CONFIG.auto_sync_sender_patterns`
+              expanded to `["INPOST", "IPOSTV", "INDPOSTV"]`.
+            - DB migration: 37 existing India Post couriers updated
+              from `["INPOST"]` to the 3-variant list.
+            All 48 courier_sync + whitelist tests pass. The A7
+            "wrong sender" test still correctly rejects unrelated
+            senders because "IndiaPost" body-tag isn't in the regex.

@@ -302,7 +302,7 @@ def parse_with_couriers(
 # --------------------------------------------------------------------
 INDIA_POST_DEFAULT_CONFIG: Dict[str, Any] = {
     "auto_sync_enabled":         True,
-    "auto_sync_sender_patterns": ["INPOST"],
+    "auto_sync_sender_patterns": ["INPOST", "IPOSTV", "INDPOSTV"],
     "auto_sync_tracking_regex":  r"\b([A-Z]{2}\d{9}IN)\b",
     "auto_sync_case_sensitive":  False,
     "auto_sync_status_rules": [

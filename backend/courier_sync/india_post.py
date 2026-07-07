@@ -47,7 +47,13 @@ PARTNER_NAME = "India Post"
 # Sender-ID matchers. We accept any DLT header that contains
 # "INPOST" (case-insensitive) so future telco-prefix variations
 # (today: VA-, VK-, JD-, AX-, BP-, etc.) don't break detection.
-_SENDER_RE = re.compile(r"INPOST", re.IGNORECASE)
+# DLT sender-ID gate. Every legit India Post DLT header contains
+# one of these tokens; the freeform "IndiaPost" brand tag lives in
+# the message body and is checked separately by the client-side
+# Kotlin listener (senderPattern="IndiaPost") — the backend re-
+# validates on the DLT header only so unrelated apps that happen
+# to mention India Post in their body don't slip through.
+_SENDER_RE = re.compile(r"(INPOST|IPOSTV|INDPOSTV)", re.IGNORECASE)
 
 # AWB / Tracking ID — strict 13-char ICAO-style barcode used by
 # India Post Speed Post, Registered Post, and EMS. "\b" anchors
@@ -260,4 +266,4 @@ def parse(
 TRACKING_PATTERN_STR = r"[A-Z]{2}\d{9}IN"
 
 # Sender pattern (substring) exposed to frontend for the same reason.
-SENDER_PATTERN_STR = r"INPOST"
+SENDER_PATTERN_STR = r"(INPOST|IPOSTV|INDPOSTV)"
