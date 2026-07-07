@@ -482,37 +482,36 @@ def _build_payload(
     context:    Dict[str, Any],
     phone:      str,
 ) -> Dict[str, str]:
-    """Compose the query-param payload to ship to the provider.
+    """Compose the message payload to ship to the provider.
 
-    Rules:
-      - api_token + contact_phone + contact_name are always present
-        (FlowConnect requires the latter two).
-      - Each ticked field is added to the payload; the variable_mapping
-        renames the outgoing key while keeping the value intact.
-      - Custom (static) fields are appended last and can override
-        anything before them — useful for things like "template_id".
+    Phase F5.5 — Simplification. Removed the "selected_fields",
+    "variable_mapping", and "custom_fields" indirection entirely per
+    the operator's directive: "no template, no auto-mapping, just
+    POST the data". The payload now contains:
+      - contact_phone / contact_name (always required by BSPs)
+      - event_type (so downstream can route)
+      - app_name (branding)
+      - Every non-null field in `context` as-is (customer_name, otp,
+        order_id, tracking_id, etc.)
+    The api_token is NO LONGER in the payload — Phase F5.5 moves it
+    to the HTTP Authorization header, matching modern BSP APIs.
     """
     cc = cfg.get("default_country_code") or "91"
     normalised = _normalise_phone(phone, cc)
     payload: Dict[str, str] = {
-        "api_token":     cfg.get("api_token", ""),
         "contact_phone": normalised,
         "contact_name":  (context.get("customer_name") or "Customer")[:80],
         "app_name":      "Shippzo",
+        "event_type":    str(trigger.get("event_key") or ""),
     }
-
-    mapping = trigger.get("variable_mapping") or {}
-    for field_key in (trigger.get("selected_fields") or []):
-        value = context.get(field_key, "")
-        out_key = mapping.get(field_key) or field_key
-        payload[str(out_key)] = "" if value is None else str(value)
-
-    for entry in (trigger.get("custom_fields") or []):
-        name  = (entry.get("name") or "").strip() if isinstance(entry, dict) else ""
-        value = entry.get("value") if isinstance(entry, dict) else ""
-        if name:
-            payload[name] = "" if value is None else str(value)
-
+    # Flatten context — every scalar field is pushed as-is. Downstream
+    # provider template picks whichever variables it cares about.
+    for k, v in (context or {}).items():
+        if v is None:
+            continue
+        if not isinstance(v, (str, int, float, bool)):
+            continue
+        payload[str(k)] = str(v)
     return payload
 
 
@@ -586,14 +585,26 @@ async def dispatch_event(
         payload  = _build_payload(
             cfg=cfg, trigger=trigger, context=context, phone=target_phone,
         )
-        safe_payload = {**payload, "api_token": "***"}
+        # Phase F5.5 — api_token flows in the Authorization header, not
+        # the URL. Body is form-encoded query params for backwards compat
+        # with FlowConnect's existing automation-URL contract; JSON body
+        # is also accepted by their /execute endpoint.
+        safe_payload = {**payload}
+        req_headers = {
+            "Accept":        "application/json",
+            "Authorization": f"Bearer {api_token}",
+            # Some providers reject Bearer scheme — fall back on a
+            # secondary header a lot of Indian BSPs (WATI, Interakt,
+            # FlowConnect) recognise. Cheap redundancy.
+            "X-Api-Token":   api_token,
+        }
 
         t0 = time.time()
         async with httpx.AsyncClient(timeout=8.0) as cli:
             resp = await cli.post(
                 endpoint,
                 params=payload,
-                headers={"Accept": "application/json"},
+                headers=req_headers,
             )
         duration_ms = (time.time() - t0) * 1000.0
         try:
