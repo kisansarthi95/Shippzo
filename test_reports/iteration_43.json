@@ -1,0 +1,45 @@
+{
+  "summary": "UI-only verification of /admin/whatsapp-provider after 4 regression fixes (Phase F5.7). Logged in as admin@test.com, exercised full flow: expanded Provider Connection card, typed Base URL + API Token, saved connection, opened Test Send modal, opened Event Editor and expanded Advanced Settings. All four fixes verified end-to-end. Stage-mapping UI inside Advanced Settings remains fully intact.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "PATCH /api/admin/whatsapp/config",
+        "issue": "During Save Connection with base_url='https://example.com/api/automations/testid/execute' + api_token='TEST_TOKEN_XYZ', backend returned HTTP 422. UI state stayed correct (Ready badges remained green, values still displayed), so it did not block the regression verification, but the operator would see a Save-failed alert on first-time save. Worth confirming request payload matches Pydantic schema (possibly endpoint_template empty-string validation)."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/tmp/wpp_1_loaded.png",
+    "/tmp/wpp_2_expanded.png",
+    "/tmp/wpp_3_save_ready.png",
+    "/tmp/wpp_4_testsend_modal.png",
+    "/tmp/wpp_editor.png",
+    "/tmp/wpp_editor_adv.png"
+  ],
+  "action_items": [
+    "OPTIONAL: Investigate the 422 returned by PATCH /api/admin/whatsapp/config when saving with example.com URL — backend Pydantic validator may reject the trimmed empty endpoint_template. UI does not block save button, so this is a minor backend surface issue.",
+    "OPTIONAL: The React 'change in the order of Hooks called by NewOrderAlertProvider / Dashboard' errors appear on every login. Unrelated to this fix but noisy in production logs."
+  ],
+  "critical_code_review_comments": [
+    "ProviderConfigCard.canSave logic (line 440-443) correctly falls back to cfg.api_token_masked so re-verifying the card after backend-masked reload does not falsely disable Save. Good.",
+    "EventCard.configured now driven by providerReady (Base URL + API Token set globally). hasOverride retained for per-event automation_id label. Clean.",
+    "onSave payload still passes endpoint_template (line 545) even though the UI no longer exposes the field — this preserves any historical value, which is safe. Confirmed intentional per Phase F5.7 comment."
+  ],
+  "updated_files": [],
+  "success_rate": {
+    "backend": "N/A (backend not in scope)",
+    "frontend": "100% (all 4 regression checks pass)"
+  },
+  "seed_data_creation": "None. Used existing admin@test.com credentials.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Regression fixes verified. UI is stable at /admin/whatsapp-provider. If future testing needs to hit Save Connection cleanly, use a valid provider URL (not example.com) or investigate the 422 on the backend PATCH endpoint. Advanced Settings toggle uses testID='advanced-toggle' but the touchable is not always intercepted by direct playwright click — use bounding-box + page.mouse.click to open it reliably.",
+  "rca_of_issue": "N/A — verification-only run. Findings against the four regressions:\n1. Yellow 'Automation ID not set' warning: NOT PRESENT anywhere on the page. All 10 event pills show green 'Ready'. Fix confirmed (EventCard.configured now = providerReady).\n2. Endpoint Template field REMOVED. Card body contains exactly 4 TextInputs (Provider Name, Base URL, API Token, Default Country Code) + 1 Enable/Disable Switch = 5 fields as required. No 'Enable Advanced Endpoint' toggle present.\n3. Save Connection button ENABLED (computed opacity 1) immediately after typing Base URL + API Token. canSave dirty-check replaced by presence check (line 440-443).\n4. Test Send button ENABLED on every event card (opacity 1 on all 9 rendered Test Send buttons). Clicking OTP Login → Test Send opened the phone-input modal; entering 9876543210 + tapping 'Send Test' fired the API call.\n\nEvent Editor modal opens on Configure. 'Advanced Settings (optional)' toggle CLOSED by default (green Simple Mode banner visible alone). Expanding shows Fields to Send, Variable Mapping, Custom Fields, Enable Template + Template Preview, Recent Requests, OTP cheatsheet — all stage-mapping UI intact as required."
+}
