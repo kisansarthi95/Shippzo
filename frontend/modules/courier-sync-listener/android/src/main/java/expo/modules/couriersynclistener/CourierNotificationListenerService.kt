@@ -96,12 +96,23 @@ class CourierNotificationListenerService : NotificationListenerService() {
     val deviceId      = prefs.getString(CourierSyncListenerModule.KEY_DEVICE_ID, "").orEmpty()
 
     val configOk = backendUrl.isNotEmpty() && authToken.isNotEmpty()
+    // Phase F5.9 — Kotlin's string-template parser trips on nested
+    // double-quoted string literals inside `${...}` expressions when
+    // those `${...}` themselves live inside another `"..."`. Extract
+    // the ternary branches into plain locals FIRST, then just
+    // interpolate the locals into a single flat template so the
+    // parser only ever sees one level of `"..."`. This is the exact
+    // pattern EAS-side Kotlin 2.x rejected as "Expecting an
+    // expression" / "'if' must have both branches" earlier.
+    val backendUrlDbg = if (backendUrl.isEmpty()) "MISSING" else "set(" + backendUrl.length + "c)"
+    val authTokenDbg  = if (authToken.isEmpty())  "MISSING" else "set(" + authToken.length  + "c)"
+    val deviceIdDbg   = if (deviceId.isEmpty())   "MISSING" else deviceId
     Log.d(
       TAG,
-      "[$sid] gate=config_present backendUrl=${if (backendUrl.isEmpty()) "MISSING" else "set(${backendUrl.length}c)"} " +
-        "authToken=${if (authToken.isEmpty()) "MISSING" else "set(${authToken.length}c)"} " +
-        "deviceId=${if (deviceId.isEmpty()) "MISSING" else deviceId} " +
-        "senderFilter=\"$senderFilter\"",
+      "[" + sid + "] gate=config_present backendUrl=" + backendUrlDbg +
+        " authToken=" + authTokenDbg +
+        " deviceId=" + deviceIdDbg +
+        " senderFilter=" + senderFilter,
     )
     if (!configOk) {
       Log.d(TAG, "[$sid] gate=config_present result=FAIL — skip")
