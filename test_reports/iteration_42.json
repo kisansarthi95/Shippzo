@@ -1,0 +1,32 @@
+{
+  "summary": "Phase F5.6 backend testing — Auto-Sync presets for Blue Dart, DTDC, and ShipRocket. Created new pytest suite (20 tests, 100% pass) covering: /api/courier-sync/defaults for all 4 couriers (Blue Dart, DTDC, Shiprocket, India Post regression), unknown-courier matched=false, case-insensitive matching (bluedart/blue dart/BLUE DART/BlUe DaRt), Ship Rocket alias, auth gating (401 without bearer), end-to-end sync-test-parse for all 4 couriers with realistic SMS samples (Blue Dart 11-digit AWB, DTDC X12345678 pattern, ShipRocket 10-digit AWB, India Post EMxxxxxxxxxIN), and partner_slug_for_name unit tests (Blue Dart Express/BLUEDART/Blue-Dart → blue_dart, DTDC Plus → dtdc, Shiprocket X/Ship Rocket → shiprocket, unknown falls back to snake_case). All 13 review requirements verified.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_phase_f56_courier_presets.py",
+    "/app/test_reports/pytest/pytest_iteration_42_f56.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "DTDC tracking regex r'\\b([A-Z]\\d{8,10}|\\d{9,11})\\b' will also match Blue Dart-length numeric AWBs (11 digits). If both couriers coexist for a user, sender-pattern gate must disambiguate — currently OK because DTDC/BLUDRT senders differ, but worth documenting.",
+    "ShipRocket regex \\d{10,15} may over-match long numeric substrings (phone numbers, order refs). Consider bounding to a tighter range once carrier-specific SMS samples are collected in production.",
+    "generic_parser.py is now 520 lines — approaching the 700-line split threshold. Consider extracting DEFAULT_CONFIGS into a separate presets.py module in the next iteration."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_phase_f56_courier_presets.py (new)"
+  ],
+  "success_rate": {"backend": "100%", "frontend": "not tested (per request)"},
+  "seed_data_creation": "Created 4 TEST_-prefixed couriers (cleaned up via autouse fixture DELETE /api/couriers/{id}). No leaked data.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "F5.6 preset additions are backward-compatible and fully tested. Reuse /app/backend/tests/test_phase_f56_courier_presets.py for regression on any future courier_sync/generic_parser.py changes. It uses EXPO_PUBLIC_BACKEND_URL from env; admin@test.com login fixture.",
+  "rca_of_issue": "N/A — no failures."
+}

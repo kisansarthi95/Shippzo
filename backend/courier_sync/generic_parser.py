@@ -340,12 +340,115 @@ INDIA_POST_DEFAULT_CONFIG: Dict[str, Any] = {
 }
 
 
+# ────────────────────────────────────────────────────────────────
+# Phase F5.6 — Additional courier presets (Blue Dart, DTDC, ShipRocket).
+# All three ship with best-effort DLT sender patterns and tracking
+# regexes gathered from public samples. The operator can tweak any
+# field via the courier edit screen; these just prefill sensible
+# defaults so the "Add courier" flow is one-tap for the 4 largest
+# Indian couriers. Status rules mirror India Post's structure —
+# negative phrasings first, canonical → shipment stage mapped with
+# the same whitelist toggle.
+# ────────────────────────────────────────────────────────────────
+
+# Common status-rule set reused across couriers. Kept as a helper
+# fn (not a shared list) because the "keyword" field is a raw
+# regex string and callers occasionally need to prepend
+# courier-specific phrasings (e.g. Blue Dart's "manifested").
+def _common_status_rules(extra_prefix: Optional[List[Dict[str, Any]]] = None) -> List[Dict[str, Any]]:
+    base: List[Dict[str, Any]] = [
+        # Negatives first — must not be masked by the bare "delivered".
+        {"keyword": r"could\s+not\s+be\s+delivered",
+         "canonical_status": "Undelivered",       "shipment_status": "",                 "whitelisted": False},
+        {"keyword": r"undelivered",
+         "canonical_status": "Undelivered",       "shipment_status": "",                 "whitelisted": False},
+        {"keyword": r"return(ed)?\s+to\s+(sender|origin|shipper)",
+         "canonical_status": "RTO",               "shipment_status": "",                 "whitelisted": False},
+        {"keyword": r"\brto\b",
+         "canonical_status": "RTO",               "shipment_status": "",                 "whitelisted": False},
+        {"keyword": r"out\s+for\s+delivery",
+         "canonical_status": "Out for Delivery",  "shipment_status": "Out for Delivery", "whitelisted": True},
+        {"keyword": r"in\s+transit",
+         "canonical_status": "In Transit",        "shipment_status": "",                 "whitelisted": False},
+        {"keyword": r"dispatched",
+         "canonical_status": "In Transit",        "shipment_status": "",                 "whitelisted": False},
+        {"keyword": r"arrived\s+at",
+         "canonical_status": "In Transit",        "shipment_status": "",                 "whitelisted": False},
+        {"keyword": r"reached\s+at",
+         "canonical_status": "In Transit",        "shipment_status": "",                 "whitelisted": False},
+        {"keyword": r"has\s+been\s+delivered",
+         "canonical_status": "Delivered",         "shipment_status": "Delivered",        "whitelisted": True},
+        {"keyword": r"\bdelivered\b",
+         "canonical_status": "Delivered",         "shipment_status": "Delivered",        "whitelisted": True},
+        {"keyword": r"has\s+been\s+(shipped|picked\s+up|booked)",
+         "canonical_status": "Booked",            "shipment_status": "Shipped",          "whitelisted": True},
+        {"keyword": r"\b(shipped|manifested|picked\s+up|booked)\b",
+         "canonical_status": "Booked",            "shipment_status": "Shipped",          "whitelisted": True},
+    ]
+    if extra_prefix:
+        # Prepend courier-specific rules so they win match order.
+        return list(extra_prefix) + base
+    return base
+
+
+BLUE_DART_DEFAULT_CONFIG: Dict[str, Any] = {
+    "auto_sync_enabled":         True,
+    # Blue Dart / DHL Express India DLT headers — sample set covering
+    # the transactional templates the shipper account uses. Ops can
+    # add more via the courier edit screen.
+    "auto_sync_sender_patterns": [
+        "BLUDRT", "BLDART", "BLUART", "BLUEDART", "BLDDLI", "BLUDRT-S",
+    ],
+    # AWB = 11 digits (Blue Dart's canonical waybill length).
+    "auto_sync_tracking_regex":  r"\b(\d{11})\b",
+    "auto_sync_case_sensitive":  False,
+    "auto_sync_status_rules": _common_status_rules(),
+}
+
+
+DTDC_DEFAULT_CONFIG: Dict[str, Any] = {
+    "auto_sync_enabled":         True,
+    # DTDC DLT headers — the express/logistics side uses "DTDCTX"
+    # while the plus/leaf-brand accounts use suffixed variants.
+    "auto_sync_sender_patterns": [
+        "DTDCTX", "DTDCLB", "DTDCEX", "DTDCNW", "DTDCIN", "DTDC-EX", "DTDCEX-S",
+    ],
+    # DTDC AWB: usually a letter followed by 8-10 digits (e.g.
+    # `X12345678`) OR 9-11 pure digits for the numeric-only variants.
+    "auto_sync_tracking_regex":  r"\b([A-Z]\d{8,10}|\d{9,11})\b",
+    "auto_sync_case_sensitive":  False,
+    "auto_sync_status_rules": _common_status_rules(),
+}
+
+
+SHIPROCKET_DEFAULT_CONFIG: Dict[str, Any] = {
+    "auto_sync_enabled":         True,
+    # ShipRocket is an aggregator — SMS templates are usually branded
+    # as "SHPRKT"/"SHIPRO" but the underlying AWB belongs to the
+    # carrier they chose (Delhivery, Xpressbees, etc.). The regex
+    # therefore matches the widest reasonable AWB shape.
+    "auto_sync_sender_patterns": [
+        "SHPRKT", "SHIPRK", "SHPROK", "SHIPRO", "SHROCT", "SHIPRC",
+    ],
+    # Broadest safe AWB shape — 10 to 15 digits, avoids matching
+    # 4-digit OTPs / short numeric fragments.
+    "auto_sync_tracking_regex":  r"\b(\d{10,15})\b",
+    "auto_sync_case_sensitive":  False,
+    "auto_sync_status_rules": _common_status_rules(),
+}
+
+
 # List of well-known courier names → default config. Used by the
 # Create-Courier flow to auto-prefill when the operator types a
 # matching name. Empty list is fine for unknown couriers — they
 # just start blank.
 DEFAULT_CONFIGS_BY_NAME: Dict[str, Dict[str, Any]] = {
-    "india post": INDIA_POST_DEFAULT_CONFIG,
+    "india post":  INDIA_POST_DEFAULT_CONFIG,
+    "blue dart":   BLUE_DART_DEFAULT_CONFIG,
+    "bluedart":    BLUE_DART_DEFAULT_CONFIG,
+    "dtdc":        DTDC_DEFAULT_CONFIG,
+    "shiprocket":  SHIPROCKET_DEFAULT_CONFIG,
+    "ship rocket": SHIPROCKET_DEFAULT_CONFIG,
 }
 
 
@@ -369,6 +472,9 @@ def default_config_for_name(name: str) -> Optional[Dict[str, Any]]:
 # compatibility with pre-F5.0 data.
 _KNOWN_SLUGS = {
     "india_post": ("india post", "indiapost", "indian post"),
+    "blue_dart":  ("blue dart", "bluedart", "blu dart", "bluedart express"),
+    "dtdc":       ("dtdc", "dtdc express", "dtdc courier"),
+    "shiprocket": ("shiprocket", "ship rocket"),
 }
 
 
@@ -385,6 +491,15 @@ def partner_slug_for_name(name: str) -> str:
         # Also match if all key tokens appear anywhere (handles
         # "Indian post", "IndiaPost Speed", "My India Post" etc.)
         if slug == "india_post" and "india" in n and "post" in n:
+            return slug
+        # Phase F5.6 — same fuzzy fallback for the new couriers so
+        # display names like "Blue Dart Express" / "DTDC Plus" /
+        # "Shiprocket X" still resolve to the canonical slug.
+        if slug == "blue_dart" and "blue" in n and "dart" in n:
+            return slug
+        if slug == "dtdc" and "dtdc" in n:
+            return slug
+        if slug == "shiprocket" and ("shiprocket" in n or ("ship" in n and "rocket" in n)):
             return slug
     return (
         n.replace(" ", "_").replace("-", "_").replace(".", "_")
