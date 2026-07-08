@@ -113,6 +113,23 @@ export default function AdminWhatsAppProviderScreen() {
   const [testFor, setTestFor]       = useState<EventRow | null>(null);
   const [testPhone, setTestPhone]   = useState("");
   const [testSending, setTestSending] = useState(false);
+  // Phase F5.8 — inline "Live Response Viewer" state. When null, the
+  // modal only shows the phone input. After a Send, this holds the
+  // generated OTP + full request/response snapshot so the operator
+  // can debug silent-drop failures (BSPs returning 200 but never
+  // delivering the WhatsApp).
+  const [testResult, setTestResult] = useState<{
+    ok:              boolean;
+    generated_otp:   string;
+    event_key:       string;
+    endpoint?:       string;
+    request_payload?: Record<string, any>;
+    response_body?:  any;
+    status_code?:    number | null;
+    duration_ms?:    number;
+    reason?:         string | null;
+    skipped?:        boolean;
+  } | null>(null);
 
   // ── Load all data ─────────────────────────────────────────────────
   const load = useCallback(async () => {
@@ -215,26 +232,36 @@ export default function AdminWhatsAppProviderScreen() {
       return;
     }
     setTestSending(true);
+    setTestResult(null);
     try {
-      const r = await Api.adminWppTestSend({
+      const r: any = await Api.adminWppTestSend({
         event_key: testFor.event_key,
         phone:     phoneTrim,
       });
-      const res = r.result;
-      Alert.alert(
-        r.ok ? "Test sent ✅" : "Test failed",
-        [
-          `Event: ${res.event_key}`,
-          res.skipped ? "Skipped" : `Status: ${res.status_code ?? "—"}`,
-          res.reason ? `Reason: ${res.reason}` : "",
-          res.duration_ms ? `Took: ${res.duration_ms} ms` : "",
-        ].filter(Boolean).join("\n"),
-      );
+      const res = r.result || {};
+      // Phase F5.8 — hold the full snapshot in state so the modal
+      // renders an inline Live Response Viewer instead of firing a
+      // one-shot Alert. The operator can see EXACTLY what was sent
+      // (endpoint + payload + response) and copy the generated OTP.
+      setTestResult({
+        ok:               !!r.ok,
+        generated_otp:    r.generated_otp || "",
+        event_key:        res.event_key || testFor.event_key,
+        endpoint:         res.endpoint,
+        request_payload:  res.request_payload,
+        response_body:    res.response_body,
+        status_code:      res.status_code,
+        duration_ms:      res.duration_ms,
+        reason:           res.reason,
+        skipped:          res.skipped,
+      });
     } catch (e: any) {
-      Alert.alert(
-        "Test failed",
-        e?.response?.data?.detail || e?.message || "Send failed",
-      );
+      setTestResult({
+        ok:            false,
+        generated_otp: "",
+        event_key:     testFor.event_key,
+        reason:        e?.response?.data?.detail || e?.message || "Send failed",
+      });
     } finally {
       setTestSending(false);
     }
@@ -370,12 +397,33 @@ export default function AdminWhatsAppProviderScreen() {
         />
       )}
 
-      {/* Test send modal */}
-      <Modal visible={!!testFor} transparent animationType="fade" onRequestClose={() => setTestFor(null)}>
-        <Pressable style={styles.modalBackdrop} onPress={() => !testSending && setTestFor(null)}>
+      {/* Test send modal — Phase F5.8 with inline Live Response Viewer */}
+      <Modal
+        visible={!!testFor}
+        transparent
+        animationType="fade"
+        onRequestClose={() => {
+          if (!testSending) { setTestFor(null); setTestResult(null); }
+        }}
+      >
+        <Pressable
+          style={styles.modalBackdrop}
+          onPress={() => { if (!testSending) { setTestFor(null); setTestResult(null); } }}
+        >
           <Pressable style={styles.testCard} onPress={() => {}}>
             <Text style={styles.testTitle}>🧪 Test Send</Text>
             <Text style={styles.testSub}>{testFor?.label}</Text>
+
+            {/* Explain what data is auto-generated so ops know
+                what to expect on the phone. */}
+            <View style={styles.testHint}>
+              <Text style={styles.testHintTxt}>
+                A random <Text style={{ fontWeight: "800" }}>6-digit OTP</Text>{" "}
+                is auto-generated for every test. The full payload &
+                provider response are shown below after Send.
+              </Text>
+            </View>
+
             <Text style={styles.fieldLabel}>Phone number (with or without +91)</Text>
             <TextInput
               value={testPhone}
@@ -384,14 +432,18 @@ export default function AdminWhatsAppProviderScreen() {
               keyboardType="phone-pad"
               style={styles.input}
               autoFocus
+              editable={!testSending}
             />
+
             <View style={{ flexDirection: "row", gap: 10, marginTop: 16 }}>
               <TouchableOpacity
                 style={styles.cancelBtn}
-                onPress={() => !testSending && setTestFor(null)}
+                onPress={() => {
+                  if (!testSending) { setTestFor(null); setTestResult(null); }
+                }}
                 disabled={testSending}
               >
-                <Text style={styles.cancelTxt}>Cancel</Text>
+                <Text style={styles.cancelTxt}>Close</Text>
               </TouchableOpacity>
               <TouchableOpacity
                 style={[styles.saveBtn, testSending && { opacity: 0.6 }]}
@@ -401,10 +453,104 @@ export default function AdminWhatsAppProviderScreen() {
                 {testSending ? (
                   <ActivityIndicator color="#fff" />
                 ) : (
-                  <Text style={styles.saveTxt}>Send Test</Text>
+                  <Text style={styles.saveTxt}>
+                    {testResult ? "Send Again" : "Send Test"}
+                  </Text>
                 )}
               </TouchableOpacity>
             </View>
+
+            {/* Live Response Viewer */}
+            {testResult && (
+              <ScrollView
+                style={{ marginTop: 18, maxHeight: 360 }}
+                showsVerticalScrollIndicator
+              >
+                <View
+                  style={[
+                    styles.testResultCard,
+                    { backgroundColor: testResult.ok ? "#F0FDF4" : "#FEF2F2",
+                      borderColor:     testResult.ok ? "#86EFAC" : "#FECACA" },
+                  ]}
+                >
+                  <Text
+                    style={[
+                      styles.testResultTitle,
+                      { color: testResult.ok ? "#15803D" : "#B91C1C" },
+                    ]}
+                  >
+                    {testResult.skipped
+                      ? "⚠️ Skipped"
+                      : testResult.ok
+                        ? "✅ Provider accepted the request"
+                        : "❌ Provider rejected / errored"}
+                  </Text>
+                  {!!testResult.reason && (
+                    <Text style={styles.testResultMuted}>
+                      {testResult.reason}
+                    </Text>
+                  )}
+                  <Text style={styles.testResultMuted}>
+                    Status: {testResult.status_code ?? "—"}
+                    {"  •  "}Took: {testResult.duration_ms ?? "—"} ms
+                  </Text>
+                </View>
+
+                {/* Generated OTP — only for OTP events */}
+                {(testFor?.event_key === "otp_login" ||
+                  testFor?.event_key === "otp_signup") &&
+                  !!testResult.generated_otp && (
+                    <View style={styles.otpBox}>
+                      <Text style={styles.otpLabel}>Generated OTP (6-digit)</Text>
+                      <Text
+                        selectable
+                        style={styles.otpValue}
+                      >
+                        {testResult.generated_otp}
+                      </Text>
+                      <Text style={styles.testResultMuted}>
+                        This is the exact code sent to your provider.
+                        If you receive a different code (or none), the
+                        BSP silently dropped or replaced it.
+                      </Text>
+                    </View>
+                  )}
+
+                {/* Endpoint */}
+                {!!testResult.endpoint && (
+                  <View style={styles.debugSection}>
+                    <Text style={styles.debugLabel}>Endpoint hit</Text>
+                    <Text style={styles.debugCode} selectable>
+                      POST {testResult.endpoint}
+                    </Text>
+                  </View>
+                )}
+
+                {/* Request payload */}
+                {!!testResult.request_payload && (
+                  <View style={styles.debugSection}>
+                    <Text style={styles.debugLabel}>
+                      Payload sent (api_token masked)
+                    </Text>
+                    <Text style={styles.debugCode} selectable>
+                      {JSON.stringify(testResult.request_payload, null, 2)}
+                    </Text>
+                  </View>
+                )}
+
+                {/* Response body */}
+                {testResult.response_body !== undefined && (
+                  <View style={styles.debugSection}>
+                    <Text style={styles.debugLabel}>Provider response</Text>
+                    <Text style={styles.debugCode} selectable>
+                      {typeof testResult.response_body === "string"
+                        ? testResult.response_body
+                        : JSON.stringify(testResult.response_body, null, 2)}
+                    </Text>
+                  </View>
+                )}
+              </ScrollView>
+            )}
           </Pressable>
         </Pressable>
       </Modal>
@@ -1608,9 +1754,40 @@ const styles = StyleSheet.create({
     backgroundColor: "#fff",
     borderRadius: 14,
     padding: 18,
+    maxHeight: "85%",
   },
   testTitle: { fontSize: 17, fontWeight: "800", color: "#0F172A" },
   testSub:   { fontSize: 12, color: "#64748B", marginTop: 2, marginBottom: 10 },
+
+  // Phase F5.8 — Live Response Viewer styles (Test Send modal).
+  testHint: {
+    marginTop: 4, marginBottom: 12,
+    backgroundColor: "#EFF6FF", borderColor: "#BFDBFE", borderWidth: 1,
+    borderRadius: 10, padding: 10,
+  },
+  testHintTxt: { fontSize: 12, color: "#1E40AF", lineHeight: 17 },
+  testResultCard: {
+    borderWidth: 1, borderRadius: 12, padding: 12, marginBottom: 12,
+  },
+  testResultTitle: { fontSize: 14, fontWeight: "800", marginBottom: 4 },
+  testResultMuted: { fontSize: 11, color: "#475569", marginTop: 2, lineHeight: 15 },
+  otpBox: {
+    borderWidth: 1, borderColor: "#FCD34D", backgroundColor: "#FFFBEB",
+    borderRadius: 12, padding: 12, marginBottom: 12,
+  },
+  otpLabel: { fontSize: 11, fontWeight: "700", color: "#92400E" },
+  otpValue: {
+    fontSize: 28, fontWeight: "900", color: "#78350F",
+    letterSpacing: 6, textAlign: "center", marginTop: 6, marginBottom: 6,
+    fontVariant: ["tabular-nums"],
+  },
+  debugSection: { marginBottom: 10 },
+  debugLabel: { fontSize: 11, fontWeight: "700", color: "#334155", marginBottom: 4 },
+  debugCode: {
+    fontSize: 11, color: "#0F172A", lineHeight: 16,
+    backgroundColor: "#F1F5F9", borderRadius: 8, padding: 8,
+    fontFamily: Platform.select({ ios: "Menlo", android: "monospace" }),
+  },
 
   // ── Phase F5.3 — Simple mode header + Advanced toggle ─────────
   simpleModeBox: {

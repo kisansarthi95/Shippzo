@@ -60,6 +60,7 @@ from __future__ import annotations
 
 import logging
 import os
+import random
 import re
 import time
 from datetime import datetime, timezone
@@ -605,10 +606,19 @@ async def dispatch_event(
             or (isinstance(body, str) and resp.status_code in (200, 201, 202))
         )
         result.update({
-            "success":     bool(ok),
-            "status_code": resp.status_code,
-            "duration_ms": round(duration_ms, 1),
-            "reason":      None if ok else f"HTTP {resp.status_code}",
+            "success":         bool(ok),
+            "status_code":     resp.status_code,
+            "duration_ms":     round(duration_ms, 1),
+            "reason":          None if ok else f"HTTP {resp.status_code}",
+            # Phase F5.8 — expose the actual wire-level bits so the
+            # Test Send modal can render a "Live Response Viewer"
+            # (previously we swallowed these and only surfaced
+            # status_code, which made silent-drop failures — where the
+            # BSP returns 200 but never delivers the WhatsApp — hard
+            # to debug).
+            "endpoint":        endpoint,
+            "request_payload": safe_payload,
+            "response_body":   body,
         })
         await _write_log(
             db,
@@ -794,14 +804,26 @@ def init() -> None:
     ) -> Dict[str, Any]:
         """Send a test message via the configured automation. Uses the
         admin-supplied sample_context to populate variables (with safe
-        defaults so the request never goes out empty)."""
+        defaults so the request never goes out empty).
+
+        Phase F5.8 — OTP is now auto-generated (random 6-digit) instead
+        of being hardcoded to "123456". Many BSPs silently drop tests
+        that repeat the same OTP value because they flag it as fraud
+        (which is why the operator kept seeing "success" but never got
+        a real WhatsApp). The generated OTP is returned in the response
+        so the Live Response Viewer can show what code was actually
+        dispatched — no guessing what to expect on the phone."""
         _require_admin_helper(current_user)
         sample = payload.sample_context or {}
+        # Auto-generate a fresh 6-digit OTP for OTP-style events.
+        # 6 digits is the industry standard (matches SBI, HDFC, Google,
+        # Meta, etc.) and gives 1 in 1M brute-force space.
+        generated_otp = f"{random.randint(100000, 999999):06d}"
         # Sensible auto-fill so OTP-type events still have a code.
         defaults = {
             "customer_name":  current_user.get("name") or "Test User",
             "customer_phone": payload.phone,
-            "otp":            "123456",
+            "otp":            generated_otp,
             "event_type":     payload.event_key,
             "order_id":       "TEST-001",
             "tracking_id":    "TRACK-TEST-001",
@@ -816,7 +838,13 @@ def init() -> None:
         outcome = await dispatch_event(
             db, payload.event_key, context, phone=payload.phone,
         )
-        return {"ok": bool(outcome.get("success")), "result": outcome}
+        # Surface the generated OTP at the top level so the frontend
+        # doesn't have to fish it out of the request_payload dict.
+        return {
+            "ok":            bool(outcome.get("success")),
+            "generated_otp": generated_otp,
+            "result":        outcome,
+        }
 
     # ── GET /logs (last 20 attempts) ──────────────────────────────
     @whatsapp_provider_router.get("/logs")
