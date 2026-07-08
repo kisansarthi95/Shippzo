@@ -253,6 +253,16 @@ export default function AdminWhatsAppProviderScreen() {
     );
   }
 
+  // Phase F5.7 — provider is "ready" (Test Send enabled, event cards
+  // flip from yellow to green) once Base URL + API Token are set at
+  // the top card. Per-event automation_id override is optional and
+  // no longer gates readiness.
+  const providerReady = !!(
+    cfg &&
+    (cfg.base_url || "").trim().length > 0 &&
+    ((cfg.api_token || "").trim().length > 0 || (cfg.api_token_masked || "").trim().length > 0)
+  );
+
   return (
     <SafeAreaView style={styles.safe} edges={["top"]}>
       <Stack.Screen options={{ headerShown: false }} />
@@ -319,6 +329,7 @@ export default function AdminWhatsAppProviderScreen() {
             <EventCard
               key={e.event_key}
               row={e}
+              providerReady={providerReady}
               onToggle={() => toggleEvent(e)}
               onEdit={() => setEditing(e)}
               onTest={() => { setTestFor(e); setTestPhone(""); }}
@@ -333,6 +344,7 @@ export default function AdminWhatsAppProviderScreen() {
             <EventCard
               key={e.event_key}
               row={e}
+              providerReady={providerReady}
               onToggle={() => toggleEvent(e)}
               onEdit={() => setEditing(e)}
               onTest={() => { setTestFor(e); setTestPhone(""); }}
@@ -413,22 +425,22 @@ function ProviderConfigCard({
 }) {
   const [expanded, setExpanded] = useState(false);
   const [draft, setDraft] = useState<ProviderConfig>(cfg);
-  // Advanced-Endpoint toggle (Jul-2026): the Endpoint Template field
-  // is hidden by default now.  We auto-open the section when the
-  // stored config already has a template so we never silently drop
-  // a user's existing custom endpoint on first render.
-  const [advancedEndpointOn, setAdvancedEndpointOn] = useState<boolean>(
-    !!(cfg.endpoint_template && cfg.endpoint_template.trim().length > 0),
-  );
+  // Phase F5.7 — Endpoint Template UI removed. The stored template
+  // (if any) survives as-is on draft; if empty, backend uses Base
+  // URL directly. The old `advancedEndpointOn` toggle is gone.
 
   useEffect(() => { setDraft(cfg); }, [cfg]);
 
-  const dirty =
-    draft.provider !== cfg.provider ||
-    draft.base_url !== cfg.base_url ||
-    draft.endpoint_template !== cfg.endpoint_template ||
-    (draft.api_token && draft.api_token !== cfg.api_token) ||
-    draft.default_country_code !== cfg.default_country_code;
+  // Phase F5.7 — Save Connection is enabled whenever the two
+  // required fields (Base URL + API Token) have content and we're
+  // not mid-save. Dropped the strict "dirty" gate because the
+  // backend never echoes the raw api_token back (only a masked
+  // form) so `draft.api_token !== cfg.api_token` was falsely
+  // "clean" whenever the operator opened the card to re-verify.
+  const canSave =
+    !saving &&
+    (draft.base_url || "").trim().length > 0 &&
+    ((draft.api_token || "").trim().length > 0 || (cfg.api_token_masked || "").trim().length > 0);
 
   return (
     <View style={styles.card}>
@@ -481,45 +493,24 @@ function ProviderConfigCard({
           <TextInput
             value={draft.base_url}
             onChangeText={(v) => setDraft({ ...draft, base_url: v })}
-            placeholder="https://login.flowconnect.ai/api/automations"
+            placeholder="https://login.flowconnect.ai/api/automations/<your-automation-id>/execute"
             autoCapitalize="none"
             style={styles.input}
           />
+          <Text style={styles.hint}>
+            Paste the full webhook URL from your provider (it already
+            includes the automation ID — no separate entry needed).
+          </Text>
 
-          {/* Enable Advanced Endpoint toggle — hides the Endpoint
-              Template field by default. Most providers only need
-              Base URL + API Token; only power users touch this. */}
-          <View style={[styles.rowBetween, { marginTop: 14, marginBottom: 4 }]}>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.fieldLabel}>Enable Advanced Endpoint</Text>
-              <Text style={styles.hint}>
-                Turn on only if your provider needs a custom endpoint
-                path (e.g. <Text style={styles.code}>{"{base_url}/{automation_id}/execute"}</Text>).
-              </Text>
-            </View>
-            <Switch
-              value={advancedEndpointOn}
-              onValueChange={setAdvancedEndpointOn}
-              thumbColor={advancedEndpointOn ? colors.primary : "#94A3B8"}
-            />
-          </View>
-
-          {advancedEndpointOn && (
-            <>
-              <Text style={styles.fieldLabel}>Endpoint Template</Text>
-              <TextInput
-                value={draft.endpoint_template}
-                onChangeText={(v) => setDraft({ ...draft, endpoint_template: v })}
-                placeholder="{base_url}/{automation_id}/execute"
-                autoCapitalize="none"
-                style={styles.input}
-              />
-              <Text style={styles.hint}>
-                Use placeholders <Text style={styles.code}>{"{base_url}"}</Text> and{" "}
-                <Text style={styles.code}>{"{automation_id}"}</Text>.
-              </Text>
-            </>
-          )}
+          {/* Phase F5.7 — Endpoint Template field removed from the
+              Provider Connection UI per operator directive. The
+              template still exists in state (persisted as an empty
+              string) so power users' historical configs continue to
+              work; the backend `dispatch_event` (whatsapp_provider.py)
+              already POSTs to Base URL as-is when the template is
+              empty. If a future provider needs a custom template
+              path, we'll surface it as a per-event override inside
+              the Advanced Settings section of the event editor. */}
 
           <Text style={styles.fieldLabel}>API Token</Text>
           <TextInput
@@ -546,16 +537,16 @@ function ProviderConfigCard({
             style={[
               styles.saveBtn,
               { marginTop: 14 },
-              (!dirty || saving) && { opacity: 0.5 },
+              !canSave && { opacity: 0.5 },
             ]}
             onPress={() => onSave({
               provider:             draft.provider,
               base_url:             draft.base_url.trim(),
-              endpoint_template:    draft.endpoint_template.trim(),
+              endpoint_template:    (draft.endpoint_template || "").trim(),
               api_token:            draft.api_token.trim(),
               default_country_code: draft.default_country_code.trim() || "91",
             })}
-            disabled={!dirty || saving}
+            disabled={!canSave}
           >
             {saving ? (
               <ActivityIndicator color="#fff" />
@@ -573,16 +564,28 @@ function ProviderConfigCard({
 // ─── One Event card ─────────────────────────────────────────────────
 function EventCard({
   row,
+  providerReady,
   onToggle,
   onEdit,
   onTest,
 }: {
   row: EventRow;
+  providerReady: boolean;
   onToggle: () => void;
   onEdit: () => void;
   onTest: () => void;
 }) {
-  const configured = !!row.automation_id;
+  // Phase F5.7 — "configured" is now driven by GLOBAL provider
+  // readiness (Base URL + API Token set at the top card), NOT by
+  // the per-event automation_id. The Base URL already contains the
+  // automation ID for 99% of providers, so treating an empty per-
+  // event override as "not configured" surfaced misleading yellow
+  // warnings on every card even when the provider was working. The
+  // per-event automation_id stays available inside the event
+  // editor's Advanced Settings for the rare case where an operator
+  // needs a per-event override.
+  const configured  = providerReady;
+  const hasOverride = !!row.automation_id;
   return (
     <View style={[styles.card, { paddingBottom: 0 }]}>
       <View style={styles.cardHeader}>
@@ -618,7 +621,9 @@ function EventCard({
             styles.metaPillTxt,
             { color: configured ? "#15803D" : "#92400E" },
           ]}>
-            {configured ? `ID: ${row.automation_id}` : "Automation ID not set"}
+            {configured
+              ? (hasOverride ? `Override: ${row.automation_id}` : "Ready")
+              : "Configure provider first"}
           </Text>
         </View>
         <Text style={styles.fieldsCount}>
