@@ -98,9 +98,9 @@ class CourierNotificationListenerService : NotificationListenerService() {
     val configOk = backendUrl.isNotEmpty() && authToken.isNotEmpty()
     Log.d(
       TAG,
-      "[$sid] gate=config_present backendUrl=${if (backendUrl.isEmpty()) \"MISSING\" else \"set(${backendUrl.length}c)\"} " +
-        "authToken=${if (authToken.isEmpty()) \"MISSING\" else \"set(${authToken.length}c)\"} " +
-        "deviceId=${if (deviceId.isEmpty()) \"MISSING\" else deviceId} " +
+      "[$sid] gate=config_present backendUrl=${if (backendUrl.isEmpty()) "MISSING" else "set(${backendUrl.length}c)"} " +
+        "authToken=${if (authToken.isEmpty()) "MISSING" else "set(${authToken.length}c)"} " +
+        "deviceId=${if (deviceId.isEmpty()) "MISSING" else deviceId} " +
         "senderFilter=\"$senderFilter\"",
     )
     if (!configOk) {
