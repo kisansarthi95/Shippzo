@@ -1,0 +1,33 @@
+{
+  "summary": "Backend-only test for new POST /api/contacts/batch-saved-check endpoint. 10/10 tests pass. Covered: auth guard (missing/invalid Bearer → 401/403), empty list returns {results: []}, empty/invalid phone values return saved:false without erroring, batch reflects prior mark-saved, phone normalization matches /contacts/saved-check for +91/dashes/leading-zero/country-code variants of the same number, repeat customers (multiple shipments sharing one phone) all flip to saved:true, response preserves input order + duplicates, cross-user isolation (admin's saved contact is NOT visible to user2), and a 25-pair perf smoke test (single $in query) completed well under 2s.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_batch_saved_check.py",
+    "/app/test_reports/pytest/pytest_iteration_41_batch_saved_check.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "custom_fields.py::batch_check_contact_saved uses a single find() with $in on phone_norm — matches the requirement (O(1) network round-trips). Good.",
+    "Phone normalization is shared logic with /contacts/saved-check via the same _normalize_phone helper — no drift risk.",
+    "Result list preserves input.phones order and duplicates (verified by test_result_preserves_input_order_and_duplicates), so the frontend can zip results 1:1 with shipments without lookup indirection.",
+    "user_id scoping is enforced in the mongo filter ({user_id: current_user['id']}) — cross-tenant isolation verified with admin vs user2."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_batch_saved_check.py (new)"
+  ],
+  "success_rate": {"backend": "100%", "frontend": "not tested (backend-only per request)"},
+  "seed_data_creation": "Each test creates its own mark-saved rows keyed by uuid-derived phone numbers under admin@test.com (and one under user2@test.com for the isolation test). No cleanup performed — these live in db.saved_contacts. Volume is tiny (<40 rows across all 10 tests) and identifiable by digit prefixes 90/93/94/95/96/97/98 with random suffixes; safe to leave in place.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Test file: /app/backend/tests/test_batch_saved_check.py. Run with `EXPO_PUBLIC_BACKEND_URL=<url> pytest backend/tests/test_batch_saved_check.py -v`. The endpoint is exposed at POST /api/contacts/batch-saved-check under the custom_fields router (init() late-binds it). Uses HTTPBearer so missing token yields 401/403 (both accepted). Frontend integration (Api.batchCheckContactSaved + shipments.tsx rehydrate) was NOT tested per the review request (backend-only).",
+  "rca_of_issue": "N/A — no issues found. All 8 requirements from the review request are satisfied: (1) endpoint accepts {phones:[{shipment_id,phone}]} and returns {results:[{shipment_id,saved}]}, (2) implementation uses a single db.saved_contacts.find({user_id, phone_norm:{$in:[...]}}), (3) same _normalize_phone helper (strip non-digits, keep last 10), (4) repeat customers with shared phone all flip saved:true, (5) empty phones list → {results:[]}, (6) empty/invalid phones → saved:false with no error, (7) unauthenticated → 401/403, (8) results scoped to current_user.id (user2 cannot see admin's saved contacts). Batch vs single-endpoint parity verified across 5 phone-format variants."
+}

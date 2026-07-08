@@ -255,6 +255,67 @@ def init() -> None:
             "shipment_id": rec.get("shipment_id") or "",
         }
 
+    class _BatchCheckItem(BaseModel):
+        shipment_id: str
+        phone: str
+
+    class _BatchCheckRequest(BaseModel):
+        phones: List[_BatchCheckItem]
+
+    @custom_fields_router.post("/contacts/batch-saved-check")
+    async def batch_check_contact_saved(
+        payload: _BatchCheckRequest,
+        current_user: Dict[str, Any] = Depends(_get_current_user),
+    ):
+        """Bulk variant of /contacts/saved-check. Takes a list of
+        (shipment_id, phone) pairs and returns which ones are already
+        saved as contacts for this user. Single MongoDB query keeps it
+        O(1) network round-trips regardless of list size — used by the
+        Shipments screen to rehydrate the green "contact saved" icon
+        on every load / focus."""
+        if not payload.phones:
+            return {"results": []}
+        # Build a phone_norm → shipment_ids map. Multiple shipments can
+        # share the same phone (repeat customers) — we must flip ALL of
+        # them, not just the first hit.
+        norm_to_sids: Dict[str, List[str]] = {}
+        for item in payload.phones:
+            n = _normalize_phone(item.phone or "")
+            if not n:
+                continue
+            norm_to_sids.setdefault(n, []).append(item.shipment_id)
+        if not norm_to_sids:
+            return {
+                "results": [
+                    {"shipment_id": p.shipment_id, "saved": False}
+                    for p in payload.phones
+                ]
+            }
+        saved_norms = set()
+        cursor = db.saved_contacts.find(
+            {
+                "user_id": current_user["id"],
+                "phone_norm": {"$in": list(norm_to_sids.keys())},
+            },
+            {"_id": 0, "phone_norm": 1},
+        )
+        async for rec in cursor:
+            pn = rec.get("phone_norm")
+            if pn:
+                saved_norms.add(pn)
+        # Build per-shipment_id result set (preserves duplicates from
+        # the input so the client can trust ordering / count parity).
+        saved_sids: set = set()
+        for n in saved_norms:
+            for sid in norm_to_sids.get(n, []):
+                saved_sids.add(sid)
+        return {
+            "results": [
+                {"shipment_id": p.shipment_id, "saved": p.shipment_id in saved_sids}
+                for p in payload.phones
+            ]
+        }
+
     class _MarkSavedRequest(BaseModel):
         phone: str
         name: Optional[str] = ""

@@ -1822,6 +1822,19 @@ export const Api = {
       "/contacts/mark-saved",
       args,
     ).then((r) => r.data),
+  /**
+   * Bulk sibling of checkContactSaved. Given (shipment_id, phone) pairs
+   * returns which are already saved as contacts for the current user.
+   * Used by the Shipments screen to rehydrate the green "contact saved"
+   * icon on every load / focus (prevents visual reset on refresh).
+   */
+  batchCheckContactSaved: (
+    phones: Array<{ shipment_id: string; phone: string }>,
+  ) =>
+    api.post<{ results: Array<{ shipment_id: string; saved: boolean }> }>(
+      "/contacts/batch-saved-check",
+      { phones },
+    ).then((r) => r.data),
 
   // Photo OCR — Gemini Vision. Uses an extended 90 s timeout because
   // vision calls + the address-recovery follow-up can take up to ~45 s

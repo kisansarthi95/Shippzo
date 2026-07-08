@@ -284,6 +284,40 @@ export default function Shipments() {
         if (Array.isArray(sh.labels) && sh.labels.length) sm[sh.id] = sh.labels;
       });
       setShipmentLabels(sm);
+      // ── Rehydrate contact-saved icon set from the backend so the
+      // green Person✓ pill persists across refreshes and focus
+      // returns. Single batch query keeps this cheap regardless of
+      // page size. Fire-and-forget — a failure here just means the
+      // icon reverts to grey and the user can re-tap Save Contact.
+      const pairs = list
+        .map((sh: any) => ({
+          shipment_id: sh.id,
+          phone: String(sh.customer_phone || ""),
+        }))
+        .filter((p) => p.phone.length > 0);
+      if (pairs.length > 0) {
+        Api.batchCheckContactSaved(pairs)
+          .then((resp) => {
+            const savedIds = (resp.results || [])
+              .filter((r) => r.saved)
+              .map((r) => r.shipment_id);
+            setContactSavedIds((prev) => {
+              // Union of server-truth + in-session flips so any
+              // taps that landed between fetch start and response
+              // (or that haven't yet hit /contacts/mark-saved) are
+              // preserved.
+              const next = new Set(prev);
+              savedIds.forEach((id) => next.add(id));
+              // Also clear any stale in-session ids for shipments
+              // that are no longer in the current page.
+              const listedIds = new Set(list.map((sh: any) => sh.id));
+              return new Set(
+                Array.from(next).filter((id) => listedIds.has(id)),
+              );
+            });
+          })
+          .catch(() => { /* non-fatal — icon just stays grey */ });
+      }
     } catch (e: any) {
       // silently ignore transient failures so no global toast
       console.log("shipments load error:", e?.message || e);
