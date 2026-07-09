@@ -5512,6 +5512,24 @@ except Exception as _fi_exc:
         f"Failed to mount file_import router: {_fi_exc}",
     )
 
+# Phase-F6.0 modular: Shipment Import System.
+# Bulk update / create existing Shipments via CSV / XLSX. Match by
+# Tracking Number, cross-verify weight / payment / cod amount, keep
+# both values on mismatch, downloadable audit CSV. Same late-binding
+# pattern as file_import above.
+try:
+    from routers.shipment_import import (
+        shipment_import_router as _shipment_import_router,
+        init as _init_shipment_import_router,
+    )
+    _init_shipment_import_router()
+    app.include_router(_shipment_import_router)
+except Exception as _si_exc:
+    import logging as _lg
+    _lg.getLogger("server.bootstrap").exception(
+        f"Failed to mount shipment_import router: {_si_exc}",
+    )
+
 
 # Phase-F2 modular: Webhook ingest (real-time JSON-payload imports) +
 # per-user webhook config endpoints. Same late-binding pattern.

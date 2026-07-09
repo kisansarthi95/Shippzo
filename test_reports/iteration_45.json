@@ -1,0 +1,44 @@
+{
+  "summary": "Phase F6.0 — Shipment Import System backend verified end-to-end. 19/19 pytest cases pass (100%). Coverage: (1) GET/PUT /me/shipment-import-mapping for booking/delivery/cod_payment with disallowed-field rejection; (2) POST /shipments/import/preview returns columns, sample_rows, target_fields with tracking_id.required=true, and suggested mapping correctly resolves AWB→tracking_id, Weight→weight, Payment→payment_mode, COD Amount→amount; (3) POST /shipments/import/commit for booking with 3-row CSV (SAME row + DIFFERENT-weight row + UNMATCHED row) produces matched/mismatch/unmatched counts, persists batch, records weight mismatch WITH existing+imported values in mismatches array, and DOES NOT override the existing weight on shipment #2 (verified via re-fetch); (4) GET /shipments/import/batches (summary excludes rows) and /batches/{id} (detail with rows); (5) /batches/{id}/mismatches.csv returns correct header row + weight-mismatch line + unmatched line + Content-Disposition attachment; (6) Delivery import forces status=Delivered and stamps delivered_at + pod_reference (verified in DB and via batch.applied); (7) COD import stamps cod_collected_amount, cod_payment_date, cod_payer_name; (8) Negative cases: invalid import_type→400, missing tracking mapping→400, disallowed customer_name in delivery→400, 11MB file→413. All F6.0 fields (pod_reference, cod_collected_amount, cod_payer_name, cod_payment_date) are correctly persisted in the shipments Mongo collection (confirmed via direct Mongo read). Match-key fallback (tracking_id/manual_tracking_id/order_id/master_order_id) is code-verified in shipment_import.py:540. Auth-gated 401 verified.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "GET /api/shipments/{id} and GET /api/shipments",
+        "issue": "The new F6.0 fields (pod_reference, cod_collected_amount, cod_payer_name, cod_payment_date) are correctly persisted to MongoDB by the shipment_import commit endpoint, but the standard Shipment read endpoints do NOT return them in the response JSON. Direct Mongo query confirms the fields ARE stored (values: pod_reference='Ramesh Kumar', cod_collected_amount=500.0, cod_payer_name='COURIER_A', cod_payment_date='2026-06-16T00:00:00'), but /api/shipments/{id} returns them as absent/None. Likely cause: the Shipment Pydantic response model in server.py hasn't been extended with these new fields. Merchants using the app UI will see COD/Delivery data imported successfully in the batch report but will not see the values on the shipment detail view. RECOMMEND adding these 4 fields to the Shipment response model / whichever serialiser strips them."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_phase_f60_shipment_import.py",
+    "/app/test_reports/pytest/pytest_iteration_45_f60.xml"
+  ],
+  "action_items": [
+    "Extend the Shipment response model (server.py) to include the F6.0 fields — pod_reference, cod_collected_amount, cod_payer_name, cod_payment_date — so GET /api/shipments and GET /api/shipments/{id} surface the imported values to the UI. Data is already correctly stored in Mongo; only the serialisation layer strips them."
+  ],
+  "critical_code_review_comments": [
+    "shipment_import.py:585-587 — for cross-verify of 'amount', code compares against (existing.get('amount') or existing.get('cod_amount') or 0.0). This is a reasonable fallback but note that when existing.amount is 0 (falsy), the code will fall through to cod_amount even if 0 was the legitimate booked amount. Consider `if 'amount' in existing else …` semantics if this becomes an issue.",
+    "shipment_import.py:527-532 — _tracking_of() strips whitespace but does NOT lowercase the tracking key. The subsequent lookup checks BOTH `existing_lookup.get(tracking)` and `.get(tracking.lower())`, but `existing_lookup` is populated with both raw + lowercase forms, so this works. Just noting the two-key strategy is intentional and correct.",
+    "shipment_import.py:653 — row_entry.applied is written directly with the raw new_val list for items. Good — matches the DB schema. But note that items mapping wraps single strings in a list; if the import file has 'Book, Pen' as one string this becomes ['Book, Pen'] not ['Book','Pen']. Documented behaviour, but consider a splitter helper later.",
+    "shipment_import.py:493 — 10 MB file guard applies AFTER reading the entire request body. FastAPI's UploadFile streams to disk/mem; for a 100 MB upload the server will still buffer it before rejecting. Consider a middleware/content-length pre-check. Not a functional bug, just a resource concern.",
+    "server.py:5514-5530 — router mount is wrapped in try/except that logs failure but doesn't crash the app. Good defensive pattern."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_phase_f60_shipment_import.py (NEW — 19 pytest cases)"
+  ],
+  "success_rate": {
+    "backend": "100% (19/19)",
+    "frontend": "not tested (backend-only per request)"
+  },
+  "seed_data_creation": "None — used existing admin@test.com shipments as test fixtures. Test writes 3 batches (booking, delivery, cod_payment) into shipment_import_batches collection which are permanent audit records (expected — no cleanup required).",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Test file at /app/backend/tests/test_phase_f60_shipment_import.py exercises the full F6.0 contract. Reuse for regression. Note the ONE known gap: /api/shipments (list) and /api/shipments/{id} (detail) don't return the new F6.0 columns (pod_reference, cod_collected_amount, cod_payer_name, cod_payment_date). The import correctly writes them to Mongo — this was confirmed by a direct pymongo query during testing. Once the main agent extends the Shipment response model, the delivery/COD assertions in test can be strengthened to re-fetch the shipment via GET (currently they verify via the batch's applied dict, which mirrors what was $set in Mongo).",
+  "rca_of_issue": "N/A — no bugs to reproduce. The single minor gap (F6.0 fields not appearing in shipment GET responses) is a serialisation omission in the Shipment response model, not a bug in the import router. Reproduction: (1) run POST /api/shipments/import/commit with import_type=delivery and pod_reference in the mapping — response returns matched_updated=1; (2) query Mongo directly → pod_reference is set on the shipment doc; (3) call GET /api/shipments/{id} → pod_reference is absent from the JSON. Mitigation: add pod_reference, cod_collected_amount, cod_payer_name, cod_payment_date (all optional str/float) to whichever Pydantic model serialises the shipments list & detail endpoints."
+}

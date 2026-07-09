@@ -1,0 +1,794 @@
+"""
+Shipment Import System — Phase F6.0 (2026-06).
+
+Bulk update / create Shipments via user-uploaded CSV / XLSX files.
+
+Unlike routers/file_import.py (which lands rows into `pending_orders`),
+THIS router matches by Tracking Number against EXISTING shipments and
+UPDATES them in place. Three import modes are supported:
+
+    booking       — bulk update booking metadata (courier, order id,
+                    items, customer, address). Cross-verify weight,
+                    payment_mode, and COD amount → mismatch report.
+    delivery      — mark parcels Delivered with delivered_at + POD.
+    cod_payment   — record COD amount actually collected, remittance
+                    date, and payer name.
+
+Behaviour rules (per user requirement):
+  • Match strictly by tracking_id (case-insensitive, trimmed).
+  • If NOT matched → row is added to the "unmatched" downloadable report.
+    We do NOT auto-create shipments here (that's what pending_orders
+    imports are for).
+  • Cross-verify fields (weight, payment_mode, cod_amount) between the
+    IMPORTED row and the EXISTING shipment. If they DIFFER → we KEEP
+    the existing value untouched AND log both values in the mismatch
+    report. User can download the report and reconcile manually.
+  • Fields that are NOT cross-verify targets are updated in place.
+
+Endpoints:
+    POST /api/shipments/import/preview             parse + suggest mapping
+    POST /api/shipments/import/commit              validate + apply
+    GET  /api/me/shipment-import-mapping           saved mapping (per type)
+    PUT  /api/me/shipment-import-mapping           persist mapping
+    GET  /api/shipments/import/batches             list past import batches
+    GET  /api/shipments/import/batches/{id}        detail (per-row status)
+    GET  /api/shipments/import/batches/{id}/mismatches.csv
+                                                   downloadable mismatch CSV
+
+Pattern: late-binding `init()` — same as routers/file_import.py.
+"""
+from __future__ import annotations
+
+import csv
+import io
+import json
+import re
+import uuid
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional, Tuple
+
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, Query
+from fastapi.responses import Response
+from pydantic import BaseModel
+
+from import_schema import (
+    SCHEMA_FIELDS,
+    NUMERIC_FIELDS,
+    HEADER_ALIASES,
+    suggest_mapping,
+    normalise_value,
+    normalise_status,
+    is_custom_field_mapping,
+    custom_field_id,
+    validate_mapping_field,
+)
+
+
+shipment_import_router = APIRouter(prefix="/api", tags=["shipment-import"])
+
+
+IMPORT_TYPES = {"booking", "delivery", "cod_payment"}
+
+# Per-type target field allowlist. Any mapping outside these is
+# ignored during commit so a user can't accidentally overwrite the
+# customer name via a Delivery upload, for example.
+TARGET_FIELDS_BY_TYPE: Dict[str, List[str]] = {
+    "booking": [
+        # Identity keys the merchant may want to sync (e.g. corrected
+        # names / phones from the courier's manifest).
+        "tracking_id",          # required — match key
+        "order_id",
+        "customer_name",
+        "customer_phone",
+        "customer_alt_phone",
+        "customer_email",
+        "address",
+        "city",
+        "state",
+        "pincode",
+        "items",
+        "courier_hint",
+        "notes",
+        # Cross-verify fields (never override existing value on mismatch)
+        "weight",
+        "payment_mode",
+        "amount",
+    ],
+    "delivery": [
+        "tracking_id",           # required — match key
+        "status",                # optional; auto-forced to "Delivered"
+        "delivered_at",
+        "pod_reference",
+        "notes",
+        # Still cross-verified even for delivery import
+        "weight",
+        "payment_mode",
+        "amount",
+    ],
+    "cod_payment": [
+        "tracking_id",           # required — match key
+        "cod_collected_amount",
+        "cod_payment_date",
+        "cod_payer_name",
+        "notes",
+        # Cross-verify: the courier's reported COD amount must match
+        # what we booked. If they differ, alert the merchant so they
+        # can chase the courier before remittance.
+        "amount",
+        "payment_mode",
+    ],
+}
+
+# Human labels for the UI dropdown.
+FIELD_LABELS: Dict[str, str] = {
+    "tracking_id":          "Tracking Number",
+    "order_id":             "Order ID",
+    "customer_name":        "Customer Name",
+    "customer_phone":       "Customer Phone",
+    "customer_alt_phone":   "Alternate Phone",
+    "customer_email":       "Customer Email",
+    "address":              "Address",
+    "city":                 "City",
+    "state":                "State",
+    "pincode":              "Pincode",
+    "items":                "Items",
+    "courier_hint":         "Courier (Name)",
+    "notes":                "Notes / Remarks",
+    "weight":               "Weight",
+    "payment_mode":         "Payment Mode (COD/PAID)",
+    "amount":               "Amount / COD Amount",
+    "status":               "Status",
+    "delivered_at":         "Delivered On",
+    "pod_reference":        "POD Reference / Receiver",
+    "cod_collected_amount": "COD Amount Collected",
+    "cod_payment_date":     "COD Payment / Remit Date",
+    "cod_payer_name":       "COD Payer Name",
+}
+
+
+# Fields where a mismatch between imported and stored value must be
+# recorded WITHOUT overriding the stored value. Applies across all
+# import types (user requirement — "cross-verify, don't override").
+CROSS_VERIFY_FIELDS: List[str] = ["weight", "payment_mode", "amount"]
+
+
+# ────────────────────── constants ─────────────────────
+MAX_SAMPLE_ROWS = 10
+MAX_FILE_BYTES  = 10 * 1024 * 1024          # 10 MB hard limit (per user)
+MAX_IMPORT_ROWS = 10000                     # generous — 10 MB cap prevails
+
+
+# ────────────────────── payloads ──────────────────────
+class MappingPayload(BaseModel):
+    mapping: Dict[str, str]                 # { csv_col: schema_field }
+
+
+# ════════════════════════════════════════════════════════════════════
+#                              Parsers
+# ════════════════════════════════════════════════════════════════════
+
+def _parse_csv(blob: bytes) -> Tuple[List[str], List[Dict[str, str]]]:
+    for enc in ("utf-8-sig", "utf-8", "latin-1"):
+        try:
+            text = blob.decode(enc)
+            break
+        except UnicodeDecodeError:
+            continue
+    else:
+        raise HTTPException(status_code=400, detail="Could not decode file")
+    reader = csv.reader(io.StringIO(text))
+    try:
+        header = next(reader)
+    except StopIteration:
+        raise HTTPException(status_code=400, detail="File is empty")
+    rows: List[Dict[str, str]] = []
+    for line in reader:
+        if len(line) < len(header):
+            line = list(line) + [""] * (len(header) - len(line))
+        elif len(line) > len(header):
+            line = line[: len(header)]
+        rows.append({h.strip(): (line[i] or "").strip() for i, h in enumerate(header)})
+    return [h.strip() for h in header], rows
+
+
+def _parse_xlsx(blob: bytes) -> Tuple[List[str], List[Dict[str, Any]]]:
+    try:
+        from openpyxl import load_workbook
+    except ImportError:
+        raise HTTPException(
+            status_code=500,
+            detail="XLSX parser (openpyxl) not installed on the server",
+        )
+    try:
+        wb = load_workbook(io.BytesIO(blob), read_only=True, data_only=True)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Could not read XLSX: {e}")
+    ws = wb.active
+    if ws is None:
+        raise HTTPException(status_code=400, detail="Workbook has no sheets")
+    rows_iter = ws.iter_rows(values_only=True)
+    try:
+        header_raw = next(rows_iter)
+    except StopIteration:
+        raise HTTPException(status_code=400, detail="Sheet is empty")
+    header = [str(c).strip() if c is not None else "" for c in header_raw]
+    rows: List[Dict[str, Any]] = []
+    for line in rows_iter:
+        line = list(line) + [None] * (len(header) - len(line))
+        line = line[: len(header)]
+        if all(c is None or (isinstance(c, str) and c.strip() == "") for c in line):
+            continue
+        rows.append({h: line[i] for i, h in enumerate(header)})
+    return header, rows
+
+
+def _parse_upload(file: UploadFile, blob: bytes) -> Tuple[str, List[str], List[Dict[str, Any]]]:
+    name = (file.filename or "").lower()
+    if name.endswith(".xlsx"):
+        cols, rows = _parse_xlsx(blob)
+        return "xlsx", cols, rows
+    if name.endswith(".csv") or (file.content_type or "").startswith("text/csv"):
+        cols, rows = _parse_csv(blob)
+        return "csv", cols, rows
+    raise HTTPException(
+        status_code=400,
+        detail=("Only .csv and .xlsx files are supported (got "
+                f"{file.filename or 'unknown'})"),
+    )
+
+
+def _row_sample(rows: List[Dict[str, Any]]) -> List[Dict[str, str]]:
+    out: List[Dict[str, str]] = []
+    for r in rows[:MAX_SAMPLE_ROWS]:
+        out.append({
+            k: ("" if v is None else (
+                v.isoformat() if hasattr(v, "isoformat") else str(v).strip()
+            ))
+            for k, v in r.items()
+        })
+    return out
+
+
+# ════════════════════════════════════════════════════════════════════
+#                       Weight normalisation
+# ════════════════════════════════════════════════════════════════════
+
+_WEIGHT_RE = re.compile(r"([-+]?\d*\.?\d+)\s*(kg|kgs|g|gm|gms|gram|grams|kilogram|kilograms)?", re.I)
+
+
+def _weight_to_grams(raw: Any) -> Optional[float]:
+    """Best-effort conversion of a free-text weight into grams.
+
+    Returns None when input is empty or unparseable. Used ONLY for
+    the cross-verify comparison (a fuzzy 1g tolerance is applied by
+    the caller). The stored `weight` field always keeps the original
+    formatted string; this helper doesn't mutate anything.
+    """
+    if raw is None:
+        return None
+    s = str(raw).strip()
+    if not s:
+        return None
+    m = _WEIGHT_RE.search(s)
+    if not m:
+        return None
+    try:
+        val = float(m.group(1))
+    except (TypeError, ValueError):
+        return None
+    unit = (m.group(2) or "").lower()
+    if unit.startswith("kg") or unit.startswith("kilogram"):
+        return val * 1000.0
+    # Default to grams when no unit or 'g' family.
+    return val
+
+
+def _payment_mode_equal(a: Any, b: Any) -> bool:
+    """Case-insensitive comparison after normalise_value."""
+    an = normalise_value("payment_mode", a) if a not in (None, "") else ""
+    bn = normalise_value("payment_mode", b) if b not in (None, "") else ""
+    return (an or "").strip().upper() == (bn or "").strip().upper()
+
+
+def _amount_equal(a: Any, b: Any, tol: float = 0.5) -> bool:
+    try:
+        af = float(a or 0.0)
+        bf = float(b or 0.0)
+    except (TypeError, ValueError):
+        return False
+    return abs(af - bf) <= tol
+
+
+def _weight_equal(a: Any, b: Any) -> bool:
+    ga = _weight_to_grams(a)
+    gb = _weight_to_grams(b)
+    if ga is None and gb is None:
+        return True
+    if ga is None or gb is None:
+        return False
+    # 1g tolerance — courier scales round differently than merchant scales.
+    return abs(ga - gb) <= 1.0
+
+
+def _iso_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+# ════════════════════════════════════════════════════════════════════
+#                              Router
+# ════════════════════════════════════════════════════════════════════
+
+def init() -> None:
+    """Register routes after server.py finishes initialising."""
+    import logging
+    _logger = logging.getLogger("routers.shipment_import")
+    from server import (  # noqa: WPS433 — late binding
+        db,
+        get_current_user as _get_current_user,
+    )
+
+    # ── Saved default mapping (per user × import_type) ────────────
+
+    @shipment_import_router.get("/me/shipment-import-mapping")
+    async def get_saved_mapping(
+        import_type: str = Query("booking", pattern="^(booking|delivery|cod_payment)$"),
+        current_user: Dict[str, Any] = Depends(_get_current_user),
+    ):
+        doc = await db.users.find_one(
+            {"id": current_user["id"]},
+            {"_id": 0, "shipment_import_mappings": 1},
+        ) or {}
+        all_maps: Dict[str, Any] = doc.get("shipment_import_mappings") or {}
+        return {
+            "import_type":    import_type,
+            "mapping":        all_maps.get(import_type) or {},
+            "target_fields":  [
+                {"key": f, "label": FIELD_LABELS.get(f, f), "required": f == "tracking_id"}
+                for f in TARGET_FIELDS_BY_TYPE[import_type]
+            ],
+            "cross_verify":   CROSS_VERIFY_FIELDS,
+        }
+
+    @shipment_import_router.put("/me/shipment-import-mapping")
+    async def put_saved_mapping(
+        payload: MappingPayload,
+        import_type: str = Query("booking", pattern="^(booking|delivery|cod_payment)$"),
+        current_user: Dict[str, Any] = Depends(_get_current_user),
+    ):
+        allowed = set(TARGET_FIELDS_BY_TYPE[import_type])
+        bad = [
+            v for v in payload.mapping.values()
+            if v and v not in allowed and not is_custom_field_mapping(v)
+        ]
+        if bad:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Fields not allowed for {import_type}: {sorted(set(bad))}",
+            )
+        await db.users.update_one(
+            {"id": current_user["id"]},
+            {"$set": {f"shipment_import_mappings.{import_type}": payload.mapping}},
+        )
+        return {"ok": True, "import_type": import_type, "mapping": payload.mapping}
+
+    # ── Preview (no DB write) ─────────────────────────────────────
+
+    @shipment_import_router.post("/shipments/import/preview")
+    async def import_preview(
+        file: UploadFile = File(...),
+        import_type: str = Form(..., description="booking | delivery | cod_payment"),
+        current_user: Dict[str, Any] = Depends(_get_current_user),
+    ):
+        if import_type not in IMPORT_TYPES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"import_type must be one of {sorted(IMPORT_TYPES)}",
+            )
+        blob = await file.read()
+        if len(blob) > MAX_FILE_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail=f"File too large (limit { MAX_FILE_BYTES // (1024 * 1024) } MB)",
+            )
+        fmt, columns, rows = _parse_upload(file, blob)
+
+        # Filter suggest_mapping output to only fields relevant for this
+        # import type. Keeps the UI focussed.
+        allowed = set(TARGET_FIELDS_BY_TYPE[import_type])
+        saved = (
+            await db.users.find_one(
+                {"id": current_user["id"]},
+                {"_id": 0, "shipment_import_mappings": 1},
+            ) or {}
+        ).get("shipment_import_mappings") or {}
+        saved_map = (saved.get(import_type) or {})
+        raw_suggested = suggest_mapping(columns, saved_map, [])
+        suggested = {c: f for c, f in raw_suggested.items() if f in allowed}
+
+        # Quick preview stats — how many rows carry a plausible tracking id?
+        tracking_col = None
+        for c, f in suggested.items():
+            if f == "tracking_id":
+                tracking_col = c
+                break
+        tracking_count = 0
+        if tracking_col:
+            for r in rows:
+                v = r.get(tracking_col)
+                if v is not None and str(v).strip():
+                    tracking_count += 1
+
+        return {
+            "import_type":    import_type,
+            "format":         fmt,
+            "filename":       file.filename or "",
+            "columns":        columns,
+            "sample_rows":    _row_sample(rows),
+            "total_rows":     len(rows),
+            "rows_with_tracking": tracking_count,
+            "target_fields":  [
+                {"key": f, "label": FIELD_LABELS.get(f, f), "required": f == "tracking_id"}
+                for f in TARGET_FIELDS_BY_TYPE[import_type]
+            ],
+            "cross_verify":   CROSS_VERIFY_FIELDS,
+            "suggested":      suggested,
+        }
+
+    # ── Commit (validate + apply) ─────────────────────────────────
+
+    @shipment_import_router.post("/shipments/import/commit")
+    async def import_commit(
+        file: UploadFile = File(...),
+        import_type: str = Form(..., description="booking | delivery | cod_payment"),
+        mapping: str = Form(..., description="JSON string {csv_col: schema_field}"),
+        save_default: bool = Form(False),
+        current_user: Dict[str, Any] = Depends(_get_current_user),
+    ):
+        if import_type not in IMPORT_TYPES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"import_type must be one of {sorted(IMPORT_TYPES)}",
+            )
+        try:
+            mapping_obj: Dict[str, str] = json.loads(mapping)
+            if not isinstance(mapping_obj, dict):
+                raise ValueError("mapping must be a JSON object")
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Invalid mapping JSON: {e}")
+
+        allowed = set(TARGET_FIELDS_BY_TYPE[import_type])
+        # Reject unknown target fields early.
+        bad = [v for v in mapping_obj.values() if v and v not in allowed]
+        if bad:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Fields not allowed for {import_type}: {sorted(set(bad))}",
+            )
+
+        # tracking_id column MUST be mapped — no match key means we
+        # can't safely locate any existing shipment.
+        field_to_col: Dict[str, str] = {}
+        for col, field in mapping_obj.items():
+            if not field:
+                continue
+            # Last mapping wins per field (allows the UI to remap).
+            field_to_col[field] = col
+        if "tracking_id" not in field_to_col:
+            raise HTTPException(
+                status_code=400,
+                detail="Please map a column to 'Tracking Number' before importing.",
+            )
+
+        blob = await file.read()
+        if len(blob) > MAX_FILE_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail=f"File too large (limit { MAX_FILE_BYTES // (1024 * 1024) } MB)",
+            )
+        fmt, columns, rows = _parse_upload(file, blob)
+        if len(rows) > MAX_IMPORT_ROWS:
+            raise HTTPException(
+                status_code=413,
+                detail=(f"Too many rows ({len(rows)}). Max {MAX_IMPORT_ROWS} per upload."),
+            )
+
+        if save_default:
+            await db.users.update_one(
+                {"id": current_user["id"]},
+                {"$set": {f"shipment_import_mappings.{import_type}": mapping_obj}},
+            )
+
+        # Batch document container — persisted at the end.
+        batch_id = str(uuid.uuid4())
+        now = _iso_now()
+        batch_doc: Dict[str, Any] = {
+            "id":                batch_id,
+            "user_id":           current_user["id"],
+            "import_type":       import_type,
+            "filename":          file.filename or "",
+            "format":            fmt,
+            "created_at":        now,
+            "mapping_used":      mapping_obj,
+            "total_rows":        len(rows),
+            "matched_updated":   0,
+            "matched_mismatch":  0,
+            "matched_no_change": 0,
+            "unmatched":         0,
+            "errors":            0,
+            "rows":              [],
+        }
+
+        # Build a tracking → shipment lookup in ONE query per batch.
+        # We collect ALL tracking values first so we do exactly one
+        # Mongo find({tracking_id: {$in: […]}}) regardless of file size.
+        tracking_col = field_to_col["tracking_id"]
+
+        def _tracking_of(row: Dict[str, Any]) -> str:
+            v = row.get(tracking_col)
+            if v is None:
+                return ""
+            return str(v).strip()
+
+        tracking_values = list({_tracking_of(r) for r in rows if _tracking_of(r)})
+        # Case-insensitive lookup — build a normalised map.
+        existing_lookup: Dict[str, Dict[str, Any]] = {}
+        if tracking_values:
+            # Match on tracking_id OR manual_tracking_id OR order_id / master_order_id
+            # so users can also feed a courier remit sheet that uses the merchant's
+            # Master Order ID as the key when the courier hasn't printed AWBs.
+            or_clauses: List[Dict[str, Any]] = []
+            for f in ("tracking_id", "manual_tracking_id", "order_id", "master_order_id"):
+                or_clauses.append({f: {"$in": tracking_values}})
+            cursor = db.shipments.find(
+                {"user_id": current_user["id"], "$or": or_clauses},
+                {"_id": 0},
+            )
+            async for sh in cursor:
+                for f in ("tracking_id", "manual_tracking_id", "order_id", "master_order_id"):
+                    v = str(sh.get(f) or "").strip()
+                    if v:
+                        existing_lookup[v.lower()] = sh
+                        existing_lookup[v] = sh
+
+        # ────────────── Per-row processing ──────────────
+        updates_to_write: List[Tuple[str, Dict[str, Any]]] = []
+        for idx, row in enumerate(rows):
+            tracking = _tracking_of(row)
+            row_status: str = "unmatched"
+            shipment_id = ""
+            mismatches: List[Dict[str, Any]] = []
+            applied: Dict[str, Any] = {}
+            row_error = ""
+
+            try:
+                if not tracking:
+                    row_status = "unmatched"
+                else:
+                    existing = existing_lookup.get(tracking) or existing_lookup.get(tracking.lower())
+                    if not existing:
+                        row_status = "unmatched"
+                    else:
+                        shipment_id = existing.get("id") or ""
+
+                        # Build the update dict for this row.
+                        for field, col in field_to_col.items():
+                            if field == "tracking_id":
+                                continue
+                            raw = row.get(col)
+                            new_val = normalise_value(field, raw)
+                            if new_val in ("", 0.0, None):
+                                # Blank cell → don't touch the existing value.
+                                continue
+
+                            # ── Cross-verify guard ──
+                            if field in CROSS_VERIFY_FIELDS:
+                                existing_val = existing.get(field) if field != "amount" else (
+                                    existing.get("amount") or existing.get("cod_amount") or 0.0
+                                )
+                                if field == "weight":
+                                    equal = _weight_equal(existing_val, new_val)
+                                elif field == "payment_mode":
+                                    equal = _payment_mode_equal(existing_val, new_val)
+                                else:  # amount
+                                    equal = _amount_equal(existing_val, new_val)
+                                if not equal:
+                                    mismatches.append({
+                                        "field":    field,
+                                        "existing": existing_val,
+                                        "imported": new_val,
+                                    })
+                                    # DO NOT override — user requirement.
+                                    continue
+
+                            # Special mapping: courier_hint drives courier_name.
+                            if field == "courier_hint":
+                                applied["courier_name"] = new_val
+                                continue
+                            if field == "address":
+                                applied["address_line1"] = new_val
+                                continue
+                            if field == "items":
+                                # Items in DB is a list; store as single-element list
+                                # when incoming is a plain string.
+                                applied["items"] = [new_val] if isinstance(new_val, str) and new_val else new_val
+                                continue
+                            applied[field] = new_val
+
+                        # Type-specific post-processing.
+                        if import_type == "delivery":
+                            # Force status to Delivered whenever delivery import runs,
+                            # even if the file didn't carry an explicit status column.
+                            applied["status"] = "Delivered"
+                            if not applied.get("delivered_at"):
+                                applied["delivered_at"] = now
+                            else:
+                                # Store as ISO string (normalise_value already did)
+                                pass
+
+                        if import_type == "cod_payment":
+                            # Stamp the courier collection metadata on the shipment
+                            # for audit trail. These live on top of any existing
+                            # values; if user re-uploads later the newest wins.
+                            if not applied.get("cod_payment_date"):
+                                applied["cod_payment_date"] = now
+
+                        if applied:
+                            row_status = "matched_mismatch" if mismatches else "matched_updated"
+                            updates_to_write.append((shipment_id, applied))
+                        else:
+                            row_status = "matched_mismatch" if mismatches else "matched_no_change"
+            except Exception as e:
+                row_status = "error"
+                row_error = str(e)[:240]
+
+            row_entry: Dict[str, Any] = {
+                "row_index":   idx + 2,   # +2: 1 header + 1-based
+                "tracking_id": tracking,
+                "status":      row_status,
+                "shipment_id": shipment_id,
+                "applied":     applied,
+                "mismatches":  mismatches,
+            }
+            if row_error:
+                row_entry["error"] = row_error
+            batch_doc["rows"].append(row_entry)
+
+            if row_status == "matched_updated":
+                batch_doc["matched_updated"] += 1
+            elif row_status == "matched_mismatch":
+                batch_doc["matched_mismatch"] += 1
+            elif row_status == "matched_no_change":
+                batch_doc["matched_no_change"] += 1
+            elif row_status == "unmatched":
+                batch_doc["unmatched"] += 1
+            elif row_status == "error":
+                batch_doc["errors"] += 1
+
+        # ────────────── Write updates in one bulk op ──────────────
+        wrote = 0
+        if updates_to_write:
+            from pymongo import UpdateOne  # local import to avoid top-level cost
+            ops = []
+            for sid, upd in updates_to_write:
+                # Stamp modified metadata so the Shipments UI's "Modified"
+                # bucket picks these up if the merchant wants to review.
+                upd_final = dict(upd)
+                upd_final["is_modified"] = True
+                upd_final["modified_at"] = now
+                # For delivery, also stamp the pipeline delivered_at when
+                # status hits Delivered. Existing helper checks in
+                # shipments_write.py will not fire here (bulk write path),
+                # so we mirror the fields manually.
+                if upd_final.get("status") == "Delivered" and not upd_final.get("delivered_at"):
+                    upd_final["delivered_at"] = now
+                ops.append(UpdateOne(
+                    {"id": sid, "user_id": current_user["id"]},
+                    {"$set": upd_final},
+                ))
+            if ops:
+                res = await db.shipments.bulk_write(ops, ordered=False)
+                wrote = int(res.modified_count or 0)
+
+        # Persist the batch record for history / audit.
+        try:
+            await db.shipment_import_batches.insert_one(batch_doc)
+        except Exception:
+            _logger.exception("failed to persist shipment_import batch")
+
+        _logger.info(
+            "shipment-import: user=%s type=%s file=%s rows=%d matched=%d mismatch=%d unmatched=%d",
+            current_user["id"], import_type, file.filename or "",
+            len(rows), batch_doc["matched_updated"], batch_doc["matched_mismatch"],
+            batch_doc["unmatched"],
+        )
+
+        return {
+            "ok":                True,
+            "batch_id":          batch_id,
+            "import_type":       import_type,
+            "filename":          batch_doc["filename"],
+            "format":            fmt,
+            "total_rows":        batch_doc["total_rows"],
+            "matched_updated":   batch_doc["matched_updated"],
+            "matched_mismatch":  batch_doc["matched_mismatch"],
+            "matched_no_change": batch_doc["matched_no_change"],
+            "unmatched":         batch_doc["unmatched"],
+            "errors":            batch_doc["errors"],
+            "db_modified":       wrote,
+        }
+
+    # ── History / Audit ───────────────────────────────────────────
+
+    @shipment_import_router.get("/shipments/import/batches")
+    async def list_batches(
+        current_user: Dict[str, Any] = Depends(_get_current_user),
+        limit: int = Query(50, ge=1, le=200),
+    ):
+        cursor = db.shipment_import_batches.find(
+            {"user_id": current_user["id"]},
+            {"_id": 0, "rows": 0},   # summary view only
+        ).sort("created_at", -1).limit(limit)
+        return {"batches": [doc async for doc in cursor]}
+
+    @shipment_import_router.get("/shipments/import/batches/{batch_id}")
+    async def get_batch(
+        batch_id: str,
+        current_user: Dict[str, Any] = Depends(_get_current_user),
+    ):
+        doc = await db.shipment_import_batches.find_one(
+            {"id": batch_id, "user_id": current_user["id"]},
+            {"_id": 0},
+        )
+        if not doc:
+            raise HTTPException(status_code=404, detail="Batch not found")
+        return doc
+
+    @shipment_import_router.get("/shipments/import/batches/{batch_id}/mismatches.csv")
+    async def download_mismatches(
+        batch_id: str,
+        current_user: Dict[str, Any] = Depends(_get_current_user),
+    ):
+        doc = await db.shipment_import_batches.find_one(
+            {"id": batch_id, "user_id": current_user["id"]},
+            {"_id": 0},
+        )
+        if not doc:
+            raise HTTPException(status_code=404, detail="Batch not found")
+        buf = io.StringIO()
+        w = csv.writer(buf)
+        w.writerow([
+            "row_index", "tracking_id", "status", "field",
+            "existing_value", "imported_value", "shipment_id", "error",
+        ])
+        for r in doc.get("rows", []):
+            status = r.get("status")
+            # Include unmatched, mismatch, and error rows in the report so
+            # the merchant sees the full downloadable audit.
+            if status == "matched_mismatch":
+                for mm in r.get("mismatches", []):
+                    w.writerow([
+                        r.get("row_index"), r.get("tracking_id"), status,
+                        mm.get("field"),
+                        _csv_val(mm.get("existing")),
+                        _csv_val(mm.get("imported")),
+                        r.get("shipment_id") or "", r.get("error") or "",
+                    ])
+            elif status in ("unmatched", "error"):
+                w.writerow([
+                    r.get("row_index"), r.get("tracking_id"), status,
+                    "", "", "", r.get("shipment_id") or "", r.get("error") or "",
+                ])
+        headers = {
+            "Content-Disposition": f'attachment; filename="mismatches_{batch_id[:8]}.csv"',
+        }
+        return Response(content=buf.getvalue(), media_type="text/csv", headers=headers)
+
+    _logger.info("shipment_import router mounted (7 endpoints)")
+
+
+def _csv_val(v: Any) -> str:
+    if v is None:
+        return ""
+    if isinstance(v, (list, dict)):
+        return json.dumps(v, ensure_ascii=False)
+    return str(v)

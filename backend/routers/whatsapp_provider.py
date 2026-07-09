@@ -569,13 +569,28 @@ async def dispatch_event(
             result["skipped"] = True
             result["reason"]  = "provider not fully configured"
             return result
-        if not automation_id or "{automation_id}" not in template:
+        if not automation_id:
+            # Simple mode: base_url is treated as the full execute
+            # endpoint. Used by events that share the single default
+            # automation (e.g. the shipment-stage triggers). Unchanged
+            # behaviour — do NOT regress these.
             endpoint = base_url
         else:
-            endpoint = template.format(
-                base_url=base_url.rstrip("/"),
-                automation_id=automation_id.strip("/"),
-            )
+            # Per-event automation. base_url may be stored either as the
+            # automations *root* (…/api/automations) or as a *full*
+            # execute URL (…/api/automations/<id>/execute) depending on
+            # how the operator saved it. Normalise to the root, then
+            # compose THIS event's own automation endpoint so each
+            # trigger can target a distinct automation (e.g. a dedicated
+            # OTP-template automation for signup/login).
+            root = re.sub(r"/[^/]+/execute/?$", "", base_url.rstrip("/"))
+            if "{automation_id}" in template and "{base_url}" in template:
+                endpoint = template.format(
+                    base_url=root.rstrip("/"),
+                    automation_id=automation_id.strip("/"),
+                )
+            else:
+                endpoint = f"{root.rstrip('/')}/{automation_id.strip('/')}/execute"
 
         target_phone = phone or context.get("customer_phone") or ""
         if not target_phone:

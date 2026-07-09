@@ -67,6 +67,16 @@ SCHEMA_FIELDS: List[str] = [
     # carries the historical timestamp instead of "now".
     "status",
     "created_at_override",
+    # Phase F6.0 (2026-06) — Shipment Import System fields.
+    # These are consumed by the new /api/shipments/import/* endpoints
+    # (booking, delivery, cod_payment). They stay in the same schema so
+    # the mapping engine, HEADER_ALIASES, and normalise_value() can be
+    # reused verbatim by the shipment-import router.
+    "delivered_at",           # ISO timestamp when the parcel was delivered
+    "pod_reference",          # Proof-of-Delivery ref / URL / receiver signature name
+    "cod_collected_amount",   # ₹ physically collected by the courier at delivery
+    "cod_payment_date",       # ISO date the COD amount was remitted to the merchant
+    "cod_payer_name",         # Name of the person who paid the COD
 ]
 
 # Phase F3.9.5 — Schema for abandoned-cart webhooks.
@@ -110,6 +120,8 @@ ABANDONED_CART_SCHEMA_FIELDS: List[str] = [
 NUMERIC_FIELDS: Set[str] = {
     "amount", "token_amount",
     "box_length", "box_width", "box_height",
+    # Phase F6.0 — Shipment Import System.
+    "cod_collected_amount",
 }
 
 PAYMENT_MODE_NORMALISE: Dict[str, str] = {
@@ -476,6 +488,52 @@ HEADER_ALIASES: Dict[str, str] = {
     "line_items":          "items",
     "lineitems":           "items",
     "skus":                "items",
+
+    # ────────────────────────────────────────────────────────────
+    # Phase F6.0 — Shipment Import System aliases.
+    # Delivery / POD / COD-payment specific columns.
+    # ────────────────────────────────────────────────────────────
+    "delivered_at":        "delivered_at",
+    "delivered_on":        "delivered_at",
+    "delivery_date":       "delivered_at",
+    "delivery_time":       "delivered_at",
+    "delivered":           "delivered_at",
+    "pod":                 "pod_reference",
+    "pod_ref":             "pod_reference",
+    "pod_reference":       "pod_reference",
+    "proof_of_delivery":   "pod_reference",
+    "receiver":            "pod_reference",
+    "receiver_name":       "pod_reference",
+    "received_by":         "pod_reference",
+    "signature":           "pod_reference",
+    "sign":                "pod_reference",
+
+    "cod_collected":         "cod_collected_amount",
+    "cod_collected_amount":  "cod_collected_amount",
+    "collected_amount":      "cod_collected_amount",
+    "collected":             "cod_collected_amount",
+    "cash_collected":        "cod_collected_amount",
+    "cod_amount_collected":  "cod_collected_amount",
+    "amount_collected":      "cod_collected_amount",
+    "cod_paid":              "cod_collected_amount",
+
+    "cod_amount":            "amount",       # expected/booked COD → amount (existing)
+    "cod_value":             "amount",
+    "cod":                   "amount",
+
+    "cod_payment_date":      "cod_payment_date",
+    "cod_remit_date":        "cod_payment_date",
+    "cod_settled_on":        "cod_payment_date",
+    "cod_paid_on":           "cod_payment_date",
+    "remit_date":            "cod_payment_date",
+    "settlement_date":       "cod_payment_date",
+    "payment_date":          "cod_payment_date",
+
+    "cod_payer":             "cod_payer_name",
+    "cod_payer_name":        "cod_payer_name",
+    "payer":                 "cod_payer_name",
+    "payer_name":            "cod_payer_name",
+    "paid_by":               "cod_payer_name",
 }
 
 
@@ -580,6 +638,8 @@ def normalise_value(field: str, raw: Any) -> Any:
     if field == "status":
         return normalise_status(raw)
     if field == "created_at_override":
+        return normalise_timestamp(raw)
+    if field in ("delivered_at", "cod_payment_date"):
         return normalise_timestamp(raw)
     if field == "items" and isinstance(raw, list):
         # Phase F3.3.1+ — pretty-format Shopify/Dukaan-style line_items.

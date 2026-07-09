@@ -1,0 +1,18 @@
+[
+  {
+    "content": "Harden dispatch_event: compose per-event automation URL from base_url root when automation_id is set (no regression to empty-automation_id stage events)",
+    "status": "completed"
+  },
+  {
+    "content": "Restart backend, verify composed endpoint URL + no regression (empty automation_id still 200)",
+    "status": "completed"
+  },
+  {
+    "content": "Get dedicated OTP automation ID from agent (automation that sends approved authntication_shippzo template)",
+    "status": "in_progress"
+  },
+  {
+    "content": "Set otp_signup & otp_login automation_id to that dedicated automation, restart, and test delivery to both numbers",
+    "status": "pending"
+  }
+]
