@@ -739,6 +739,16 @@ class Shipment(BaseModel):
 
     labels: List[str] = Field(default_factory=list)
 
+    # Phase F6.0 (2026-06) — Shipment Import System fields.
+    # Populated by /api/shipments/import/commit when the merchant
+    # uploads a Delivery or COD Payment sheet. Declared here so
+    # GET /api/shipments and GET /api/shipments/{id} return them in
+    # the JSON response (Mongo already stores them via bulk_write).
+    pod_reference:        Optional[str] = ""
+    cod_collected_amount: Optional[float] = 0.0
+    cod_payment_date:     Optional[str]   = ""
+    cod_payer_name:       Optional[str]   = ""
+
 
 class ShipmentCreate(BaseModel):
     tracking_id: str
