@@ -140,34 +140,11 @@ export default function Shipments() {
   const [importBatchPickerOpen, setImportBatchPickerOpen]   = useState(false);
   const [paymentBatchPickerOpen, setPaymentBatchPickerOpen] = useState(false);
 
-  // Phase C — Suggested Filters (server-driven).
-  //
-  // Historically we counted product-name frequency client-side over
-  // the loaded `items` array — but that meant the badge count could
-  // never match the search endpoint's result count (they used
-  // different match logic and the client only saw the first N
-  // shipments).
-  //
-  // The backend now owns both:
-  //   * `/api/shipments/product-suggestions`  → returns a normalised
-  //     token, a display variant, and the EXACT number of shipments
-  //     that will match when the chip is tapped.
-  //   * `/api/shipments?search=<display>`     → matches via the same
-  //     normalised `_search_blob` so tap-through NEVER shows fewer
-  //     rows than the badge promises.
-  //
-  // Fetched lazily whenever `items` changes so newly-created
-  // shipments feed into the suggestions on the next refresh.
-  const [suggestedFilters, setSuggestedFilters] = useState<
-    { display: string; norm: string; count: number }[]
-  >([]);
-  useEffect(() => {
-    let cancelled = false;
-    Api.productSuggestions(10, 2)
-      .then((rows) => { if (!cancelled) setSuggestedFilters(rows || []); })
-      .catch(() => { if (!cancelled) setSuggestedFilters([]); });
-    return () => { cancelled = true; };
-  }, [items.length]);
+  // Phase F6.6 — "Suggested Filters" section was permanently removed
+  // from the Filter Bottom Sheet at user request. The product-suggestion
+  // state and its `/api/shipments/product-suggestions` fetch have been
+  // deleted to eliminate the round-trip on every list change.
+
   // Phase B — when the "+ Create new label" button in the Filter
   // Bottom Sheet is tapped we open LabelPickerSheet in a special
   // "create-mode-only" state.  We reuse the existing sheet by
@@ -2886,11 +2863,6 @@ export default function Shipments() {
         onOpenCustomDate={() => setShowDateModal(true)}
         paymentFilter={paymentFilter}
         setPaymentFilter={setPaymentFilter}
-        suggestions={suggestedFilters}
-        onPickSuggestion={(term) => {
-          setSearch(term);
-          load().catch(() => {});
-        }}
         onClearAll={() => {
           setDateFilter("all");
           setCustomFrom(null);

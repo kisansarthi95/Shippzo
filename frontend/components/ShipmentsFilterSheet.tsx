@@ -31,8 +31,6 @@ import { colors } from "../lib/theme";
 
 type DateFilterKey = "all" | "today" | "week" | "month" | "custom";
 
-type Suggestion = { display: string; count: number };
-
 export type ImportStatusKey = "all" | "imported" | "not_imported";
 export type ImportTypeKey = "booking" | "delivery" | "cod_payment";
 export type ValidationKey = "weight" | "payment_mode" | "amount";
@@ -54,10 +52,6 @@ type Props = {
   // Payment
   paymentFilter: Set<string>;
   setPaymentFilter: (v: Set<string>) => void;
-  // Phase C — Suggested product-name filters (most frequently
-  // occurring items across the currently loaded shipments).
-  suggestions: Suggestion[];
-  onPickSuggestion: (term: string) => void;
   // Clear-all
   onClearAll: () => void;
 
@@ -136,7 +130,7 @@ export default function ShipmentsFilterSheet({
   dateFilter, setDateFilter,
   customFrom, customTo, onOpenCustomDate,
   paymentFilter, setPaymentFilter,
-  suggestions, onPickSuggestion, onClearAll,
+  onClearAll,
   importStatus, setImportStatus,
   importTypes, setImportTypes,
   bookingFilter, setBookingFilter,
@@ -501,57 +495,6 @@ export default function ShipmentsFilterSheet({
             </View>
             <PhIcon name="chevron-forward" size={16} color="#94A3B8" />
           </TouchableOpacity>
-
-          {/* ── Suggested Filters section (Phase C) ─────────────
-              Shows the most frequently occurring product names
-              (items[]) across your loaded shipments. Tap a chip and
-              we drop that term straight into the search bar so it
-              composes with every other filter. The old "Create new
-              label" shortcut lives on the shipment card itself
-              (Label icon → +New) — no need to duplicate it here. */}
-          <Text style={styles.sectionTitle}>
-            Suggested Filters{suggestions.length > 0 ? ` (${suggestions.length})` : ""}
-          </Text>
-          {suggestions.length === 0 ? (
-            <Text style={styles.helper}>
-              No frequently-used product names yet. Once the same
-              product appears in 2+ shipments, it'll show up here as
-              a one-tap filter.
-            </Text>
-          ) : (
-            <View style={styles.chipWrap}>
-              {suggestions.map((s) => (
-                <TouchableOpacity
-                  key={s.display}
-                  testID={`fs-sugg-${s.display}`}
-                  onPress={() => {
-                    onPickSuggestion(s.display);
-                    onClose();
-                  }}
-                  style={[
-                    styles.chip,
-                    { flexDirection: "row", gap: 6, alignItems: "center" },
-                  ]}
-                >
-                  <PhIcon name="search" size={13} color={colors.primary} />
-                  <Text
-                    numberOfLines={1}
-                    allowFontScaling={false}
-                    style={[styles.chipTxt, { color: colors.primary }]}
-                  >
-                    {s.display}
-                  </Text>
-                  <View style={styles.countPill}>
-                    <Text style={styles.countPillTxt}>{s.count}</Text>
-                  </View>
-                </TouchableOpacity>
-              ))}
-            </View>
-          )}
-          <Text style={styles.helper}>
-            Tip: To create a new label, open any shipment's Label
-            picker directly from its card.
-          </Text>
         </ScrollView>
 
         {/* Footer actions */}
