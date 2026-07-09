@@ -740,6 +740,15 @@ def init() -> None:
                         shipment_id = existing.get("id") or ""
 
                         # Build the update dict for this row.
+                        # ─── Phase F6.2 — Also stamp IMPORT-SPECIFIC fields
+                        # on the shipment so Shipment Details screen can
+                        # surface the imported courier weight, payment
+                        # type, and booked COD amount WITHOUT overwriting
+                        # the merchant's original values.
+                        row_imported_weight = ""
+                        row_imported_payment_mode = ""
+                        row_imported_amount: Optional[float] = None
+
                         for field, col in field_to_col.items():
                             if field == "tracking_id":
                                 continue
@@ -756,10 +765,16 @@ def init() -> None:
                                 )
                                 if field == "weight":
                                     equal = _weight_equal(existing_val, new_val)
+                                    row_imported_weight = str(new_val)
                                 elif field == "payment_mode":
                                     equal = _payment_mode_equal(existing_val, new_val)
+                                    row_imported_payment_mode = str(new_val)
                                 else:  # amount
                                     equal = _amount_equal(existing_val, new_val)
+                                    try:
+                                        row_imported_amount = float(new_val)
+                                    except (TypeError, ValueError):
+                                        row_imported_amount = None
                                 if not equal:
                                     mismatches.append({
                                         "field":    field,
@@ -783,6 +798,35 @@ def init() -> None:
                                 continue
                             applied[field] = new_val
 
+                        # ─── Phase F6.2 — Type-specific import stamps ───
+                        # These fields ADD to (never replace) the merchant's
+                        # original booking data. The Shipment Details screen
+                        # reads them to render the "Import" panel.
+                        if import_type == "booking":
+                            applied["imported_booking_at"] = now
+                            applied["last_import_at"] = now
+                            applied["last_import_type"] = "booking"
+                            if row_imported_weight:
+                                applied["imported_post_office_weight"] = row_imported_weight
+                            if row_imported_payment_mode:
+                                applied["imported_courier_payment_mode"] = row_imported_payment_mode
+                            if row_imported_amount is not None:
+                                applied["imported_booked_cod_amount"] = row_imported_amount
+                            # Persist current-run validation alerts on the shipment
+                            # so the Details screen can display badges. Cross-verify
+                            # mismatches from THIS row become the shipment's live
+                            # alerts (overwrites previous run's alerts by design —
+                            # newest import is the source of truth).
+                            applied["import_validation_alerts"] = [
+                                {
+                                    "field":    mm["field"],
+                                    "existing": mm["existing"],
+                                    "imported": mm["imported"],
+                                    "at":       now,
+                                }
+                                for mm in mismatches
+                            ]
+
                         # Type-specific post-processing.
                         if import_type == "delivery":
                             # Force status to Delivered whenever delivery import runs,
@@ -790,9 +834,13 @@ def init() -> None:
                             applied["status"] = "Delivered"
                             if not applied.get("delivered_at"):
                                 applied["delivered_at"] = now
-                            else:
-                                # Store as ISO string (normalise_value already did)
-                                pass
+                            # Phase F6.2 — auto-confirm delivery so the
+                            # "Delivery Confirmation Pending" badge clears
+                            # in the Shipment Details / card views.
+                            applied["confirmation_status"] = "confirmed"
+                            applied["delivery_source"] = "imported"
+                            applied["last_import_at"] = now
+                            applied["last_import_type"] = "delivery"
 
                         if import_type == "cod_payment":
                             # Stamp the courier collection metadata on the shipment
@@ -800,6 +848,9 @@ def init() -> None:
                             # values; if user re-uploads later the newest wins.
                             if not applied.get("cod_payment_date"):
                                 applied["cod_payment_date"] = now
+                            applied["cod_payment_status"] = "received"
+                            applied["last_import_at"] = now
+                            applied["last_import_type"] = "cod_payment"
 
                         if applied:
                             row_status = "matched_mismatch" if mismatches else "matched_updated"

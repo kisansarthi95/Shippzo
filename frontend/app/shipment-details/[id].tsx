@@ -83,6 +83,15 @@ export default function ShipmentDetailsScreen() {
     loadShipment();
   }, [loadShipment]);
 
+  // Phase F6.2 — Auto-refresh on screen focus so a Shipment Import
+  // that finished on another tab (or was just committed) surfaces the
+  // freshest imported values here without a manual reload.
+  useFocusEffect(
+    useCallback(() => {
+      loadShipment();
+    }, [loadShipment]),
+  );
+
   // Phase-25 — Tracking-ID Gate. When the user scans a tracking ID
   // from this screen (via "Add Tracking ID first" CTA → /scanner),
   // the scanner pushes the value through scannerBridge. On focus
@@ -448,6 +457,9 @@ export default function ShipmentDetailsScreen() {
         {/* Timestamps */}
         <Section title="Timeline" icon="time-outline">
           <Row label="Order Date / Time" value={fmtDate(ship.created_at)} />
+          {!!(ship as any).imported_booking_at && (
+            <Row label="Booking Date / Time" value={fmtDate((ship as any).imported_booking_at)} />
+          )}
           {!!(ship as any).processing_started_at && (
             <Row label="Processing Started" value={fmtDate((ship as any).processing_started_at)} />
           )}
@@ -458,12 +470,100 @@ export default function ShipmentDetailsScreen() {
             <Row label="Shipped at"         value={fmtDate((ship as any).shipped_at)} />
           )}
           {!!ship.delivered_at && (
-            <Row label="Delivered at"       value={fmtDate(ship.delivered_at)} />
+            <Row label="Delivered Date / Time" value={fmtDate(ship.delivered_at)} />
           )}
           {!!(ship as any).modified_at && (
-            <Row label="Last Modified at"   value={fmtDate((ship as any).modified_at)} />
+            <Row label="Last Modified Date / Time" value={fmtDate((ship as any).modified_at)} />
           )}
         </Section>
+
+        {/* ────────── Import Data (Phase F6.2) ──────────
+            Shown ONLY if this shipment was ever touched by the
+            Shipment Import System. Layout is grouped by import type
+            so operators can quickly parse the courier-side view
+            without conflicting with their original booking data. */}
+        {(!!(ship as any).imported_booking_at
+          || !!(ship as any).delivery_source
+          || !!(ship as any).cod_payment_status
+          || (((ship as any).import_validation_alerts || []).length > 0)) && (
+          <Section title="Import Data" icon="cloud-download-outline">
+
+            {/* Validation alerts — surface any weight / payment / COD
+                mismatches recorded on the LAST Booking Import. */}
+            {(((ship as any).import_validation_alerts || []) as any[]).length > 0 && (
+              <View style={styles.alertBox}>
+                <View style={{ flexDirection: "row", alignItems: "center", gap: 6, marginBottom: 6 }}>
+                  <PhIcon name="warning" size={14} color="#B45309" />
+                  <Text style={styles.alertTitle}>
+                    Validation Alerts ({((ship as any).import_validation_alerts || []).length})
+                  </Text>
+                </View>
+                {(((ship as any).import_validation_alerts || []) as any[]).map((a, i) => (
+                  <View key={i} style={styles.alertRow}>
+                    <Text style={styles.alertField}>
+                      {a.field === "weight"       && "Weight Mismatch"}
+                      {a.field === "payment_mode" && "Payment Type Mismatch"}
+                      {a.field === "amount"       && "COD Amount Mismatch"}
+                      {!["weight", "payment_mode", "amount"].includes(a.field) && `${a.field} mismatch`}
+                    </Text>
+                    <Text style={styles.alertVal}>
+                      Booked: <Text style={styles.alertMono}>{String(a.existing ?? "")}</Text>
+                      {"  ·  "}
+                      Imported: <Text style={styles.alertMono}>{String(a.imported ?? "")}</Text>
+                    </Text>
+                  </View>
+                ))}
+              </View>
+            )}
+
+            {/* Booking-import specific rows */}
+            {!!(ship as any).imported_booking_at && (
+              <>
+                <Row label="Booking Date"  value={fmtDate((ship as any).imported_booking_at)} />
+                {!!(ship as any).imported_post_office_weight && (
+                  <Row label="Post Office Weight"   value={(ship as any).imported_post_office_weight} />
+                )}
+                {!!(ship as any).imported_courier_payment_mode && (
+                  <Row label="Courier Payment Type" value={(ship as any).imported_courier_payment_mode} />
+                )}
+                {((ship as any).imported_booked_cod_amount ?? 0) > 0 && (
+                  <Row label="Booked COD Amount"    value={fmtMoney((ship as any).imported_booked_cod_amount)} />
+                )}
+              </>
+            )}
+
+            {/* Delivery-import specific rows */}
+            {(ship as any).delivery_source === "imported" && (
+              <>
+                {!!ship.delivered_at && (
+                  <Row label="Delivery Date / Time" value={fmtDate(ship.delivered_at)} />
+                )}
+                <Row label="Delivery Source" value="Imported" />
+                <Row label="Delivery Status" value="Delivered" />
+              </>
+            )}
+
+            {/* COD-payment-import specific rows */}
+            {(ship as any).cod_payment_status === "received" && (
+              <>
+                {!!(ship as any).cod_payment_date && (
+                  <Row label="COD Payment Received Date" value={fmtDate((ship as any).cod_payment_date)} />
+                )}
+                {((ship as any).cod_collected_amount ?? 0) > 0 && (
+                  <Row label="COD Amount Received" value={fmtMoney((ship as any).cod_collected_amount)} />
+                )}
+                {!!(ship as any).cod_payer_name && (
+                  <Row label="Received From" value={(ship as any).cod_payer_name} />
+                )}
+                <Row label="COD Payment Status" value="Received" />
+              </>
+            )}
+
+            {!!(ship as any).pod_reference && (
+              <Row label="POD Reference" value={(ship as any).pod_reference} />
+            )}
+          </Section>
+        )}
 
         {/* Notes */}
         {(!!ship.shipment_notes || !!(ship as any).admin_notes) && (
@@ -548,6 +648,26 @@ const styles = StyleSheet.create({
     backgroundColor: "#EEE9FF", borderColor: "#DAD0FF",
   },
   statusChipTxt: { fontSize: 11, fontWeight: "800", letterSpacing: 0.5, color: "#4B3FCF" },
+
+  // Phase F6.2 — Import validation alerts
+  alertBox: {
+    backgroundColor: "#FFFBEB",
+    borderLeftWidth: 3,
+    borderLeftColor: "#F59E0B",
+    borderRadius: 6,
+    padding: 10,
+    marginBottom: 10,
+  },
+  alertTitle: { fontSize: 12, fontWeight: "800", color: "#92400E" },
+  alertRow: { marginTop: 4 },
+  alertField: { fontSize: 12, fontWeight: "700", color: "#78350F" },
+  alertVal: { fontSize: 11, color: "#0F172A", marginTop: 1 },
+  alertMono: {
+    fontFamily: "monospace",
+    fontSize: 11,
+    fontWeight: "700",
+    color: "#B45309",
+  },
 
   section: {
     backgroundColor: "#fff",

@@ -241,6 +241,31 @@ export type Shipment = {
   delivered_at?: string | null;
   sheet_row_key?: string;
   sheet_row_num?: number | null;   // Master Sheet row this shipment was appended to (for soft-delete)
+  modified_at?: string | null;
+
+  // Phase F6.0 / F6.2 — Shipment Import System fields.
+  pod_reference?: string;
+  cod_collected_amount?: number;
+  cod_payment_date?: string;
+  cod_payer_name?: string;
+  imported_booking_at?: string;
+  imported_post_office_weight?: string;
+  imported_courier_payment_mode?: string;
+  imported_booked_cod_amount?: number;
+  import_validation_alerts?: {
+    field: string;
+    existing: any;
+    imported: any;
+    at: string;
+  }[];
+  delivery_source?: string;
+  cod_payment_status?: string;
+  last_import_at?: string;
+  last_import_type?: string;
+
+  // Delivery confirmation state — auto-flipped to "confirmed" on
+  // Delivery Import so the "pending" badge clears.
+  confirmation_status?: string;
 };
 
 export type SheetPreview = {

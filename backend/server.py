@@ -749,6 +749,27 @@ class Shipment(BaseModel):
     cod_payment_date:     Optional[str]   = ""
     cod_payer_name:       Optional[str]   = ""
 
+    # Phase F6.2 — Import-side fields surfaced to the Shipment Details
+    # screen. Populated by the /api/shipments/import/commit route.
+    # These NEVER override the merchant's original booking values —
+    # they live alongside them so the details view can show BOTH.
+    imported_booking_at:            Optional[str]   = ""
+    imported_post_office_weight:    Optional[str]   = ""   # verbatim from courier sheet
+    imported_courier_payment_mode:  Optional[str]   = ""   # COD / PAID as courier saw it
+    imported_booked_cod_amount:     Optional[float] = 0.0
+    # Cross-verify mismatch alerts stamped on this shipment during the
+    # last import. Each entry: {field, existing, imported, at}.
+    import_validation_alerts:       List[Dict[str, Any]] = Field(default_factory=list)
+    # Set by Delivery import — "imported" so UI can distinguish from
+    # merchant-marked or courier-webhook-marked deliveries.
+    delivery_source:                Optional[str]   = ""
+    # Set by COD Payment import — "received" clears the pending badge.
+    cod_payment_status:             Optional[str]   = ""
+    # Convenience: the timestamp / type of the LAST import that
+    # touched this shipment (any of booking / delivery / cod_payment).
+    last_import_at:                 Optional[str]   = ""
+    last_import_type:               Optional[str]   = ""
+
 
 class ShipmentCreate(BaseModel):
     tracking_id: str
