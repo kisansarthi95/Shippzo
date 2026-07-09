@@ -166,8 +166,19 @@ class MappingPayload(BaseModel):
 # ════════════════════════════════════════════════════════════════════
 #                              Parsers
 # ════════════════════════════════════════════════════════════════════
+#
+# All parsers return a **raw grid** (List[List[Any]]) with NO header
+# assumption. `_apply_layout()` then slices out the header row + data
+# rows based on the user-provided `header_row`, `data_start_row`, and
+# `header_col` values. This matches the Webhook Mapping Engine UX where
+# spreadsheets with title banners / metadata before the actual header
+# (common in courier remit sheets) can be imported cleanly.
+# ════════════════════════════════════════════════════════════════════
 
-def _parse_csv(blob: bytes) -> Tuple[List[str], List[Dict[str, str]]]:
+MAX_RAW_ROWS = 12000    # safety ceiling — 10 MB CSV rarely exceeds this
+
+
+def _parse_csv_raw(blob: bytes) -> List[List[Any]]:
     for enc in ("utf-8-sig", "utf-8", "latin-1"):
         try:
             text = blob.decode(enc)
@@ -177,21 +188,17 @@ def _parse_csv(blob: bytes) -> Tuple[List[str], List[Dict[str, str]]]:
     else:
         raise HTTPException(status_code=400, detail="Could not decode file")
     reader = csv.reader(io.StringIO(text))
-    try:
-        header = next(reader)
-    except StopIteration:
-        raise HTTPException(status_code=400, detail="File is empty")
-    rows: List[Dict[str, str]] = []
+    grid: List[List[Any]] = []
     for line in reader:
-        if len(line) < len(header):
-            line = list(line) + [""] * (len(header) - len(line))
-        elif len(line) > len(header):
-            line = line[: len(header)]
-        rows.append({h.strip(): (line[i] or "").strip() for i, h in enumerate(header)})
-    return [h.strip() for h in header], rows
+        grid.append([(c or "").strip() if isinstance(c, str) else c for c in line])
+        if len(grid) > MAX_RAW_ROWS:
+            break
+    if not grid:
+        raise HTTPException(status_code=400, detail="File is empty")
+    return grid
 
 
-def _parse_xlsx(blob: bytes) -> Tuple[List[str], List[Dict[str, Any]]]:
+def _parse_xlsx_raw(blob: bytes) -> List[List[Any]]:
     try:
         from openpyxl import load_workbook
     except ImportError:
@@ -206,29 +213,122 @@ def _parse_xlsx(blob: bytes) -> Tuple[List[str], List[Dict[str, Any]]]:
     ws = wb.active
     if ws is None:
         raise HTTPException(status_code=400, detail="Workbook has no sheets")
-    rows_iter = ws.iter_rows(values_only=True)
-    try:
-        header_raw = next(rows_iter)
-    except StopIteration:
+    grid: List[List[Any]] = []
+    for line in ws.iter_rows(values_only=True):
+        grid.append(list(line))
+        if len(grid) > MAX_RAW_ROWS:
+            break
+    if not grid:
         raise HTTPException(status_code=400, detail="Sheet is empty")
-    header = [str(c).strip() if c is not None else "" for c in header_raw]
+    return grid
+
+
+def _apply_layout(
+    grid: List[List[Any]],
+    header_row: int,
+    data_start_row: int,
+    header_col: int,
+) -> Tuple[List[str], List[Dict[str, Any]]]:
+    """Slice a raw grid into (columns, list-of-row-dicts) using the
+    1-based header_row / data_start_row / header_col config.
+
+    • header_row     — 1-based row number where COLUMN HEADERS live.
+    • data_start_row — 1-based row number where actual data begins.
+                       Must be >= header_row + 1.
+    • header_col     — 1-based column number where the FIRST meaningful
+                       column lives. Any columns to the LEFT of this
+                       are ignored entirely (both in header + data).
+
+    Blank rows in the data region are skipped. Data columns beyond the
+    header width are truncated; short rows are padded with "".
+    """
+    if header_row < 1:
+        header_row = 1
+    if header_col < 1:
+        header_col = 1
+    if data_start_row <= header_row:
+        data_start_row = header_row + 1
+
+    if header_row > len(grid):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Header row {header_row} is beyond the file "
+                f"(file has {len(grid)} rows)."
+            ),
+        )
+    header_line = grid[header_row - 1]
+    header_line = header_line[header_col - 1:]
+    columns: List[str] = []
+    for c in header_line:
+        if c is None:
+            columns.append("")
+        elif isinstance(c, str):
+            columns.append(c.strip())
+        else:
+            columns.append(str(c).strip())
+    # Drop trailing blank header columns — they add noise to the mapping UI.
+    while columns and not columns[-1]:
+        columns.pop()
+    if not columns:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Header row {header_row} is empty (no column names found). "
+                "Check the Header Row / Data Start Column values."
+            ),
+        )
+
     rows: List[Dict[str, Any]] = []
-    for line in rows_iter:
-        line = list(line) + [None] * (len(header) - len(line))
-        line = line[: len(header)]
+    for row_i in range(data_start_row - 1, len(grid)):
+        line = grid[row_i]
+        line = line[header_col - 1:]
+        # Pad or trim to header width.
+        if len(line) < len(columns):
+            line = list(line) + [None] * (len(columns) - len(line))
+        else:
+            line = line[: len(columns)]
+        # Skip fully-blank rows.
         if all(c is None or (isinstance(c, str) and c.strip() == "") for c in line):
             continue
-        rows.append({h: line[i] for i, h in enumerate(header)})
-    return header, rows
+        rows.append({
+            columns[i]: (
+                line[i].strip() if isinstance(line[i], str) else line[i]
+            )
+            for i in range(len(columns))
+        })
+    return columns, rows
 
 
-def _parse_upload(file: UploadFile, blob: bytes) -> Tuple[str, List[str], List[Dict[str, Any]]]:
+def _parse_csv(blob: bytes) -> Tuple[List[str], List[Dict[str, str]]]:
+    """Legacy default-layout parser: header on row 1, data from row 2.
+    Retained so /orders/import/* + tests keep working unchanged."""
+    grid = _parse_csv_raw(blob)
+    cols, rows = _apply_layout(grid, header_row=1, data_start_row=2, header_col=1)
+    return cols, rows  # type: ignore[return-value]
+
+
+def _parse_xlsx(blob: bytes) -> Tuple[List[str], List[Dict[str, Any]]]:
+    """Legacy default-layout parser."""
+    grid = _parse_xlsx_raw(blob)
+    return _apply_layout(grid, header_row=1, data_start_row=2, header_col=1)
+
+
+def _parse_upload(
+    file: UploadFile,
+    blob: bytes,
+    header_row: int = 1,
+    data_start_row: int = 2,
+    header_col: int = 1,
+) -> Tuple[str, List[str], List[Dict[str, Any]]]:
     name = (file.filename or "").lower()
     if name.endswith(".xlsx"):
-        cols, rows = _parse_xlsx(blob)
+        grid = _parse_xlsx_raw(blob)
+        cols, rows = _apply_layout(grid, header_row, data_start_row, header_col)
         return "xlsx", cols, rows
     if name.endswith(".csv") or (file.content_type or "").startswith("text/csv"):
-        cols, rows = _parse_csv(blob)
+        grid = _parse_csv_raw(blob)
+        cols, rows = _apply_layout(grid, header_row, data_start_row, header_col)
         return "csv", cols, rows
     raise HTTPException(
         status_code=400,
@@ -246,6 +346,26 @@ def _row_sample(rows: List[Dict[str, Any]]) -> List[Dict[str, str]]:
             ))
             for k, v in r.items()
         })
+    return out
+
+
+def _raw_preview_grid(
+    grid: List[List[Any]],
+    max_rows: int = 12,
+    max_cols: int = 20,
+) -> List[List[str]]:
+    """Return the first N rows × M cols of the raw grid, stringified
+    for the UI 'first 12 rows peek' block. Lets the user visually
+    confirm which row IS the header before finalising the layout."""
+    out: List[List[str]] = []
+    for r in grid[:max_rows]:
+        r2 = r[:max_cols]
+        out.append([
+            "" if c is None else (
+                c.isoformat() if hasattr(c, "isoformat") else str(c).strip()
+            )
+            for c in r2
+        ])
     return out
 
 
@@ -336,12 +456,17 @@ def init() -> None:
     ):
         doc = await db.users.find_one(
             {"id": current_user["id"]},
-            {"_id": 0, "shipment_import_mappings": 1},
+            {"_id": 0, "shipment_import_mappings": 1, "shipment_import_layouts": 1},
         ) or {}
         all_maps: Dict[str, Any] = doc.get("shipment_import_mappings") or {}
+        all_layouts: Dict[str, Any] = doc.get("shipment_import_layouts") or {}
+        layout = all_layouts.get(import_type) or {}
         return {
             "import_type":    import_type,
             "mapping":        all_maps.get(import_type) or {},
+            "header_row":     int(layout.get("header_row") or 1),
+            "data_start_row": int(layout.get("data_start_row") or 2),
+            "header_col":     int(layout.get("header_col") or 1),
             "target_fields":  [
                 {"key": f, "label": FIELD_LABELS.get(f, f), "required": f == "tracking_id"}
                 for f in TARGET_FIELDS_BY_TYPE[import_type]
@@ -377,6 +502,9 @@ def init() -> None:
     async def import_preview(
         file: UploadFile = File(...),
         import_type: str = Form(..., description="booking | delivery | cod_payment"),
+        header_row: int = Form(1, description="1-based row where COLUMN HEADERS live"),
+        data_start_row: int = Form(2, description="1-based row where DATA begins"),
+        header_col: int = Form(1, description="1-based column where data begins (skip N-1 left columns)"),
         current_user: Dict[str, Any] = Depends(_get_current_user),
     ):
         if import_type not in IMPORT_TYPES:
@@ -390,17 +518,33 @@ def init() -> None:
                 status_code=413,
                 detail=f"File too large (limit { MAX_FILE_BYTES // (1024 * 1024) } MB)",
             )
-        fmt, columns, rows = _parse_upload(file, blob)
+
+        # Parse the raw grid ONCE — used both for the layout-aware
+        # (columns, rows) view AND for the "first 12 rows peek" that
+        # helps the user visually locate the correct header row.
+        name = (file.filename or "").lower()
+        if name.endswith(".xlsx"):
+            grid = _parse_xlsx_raw(blob)
+            fmt = "xlsx"
+        elif name.endswith(".csv") or (file.content_type or "").startswith("text/csv"):
+            grid = _parse_csv_raw(blob)
+            fmt = "csv"
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail=("Only .csv and .xlsx files are supported (got "
+                        f"{file.filename or 'unknown'})"),
+            )
+        columns, rows = _apply_layout(grid, header_row, data_start_row, header_col)
 
         # Filter suggest_mapping output to only fields relevant for this
         # import type. Keeps the UI focussed.
         allowed = set(TARGET_FIELDS_BY_TYPE[import_type])
-        saved = (
-            await db.users.find_one(
-                {"id": current_user["id"]},
-                {"_id": 0, "shipment_import_mappings": 1},
-            ) or {}
-        ).get("shipment_import_mappings") or {}
+        saved_doc = await db.users.find_one(
+            {"id": current_user["id"]},
+            {"_id": 0, "shipment_import_mappings": 1, "shipment_import_layouts": 1},
+        ) or {}
+        saved = saved_doc.get("shipment_import_mappings") or {}
         saved_map = (saved.get(import_type) or {})
         raw_suggested = suggest_mapping(columns, saved_map, [])
         suggested = {c: f for c, f in raw_suggested.items() if f in allowed}
@@ -432,6 +576,16 @@ def init() -> None:
             ],
             "cross_verify":   CROSS_VERIFY_FIELDS,
             "suggested":      suggested,
+            # Layout the parser used — echoed back so the UI can display
+            # exactly what got applied.
+            "header_row":     header_row,
+            "data_start_row": data_start_row,
+            "header_col":     header_col,
+            # First 12 rows × 20 cols of the ORIGINAL grid (pre-layout)
+            # so the UI can render a scrollable peek widget the user
+            # taps to say "row 3 IS my header".
+            "raw_preview":    _raw_preview_grid(grid, max_rows=12, max_cols=20),
+            "raw_total_rows": len(grid),
         }
 
     # ── Commit (validate + apply) ─────────────────────────────────
@@ -442,6 +596,9 @@ def init() -> None:
         import_type: str = Form(..., description="booking | delivery | cod_payment"),
         mapping: str = Form(..., description="JSON string {csv_col: schema_field}"),
         save_default: bool = Form(False),
+        header_row: int = Form(1),
+        data_start_row: int = Form(2),
+        header_col: int = Form(1),
         current_user: Dict[str, Any] = Depends(_get_current_user),
     ):
         if import_type not in IMPORT_TYPES:
@@ -485,7 +642,7 @@ def init() -> None:
                 status_code=413,
                 detail=f"File too large (limit { MAX_FILE_BYTES // (1024 * 1024) } MB)",
             )
-        fmt, columns, rows = _parse_upload(file, blob)
+        fmt, columns, rows = _parse_upload(file, blob, header_row, data_start_row, header_col)
         if len(rows) > MAX_IMPORT_ROWS:
             raise HTTPException(
                 status_code=413,
@@ -495,7 +652,14 @@ def init() -> None:
         if save_default:
             await db.users.update_one(
                 {"id": current_user["id"]},
-                {"$set": {f"shipment_import_mappings.{import_type}": mapping_obj}},
+                {"$set": {
+                    f"shipment_import_mappings.{import_type}": mapping_obj,
+                    f"shipment_import_layouts.{import_type}": {
+                        "header_row":     header_row,
+                        "data_start_row": data_start_row,
+                        "header_col":     header_col,
+                    },
+                }},
             )
 
         # Batch document container — persisted at the end.
@@ -509,6 +673,11 @@ def init() -> None:
             "format":            fmt,
             "created_at":        now,
             "mapping_used":      mapping_obj,
+            "layout_used": {
+                "header_row":     header_row,
+                "data_start_row": data_start_row,
+                "header_col":     header_col,
+            },
             "total_rows":        len(rows),
             "matched_updated":   0,
             "matched_mismatch":  0,
@@ -642,7 +811,7 @@ def init() -> None:
                 row_error = str(e)[:240]
 
             row_entry: Dict[str, Any] = {
-                "row_index":   idx + 2,   # +2: 1 header + 1-based
+                "row_index":   idx + data_start_row,   # 1-based row in the ORIGINAL file
                 "tracking_id": tracking,
                 "status":      row_status,
                 "shipment_id": shipment_id,

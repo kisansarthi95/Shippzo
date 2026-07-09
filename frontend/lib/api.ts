@@ -2104,10 +2104,21 @@ export const Api = {
     name: string,
     mime: string,
     import_type: "booking" | "delivery" | "cod_payment",
+    layout?: { header_row?: number; data_start_row?: number; header_col?: number },
+    webFile?: any,   // File object from expo-document-picker on Web
   ) => {
     const fd = new FormData();
-    fd.append("file", { uri, name, type: mime } as any);
+    if (webFile && typeof (globalThis as any).File !== "undefined") {
+      // Web: use the real File object so multipart is well-formed.
+      fd.append("file", webFile, name);
+    } else {
+      // Native (iOS/Android): RN FormData accepts {uri,name,type} shim.
+      fd.append("file", { uri, name, type: mime } as any);
+    }
     fd.append("import_type", import_type);
+    fd.append("header_row",     String(layout?.header_row     ?? 1));
+    fd.append("data_start_row", String(layout?.data_start_row ?? 2));
+    fd.append("header_col",     String(layout?.header_col     ?? 1));
     return api
       .post<{
         import_type: string;
@@ -2120,6 +2131,11 @@ export const Api = {
         target_fields: { key: string; label: string; required: boolean }[];
         cross_verify: string[];
         suggested: Record<string, string>;
+        header_row: number;
+        data_start_row: number;
+        header_col: number;
+        raw_preview: string[][];
+        raw_total_rows: number;
       }>("/shipments/import/preview", fd, {
         headers: { "Content-Type": "multipart/form-data" },
       })
@@ -2132,12 +2148,21 @@ export const Api = {
     import_type: "booking" | "delivery" | "cod_payment",
     mapping: Record<string, string>,
     save_default = false,
+    layout?: { header_row?: number; data_start_row?: number; header_col?: number },
+    webFile?: any,
   ) => {
     const fd = new FormData();
-    fd.append("file", { uri, name, type: mime } as any);
+    if (webFile && typeof (globalThis as any).File !== "undefined") {
+      fd.append("file", webFile, name);
+    } else {
+      fd.append("file", { uri, name, type: mime } as any);
+    }
     fd.append("import_type", import_type);
     fd.append("mapping", JSON.stringify(mapping));
     fd.append("save_default", save_default ? "true" : "false");
+    fd.append("header_row",     String(layout?.header_row     ?? 1));
+    fd.append("data_start_row", String(layout?.data_start_row ?? 2));
+    fd.append("header_col",     String(layout?.header_col     ?? 1));
     return api
       .post<{
         ok: boolean;
@@ -2164,6 +2189,9 @@ export const Api = {
       .get<{
         import_type: string;
         mapping: Record<string, string>;
+        header_row: number;
+        data_start_row: number;
+        header_col: number;
         target_fields: { key: string; label: string; required: boolean }[];
         cross_verify: string[];
       }>(`/me/shipment-import-mapping?import_type=${import_type}`)

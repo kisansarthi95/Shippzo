@@ -36,7 +36,7 @@ type TargetField = { key: string; label: string; required: boolean };
 type Preview = Awaited<ReturnType<typeof Api.shipmentImportPreview>>;
 type Commit  = Awaited<ReturnType<typeof Api.shipmentImportCommit>>;
 
-type PickedFile = { uri: string; name: string; mime: string };
+type PickedFile = { uri: string; name: string; mime: string; webFile?: any };
 
 const IMPORT_TYPE_META: Record<
   ImportType,
@@ -78,7 +78,15 @@ export default function ShipmentImportScreen() {
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [resultOpen, setResultOpen]   = useState<Commit | null>(null);
 
-  // Load saved mapping when import type is picked.
+  // Layout controls — Header row / Data-start row / Data-start column.
+  // Loaded from saved settings on type change; re-preview fires when any
+  // of these change AND a file is already picked.
+  const [headerRow, setHeaderRow]         = useState<number>(1);
+  const [dataStartRow, setDataStartRow]   = useState<number>(2);
+  const [headerCol, setHeaderCol]         = useState<number>(1);
+  const [showLayoutHint, setShowLayoutHint] = useState<boolean>(false);
+
+  // Load saved mapping + layout when import type is picked.
   useEffect(() => {
     if (!importType) return;
     let cancelled = false;
@@ -88,6 +96,9 @@ export default function ShipmentImportScreen() {
         if (r.mapping && Object.keys(r.mapping).length) {
           setMapping(r.mapping);
         }
+        if (r.header_row) setHeaderRow(r.header_row);
+        if (r.data_start_row) setDataStartRow(r.data_start_row);
+        if (r.header_col) setHeaderCol(r.header_col);
       })
       .catch(() => {});
     return () => { cancelled = true; };
@@ -107,6 +118,41 @@ export default function ShipmentImportScreen() {
     return m;
   }, [targetFields]);
 
+  const runPreview = useCallback(
+    async (file: PickedFile, layoutOverride?: { header_row: number; data_start_row: number; header_col: number }) => {
+      if (!importType) return;
+      setLoading(true);
+      try {
+        const layout = layoutOverride ?? {
+          header_row: headerRow,
+          data_start_row: dataStartRow,
+          header_col: headerCol,
+        };
+        const p = await Api.shipmentImportPreview(
+          file.uri, file.name, file.mime, importType, layout, file.webFile,
+        );
+        setPreview(p);
+        // Merge SUGGESTED with any saved mapping — saved wins.
+        setMapping((prev) => {
+          const merged: Record<string, string> = { ...(p.suggested || {}) };
+          for (const [k, v] of Object.entries(prev)) {
+            if (v && p.columns.includes(k)) merged[k] = v;
+          }
+          return merged;
+        });
+      } catch (e: any) {
+        Alert.alert(
+          "Could not read file",
+          e?.response?.data?.detail || e?.message || "Unknown",
+        );
+        setPreview(null);
+      } finally {
+        setLoading(false);
+      }
+    },
+    [importType, headerRow, dataStartRow, headerCol],
+  );
+
   const pickFile = useCallback(async () => {
     if (!importType) return;
     try {
@@ -125,34 +171,32 @@ export default function ShipmentImportScreen() {
         uri:  a.uri,
         name: a.name || "upload",
         mime: a.mimeType || "text/csv",
+        // On Web, expo-document-picker attaches the real File object at
+        // `assets[0].file`. Preserve it so axios FormData can send a
+        // proper multipart body instead of stringifying `{uri,name,type}`.
+        webFile: (a as any).file,
       };
       setPicked(file);
-      setLoading(true);
-      try {
-        const p = await Api.shipmentImportPreview(file.uri, file.name, file.mime, importType);
-        setPreview(p);
-        // Merge SUGGESTED with any saved mapping — saved wins.
-        setMapping((prev) => {
-          const merged: Record<string, string> = { ...(p.suggested || {}) };
-          for (const [k, v] of Object.entries(prev)) {
-            if (v) merged[k] = v;
-          }
-          return merged;
-        });
-      } catch (e: any) {
-        Alert.alert(
-          "Could not read file",
-          e?.response?.data?.detail || e?.message || "Unknown",
-        );
-        setPicked(null);
-        setPreview(null);
-      } finally {
-        setLoading(false);
-      }
+      await runPreview(file);
     } catch (e: any) {
       Alert.alert("Picker error", e?.message || "Could not open file picker");
     }
-  }, [importType]);
+  }, [importType, runPreview]);
+
+  const applyLayout = useCallback(
+    (patch: Partial<{ header_row: number; data_start_row: number; header_col: number }>) => {
+      const nextHR = patch.header_row     ?? headerRow;
+      const nextDR = patch.data_start_row ?? dataStartRow;
+      const nextHC = patch.header_col     ?? headerCol;
+      if (patch.header_row     !== undefined) setHeaderRow(nextHR);
+      if (patch.data_start_row !== undefined) setDataStartRow(nextDR);
+      if (patch.header_col     !== undefined) setHeaderCol(nextHC);
+      if (picked) {
+        runPreview(picked, { header_row: nextHR, data_start_row: nextDR, header_col: nextHC });
+      }
+    },
+    [picked, headerRow, dataStartRow, headerCol, runPreview],
+  );
 
   const setColMapping = (col: string, field: string) => {
     setMapping((m) => {
@@ -201,6 +245,8 @@ export default function ShipmentImportScreen() {
     try {
       const r = await Api.shipmentImportCommit(
         picked.uri, picked.name, picked.mime, importType, mapping, saveDefault,
+        { header_row: headerRow, data_start_row: dataStartRow, header_col: headerCol },
+        picked.webFile,
       );
       setResultOpen(r);
     } catch (e: any) {
@@ -336,11 +382,121 @@ export default function ShipmentImportScreen() {
           ) : null}
         </View>
 
-        {/* Step 2 — column mapping */}
+        {/* Step 2 — Layout (header + data start) — only after a file is picked */}
+        {picked ? (
+          <View style={styles.stepCard}>
+            <View style={{ flexDirection: "row", alignItems: "center" }}>
+              <Text style={[styles.stepLabel, { flex: 1 }]}>
+                2.  Header &amp; Data layout
+              </Text>
+              <TouchableOpacity onPress={() => setShowLayoutHint((v) => !v)} hitSlop={8}>
+                <PhIcon name="information-circle-outline" size={18} color="#64748B" />
+              </TouchableOpacity>
+            </View>
+            <Text style={styles.helpText}>
+              Tell us which row has the column names and where the actual data begins.
+              {" "}Useful when your file has title/blank rows on top.
+            </Text>
+
+            <View style={styles.layoutRow}>
+              <LayoutStepper
+                label="Header Row"
+                value={headerRow}
+                min={1}
+                max={Math.max(1, preview?.raw_total_rows ?? 20)}
+                onChange={(v) => applyLayout({ header_row: v })}
+              />
+              <LayoutStepper
+                label="Data Start Row"
+                value={dataStartRow}
+                min={headerRow + 1}
+                max={Math.max(headerRow + 1, preview?.raw_total_rows ?? 20)}
+                onChange={(v) => applyLayout({ data_start_row: v })}
+              />
+              <LayoutStepper
+                label="Data Start Col"
+                value={headerCol}
+                min={1}
+                max={20}
+                onChange={(v) => applyLayout({ header_col: v })}
+              />
+            </View>
+
+            {/* Peek of first 8 rows (raw) so user can spot the correct header row */}
+            {preview?.raw_preview && preview.raw_preview.length > 0 ? (
+              <View style={{ marginTop: 12 }}>
+                <Text style={styles.peekTitle}>File preview (first {preview.raw_preview.length} rows)</Text>
+                <ScrollView horizontal showsHorizontalScrollIndicator={true} style={styles.peekWrap}>
+                  <View>
+                    {preview.raw_preview.map((row, rIdx) => {
+                      const oneBased = rIdx + 1;
+                      const isHeader = oneBased === headerRow;
+                      const isData = oneBased >= dataStartRow;
+                      const isSkip = oneBased < headerRow || (oneBased > headerRow && oneBased < dataStartRow);
+                      return (
+                        <View
+                          key={rIdx}
+                          style={[
+                            styles.peekRow,
+                            isHeader && styles.peekRowHeader,
+                            isData && styles.peekRowData,
+                            isSkip && styles.peekRowSkip,
+                          ]}
+                        >
+                          <TouchableOpacity
+                            onPress={() => applyLayout({ header_row: oneBased, data_start_row: oneBased + 1 })}
+                            style={styles.peekRowNum}
+                          >
+                            <Text style={styles.peekRowNumTxt}>{oneBased}</Text>
+                          </TouchableOpacity>
+                          {row.slice(0, 10).map((cell, cIdx) => {
+                            const colOneBased = cIdx + 1;
+                            const beforeStart = colOneBased < headerCol;
+                            return (
+                              <View
+                                key={cIdx}
+                                style={[
+                                  styles.peekCell,
+                                  beforeStart && styles.peekCellSkip,
+                                ]}
+                              >
+                                <Text style={styles.peekCellTxt} numberOfLines={1}>
+                                  {cell || " "}
+                                </Text>
+                              </View>
+                            );
+                          })}
+                        </View>
+                      );
+                    })}
+                  </View>
+                </ScrollView>
+                <Text style={styles.peekLegend}>
+                  <Text style={{ color: "#2563EB", fontWeight: "700" }}>Blue</Text> = header ·{" "}
+                  <Text style={{ color: "#059669", fontWeight: "700" }}>Green</Text> = data ·{" "}
+                  <Text style={{ color: "#94A3B8", fontWeight: "700" }}>Grey</Text> = skipped · Tap a row number to set as header
+                </Text>
+              </View>
+            ) : null}
+
+            {showLayoutHint ? (
+              <View style={styles.layoutHint}>
+                <Text style={styles.layoutHintTxt}>
+                  Example: A courier remit sheet often has a title on row 1, a blank
+                  row 2, headers on row 3, and data from row 4. Set{" "}
+                  <Text style={{ fontWeight: "700" }}>Header Row = 3</Text> and{" "}
+                  <Text style={{ fontWeight: "700" }}>Data Start Row = 4</Text>.
+                </Text>
+              </View>
+            ) : null}
+          </View>
+        ) : null}
+
+        {/* Step 3 — column mapping */}
         {preview ? (
           <View style={styles.stepCard}>
             <Text style={styles.stepLabel}>
-              2.  Map columns ({mappedCount}/{preview.columns.length})
+              3.  Map columns ({mappedCount}/{preview.columns.length})
             </Text>
             <Text style={styles.helpText}>
               Tap a column to pick the shipment field. Fields marked{" "}
@@ -592,6 +748,47 @@ function ResultStat({ n, l, tint }: { n: number; l: string; tint: string }) {
   );
 }
 
+/** Small +/- stepper used for Header Row / Data Start Row / Data Start Column.
+ *  Keeps input touch-friendly (44pt targets) and clamps to [min,max]. */
+function LayoutStepper({
+  label, value, min, max, onChange,
+}: {
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  onChange: (v: number) => void;
+}) {
+  const dec = () => onChange(Math.max(min, value - 1));
+  const inc = () => onChange(Math.min(max, value + 1));
+  return (
+    <View style={styles.stepperWrap}>
+      <Text style={styles.stepperLbl}>{label}</Text>
+      <View style={styles.stepperRow}>
+        <TouchableOpacity
+          testID={`stepper-${label.replace(/\s/g, "-").toLowerCase()}-dec`}
+          onPress={dec}
+          style={[styles.stepperBtn, value <= min && { opacity: 0.4 }]}
+          disabled={value <= min}
+        >
+          <PhIcon name="remove" size={16} color="#0F172A" />
+        </TouchableOpacity>
+        <View style={styles.stepperVal}>
+          <Text style={styles.stepperValTxt}>{value}</Text>
+        </View>
+        <TouchableOpacity
+          testID={`stepper-${label.replace(/\s/g, "-").toLowerCase()}-inc`}
+          onPress={inc}
+          style={[styles.stepperBtn, value >= max && { opacity: 0.4 }]}
+          disabled={value >= max}
+        >
+          <PhIcon name="add" size={16} color="#0F172A" />
+        </TouchableOpacity>
+      </View>
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
   safe:     { flex: 1, backgroundColor: "#F4F5F7" },
   header:   {
@@ -706,4 +903,50 @@ const styles = StyleSheet.create({
     marginTop: 10, padding: 10, borderRadius: 8, backgroundColor: "#EFF6FF",
   },
   viewBatchTxt: { color: colors.primary, fontWeight: "600", fontSize: 13 },
+
+  // ── Layout stepper + file peek ──
+  layoutRow: {
+    flexDirection: "row", gap: 8, marginTop: 4,
+  },
+  stepperWrap: { flex: 1 },
+  stepperLbl: { fontSize: 10, fontWeight: "700", color: "#64748B", letterSpacing: 0.3, marginBottom: 4, textAlign: "center" },
+  stepperRow: {
+    flexDirection: "row", alignItems: "center", justifyContent: "center",
+    backgroundColor: "#F1F5F9", borderRadius: 8, overflow: "hidden",
+  },
+  stepperBtn: {
+    width: 32, height: 34, alignItems: "center", justifyContent: "center",
+  },
+  stepperVal: {
+    flex: 1, alignItems: "center", justifyContent: "center",
+    backgroundColor: "#fff", height: 34,
+  },
+  stepperValTxt: { fontSize: 15, fontWeight: "700", color: "#0F172A" },
+
+  peekTitle: { fontSize: 11, fontWeight: "700", color: "#64748B", letterSpacing: 0.3, marginBottom: 6 },
+  peekWrap: {
+    borderWidth: 1, borderColor: "#E5E7EB", borderRadius: 8,
+    backgroundColor: "#FAFAFA", maxHeight: 260,
+  },
+  peekRow: { flexDirection: "row", alignItems: "stretch", borderBottomWidth: 1, borderBottomColor: "#F1F5F9" },
+  peekRowHeader: { backgroundColor: "#DBEAFE" },
+  peekRowData:   { backgroundColor: "#DCFCE7" },
+  peekRowSkip:   { backgroundColor: "#F1F5F9", opacity: 0.55 },
+  peekRowNum:    {
+    width: 30, alignItems: "center", justifyContent: "center",
+    borderRightWidth: 1, borderRightColor: "#E5E7EB", backgroundColor: "rgba(15,23,42,0.05)",
+  },
+  peekRowNumTxt: { fontSize: 10, fontWeight: "800", color: "#0F172A" },
+  peekCell: {
+    width: 110, paddingHorizontal: 6, paddingVertical: 5,
+    borderRightWidth: 1, borderRightColor: "#F1F5F9",
+  },
+  peekCellSkip: { backgroundColor: "rgba(148,163,184,0.15)" },
+  peekCellTxt:  { fontSize: 11, color: "#0F172A" },
+  peekLegend:   { fontSize: 10, color: "#64748B", marginTop: 6, lineHeight: 14 },
+
+  layoutHint: {
+    marginTop: 10, padding: 8, backgroundColor: "#EFF6FF", borderRadius: 6,
+  },
+  layoutHintTxt: { fontSize: 11, color: "#1E40AF", lineHeight: 15 },
 });
