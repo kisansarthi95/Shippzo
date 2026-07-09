@@ -1350,6 +1350,13 @@ function EventEditorModal({
             <Text style={styles.hint}>
               Hardcoded extras (e.g. <Text style={styles.code}>template_lang = en</Text>).
               Pushed exactly as-is on every dispatch.
+              {"\n\n"}
+              <Text style={{ fontWeight: "700", color: "#0369A1" }}>💡 Placeholders:</Text>{" "}
+              Use <Text style={styles.code}>{"{%contact.otp%}"}</Text>,{" "}
+              <Text style={styles.code}>{"{%contact.customer_name%}"}</Text>,{" "}
+              <Text style={styles.code}>{"{%contact.order_id%}"}</Text> etc. as VALUE
+              to inject live context data. Unresolved placeholders are forwarded to the
+              CRM verbatim so FlowConnect / WATI / Interakt can resolve them downstream.
             </Text>
             {draft.custom_fields.map((cf, idx) => (
               <View key={idx} style={styles.customRow}>

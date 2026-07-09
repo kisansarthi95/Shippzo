@@ -476,6 +476,46 @@ async def _write_log(
         _LOG.warning("whatsapp-provider audit write failed: %s", e)
 
 
+# ─── Placeholder substitution (Phase F6.1) ──────────────────────────
+# Custom-field VALUES can reference context variables using FlowConnect's
+# own token syntax:
+#     {%contact.otp%}          → context["otp"]
+#     {%contact.customer_name%}→ context["customer_name"]
+#     {contact.order_id}       → context["order_id"]    (unbraced variant)
+#     {otp}                    → context["otp"]         (short variant)
+#
+# If the referenced key isn't in the dispatch context (or is empty), the
+# LITERAL placeholder is left untouched so the downstream BSP (e.g.
+# FlowConnect) can still resolve it against its own contact record.
+# ────────────────────────────────────────────────────────────────────
+_PLACEHOLDER_RE = re.compile(
+    r"\{%\s*contact\.([a-zA-Z_][a-zA-Z0-9_]*)\s*%\}"     # {%contact.key%}
+    r"|\{\s*contact\.([a-zA-Z_][a-zA-Z0-9_]*)\s*\}"      # {contact.key}
+    r"|\{\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\}"               # {key}
+)
+
+
+def _substitute_placeholders(value: Any, context: Dict[str, Any]) -> str:
+    """Replace `{%contact.<key>%}` (and short variants) with values from
+    the dispatch context. Unresolved placeholders are kept as-is so the
+    downstream provider can still process them."""
+    if value is None:
+        return ""
+    s = str(value)
+    if "{" not in s:
+        return s
+
+    def repl(m: "re.Match[str]") -> str:
+        key = m.group(1) or m.group(2) or m.group(3)
+        if not key:
+            return m.group(0)
+        if key in context and context[key] not in (None, ""):
+            return str(context[key])
+        return m.group(0)   # unresolved → forward literal to CRM
+
+    return _PLACEHOLDER_RE.sub(repl, s)
+
+
 def _build_payload(
     *,
     cfg:        Dict[str, Any],
@@ -512,7 +552,12 @@ def _build_payload(
         name  = (entry.get("name") or "").strip() if isinstance(entry, dict) else ""
         value = entry.get("value") if isinstance(entry, dict) else ""
         if name:
-            payload[name] = "" if value is None else str(value)
+            # Phase F6.1 — substitute {%contact.<key>%} placeholders so
+            # operators can wire "otp" (or any context var) into a
+            # custom field's VALUE by typing {%contact.otp%}. Unresolved
+            # tokens are left intact so FlowConnect can still resolve
+            # them against its own contact record downstream.
+            payload[name] = _substitute_placeholders(value, context)
 
     return payload
 
