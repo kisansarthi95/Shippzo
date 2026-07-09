@@ -100,6 +100,10 @@ TARGET_FIELDS_BY_TYPE: Dict[str, List[str]] = {
         "delivered_at",
         "pod_reference",
         "notes",
+        # Phase F6.4 — free-text "Last Event" column from courier remit
+        # sheet. Stored raw + classified into a short category for the
+        # card badge (see classify_last_event()).
+        "last_event",
         # Still cross-verified even for delivery import
         "weight",
         "payment_mode",
@@ -143,6 +147,7 @@ FIELD_LABELS: Dict[str, str] = {
     "cod_collected_amount": "COD Amount Collected",
     "cod_payment_date":     "COD Payment / Remit Date",
     "cod_payer_name":       "COD Payer Name",
+    "last_event":           "Last Event (India Post/Courier)",
 }
 
 
@@ -417,6 +422,41 @@ def _amount_equal(a: Any, b: Any, tol: float = 0.5) -> bool:
     except (TypeError, ValueError):
         return False
     return abs(af - bf) <= tol
+
+
+# ─── Phase F6.4 — Last Event Category classifier ────────────────────
+# India Post / courier remit sheets carry a free-text "Last Event"
+# column like "Item Kept on Hold at Wanri B.O on 09/07/2026 13:04:10".
+# The Shipments card only has room for a short badge, so we map the
+# raw text to ONE of these fixed categories. Shipment Details keeps
+# the ORIGINAL text untouched. Order matters — more specific patterns
+# come first so "Out for Delivery" doesn't accidentally hit "Delivered".
+_LAST_EVENT_PATTERNS: List[Tuple[str, str]] = [
+    (r"\bdelivered\b",                            "Delivered"),
+    (r"\bout\s*for\s*delivery\b|\bofd\b",         "Out for Delivery"),
+    (r"\bhold\b|\bon\s*hold\b|\bheld\b|\bmisc",   "Hold"),
+    (r"\bredirect(?:ed|ion)?\b|\brerout",         "Redirected"),
+    (r"\breturn(?:ed|ing|-\s*to)?\b|\brts\b",     "Returned"),
+    (r"\bdispatch(?:ed|ing)?\b|\bin\s*transit\b", "Dispatched"),
+    (r"\breceiv(?:ed|ing)?\b|\bbooked\b",         "Received"),
+    (r"\bbag(?:ged)?\b|\bin\s*bag\b",             "Bagged"),
+]
+_LAST_EVENT_COMPILED = [(re.compile(p, re.I), cat) for p, cat in _LAST_EVENT_PATTERNS]
+
+
+def classify_last_event(text: Any) -> str:
+    """Return the short category badge label for a raw Last Event
+    string. Never modifies the input; returns "" for empty input and
+    "Other" when no known pattern matches."""
+    if not text:
+        return ""
+    s = str(text).strip()
+    if not s:
+        return ""
+    for rx, cat in _LAST_EVENT_COMPILED:
+        if rx.search(s):
+            return cat
+    return "Other"
 
 
 def _weight_equal(a: Any, b: Any) -> bool:
@@ -878,15 +918,40 @@ def init() -> None:
 
                         # Type-specific post-processing.
                         if import_type == "delivery":
-                            # Force status to Delivered whenever delivery import runs,
-                            # even if the file didn't carry an explicit status column.
-                            applied["status"] = "Delivered"
-                            if not applied.get("delivered_at"):
+                            # Phase F6.4 — Compute a compact category for
+                            # the Shipments-card badge. RAW text stays
+                            # untouched so Shipment Details can show it
+                            # verbatim.
+                            raw_ev = applied.get("last_event") or ""
+                            ev_cat = classify_last_event(raw_ev) if raw_ev else ""
+                            if ev_cat:
+                                applied["last_event_category"] = ev_cat
+
+                            # Smart status handling: if the Last Event
+                            # explicitly says "Delivered" (or the import
+                            # carries no Last Event at all, i.e. legacy
+                            # behaviour), mark the parcel Delivered. If
+                            # the event indicates in-flight motion
+                            # ("Out for Delivery", "Hold", "Redirected",
+                            # etc.) we DO NOT overwrite the shipment's
+                            # workflow status — the courier hasn't
+                            # actually delivered yet.
+                            if ev_cat in ("Delivered", "") and not applied.get("status"):
+                                applied["status"] = "Delivered"
+                            elif ev_cat == "Out for Delivery":
+                                applied["status"] = "Out for Delivery"
+
+                            # `delivered_at` is only stamped when we're
+                            # actually marking Delivered.
+                            if applied.get("status") == "Delivered" and not applied.get("delivered_at"):
                                 applied["delivered_at"] = now
-                            # Phase F6.2 — auto-confirm delivery so the
-                            # "Delivery Confirmation Pending" badge clears
-                            # in the Shipment Details / card views.
-                            applied["confirmation_status"] = "confirmed"
+
+                            # Auto-confirm delivery so the "Delivery
+                            # Confirmation Pending" badge clears — but
+                            # ONLY if the event actually says Delivered.
+                            if ev_cat == "Delivered" or (not ev_cat and applied.get("status") == "Delivered"):
+                                applied["confirmation_status"] = "confirmed"
+
                             applied["delivery_source"] = "imported"
                             applied["last_import_at"] = now
                             applied["last_import_type"] = "delivery"

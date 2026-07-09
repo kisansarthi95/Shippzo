@@ -543,6 +543,31 @@ export default function ShipmentDetailsScreen() {
               </>
             )}
 
+            {/* Phase F6.4 — Last Event (verbatim India Post remit text).
+                Shown here in FULL — the Shipments card badge only shows
+                the short category. This block appears whenever the
+                shipment has a stored Last Event, regardless of
+                confirmation state, so operators can see mid-transit
+                events (Hold / Redirected / Dispatched) too. */}
+            {!!(ship as any).last_event && (
+              <View style={styles.lastEventBox}>
+                <View style={{ flexDirection: "row", alignItems: "center", gap: 6, marginBottom: 4 }}>
+                  <PhIcon name="pulse" size={13} color="#0369A1" />
+                  <Text style={styles.lastEventLabel}>Last Event</Text>
+                  {!!(ship as any).last_event_category && (
+                    <View style={styles.lastEventCatPill}>
+                      <Text style={styles.lastEventCatPillTxt}>
+                        {(ship as any).last_event_category}
+                      </Text>
+                    </View>
+                  )}
+                </View>
+                <Text style={styles.lastEventTxt} selectable>
+                  {(ship as any).last_event}
+                </Text>
+              </View>
+            )}
+
             {/* COD-payment-import specific rows */}
             {(ship as any).cod_payment_status === "received" && (
               <>
@@ -668,6 +693,26 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     color: "#B45309",
   },
+
+  // Phase F6.4 — Last Event (verbatim India Post remit text)
+  lastEventBox: {
+    backgroundColor: "#ECFEFF",
+    borderLeftWidth: 3,
+    borderLeftColor: "#0EA5E9",
+    borderRadius: 6,
+    padding: 10,
+    marginTop: 8,
+  },
+  lastEventLabel: {
+    fontSize: 12, fontWeight: "800", color: "#0369A1",
+    textTransform: "uppercase", letterSpacing: 0.5,
+  },
+  lastEventCatPill: {
+    marginLeft: 4,
+    backgroundColor: "#BAE6FD", paddingHorizontal: 6, paddingVertical: 1, borderRadius: 4,
+  },
+  lastEventCatPillTxt: { fontSize: 9, fontWeight: "800", color: "#075985", letterSpacing: 0.4 },
+  lastEventTxt:  { fontSize: 13, color: "#0F172A", lineHeight: 18, marginTop: 2 },
 
   section: {
     backgroundColor: "#fff",

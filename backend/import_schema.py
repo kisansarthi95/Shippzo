@@ -77,6 +77,10 @@ SCHEMA_FIELDS: List[str] = [
     "cod_collected_amount",   # ₹ physically collected by the courier at delivery
     "cod_payment_date",       # ISO date the COD amount was remitted to the merchant
     "cod_payer_name",         # Name of the person who paid the COD
+    # Phase F6.4 — Last Event (raw text imported from India Post remit sheet).
+    # Server-side classifier maps this to `last_event_category` for the
+    # Shipments card badge — full text remains untouched for Details.
+    "last_event",
 ]
 
 # Phase F3.9.5 — Schema for abandoned-cart webhooks.
@@ -534,6 +538,21 @@ HEADER_ALIASES: Dict[str, str] = {
     "payer":                 "cod_payer_name",
     "payer_name":            "cod_payer_name",
     "paid_by":               "cod_payer_name",
+
+    # Phase F6.4 — Last Event column (India Post / DTDC / etc.)
+    "last_event":            "last_event",
+    "lastevent":             "last_event",
+    "latest_event":          "last_event",
+    "latest_status":         "last_event",
+    "current_status":        "last_event",
+    "status_description":    "last_event",
+    "event":                 "last_event",
+    "event_description":     "last_event",
+    "event_detail":          "last_event",
+    "last_status":           "last_event",
+    "tracking_status":       "last_event",
+    "remark":                "last_event",
+    "remarks":               "last_event",
 }
 
 

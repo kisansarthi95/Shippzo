@@ -55,6 +55,21 @@ import {
   type PackingLang,
 } from "../../lib/packingSummary";
 
+// Phase F6.4 — Last Event category → badge visual. Mirrors the
+// server-side classify_last_event() output. Values kept to short
+// labels so the top-right slot on the Shipments card stays compact.
+const LAST_EVENT_BADGE_META: Record<string, { bg: string; fg: string; icon: string }> = {
+  "Delivered":        { bg: "#DCFCE7", fg: "#166534", icon: "checkmark-circle" },
+  "Out for Delivery": { bg: "#DBEAFE", fg: "#1E40AF", icon: "bicycle" },
+  "Hold":             { bg: "#FEF3C7", fg: "#92400E", icon: "pause-circle" },
+  "Redirected":       { bg: "#EDE9FE", fg: "#5B21B6", icon: "shuffle" },
+  "Returned":         { bg: "#FEE2E2", fg: "#991B1B", icon: "return-up-back" },
+  "Dispatched":       { bg: "#E0F2FE", fg: "#075985", icon: "airplane" },
+  "Received":         { bg: "#F1F5F9", fg: "#334155", icon: "cube" },
+  "Bagged":           { bg: "#F1F5F9", fg: "#334155", icon: "briefcase" },
+  "Other":            { bg: "#F1F5F9", fg: "#334155", icon: "ellipsis-horizontal" },
+};
+
 export default function Shipments() {
   const router = useRouter();
   const { user } = useAuth();
@@ -2215,15 +2230,39 @@ export default function Shipments() {
                 </View>
                 {/* Phase-20 — Replaced the top-right StatusChip with a
                     direct "Print Now" CTA.
-                    Phase F4.3 — Now a 3-state button:
-                      • disabled grey  → tracking_id empty
-                      • orange         → ready to print (not printed yet)
-                      • green + ✓      → already printed (opens Reprint dialog)
-                    Sizing / padding / layout kept EXACTLY the same via
-                    the shared `styles.printNowBtn`. */}
+                    Phase F4.3 — 3-state Print button.
+                    Phase F6.4 — For Out for Delivery cards that carry
+                    a Last Event from a Delivery Import, the top-right
+                    slot switches from the Print CTA to a compact Last
+                    Event category badge (Delivered / Hold / Redirected
+                    / Returned / Dispatched / Received / Bagged / Other).
+                    The full free-text lives on Shipment Details. */}
                 {flagPrint && !selectMode ? (() => {
                   const isPrinted = (item.print_status || "") === "Printed";
                   const hasTracking = !!(item.tracking_id || (item as any).manual_tracking_id);
+                  const status = String((item as any).status || "");
+                  const evCat = String((item as any).last_event_category || "");
+                  const showEvent = status === "Out for Delivery" && !!evCat;
+                  if (showEvent) {
+                    const meta = LAST_EVENT_BADGE_META[evCat] || LAST_EVENT_BADGE_META.Other;
+                    return (
+                      <View
+                        style={[
+                          styles.printNowBtn,
+                          { backgroundColor: meta.bg, borderWidth: 0 },
+                        ]}
+                        testID={`last-event-${item.tracking_id || item.id}`}
+                      >
+                        <PhIcon name={meta.icon as any} size={12} color={meta.fg} />
+                        <Text
+                          numberOfLines={1}
+                          style={[styles.printNowTxt, { color: meta.fg }]}
+                        >
+                          {evCat}
+                        </Text>
+                      </View>
+                    );
+                  }
                   return (
                     <TouchableOpacity
                       onPress={() => onPrintButtonPress(item)}

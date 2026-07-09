@@ -266,6 +266,10 @@ export type Shipment = {
   // Delivery confirmation state — auto-flipped to "confirmed" on
   // Delivery Import so the "pending" badge clears.
   confirmation_status?: string;
+
+  // Phase F6.4 — Last Event (India Post remit sheet)
+  last_event?: string;
+  last_event_category?: string;
 };
 
 export type SheetPreview = {

@@ -773,6 +773,13 @@ class Shipment(BaseModel):
     # so the Shipment Filter panel can drill down by batch.
     import_batch_ids:               List[str] = Field(default_factory=list)
     payment_batch_id:               Optional[str]   = ""
+    # Phase F6.4 — Last Event (courier-side latest tracking event).
+    # `last_event` = verbatim text from India Post / DTDC / etc.
+    # `last_event_category` = short badge label (Delivered, Hold,
+    # Redirected, Returned, Out for Delivery, Dispatched, Received,
+    # Bagged, Other). See classify_last_event() in shipment_import.py.
+    last_event:                     Optional[str] = ""
+    last_event_category:            Optional[str] = ""
 
 
 class ShipmentCreate(BaseModel):
