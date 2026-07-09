@@ -1048,12 +1048,79 @@ export default function Shipments() {
     const byCourier = !courierFilter
       ? byPay
       : byPay.filter((s) => String((s as any).courier_id || "") === courierFilter);
-    if (dateFilter === "all") return byCourier;
+
+    // ─── Phase F6.6 Bug-1 Fix — Import filters MUST participate in
+    // the tab counter chain, otherwise the per-tab pills keep showing
+    // the un-filtered totals while the list body already reflects the
+    // active Import Status / Type / Validation / Booking / Delivery /
+    // COD sub-filters. Same predicates as the visible-list `useMemo`.
+    let byImp = byCourier;
+    if (importStatus === "imported") {
+      byImp = byImp.filter((s) => !!(s as any).last_import_at);
+    } else if (importStatus === "not_imported") {
+      byImp = byImp.filter((s) => !(s as any).last_import_at);
+    }
+    if (importTypes.size > 0) {
+      byImp = byImp.filter((s) => {
+        const anyS = s as any;
+        if (importTypes.has("booking")     && anyS.imported_booking_at)                return true;
+        if (importTypes.has("delivery")    && anyS.delivery_source === "imported")    return true;
+        if (importTypes.has("cod_payment") && anyS.cod_payment_status === "received") return true;
+        return false;
+      });
+    }
+    if (bookingFilter.size > 0) {
+      byImp = byImp.filter((s) => {
+        const anyS = s as any;
+        const hasBooking = !!anyS.imported_booking_at;
+        if (bookingFilter.has("imported") && hasBooking)  return true;
+        if (bookingFilter.has("pending")  && !hasBooking) return true;
+        return false;
+      });
+    }
+    if (deliveryFilter.size > 0) {
+      byImp = byImp.filter((s) => {
+        const anyS = s as any;
+        const impDel   = anyS.delivery_source === "imported";
+        const confirmed = anyS.confirmation_status === "confirmed";
+        const pending   = String(anyS.status || "") !== "Delivered";
+        if (deliveryFilter.has("imported")  && impDel)     return true;
+        if (deliveryFilter.has("confirmed") && confirmed)  return true;
+        if (deliveryFilter.has("pending")   && pending)    return true;
+        return false;
+      });
+    }
+    if (codPaymentFilter.size > 0) {
+      byImp = byImp.filter((s) => {
+        const anyS = s as any;
+        const received = anyS.cod_payment_status === "received";
+        const isCOD    = String(anyS.payment_mode || "").toUpperCase() === "COD";
+        const pending  = isCOD && !received;
+        const amtMismatch = ((anyS.import_validation_alerts || []) as any[])
+          .some((a) => a.field === "amount");
+        if (codPaymentFilter.has("received")        && received)       return true;
+        if (codPaymentFilter.has("pending")         && pending)        return true;
+        if (codPaymentFilter.has("amount_mismatch") && amtMismatch)    return true;
+        return false;
+      });
+    }
+    if (validationFilter.size > 0) {
+      byImp = byImp.filter((s) => {
+        const alerts = ((s as any).import_validation_alerts || []) as any[];
+        for (const a of alerts) {
+          if (validationFilter.has(a.field)) return true;
+        }
+        return false;
+      });
+    }
+    // ─────────────────────────────────────────────────────────────
+
+    if (dateFilter === "all") return byImp;
     if (dateFilter === "custom") {
-      if (!customFrom && !customTo) return byCourier;
+      if (!customFrom && !customTo) return byImp;
       const from = customFrom ? new Date(customFrom.getFullYear(), customFrom.getMonth(), customFrom.getDate()).getTime() : 0;
       const to = customTo ? new Date(customTo.getFullYear(), customTo.getMonth(), customTo.getDate(), 23, 59, 59, 999).getTime() : Number.MAX_SAFE_INTEGER;
-      return byCourier.filter((s) => {
+      return byImp.filter((s) => {
         const t = Date.parse(s.created_at || "");
         return !isNaN(t) && t >= from && t <= to;
       });
@@ -1065,11 +1132,17 @@ export default function Shipments() {
         : dateFilter === "week"
         ? now - 7 * 24 * 60 * 60 * 1000
         : now - 30 * 24 * 60 * 60 * 1000;
-    return byCourier.filter((s) => {
+    return byImp.filter((s) => {
       const t = Date.parse(s.created_at || "");
       return !isNaN(t) && t >= cutoff;
     });
-  }, [items, printFilter, labelFilter, shipmentLabels, paymentFilter, courierFilter, dateFilter, customFrom, customTo]);
+  }, [
+    items, printFilter, labelFilter, shipmentLabels, paymentFilter, courierFilter,
+    dateFilter, customFrom, customTo,
+    // Phase F6.6 — Import filters must invalidate the counter cache.
+    importStatus, importTypes, bookingFilter, deliveryFilter,
+    codPaymentFilter, validationFilter,
+  ]);
 
   const statusCounts = useMemo(() => {
     const counts: Record<StatusFilter, number> = {

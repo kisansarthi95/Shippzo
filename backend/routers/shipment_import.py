@@ -927,29 +927,50 @@ def init() -> None:
                             if ev_cat:
                                 applied["last_event_category"] = ev_cat
 
-                            # Smart status handling: if the Last Event
-                            # explicitly says "Delivered" (or the import
-                            # carries no Last Event at all, i.e. legacy
-                            # behaviour), mark the parcel Delivered. If
-                            # the event indicates in-flight motion
-                            # ("Out for Delivery", "Hold", "Redirected",
-                            # etc.) we DO NOT overwrite the shipment's
-                            # workflow status — the courier hasn't
-                            # actually delivered yet.
-                            if ev_cat in ("Delivered", "") and not applied.get("status"):
-                                applied["status"] = "Delivered"
-                            elif ev_cat == "Out for Delivery":
-                                applied["status"] = "Out for Delivery"
+                            # ─── Phase F6.6 Bug-2 Fix — Deterministic
+                            # status routing per user rules:
+                            #   • Delivered              → Delivered
+                            #   • Out for Delivery       → Out for Delivery
+                            #   • Dispatched / Received  → Shipped (in-transit)
+                            #   • Bagged                 → Shipped (in-transit)
+                            #   • Hold / Redirected /
+                            #     Returned               → Out for Delivery
+                            #                              (exception queue)
+                            #   • Other / unknown        → Out for Delivery
+                            #                              (Rule 5 default —
+                            #                               never hide the
+                            #                               shipment)
+                            #   • no last_event          → keep existing
+                            #                              status untouched
+                            #                              (previously forced
+                            #                               Delivered — the
+                            #                               user explicitly
+                            #                               reported that as
+                            #                               Bug-3 "shipments
+                            #                               disappearing".)
+                            STATUS_ROUTE_BY_EVENT = {
+                                "Delivered":        "Delivered",
+                                "Out for Delivery": "Out for Delivery",
+                                "Dispatched":       "Shipped",
+                                "Received":         "Shipped",
+                                "Bagged":           "Shipped",
+                                "Hold":             "Out for Delivery",
+                                "Redirected":       "Out for Delivery",
+                                "Returned":         "Out for Delivery",
+                                "Other":            "Out for Delivery",
+                            }
+                            if ev_cat:
+                                routed = STATUS_ROUTE_BY_EVENT.get(ev_cat, "Out for Delivery")
+                                applied["status"] = routed
 
                             # `delivered_at` is only stamped when we're
                             # actually marking Delivered.
                             if applied.get("status") == "Delivered" and not applied.get("delivered_at"):
                                 applied["delivered_at"] = now
 
-                            # Auto-confirm delivery so the "Delivery
-                            # Confirmation Pending" badge clears — but
-                            # ONLY if the event actually says Delivered.
-                            if ev_cat == "Delivered" or (not ev_cat and applied.get("status") == "Delivered"):
+                            # Auto-confirm delivery ONLY when the event
+                            # actually says Delivered.
+                            if ev_cat == "Delivered":
                                 applied["confirmation_status"] = "confirmed"
 
                             applied["delivery_source"] = "imported"
