@@ -2096,6 +2096,142 @@ export const Api = {
       )
       .then((r) => r.data),
 
+  // ─────── Phase F6.0 — Shipment Import System ───────
+  /** Parse a CSV/XLSX for Shipment update. `import_type` picks the
+   *  target-field allowlist (booking / delivery / cod_payment). */
+  shipmentImportPreview: async (
+    uri: string,
+    name: string,
+    mime: string,
+    import_type: "booking" | "delivery" | "cod_payment",
+  ) => {
+    const fd = new FormData();
+    fd.append("file", { uri, name, type: mime } as any);
+    fd.append("import_type", import_type);
+    return api
+      .post<{
+        import_type: string;
+        format: "csv" | "xlsx";
+        filename: string;
+        columns: string[];
+        sample_rows: Record<string, string>[];
+        total_rows: number;
+        rows_with_tracking: number;
+        target_fields: { key: string; label: string; required: boolean }[];
+        cross_verify: string[];
+        suggested: Record<string, string>;
+      }>("/shipments/import/preview", fd, {
+        headers: { "Content-Type": "multipart/form-data" },
+      })
+      .then((r) => r.data);
+  },
+  shipmentImportCommit: async (
+    uri: string,
+    name: string,
+    mime: string,
+    import_type: "booking" | "delivery" | "cod_payment",
+    mapping: Record<string, string>,
+    save_default = false,
+  ) => {
+    const fd = new FormData();
+    fd.append("file", { uri, name, type: mime } as any);
+    fd.append("import_type", import_type);
+    fd.append("mapping", JSON.stringify(mapping));
+    fd.append("save_default", save_default ? "true" : "false");
+    return api
+      .post<{
+        ok: boolean;
+        batch_id: string;
+        import_type: string;
+        filename: string;
+        format: string;
+        total_rows: number;
+        matched_updated: number;
+        matched_mismatch: number;
+        matched_no_change: number;
+        unmatched: number;
+        errors: number;
+        db_modified: number;
+      }>("/shipments/import/commit", fd, {
+        headers: { "Content-Type": "multipart/form-data" },
+      })
+      .then((r) => r.data);
+  },
+  getShipmentImportMapping: (
+    import_type: "booking" | "delivery" | "cod_payment",
+  ) =>
+    api
+      .get<{
+        import_type: string;
+        mapping: Record<string, string>;
+        target_fields: { key: string; label: string; required: boolean }[];
+        cross_verify: string[];
+      }>(`/me/shipment-import-mapping?import_type=${import_type}`)
+      .then((r) => r.data),
+  putShipmentImportMapping: (
+    import_type: "booking" | "delivery" | "cod_payment",
+    mapping: Record<string, string>,
+  ) =>
+    api
+      .put<{ ok: boolean; import_type: string; mapping: Record<string, string> }>(
+        `/me/shipment-import-mapping?import_type=${import_type}`,
+        { mapping },
+      )
+      .then((r) => r.data),
+  listShipmentImportBatches: (limit = 50) =>
+    api
+      .get<{
+        batches: {
+          id: string;
+          import_type: string;
+          filename: string;
+          format: string;
+          created_at: string;
+          total_rows: number;
+          matched_updated: number;
+          matched_mismatch: number;
+          matched_no_change: number;
+          unmatched: number;
+          errors: number;
+        }[];
+      }>(`/shipments/import/batches?limit=${limit}`)
+      .then((r) => r.data),
+  getShipmentImportBatch: (batch_id: string) =>
+    api
+      .get<{
+        id: string;
+        import_type: string;
+        filename: string;
+        format: string;
+        created_at: string;
+        total_rows: number;
+        matched_updated: number;
+        matched_mismatch: number;
+        matched_no_change: number;
+        unmatched: number;
+        errors: number;
+        mapping_used: Record<string, string>;
+        rows: {
+          row_index: number;
+          tracking_id: string;
+          status:
+            | "matched_updated"
+            | "matched_mismatch"
+            | "matched_no_change"
+            | "unmatched"
+            | "error";
+          shipment_id: string;
+          applied: Record<string, any>;
+          mismatches: { field: string; existing: any; imported: any }[];
+          error?: string;
+        }[];
+      }>(`/shipments/import/batches/${batch_id}`)
+      .then((r) => r.data),
+  /** Build a URL for the mismatches CSV download. Caller must inject
+   *  the auth token; we return a plain URL here. */
+  shipmentImportMismatchesUrl: (batch_id: string) =>
+    `/shipments/import/batches/${batch_id}/mismatches.csv`,
+
   // --- Feature 1: Write headers to user sheet ---
   syncSheetHeaders: (dry_run = false) =>
     api

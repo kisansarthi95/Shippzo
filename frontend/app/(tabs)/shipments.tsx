@@ -1553,6 +1553,19 @@ export default function Shipments() {
               <PhIcon name="download-outline" size={20} color={colors.text} />
             </TouchableOpacity>
           )}
+          {/* Phase F6.0 — Shipment Import System.
+              Upload button visible ONLY in normal (non-selection) mode.
+              Opens the type-picker (Booking / Delivery / COD Payment)
+              which then leads to the mapping + preview flow. */}
+          {!selectMode && (
+            <TouchableOpacity
+              testID="shipment-import-btn"
+              style={styles.iconBtn}
+              onPress={() => router.push("/shipment-import" as any)}
+            >
+              <PhIcon name="cloud-upload-outline" size={20} color={colors.text} />
+            </TouchableOpacity>
+          )}
           {/* Save-Contacts — selection-mode only, sits before Cancel. */}
           {selectMode && (
             <TouchableOpacity
