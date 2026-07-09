@@ -532,7 +532,9 @@ export default function ShipmentDetailsScreen() {
               </>
             )}
 
-            {/* Delivery-import specific rows */}
+            {/* Delivery-import specific rows.
+                Phase F6.5 — POD Reference now sits inside the Delivery
+                block (it's proof-of-delivery, NOT a payment field). */}
             {(ship as any).delivery_source === "imported" && (
               <>
                 {!!ship.delivered_at && (
@@ -540,37 +542,57 @@ export default function ShipmentDetailsScreen() {
                 )}
                 <Row label="Delivery Source" value="Imported" />
                 <Row label="Delivery Status" value="Delivered" />
+                {!!(ship as any).pod_reference && (
+                  <Row label="POD Reference" value={(ship as any).pod_reference} />
+                )}
               </>
             )}
 
-            {/* Phase F6.4 — Last Event (verbatim India Post remit text).
-                Shown here in FULL — the Shipments card badge only shows
-                the short category. This block appears whenever the
-                shipment has a stored Last Event, regardless of
-                confirmation state, so operators can see mid-transit
-                events (Hold / Redirected / Dispatched) too. */}
+            {/* ═════════════════════════════════════════════════════════
+                Phase F6.5 — Tracking History (Last Event).
+                STRICTLY ONLY courier tracking events (Received /
+                Dispatched / Bagged / Hold / Redirected / Returned /
+                Delivered / etc.) from the India Post / Courier remit
+                file. NO payment or COD data lives inside this block.
+                ═════════════════════════════════════════════════════ */}
             {!!(ship as any).last_event && (
-              <View style={styles.lastEventBox}>
-                <View style={{ flexDirection: "row", alignItems: "center", gap: 6, marginBottom: 4 }}>
-                  <PhIcon name="pulse" size={13} color="#0369A1" />
-                  <Text style={styles.lastEventLabel}>Last Event</Text>
-                  {!!(ship as any).last_event_category && (
-                    <View style={styles.lastEventCatPill}>
-                      <Text style={styles.lastEventCatPillTxt}>
-                        {(ship as any).last_event_category}
-                      </Text>
-                    </View>
-                  )}
+              <>
+                <View style={styles.subHeaderRow}>
+                  <PhIcon name="git-commit" size={13} color="#0369A1" />
+                  <Text style={styles.subHeaderTxt}>Tracking History</Text>
                 </View>
-                <Text style={styles.lastEventTxt} selectable>
-                  {(ship as any).last_event}
-                </Text>
-              </View>
+                <View style={styles.lastEventBox}>
+                  <View style={{ flexDirection: "row", alignItems: "center", gap: 6, marginBottom: 4 }}>
+                    <PhIcon name="pulse" size={13} color="#0369A1" />
+                    <Text style={styles.lastEventLabel}>Last Event</Text>
+                    {!!(ship as any).last_event_category && (
+                      <View style={styles.lastEventCatPill}>
+                        <Text style={styles.lastEventCatPillTxt}>
+                          {(ship as any).last_event_category}
+                        </Text>
+                      </View>
+                    )}
+                  </View>
+                  <Text style={styles.lastEventTxt} selectable>
+                    {(ship as any).last_event}
+                  </Text>
+                </View>
+              </>
             )}
 
-            {/* COD-payment-import specific rows */}
+            {/* ═════════════════════════════════════════════════════════
+                Phase F6.5 — COD Payment block.
+                STRICTLY payment-only fields. Separated from Tracking
+                History above with its own subheader so operators can
+                never confuse a courier tracking event with a payment
+                settlement.
+                ═════════════════════════════════════════════════════ */}
             {(ship as any).cod_payment_status === "received" && (
               <>
+                <View style={styles.subHeaderRow}>
+                  <PhIcon name="cash" size={13} color="#B45309" />
+                  <Text style={[styles.subHeaderTxt, { color: "#B45309" }]}>COD Payment</Text>
+                </View>
                 {!!(ship as any).cod_payment_date && (
                   <Row label="COD Payment Received Date" value={fmtDate((ship as any).cod_payment_date)} />
                 )}
@@ -582,10 +604,6 @@ export default function ShipmentDetailsScreen() {
                 )}
                 <Row label="COD Payment Status" value="Received" />
               </>
-            )}
-
-            {!!(ship as any).pod_reference && (
-              <Row label="POD Reference" value={(ship as any).pod_reference} />
             )}
           </Section>
         )}
@@ -713,6 +731,18 @@ const styles = StyleSheet.create({
   },
   lastEventCatPillTxt: { fontSize: 9, fontWeight: "800", color: "#075985", letterSpacing: 0.4 },
   lastEventTxt:  { fontSize: 13, color: "#0F172A", lineHeight: 18, marginTop: 2 },
+
+  // Phase F6.5 — Sub-header row that visually separates Tracking
+  // History from COD Payment inside the "Import Data" section.
+  subHeaderRow: {
+    flexDirection: "row", alignItems: "center", gap: 6,
+    marginTop: 14, marginBottom: 6,
+    paddingBottom: 4, borderBottomWidth: 1, borderBottomColor: "#E5E7EB",
+  },
+  subHeaderTxt: {
+    fontSize: 12, fontWeight: "800", color: "#0369A1",
+    textTransform: "uppercase", letterSpacing: 0.6,
+  },
 
   section: {
     backgroundColor: "#fff",
