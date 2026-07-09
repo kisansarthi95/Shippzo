@@ -769,6 +769,10 @@ class Shipment(BaseModel):
     # touched this shipment (any of booking / delivery / cod_payment).
     last_import_at:                 Optional[str]   = ""
     last_import_type:               Optional[str]   = ""
+    # Phase F6.3 — links to the Import System & Payment Batch systems
+    # so the Shipment Filter panel can drill down by batch.
+    import_batch_ids:               List[str] = Field(default_factory=list)
+    payment_batch_id:               Optional[str]   = ""
 
 
 class ShipmentCreate(BaseModel):
@@ -5559,6 +5563,23 @@ except Exception as _si_exc:
     import logging as _lg
     _lg.getLogger("server.bootstrap").exception(
         f"Failed to mount shipment_import router: {_si_exc}",
+    )
+
+# Phase-F6.3 modular: Payment Batches (COD settlement grouping).
+# One payment batch = one cheque / NEFT / UTR / UPI settlement that
+# clears many articles at once. Used by the Shipment Filter panel
+# to answer "which parcels were paid in cheque #12345?".
+try:
+    from routers.payment_batches import (
+        payment_batches_router as _payment_batches_router,
+        init as _init_payment_batches_router,
+    )
+    _init_payment_batches_router()
+    app.include_router(_payment_batches_router)
+except Exception as _pb_exc:
+    import logging as _lg
+    _lg.getLogger("server.bootstrap").exception(
+        f"Failed to mount payment_batches router: {_pb_exc}",
     )
 
 

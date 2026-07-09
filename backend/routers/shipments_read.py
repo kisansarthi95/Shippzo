@@ -80,12 +80,23 @@ def init() -> None:
         status: Optional[str] = None,
         courier_id: Optional[str] = None,
         search: Optional[str] = None,
+        # Phase F6.3 — Filter panel drill-downs for the Shipment Import
+        # System. `import_batch_id` returns only shipments touched by
+        # THAT specific ImportBatch. `payment_batch_id` mirrors the
+        # concept for COD settlement batches. Both are optional and
+        # compose cleanly with `status` / `search` / `courier_id`.
+        import_batch_id:  Optional[str] = None,
+        payment_batch_id: Optional[str] = None,
         limit: int = 500,
         current_user: Dict[str, Any] = Depends(_get_current_user),
     ):
         # Always scope to the logged-in user so one tenant never sees
         # another's data.
         q: dict = {"user_id": current_user["id"]}
+        if import_batch_id:
+            q["import_batch_ids"] = import_batch_id
+        if payment_batch_id:
+            q["payment_batch_id"] = payment_batch_id
         if status:
             # Phase-19 — "Modified" is a virtual filter: it shows every
             # shipment that's been edited via the pencil/edit form,

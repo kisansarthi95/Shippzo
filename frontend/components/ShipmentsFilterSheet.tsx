@@ -9,7 +9,15 @@
  *   3. Labels       — quick "+ Create Label" shortcut (opens the
  *                     existing LabelPickerSheet in create mode).
  *
- * Actions: "Clear all" (resets all three filter groups) + "Apply"
+ * Phase F6.3 (2026-06) — extended with Shipment Import filters:
+ *   4. Import Status      — All / Imported / Not Imported
+ *   5. Import Type        — Booking / Delivery / COD Payment (multi)
+ *   6. Booking / Delivery / COD sub-filters
+ *   7. Validation alerts  — Weight / Payment / COD amount mismatch
+ *   8. Import Batch picker
+ *   9. Payment Batch picker (COD settlement grouping)
+ *
+ * Actions: "Clear all" (resets all filter groups) + "Apply"
  * (just closes — every filter is applied optimistically as the user
  * taps a chip, matching the existing UX pattern on the Shipments
  * screen).
@@ -24,6 +32,15 @@ import { colors } from "../lib/theme";
 type DateFilterKey = "all" | "today" | "week" | "month" | "custom";
 
 type Suggestion = { display: string; count: number };
+
+export type ImportStatusKey = "all" | "imported" | "not_imported";
+export type ImportTypeKey = "booking" | "delivery" | "cod_payment";
+export type ValidationKey = "weight" | "payment_mode" | "amount";
+export type CodPaymentKey = "received" | "pending" | "amount_mismatch";
+export type DeliveryKey = "imported" | "pending" | "confirmed";
+export type BookingKey = "imported" | "pending";
+
+export type BatchRef = { id: string; label: string; sub?: string };
 
 type Props = {
   visible: boolean;
@@ -43,6 +60,33 @@ type Props = {
   onPickSuggestion: (term: string) => void;
   // Clear-all
   onClearAll: () => void;
+
+  // Phase F6.3 — Import filters
+  importStatus: ImportStatusKey;
+  setImportStatus: (v: ImportStatusKey) => void;
+
+  importTypes: Set<ImportTypeKey>;
+  setImportTypes: (v: Set<ImportTypeKey>) => void;
+
+  bookingFilter: Set<BookingKey>;
+  setBookingFilter: (v: Set<BookingKey>) => void;
+
+  deliveryFilter: Set<DeliveryKey>;
+  setDeliveryFilter: (v: Set<DeliveryKey>) => void;
+
+  codPaymentFilter: Set<CodPaymentKey>;
+  setCodPaymentFilter: (v: Set<CodPaymentKey>) => void;
+
+  validationFilter: Set<ValidationKey>;
+  setValidationFilter: (v: Set<ValidationKey>) => void;
+
+  // Import Batch (single-select) — picker opens a sub-sheet.
+  importBatch: BatchRef | null;
+  onOpenImportBatchPicker: () => void;
+
+  // Payment Batch (single-select)
+  paymentBatch: BatchRef | null;
+  onOpenPaymentBatchPicker: () => void;
 };
 
 const DATE_CHIPS: { key: DateFilterKey; label: string }[] = [
@@ -57,12 +101,50 @@ const PAYMENT_CHIPS = [
   { key: "Prepaid", label: "Prepaid", icon: "card" as const },
 ];
 
+const IMPORT_STATUS_CHIPS: { key: ImportStatusKey; label: string }[] = [
+  { key: "all",          label: "All Shipments" },
+  { key: "imported",     label: "Imported" },
+  { key: "not_imported", label: "Not Imported" },
+];
+const IMPORT_TYPE_CHIPS: { key: ImportTypeKey; label: string; icon: any }[] = [
+  { key: "booking",     label: "Booking Imported",  icon: "cube-outline" },
+  { key: "delivery",    label: "Delivery Imported", icon: "checkmark-done-outline" },
+  { key: "cod_payment", label: "COD Payment Imported", icon: "cash-outline" },
+];
+const BOOKING_CHIPS: { key: BookingKey; label: string }[] = [
+  { key: "imported", label: "Booking Imported" },
+  { key: "pending",  label: "Booking Pending" },
+];
+const DELIVERY_CHIPS: { key: DeliveryKey; label: string }[] = [
+  { key: "imported",  label: "Delivery Imported" },
+  { key: "pending",   label: "Delivery Pending" },
+  { key: "confirmed", label: "Delivery Confirmed" },
+];
+const COD_CHIPS: { key: CodPaymentKey; label: string }[] = [
+  { key: "received",         label: "COD Payment Received" },
+  { key: "pending",          label: "COD Payment Pending" },
+  { key: "amount_mismatch",  label: "COD Amount Mismatch" },
+];
+const VALIDATION_CHIPS: { key: ValidationKey; label: string }[] = [
+  { key: "weight",       label: "Weight Mismatch" },
+  { key: "payment_mode", label: "Payment Type Mismatch" },
+  { key: "amount",       label: "COD Amount Mismatch" },
+];
+
 export default function ShipmentsFilterSheet({
   visible, onClose,
   dateFilter, setDateFilter,
   customFrom, customTo, onOpenCustomDate,
   paymentFilter, setPaymentFilter,
   suggestions, onPickSuggestion, onClearAll,
+  importStatus, setImportStatus,
+  importTypes, setImportTypes,
+  bookingFilter, setBookingFilter,
+  deliveryFilter, setDeliveryFilter,
+  codPaymentFilter, setCodPaymentFilter,
+  validationFilter, setValidationFilter,
+  importBatch, onOpenImportBatchPicker,
+  paymentBatch, onOpenPaymentBatchPicker,
 }: Props) {
   const togglePayment = (mode: string) => {
     const next = new Set(paymentFilter);
@@ -70,10 +152,24 @@ export default function ShipmentsFilterSheet({
     else next.add(mode);
     setPaymentFilter(next);
   };
+  const toggleSet = <T,>(setState: (v: Set<T>) => void, current: Set<T>, k: T) => {
+    const next = new Set(current);
+    if (next.has(k)) next.delete(k);
+    else next.add(k);
+    setState(next);
+  };
 
   const activeCount =
     (dateFilter !== "all" ? 1 : 0) +
-    (paymentFilter.size > 0 ? 1 : 0);
+    (paymentFilter.size > 0 ? 1 : 0) +
+    (importStatus !== "all" ? 1 : 0) +
+    (importTypes.size > 0 ? 1 : 0) +
+    (bookingFilter.size > 0 ? 1 : 0) +
+    (deliveryFilter.size > 0 ? 1 : 0) +
+    (codPaymentFilter.size > 0 ? 1 : 0) +
+    (validationFilter.size > 0 ? 1 : 0) +
+    (importBatch ? 1 : 0) +
+    (paymentBatch ? 1 : 0);
 
   const customLabel = (() => {
     if (dateFilter !== "custom") return "Custom";
@@ -196,6 +292,215 @@ export default function ShipmentsFilterSheet({
               );
             })}
           </View>
+
+          {/* ─────────────────────────────────────────────────────
+              Phase F6.3 — Shipment Import filters
+              ─────────────────────────────────────────────────── */}
+
+          <Text style={styles.sectionTitle}>Import Status</Text>
+          <View style={styles.chipWrap}>
+            {IMPORT_STATUS_CHIPS.map((c) => {
+              const active = importStatus === c.key;
+              return (
+                <TouchableOpacity
+                  key={c.key}
+                  testID={`fs-imp-status-${c.key}`}
+                  onPress={() => setImportStatus(c.key)}
+                  style={[
+                    styles.chip,
+                    active && { backgroundColor: colors.primary, borderColor: colors.primary },
+                  ]}
+                >
+                  <Text
+                    numberOfLines={1} allowFontScaling={false}
+                    style={[styles.chipTxt, { color: active ? "#fff" : colors.primary }]}
+                  >
+                    {c.label}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+
+          <Text style={styles.sectionTitle}>Import Type</Text>
+          <View style={styles.chipWrap}>
+            {IMPORT_TYPE_CHIPS.map((c) => {
+              const active = importTypes.has(c.key);
+              return (
+                <TouchableOpacity
+                  key={c.key}
+                  testID={`fs-imp-type-${c.key}`}
+                  onPress={() => toggleSet(setImportTypes, importTypes, c.key)}
+                  style={[
+                    styles.chip,
+                    { flexDirection: "row", gap: 5, alignItems: "center" },
+                    active && { backgroundColor: colors.primary, borderColor: colors.primary },
+                  ]}
+                >
+                  <PhIcon name={c.icon} size={12} color={active ? "#fff" : colors.primary} />
+                  <Text
+                    numberOfLines={1} allowFontScaling={false}
+                    style={[styles.chipTxt, { color: active ? "#fff" : colors.primary }]}
+                  >
+                    {c.label}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+
+          <Text style={styles.sectionTitle}>Booking</Text>
+          <View style={styles.chipWrap}>
+            {BOOKING_CHIPS.map((c) => {
+              const active = bookingFilter.has(c.key);
+              return (
+                <TouchableOpacity
+                  key={c.key}
+                  testID={`fs-book-${c.key}`}
+                  onPress={() => toggleSet(setBookingFilter, bookingFilter, c.key)}
+                  style={[
+                    styles.chip,
+                    active && { backgroundColor: colors.primary, borderColor: colors.primary },
+                  ]}
+                >
+                  <Text
+                    numberOfLines={1} allowFontScaling={false}
+                    style={[styles.chipTxt, { color: active ? "#fff" : colors.primary }]}
+                  >
+                    {c.label}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+
+          <Text style={styles.sectionTitle}>Delivery</Text>
+          <View style={styles.chipWrap}>
+            {DELIVERY_CHIPS.map((c) => {
+              const active = deliveryFilter.has(c.key);
+              return (
+                <TouchableOpacity
+                  key={c.key}
+                  testID={`fs-del-${c.key}`}
+                  onPress={() => toggleSet(setDeliveryFilter, deliveryFilter, c.key)}
+                  style={[
+                    styles.chip,
+                    active && { backgroundColor: colors.primary, borderColor: colors.primary },
+                  ]}
+                >
+                  <Text
+                    numberOfLines={1} allowFontScaling={false}
+                    style={[styles.chipTxt, { color: active ? "#fff" : colors.primary }]}
+                  >
+                    {c.label}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+
+          <Text style={styles.sectionTitle}>COD Payment</Text>
+          <View style={styles.chipWrap}>
+            {COD_CHIPS.map((c) => {
+              const active = codPaymentFilter.has(c.key);
+              return (
+                <TouchableOpacity
+                  key={c.key}
+                  testID={`fs-cod-${c.key}`}
+                  onPress={() => toggleSet(setCodPaymentFilter, codPaymentFilter, c.key)}
+                  style={[
+                    styles.chip,
+                    active && { backgroundColor: colors.primary, borderColor: colors.primary },
+                  ]}
+                >
+                  <Text
+                    numberOfLines={1} allowFontScaling={false}
+                    style={[styles.chipTxt, { color: active ? "#fff" : colors.primary }]}
+                  >
+                    {c.label}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+
+          <Text style={styles.sectionTitle}>Validation Alerts</Text>
+          <View style={styles.chipWrap}>
+            {VALIDATION_CHIPS.map((c) => {
+              const active = validationFilter.has(c.key);
+              return (
+                <TouchableOpacity
+                  key={c.key}
+                  testID={`fs-val-${c.key}`}
+                  onPress={() => toggleSet(setValidationFilter, validationFilter, c.key)}
+                  style={[
+                    styles.chip,
+                    { flexDirection: "row", gap: 4, alignItems: "center" },
+                    active && { backgroundColor: "#B45309", borderColor: "#B45309" },
+                  ]}
+                >
+                  <PhIcon
+                    name="warning" size={11}
+                    color={active ? "#fff" : "#B45309"}
+                  />
+                  <Text
+                    numberOfLines={1} allowFontScaling={false}
+                    style={[styles.chipTxt, { color: active ? "#fff" : "#B45309" }]}
+                  >
+                    {c.label}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+
+          {/* Import Batch drill-down */}
+          <Text style={styles.sectionTitle}>Import Batch</Text>
+          <TouchableOpacity
+            testID="fs-import-batch-picker"
+            style={styles.batchPickerBtn}
+            onPress={onOpenImportBatchPicker}
+          >
+            <View style={{ flex: 1 }}>
+              {importBatch ? (
+                <>
+                  <Text style={styles.batchPickerLbl}>{importBatch.label}</Text>
+                  {importBatch.sub ? (
+                    <Text style={styles.batchPickerSub}>{importBatch.sub}</Text>
+                  ) : null}
+                </>
+              ) : (
+                <Text style={styles.batchPickerPlaceholder}>
+                  Any import batch (tap to pick)
+                </Text>
+              )}
+            </View>
+            <PhIcon name="chevron-forward" size={16} color="#94A3B8" />
+          </TouchableOpacity>
+
+          {/* Payment Batch drill-down */}
+          <Text style={styles.sectionTitle}>Payment Batch</Text>
+          <TouchableOpacity
+            testID="fs-payment-batch-picker"
+            style={styles.batchPickerBtn}
+            onPress={onOpenPaymentBatchPicker}
+          >
+            <View style={{ flex: 1 }}>
+              {paymentBatch ? (
+                <>
+                  <Text style={styles.batchPickerLbl}>{paymentBatch.label}</Text>
+                  {paymentBatch.sub ? (
+                    <Text style={styles.batchPickerSub}>{paymentBatch.sub}</Text>
+                  ) : null}
+                </>
+              ) : (
+                <Text style={styles.batchPickerPlaceholder}>
+                  Any payment batch (tap to pick)
+                </Text>
+              )}
+            </View>
+            <PhIcon name="chevron-forward" size={16} color="#94A3B8" />
+          </TouchableOpacity>
 
           {/* ── Suggested Filters section (Phase C) ─────────────
               Shows the most frequently occurring product names
@@ -322,6 +627,16 @@ const styles = StyleSheet.create({
   helper: {
     fontSize: 12, color: "#94A3B8", marginTop: 10, lineHeight: 16,
   },
+  // Phase F6.3 — Import Batch / Payment Batch pickers
+  batchPickerBtn: {
+    flexDirection: "row", alignItems: "center",
+    paddingVertical: 12, paddingHorizontal: 12, gap: 8,
+    borderWidth: 1, borderColor: "#E5E7EB", borderRadius: 10,
+    backgroundColor: "#F8FAFC",
+  },
+  batchPickerLbl:  { fontSize: 13, fontWeight: "700", color: colors.text },
+  batchPickerSub:  { fontSize: 11, color: "#64748B", marginTop: 2 },
+  batchPickerPlaceholder: { fontSize: 13, color: "#94A3B8", fontStyle: "italic" },
   footer: {
     flexDirection: "row", gap: 10, marginTop: 12, paddingTop: 10,
     borderTopWidth: 1, borderTopColor: "#F1F5F9",

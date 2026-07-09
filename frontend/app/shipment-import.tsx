@@ -20,7 +20,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   View, Text, TouchableOpacity, ScrollView, StyleSheet, Alert,
-  ActivityIndicator, Switch, Modal, Pressable, Platform,
+  ActivityIndicator, Switch, Modal, Pressable, Platform, TextInput,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Stack, useLocalSearchParams, useRouter } from "expo-router";
@@ -85,6 +85,20 @@ export default function ShipmentImportScreen() {
   const [dataStartRow, setDataStartRow]   = useState<number>(2);
   const [headerCol, setHeaderCol]         = useState<number>(1);
   const [showLayoutHint, setShowLayoutHint] = useState<boolean>(false);
+
+  // Phase F6.3 — Payment Batch metadata (only for cod_payment imports).
+  // When any field is filled, it's sent to the backend which creates a
+  // PaymentBatch record + stamps payment_batch_id on every settled
+  // shipment. Reference # gets a duplicate-detection warning.
+  const [pbName, setPbName]                 = useState<string>("");
+  const [pbDescription, setPbDescription]   = useState<string>("");
+  const [pbPaymentDate, setPbPaymentDate]   = useState<string>("");
+  const [pbPaymentMode, setPbPaymentMode]   = useState<string>("cheque");
+  const [pbReferenceNumber, setPbReferenceNumber] = useState<string>("");
+  const [pbBankName, setPbBankName]         = useState<string>("");
+  const [pbNotes, setPbNotes]               = useState<string>("");
+  const [pbDupWarning, setPbDupWarning]     = useState<{ name?: string; payment_date?: string } | null>(null);
+  const [pbOverrideDuplicate, setPbOverrideDuplicate] = useState<boolean>(false);
 
   // Load saved mapping + layout when import type is picked.
   useEffect(() => {
@@ -238,19 +252,103 @@ export default function ShipmentImportScreen() {
     setConfirmOpen(true);
   };
 
+  // Phase F6.3 — Duplicate-reference check with 500ms debounce. Fires
+  // whenever the user edits the reference number. Non-blocking — just
+  // renders a warning banner they can override at commit time.
+  useEffect(() => {
+    if (importType !== "cod_payment" || !pbReferenceNumber.trim()) {
+      setPbDupWarning(null);
+      return;
+    }
+    const ref = pbReferenceNumber.trim();
+    const t = setTimeout(() => {
+      Api.checkPaymentBatchDuplicate(ref)
+        .then((r) => setPbDupWarning(r.duplicate ? r.batch : null))
+        .catch(() => setPbDupWarning(null));
+    }, 500);
+    return () => clearTimeout(t);
+  }, [pbReferenceNumber, importType]);
+
   const commit = async () => {
     if (!importType || !picked || !preview) return;
     setConfirmOpen(false);
     setCommitting(true);
     try {
+      // Assemble the payment_batch payload if the user filled any of it
+      // in AND we're doing a cod_payment import. If required fields are
+      // empty we skip sending it altogether (server treats it as
+      // "no batch" and just does the plain COD update).
+      let paymentBatchJson: string | undefined;
+      if (
+        importType === "cod_payment" &&
+        (pbName.trim() || pbReferenceNumber.trim() || pbPaymentDate.trim())
+      ) {
+        paymentBatchJson = JSON.stringify({
+          name:             pbName.trim(),
+          description:      pbDescription.trim(),
+          payment_date:     pbPaymentDate.trim(),
+          payment_mode:     pbPaymentMode,
+          reference_number: pbReferenceNumber.trim(),
+          bank_name:        pbBankName.trim(),
+          notes:            pbNotes.trim(),
+        });
+      }
       const r = await Api.shipmentImportCommit(
         picked.uri, picked.name, picked.mime, importType, mapping, saveDefault,
         { header_row: headerRow, data_start_row: dataStartRow, header_col: headerCol },
         picked.webFile,
+        paymentBatchJson,
+        pbOverrideDuplicate,
       );
       setResultOpen(r);
     } catch (e: any) {
-      Alert.alert("Import failed", e?.response?.data?.detail || e?.message || "Unknown error");
+      // Surface the backend's 409 duplicate warning nicely so the user
+      // can choose to override or edit the reference number.
+      const detail = e?.response?.data?.detail;
+      if (detail && typeof detail === "object" && detail.error === "duplicate_reference") {
+        Alert.alert(
+          "Duplicate Reference",
+          detail.message + "\n\nTap \"Override\" to import anyway.",
+          [
+            { text: "Cancel", style: "cancel" },
+            {
+              text: "Override",
+              style: "destructive",
+              onPress: async () => {
+                setPbOverrideDuplicate(true);
+                // Re-invoke commit with override flag on. Setting state
+                // and immediately calling won't propagate — pass the
+                // flag directly through a small closure instead.
+                setCommitting(true);
+                try {
+                  const rr = await Api.shipmentImportCommit(
+                    picked.uri, picked.name, picked.mime, importType, mapping, saveDefault,
+                    { header_row: headerRow, data_start_row: dataStartRow, header_col: headerCol },
+                    picked.webFile,
+                    JSON.stringify({
+                      name:             pbName.trim(),
+                      description:      pbDescription.trim(),
+                      payment_date:     pbPaymentDate.trim(),
+                      payment_mode:     pbPaymentMode,
+                      reference_number: pbReferenceNumber.trim(),
+                      bank_name:        pbBankName.trim(),
+                      notes:            pbNotes.trim(),
+                    }),
+                    true,
+                  );
+                  setResultOpen(rr);
+                } catch (ee: any) {
+                  Alert.alert("Import failed", ee?.response?.data?.detail || ee?.message || "Unknown");
+                } finally {
+                  setCommitting(false);
+                }
+              },
+            },
+          ],
+        );
+      } else {
+        Alert.alert("Import failed", detail || e?.message || "Unknown error");
+      }
     } finally {
       setCommitting(false);
     }
@@ -492,11 +590,81 @@ export default function ShipmentImportScreen() {
           </View>
         ) : null}
 
-        {/* Step 3 — column mapping */}
+        {/* Phase F6.3 — Payment Batch metadata (only for COD Payment) */}
+        {importType === "cod_payment" && picked ? (
+          <View style={styles.stepCard}>
+            <Text style={styles.stepLabel}>3.  Payment Batch (optional)</Text>
+            <Text style={styles.helpText}>
+              Group this settlement under a Payment Batch so you can later filter
+              &quot;which parcels were paid in this cheque / UTR?&quot;. Leave blank to skip.
+            </Text>
+
+            {pbDupWarning ? (
+              <View style={styles.warnBanner}>
+                <PhIcon name="warning" size={16} color="#B45309" />
+                <Text style={styles.warnBannerTxt}>
+                  Reference already used in batch{" "}
+                  <Text style={{ fontWeight: "700" }}>{pbDupWarning.name}</Text>{" "}
+                  ({pbDupWarning.payment_date}). Import will be blocked unless
+                  you Override at commit.
+                </Text>
+              </View>
+            ) : null}
+
+            <PbField label="Batch Name" value={pbName} onChangeText={setPbName}
+              placeholder="e.g. India Post Aug W2" />
+            <View style={{ flexDirection: "row", gap: 10 }}>
+              <View style={{ flex: 1 }}>
+                <PbField label="Payment Date" value={pbPaymentDate} onChangeText={setPbPaymentDate}
+                  placeholder="YYYY-MM-DD" />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.pbLabel}>Payment Mode</Text>
+                <View style={styles.pbModeRow}>
+                  {["cheque", "neft", "upi", "bank_transfer", "other"].map((m) => (
+                    <TouchableOpacity
+                      key={m}
+                      style={[
+                        styles.pbModeChip,
+                        pbPaymentMode === m && styles.pbModeChipActive,
+                      ]}
+                      onPress={() => setPbPaymentMode(m)}
+                    >
+                      <Text style={[
+                        styles.pbModeChipTxt,
+                        pbPaymentMode === m && { color: "#fff" },
+                      ]}>{m.replace("_", " ").toUpperCase()}</Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              </View>
+            </View>
+            <PbField
+              label="Reference Number (Cheque # / UTR / Txn ID)"
+              value={pbReferenceNumber}
+              onChangeText={(v) => { setPbReferenceNumber(v); setPbOverrideDuplicate(false); }}
+              placeholder="e.g. CHK-2345678"
+            />
+            <View style={{ flexDirection: "row", gap: 10 }}>
+              <View style={{ flex: 1 }}>
+                <PbField label="Bank Name (optional)" value={pbBankName} onChangeText={setPbBankName}
+                  placeholder="e.g. SBI" />
+              </View>
+              <View style={{ flex: 1 }}>
+                <PbField label="Description" value={pbDescription} onChangeText={setPbDescription}
+                  placeholder="Optional" />
+              </View>
+            </View>
+            <PbField label="Notes (optional)" value={pbNotes} onChangeText={setPbNotes}
+              placeholder="Extra notes" multiline />
+          </View>
+        ) : null}
+
+        {/* Step — column mapping */}
         {preview ? (
           <View style={styles.stepCard}>
             <Text style={styles.stepLabel}>
-              3.  Map columns ({mappedCount}/{preview.columns.length})
+              {importType === "cod_payment" ? "4" : "3"}.  Map columns ({mappedCount}/{preview.columns.length})
             </Text>
             <Text style={styles.helpText}>
               Tap a column to pick the shipment field. Fields marked{" "}
@@ -748,6 +916,31 @@ function ResultStat({ n, l, tint }: { n: number; l: string; tint: string }) {
   );
 }
 
+/** Compact labelled text input used across the Payment Batch section. */
+function PbField({
+  label, value, onChangeText, placeholder, multiline,
+}: {
+  label: string;
+  value: string;
+  onChangeText: (v: string) => void;
+  placeholder?: string;
+  multiline?: boolean;
+}) {
+  return (
+    <View style={{ marginTop: 8 }}>
+      <Text style={styles.pbLabel}>{label}</Text>
+      <TextInput
+        style={[styles.pbInput, multiline && { height: 60, textAlignVertical: "top" }]}
+        value={value}
+        onChangeText={onChangeText}
+        placeholder={placeholder}
+        placeholderTextColor="#94A3B8"
+        multiline={!!multiline}
+      />
+    </View>
+  );
+}
+
 /** Small +/- stepper used for Header Row / Data Start Row / Data Start Column.
  *  Keeps input touch-friendly (44pt targets) and clamps to [min,max]. */
 function LayoutStepper({
@@ -949,4 +1142,19 @@ const styles = StyleSheet.create({
     marginTop: 10, padding: 8, backgroundColor: "#EFF6FF", borderRadius: 6,
   },
   layoutHintTxt: { fontSize: 11, color: "#1E40AF", lineHeight: 15 },
+
+  // Phase F6.3 — Payment Batch inputs
+  pbLabel: { fontSize: 10, fontWeight: "800", color: "#64748B", letterSpacing: 0.3, marginBottom: 4 },
+  pbInput: {
+    borderWidth: 1, borderColor: "#E5E7EB", borderRadius: 8,
+    paddingHorizontal: 10, paddingVertical: 8, fontSize: 13, color: "#0F172A",
+    backgroundColor: "#fff", minHeight: 38,
+  },
+  pbModeRow: { flexDirection: "row", flexWrap: "wrap", gap: 4, marginTop: 2 },
+  pbModeChip: {
+    paddingHorizontal: 8, paddingVertical: 6, borderRadius: 6,
+    backgroundColor: "#F1F5F9", borderWidth: 1, borderColor: "#E5E7EB",
+  },
+  pbModeChipActive: { backgroundColor: colors.primary, borderColor: colors.primary },
+  pbModeChipTxt: { fontSize: 10, fontWeight: "700", color: "#334155" },
 });

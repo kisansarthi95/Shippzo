@@ -599,6 +599,12 @@ def init() -> None:
         header_row: int = Form(1),
         data_start_row: int = Form(2),
         header_col: int = Form(1),
+        # Phase F6.3 — For import_type=cod_payment, an OPTIONAL payment
+        # batch payload can be sent to group these settlements under a
+        # PaymentBatch record (e.g. one cheque = one batch). Ignored for
+        # other import types.
+        payment_batch: str = Form("", description="JSON string with PaymentBatch fields (name, payment_date, payment_mode, reference_number, ...)"),
+        override_duplicate: bool = Form(False, description="If true, proceed even when reference_number already exists"),
         current_user: Dict[str, Any] = Depends(_get_current_user),
     ):
         if import_type not in IMPORT_TYPES:
@@ -661,6 +667,49 @@ def init() -> None:
                     },
                 }},
             )
+
+        # Phase F6.3 — parse & validate payment_batch metadata (only
+        # relevant for cod_payment imports). We create the batch AFTER
+        # the shipment updates so total_articles / total_amount reflect
+        # the real result.
+        payment_batch_payload: Optional[Dict[str, Any]] = None
+        duplicate_batch: Optional[Dict[str, Any]] = None
+        if import_type == "cod_payment" and payment_batch and payment_batch.strip():
+            try:
+                pb_raw = json.loads(payment_batch)
+                if pb_raw and isinstance(pb_raw, dict):
+                    from routers.payment_batches import (
+                        PaymentBatchIn, validate_payment_batch, find_duplicate_ref,
+                    )
+                    pb_in = PaymentBatchIn(**pb_raw)
+                    payment_batch_payload = validate_payment_batch(pb_in)
+                    duplicate_batch = await find_duplicate_ref(
+                        db, current_user["id"], payment_batch_payload["reference_number"],
+                    )
+                    if duplicate_batch and not override_duplicate:
+                        # Soft warning — return 409 so UI can show a
+                        # confirm dialog and re-submit with
+                        # override_duplicate=true.
+                        raise HTTPException(
+                            status_code=409,
+                            detail={
+                                "error": "duplicate_reference",
+                                "message": (
+                                    f"Reference '{payment_batch_payload['reference_number']}' "
+                                    f"already used in batch '{duplicate_batch.get('name')}' on "
+                                    f"{duplicate_batch.get('payment_date')}. "
+                                    "Import blocked to prevent duplicate payment."
+                                ),
+                                "existing_batch": duplicate_batch,
+                            },
+                        )
+            except HTTPException:
+                raise
+            except Exception as _pb_e:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid payment_batch payload: {_pb_e}",
+                )
 
         # Batch document container — persisted at the end.
         batch_id = str(uuid.uuid4())
@@ -886,6 +935,8 @@ def init() -> None:
 
         # ────────────── Write updates in one bulk op ──────────────
         wrote = 0
+        settled_shipment_ids: List[str] = []
+        settled_total_amount: float = 0.0
         if updates_to_write:
             from pymongo import UpdateOne  # local import to avoid top-level cost
             ops = []
@@ -895,6 +946,13 @@ def init() -> None:
                 upd_final = dict(upd)
                 upd_final["is_modified"] = True
                 upd_final["modified_at"] = now
+                # Phase F6.3 — always link the shipment to THIS import
+                # batch so the Filter panel's "Import Batch" chip can
+                # drill down. Stored as an array (a shipment can be
+                # touched by multiple imports of different types over
+                # its lifetime).
+                # Using $addToSet via UpdateOne needs $set + $addToSet
+                # split — see the ops build below.
                 # For delivery, also stamp the pipeline delivered_at when
                 # status hits Delivered. Existing helper checks in
                 # shipments_write.py will not fire here (bulk write path),
@@ -903,11 +961,41 @@ def init() -> None:
                     upd_final["delivered_at"] = now
                 ops.append(UpdateOne(
                     {"id": sid, "user_id": current_user["id"]},
-                    {"$set": upd_final},
+                    {
+                        "$set": upd_final,
+                        "$addToSet": {"import_batch_ids": batch_id},
+                    },
                 ))
+                if import_type == "cod_payment":
+                    settled_shipment_ids.append(sid)
+                    try:
+                        settled_total_amount += float(upd_final.get("cod_collected_amount") or 0.0)
+                    except (TypeError, ValueError):
+                        pass
             if ops:
                 res = await db.shipments.bulk_write(ops, ordered=False)
                 wrote = int(res.modified_count or 0)
+
+        # Phase F6.3 — create the PaymentBatch AFTER writes so we can
+        # attach the actual list of settled shipments + real total.
+        pb_created: Optional[Dict[str, Any]] = None
+        if payment_batch_payload and import_type == "cod_payment":
+            from routers.payment_batches import create_payment_batch as _create_pb
+            pb_created = await _create_pb(
+                db, current_user["id"], payment_batch_payload,
+                shipment_ids=settled_shipment_ids,
+                total_amount=settled_total_amount,
+                import_batch_id=batch_id,
+            )
+            # Stamp payment_batch_id on each settled shipment so the
+            # Payment Batch filter chip can find them without a join.
+            if settled_shipment_ids and pb_created:
+                await db.shipments.update_many(
+                    {"user_id": current_user["id"], "id": {"$in": settled_shipment_ids}},
+                    {"$set": {"payment_batch_id": pb_created["id"]}},
+                )
+            # Record on the import batch record for cross-lookup.
+            batch_doc["payment_batch_id"] = pb_created["id"]
 
         # Persist the batch record for history / audit.
         try:
@@ -935,6 +1023,9 @@ def init() -> None:
             "unmatched":         batch_doc["unmatched"],
             "errors":            batch_doc["errors"],
             "db_modified":       wrote,
+            # Phase F6.3 — surface the payment batch if one was created.
+            "payment_batch":     pb_created,
+            "duplicate_warning": duplicate_batch if (pb_created and duplicate_batch) else None,
         }
 
     # ── History / Audit ───────────────────────────────────────────

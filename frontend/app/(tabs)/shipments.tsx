@@ -38,6 +38,7 @@ import LabelChip from "../../components/LabelChip";
 import LabelPickerSheet from "../../components/LabelPickerSheet";
 import QuickPickerSheet, { QuickPickerOption } from "../../components/QuickPickerSheet";
 import ShipmentsFilterSheet from "../../components/ShipmentsFilterSheet";
+import BatchPickerSheet from "../../components/BatchPickerSheet";
 import { useFeatureFlag } from "../../lib/feature_flags";
 import { requestWhatsAppSend } from "../../lib/whatsappGuard";
 import DailyLimitBanner from "../../components/DailyLimitBanner";
@@ -109,6 +110,20 @@ export default function Shipments() {
   const [courierFilter, setCourierFilter] = useState<string>("");
   const [quickPicker, setQuickPicker] = useState<"print" | "label" | "courier" | null>(null);
   const [filterSheetOpen, setFilterSheetOpen] = useState(false);
+
+  // Phase F6.3 — Shipment Import filter states. All are client-side
+  // except importBatchPick / paymentBatchPick which are passed as
+  // server query params (indexed Mongo lookup).
+  const [importStatus, setImportStatus]         = useState<"all" | "imported" | "not_imported">("all");
+  const [importTypes, setImportTypes]           = useState<Set<"booking" | "delivery" | "cod_payment">>(new Set());
+  const [bookingFilter, setBookingFilter]       = useState<Set<"imported" | "pending">>(new Set());
+  const [deliveryFilter, setDeliveryFilter]     = useState<Set<"imported" | "pending" | "confirmed">>(new Set());
+  const [codPaymentFilter, setCodPaymentFilter] = useState<Set<"received" | "pending" | "amount_mismatch">>(new Set());
+  const [validationFilter, setValidationFilter] = useState<Set<"weight" | "payment_mode" | "amount">>(new Set());
+  const [importBatchPick, setImportBatchPick]   = useState<{ id: string; label: string; sub?: string } | null>(null);
+  const [paymentBatchPick, setPaymentBatchPick] = useState<{ id: string; label: string; sub?: string } | null>(null);
+  const [importBatchPickerOpen, setImportBatchPickerOpen]   = useState(false);
+  const [paymentBatchPickerOpen, setPaymentBatchPickerOpen] = useState(false);
 
   // Phase C — Suggested Filters (server-driven).
   //
@@ -270,6 +285,14 @@ export default function Shipments() {
     // compound buckets like "Dispatch" that unify Pending+Dispatched —
     // works consistently without extra backend round-trips.
     const q: any = { search: search || undefined };
+    // Phase F6.3 — Import Batch / Payment Batch drill-downs go
+    // server-side because they translate to indexed Mongo queries
+    // (`import_batch_ids: <id>` / `payment_batch_id: <id>`). Every
+    // other new filter (Import Status / Type / validation / booking /
+    // delivery / cod payment sub-filters) is applied CLIENT-SIDE so
+    // it composes with the existing tab / date / label filters.
+    if (importBatchPick?.id)  q.import_batch_id = importBatchPick.id;
+    if (paymentBatchPick?.id) q.payment_batch_id = paymentBatchPick.id;
     try {
       const [list, s, cs] = await Promise.all([
         Api.listShipments(q), Api.getSettings(), Api.listCouriers(),
@@ -390,12 +413,81 @@ export default function Shipments() {
     const byCourier = !courierFilter
       ? byPay
       : byPay.filter((s) => String((s as any).courier_id || "") === courierFilter);
-    if (dateFilter === "all") return byCourier;
+
+    // ─── Phase F6.3 — Shipment Import filters (client-side) ───
+    // Applied AFTER the tab/status/date filters so they compose cleanly
+    // with every other active chip. Each block is a no-op when its set
+    // is empty (fast path preserved).
+    let byImp = byCourier;
+    if (importStatus === "imported") {
+      byImp = byImp.filter((s) => !!(s as any).last_import_at);
+    } else if (importStatus === "not_imported") {
+      byImp = byImp.filter((s) => !(s as any).last_import_at);
+    }
+    if (importTypes.size > 0) {
+      byImp = byImp.filter((s) => {
+        const anyS = s as any;
+        // A shipment "belongs to" a type if we can see its stamp.
+        // booking = imported_booking_at, delivery = delivery_source==="imported",
+        // cod_payment = cod_payment_status==="received".
+        if (importTypes.has("booking")     && anyS.imported_booking_at)                return true;
+        if (importTypes.has("delivery")    && anyS.delivery_source === "imported")    return true;
+        if (importTypes.has("cod_payment") && anyS.cod_payment_status === "received") return true;
+        return false;
+      });
+    }
+    if (bookingFilter.size > 0) {
+      byImp = byImp.filter((s) => {
+        const anyS = s as any;
+        const hasBooking = !!anyS.imported_booking_at;
+        if (bookingFilter.has("imported") && hasBooking)  return true;
+        if (bookingFilter.has("pending")  && !hasBooking) return true;
+        return false;
+      });
+    }
+    if (deliveryFilter.size > 0) {
+      byImp = byImp.filter((s) => {
+        const anyS = s as any;
+        const impDel   = anyS.delivery_source === "imported";
+        const confirmed = anyS.confirmation_status === "confirmed";
+        const pending   = String(anyS.status || "") !== "Delivered";
+        if (deliveryFilter.has("imported")  && impDel)     return true;
+        if (deliveryFilter.has("confirmed") && confirmed)  return true;
+        if (deliveryFilter.has("pending")   && pending)    return true;
+        return false;
+      });
+    }
+    if (codPaymentFilter.size > 0) {
+      byImp = byImp.filter((s) => {
+        const anyS = s as any;
+        const received = anyS.cod_payment_status === "received";
+        const isCOD    = String(anyS.payment_mode || "").toUpperCase() === "COD";
+        const pending  = isCOD && !received;
+        const amtMismatch = ((anyS.import_validation_alerts || []) as any[])
+          .some((a) => a.field === "amount");
+        if (codPaymentFilter.has("received")        && received)       return true;
+        if (codPaymentFilter.has("pending")         && pending)        return true;
+        if (codPaymentFilter.has("amount_mismatch") && amtMismatch)    return true;
+        return false;
+      });
+    }
+    if (validationFilter.size > 0) {
+      byImp = byImp.filter((s) => {
+        const alerts = ((s as any).import_validation_alerts || []) as any[];
+        for (const a of alerts) {
+          if (validationFilter.has(a.field)) return true;
+        }
+        return false;
+      });
+    }
+    // ─────────────────────────────────────────────────────────────
+
+    if (dateFilter === "all") return byImp;
     if (dateFilter === "custom") {
-      if (!customFrom && !customTo) return byCourier;
+      if (!customFrom && !customTo) return byImp;
       const from = customFrom ? new Date(customFrom.getFullYear(), customFrom.getMonth(), customFrom.getDate()).getTime() : 0;
       const to = customTo ? new Date(customTo.getFullYear(), customTo.getMonth(), customTo.getDate(), 23, 59, 59, 999).getTime() : Number.MAX_SAFE_INTEGER;
-      return byCourier.filter((s) => {
+      return byImp.filter((s) => {
         const t = Date.parse(s.created_at || "");
         return !isNaN(t) && t >= from && t <= to;
       });
@@ -407,11 +499,17 @@ export default function Shipments() {
         : dateFilter === "week"
         ? now - 7 * 24 * 60 * 60 * 1000
         : now - 30 * 24 * 60 * 60 * 1000;
-    return byCourier.filter((s) => {
+    return byImp.filter((s) => {
       const t = Date.parse(s.created_at || "");
       return !isNaN(t) && t >= cutoff;
     });
-  }, [items, dateFilter, customFrom, customTo, status, printFilter, labelFilter, shipmentLabels, paymentFilter, courierFilter]);
+  }, [
+    items, dateFilter, customFrom, customTo, status, printFilter, labelFilter,
+    shipmentLabels, paymentFilter, courierFilter,
+    // Phase F6.3
+    importStatus, importTypes, bookingFilter, deliveryFilter,
+    codPaymentFilter, validationFilter,
+  ]);
 
   const toggleSelect = (id: string) => {
     setSelectedIds((prev) => {
@@ -2751,13 +2849,7 @@ export default function Shipments() {
         setPaymentFilter={setPaymentFilter}
         suggestions={suggestedFilters}
         onPickSuggestion={(term) => {
-          // Drop the suggestion into the search bar → the existing
-          // `search` state drives the backend query, so this
-          // instantly filters the list and composes cleanly with
-          // every other active filter (status, print, label, etc.).
           setSearch(term);
-          // Kick off an immediate reload so users see the filtered
-          // list without waiting for the debounce timer.
           load().catch(() => {});
         }}
         onClearAll={() => {
@@ -2765,8 +2857,62 @@ export default function Shipments() {
           setCustomFrom(null);
           setCustomTo(null);
           setPaymentFilter(new Set());
+          // Phase F6.3 — also reset the Import filters
+          setImportStatus("all");
+          setImportTypes(new Set());
+          setBookingFilter(new Set());
+          setDeliveryFilter(new Set());
+          setCodPaymentFilter(new Set());
+          setValidationFilter(new Set());
+          setImportBatchPick(null);
+          setPaymentBatchPick(null);
+          // Kick a reload since Batch filters are server-side
+          load().catch(() => {});
+        }}
+        // Phase F6.3 — Import filter props
+        importStatus={importStatus}
+        setImportStatus={setImportStatus}
+        importTypes={importTypes}
+        setImportTypes={setImportTypes}
+        bookingFilter={bookingFilter}
+        setBookingFilter={setBookingFilter}
+        deliveryFilter={deliveryFilter}
+        setDeliveryFilter={setDeliveryFilter}
+        codPaymentFilter={codPaymentFilter}
+        setCodPaymentFilter={setCodPaymentFilter}
+        validationFilter={validationFilter}
+        setValidationFilter={setValidationFilter}
+        importBatch={importBatchPick}
+        onOpenImportBatchPicker={() => setImportBatchPickerOpen(true)}
+        paymentBatch={paymentBatchPick}
+        onOpenPaymentBatchPicker={() => setPaymentBatchPickerOpen(true)}
+      />
+
+      {/* Phase F6.3 — Batch pickers (import + payment). Server-side
+          filters — selection triggers a reload since the picked id
+          is passed as a query param on Api.listShipments. */}
+      <BatchPickerSheet
+        visible={importBatchPickerOpen}
+        onClose={() => setImportBatchPickerOpen(false)}
+        kind="import"
+        current={importBatchPick}
+        onSelect={(b) => {
+          setImportBatchPick(b);
+          // Immediate reload so the list reflects the drill-down.
+          load().catch(() => {});
         }}
       />
+      <BatchPickerSheet
+        visible={paymentBatchPickerOpen}
+        onClose={() => setPaymentBatchPickerOpen(false)}
+        kind="payment"
+        current={paymentBatchPick}
+        onSelect={(b) => {
+          setPaymentBatchPick(b);
+          load().catch(() => {});
+        }}
+      />
+
 
       {/* ── Phase B — Create-label shortcut. Opens LabelPickerSheet
              straight in Create mode; on save the new label refreshes

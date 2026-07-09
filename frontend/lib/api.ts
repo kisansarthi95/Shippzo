@@ -1012,6 +1012,9 @@ export const Api = {
     status?: string;
     courier_id?: string;
     search?: string;
+    // Phase F6.3 — Import System filter drill-downs.
+    import_batch_id?: string;
+    payment_batch_id?: string;
   }) => api.get<Shipment[]>("/shipments", { params }).then((r) => r.data),
   getStats: () =>
     api
@@ -2175,6 +2178,8 @@ export const Api = {
     save_default = false,
     layout?: { header_row?: number; data_start_row?: number; header_col?: number },
     webFile?: any,
+    payment_batch_json?: string,
+    override_duplicate = false,
   ) => {
     const fd = new FormData();
     if (webFile && typeof (globalThis as any).File !== "undefined") {
@@ -2188,6 +2193,8 @@ export const Api = {
     fd.append("header_row",     String(layout?.header_row     ?? 1));
     fd.append("data_start_row", String(layout?.data_start_row ?? 2));
     fd.append("header_col",     String(layout?.header_col     ?? 1));
+    if (payment_batch_json) fd.append("payment_batch", payment_batch_json);
+    if (override_duplicate)  fd.append("override_duplicate", "true");
     return api
       .post<{
         ok: boolean;
@@ -2284,6 +2291,71 @@ export const Api = {
    *  the auth token; we return a plain URL here. */
   shipmentImportMismatchesUrl: (batch_id: string) =>
     `/shipments/import/batches/${batch_id}/mismatches.csv`,
+
+  // ─── Phase F6.3 — Payment Batches (COD settlement grouping) ───
+  listPaymentBatches: (params?: {
+    search?: string;
+    payment_mode?: string;
+    date_from?: string;
+    date_to?: string;
+    limit?: number;
+  }) => {
+    const q = new URLSearchParams();
+    if (params?.search)       q.append("search", params.search);
+    if (params?.payment_mode) q.append("payment_mode", params.payment_mode);
+    if (params?.date_from)    q.append("date_from", params.date_from);
+    if (params?.date_to)      q.append("date_to", params.date_to);
+    if (params?.limit)        q.append("limit", String(params.limit));
+    const qs = q.toString() ? `?${q.toString()}` : "";
+    return api
+      .get<{
+        batches: {
+          id: string;
+          name: string;
+          description?: string;
+          payment_date: string;
+          payment_mode: string;
+          reference_number: string;
+          bank_name?: string;
+          notes?: string;
+          total_articles: number;
+          total_amount: number;
+          created_at: string;
+          import_batch_ids?: string[];
+        }[];
+      }>(`/payment-batches${qs}`)
+      .then((r) => r.data);
+  },
+  getPaymentBatch: (batch_id: string) =>
+    api
+      .get<{
+        id: string;
+        name: string;
+        description?: string;
+        payment_date: string;
+        payment_mode: string;
+        reference_number: string;
+        bank_name?: string;
+        notes?: string;
+        total_articles: number;
+        total_amount: number;
+        shipment_ids: string[];
+        import_batch_ids?: string[];
+        created_at: string;
+      }>(`/payment-batches/${batch_id}`)
+      .then((r) => r.data),
+  checkPaymentBatchDuplicate: (ref: string) =>
+    api
+      .get<{ duplicate: boolean; batch: any }>(
+        `/payment-batches/check-duplicate?ref=${encodeURIComponent(ref)}`,
+      )
+      .then((r) => r.data),
+  deletePaymentBatch: (batch_id: string) =>
+    api
+      .delete<{ ok: boolean; unlinked_shipments: number }>(
+        `/payment-batches/${batch_id}`,
+      )
+      .then((r) => r.data),
 
   // --- Feature 1: Write headers to user sheet ---
   syncSheetHeaders: (dry_run = false) =>
