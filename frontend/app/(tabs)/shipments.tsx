@@ -1824,6 +1824,13 @@ export default function Shipments() {
     }
   };
 
+  // Phase F7.5 (Jun-2026) — Download Data menu (Modal-based) so we
+  // can extend it with the "Copy Only <Courier> Article Numbers"
+  // submenu that's dynamically populated from Courier Partner
+  // Settings. Alert.alert can't render N+ buttons cleanly (iOS caps
+  // at ~3 comfortably); this modal supports any number of couriers.
+  const [downloadMenuOpen, setDownloadMenuOpen] = useState(false);
+
   const handleExportCsv = async () => {
     if (exportCsvBusy) return;
     // ── Phase F7.1 — India Post Complaint STATUS override ────────
@@ -1847,35 +1854,65 @@ export default function Shipments() {
       return;
     }
     // ─────────────────────────────────────────────────────────────
-    // Give users the choice: Excel-native XLSX (Recommended for
-    // Gujarati / Hindi customer names — never breaks in old Windows
-    // Excel) OR the classic CSV (compact, works in any spreadsheet
-    // app that respects UTF-8 BOM).
-    Alert.alert(
-      "Export Shipments",
-      "Excel (.xlsx) preserves Gujarati / Hindi names in every Excel version. Choose CSV only if you specifically need a comma-separated file.",
-      [
-        { text: "Cancel", style: "cancel" },
-        {
-          text: "Excel (.xlsx) — Recommended",
-          onPress: async () => {
-            setExportCsvBusy(true);
-            try { await _doExportXlsx(); }
-            catch (e: any) {
-              Alert.alert(
-                "Export failed",
-                e?.response?.data?.detail || e?.message || "Try again.",
-              );
-            } finally { setExportCsvBusy(false); }
-          },
-        },
-        {
-          text: "CSV",
-          onPress: () => { setExportCsvBusy(true); _doExportCsv().finally(() => setExportCsvBusy(false)); },
-        },
-      ],
-    );
+    // Phase F7.5 — Open the Download menu modal. It offers:
+    //   • Excel (.xlsx) — recommended
+    //   • CSV
+    //   • Copy Only <Courier> Article Numbers — one row per configured
+    //     courier partner (auto-refreshed from Courier Partner Settings)
+    setDownloadMenuOpen(true);
   };
+
+  // ── Phase F7.5 — Copy Only Article Numbers ─────────────────────
+  //
+  // Filters the currently-visible shipment list (`dateFilteredItems`
+  // — the compound filter output) by the selected courier, extracts
+  // each row's `tracking_id`, deduplicates, and joins with newlines
+  // so a paste target sees one Article Number per line. No other
+  // fields (Order ID, Customer Name, Status, Amount, dates, etc.)
+  // are copied — clipboard content is EXCLUSIVELY article numbers.
+  const runCopyArticleNumbers = useCallback(async (courierId: string) => {
+    setDownloadMenuOpen(false);
+    try {
+      // 1. Match courier by id, then filter shipments where
+      //    `courier_id === courierId` AND a non-empty tracking_id
+      //    exists. We do NOT trust just "starts with prefix" — an
+      //    operator may have manually edited the tracking id on a
+      //    shipment (India Post Speed Post stickers, Anjani physical
+      //    labels, etc.). courier_id is the canonical link.
+      const courier = couriers.find((c) => c.id === courierId);
+      const courierLabel = courier?.name || "Selected";
+      const tracking = dateFilteredItems
+        .filter((s) => s.courier_id === courierId)
+        .map((s) => (s.tracking_id || "").trim())
+        .filter(Boolean);
+      // Deduplicate while preserving first-seen order (a shipment
+      // list can legitimately have duplicates if the same tracking
+      // was assigned to multiple orders — India Post allows this).
+      const seen = new Set<string>();
+      const deduped: string[] = [];
+      for (const t of tracking) {
+        if (!seen.has(t)) { seen.add(t); deduped.push(t); }
+      }
+      if (deduped.length === 0) {
+        Alert.alert(
+          "No Article Numbers",
+          `There are no ${courierLabel} shipments with tracking numbers in the current filtered view.`,
+        );
+        return;
+      }
+      const payload = deduped.join("\n");
+      await Clipboard.setStringAsync(payload);
+      Alert.alert(
+        "Article Numbers copied successfully.",
+        `${deduped.length} ${courierLabel} article ${deduped.length === 1 ? "number" : "numbers"} copied to clipboard.`,
+      );
+    } catch (e: any) {
+      Alert.alert(
+        "Copy failed",
+        e?.message || "Couldn't access the system clipboard. Please try again.",
+      );
+    }
+  }, [couriers, dateFilteredItems]);
 
   const _doExportCsv = async () => {
     try {
@@ -3270,6 +3307,106 @@ export default function Shipments() {
           loadLabels().catch(() => {});
         }}
       />
+
+      {/* ── Phase F7.5 — Download Data menu (Modal-based) ────────
+             Replaces the old Alert.alert chooser so we can list one
+             submenu row per configured courier partner (dynamically
+             read from `couriers` state → Courier Partner Settings).
+             The Excel / CSV rows are UNCHANGED — same handlers, just
+             wrapped in a proper button list. */}
+      <Modal
+        visible={downloadMenuOpen}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setDownloadMenuOpen(false)}
+      >
+        <TouchableOpacity
+          style={styles.downloadMenuBackdrop}
+          activeOpacity={1}
+          onPress={() => setDownloadMenuOpen(false)}
+        >
+          <TouchableOpacity
+            activeOpacity={1}
+            style={styles.downloadMenuCard}
+            onPress={() => {/* swallow taps so the backdrop doesn't dismiss */}}
+          >
+            <Text style={styles.downloadMenuTitle}>Download Data</Text>
+            <Text style={styles.downloadMenuSub}>
+              Excel (.xlsx) preserves Gujarati / Hindi names in every Excel version.
+            </Text>
+
+            <TouchableOpacity
+              testID="dl-menu-xlsx"
+              style={styles.downloadMenuItem}
+              onPress={() => {
+                setDownloadMenuOpen(false);
+                setExportCsvBusy(true);
+                _doExportXlsx()
+                  .catch((e: any) => Alert.alert(
+                    "Export failed",
+                    e?.response?.data?.detail || e?.message || "Try again.",
+                  ))
+                  .finally(() => setExportCsvBusy(false));
+              }}
+            >
+              <PhIcon name="grid-outline" size={16} color={colors.primary} />
+              <View style={{ flex: 1 }}>
+                <Text style={styles.downloadMenuItemTxt}>Excel (.xlsx)</Text>
+                <Text style={styles.downloadMenuItemSub}>Recommended</Text>
+              </View>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              testID="dl-menu-csv"
+              style={styles.downloadMenuItem}
+              onPress={() => {
+                setDownloadMenuOpen(false);
+                setExportCsvBusy(true);
+                _doExportCsv().finally(() => setExportCsvBusy(false));
+              }}
+            >
+              <PhIcon name="document-text-outline" size={16} color={colors.primary} />
+              <Text style={styles.downloadMenuItemTxt}>CSV</Text>
+            </TouchableOpacity>
+
+            {/* ── Copy Only Article Numbers submenu ──
+                One row per courier partner. Rendered dynamically from
+                the `couriers` state (fed by Api.listCouriers) so
+                add/remove in Courier Partner Settings auto-updates
+                this list without any code change. */}
+            {couriers.length > 0 && (
+              <>
+                <View style={styles.downloadMenuDivider}>
+                  <Text style={styles.downloadMenuDividerTxt}>
+                    Copy Only Article Numbers
+                  </Text>
+                </View>
+                {couriers.map((c) => (
+                  <TouchableOpacity
+                    key={c.id}
+                    testID={`dl-menu-copy-${c.id}`}
+                    style={styles.downloadMenuItem}
+                    onPress={() => runCopyArticleNumbers(c.id)}
+                  >
+                    <PhIcon name="copy-outline" size={16} color="#0EA5E9" />
+                    <Text style={styles.downloadMenuItemTxt} numberOfLines={1}>
+                      Copy Only {c.name} Article Numbers
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </>
+            )}
+
+            <TouchableOpacity
+              testID="dl-menu-cancel"
+              style={[styles.downloadMenuItem, styles.downloadMenuCancel]}
+              onPress={() => setDownloadMenuOpen(false)}
+            >
+              <Text style={styles.downloadMenuCancelTxt}>Cancel</Text>
+            </TouchableOpacity>
+          </TouchableOpacity>
+        </TouchableOpacity>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -3281,6 +3418,53 @@ export default function Shipments() {
 
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: colors.background },
+
+  // ── Phase F7.5 — Download Data menu ─────────────────────────
+  downloadMenuBackdrop: {
+    flex: 1, backgroundColor: "rgba(0,0,0,0.4)",
+    justifyContent: "flex-end",
+  },
+  downloadMenuCard: {
+    backgroundColor: "#fff",
+    borderTopLeftRadius: 16, borderTopRightRadius: 16,
+    paddingHorizontal: 16, paddingTop: 14, paddingBottom: 22,
+    maxHeight: "80%",
+  },
+  downloadMenuTitle: {
+    fontSize: 16, fontWeight: "800", color: colors.text,
+    marginBottom: 2, letterSpacing: 0.3,
+  },
+  downloadMenuSub: {
+    fontSize: 12, color: "#64748B", marginBottom: 12, lineHeight: 16,
+  },
+  downloadMenuItem: {
+    flexDirection: "row", alignItems: "center", gap: 12,
+    paddingHorizontal: 12, paddingVertical: 12,
+    borderRadius: 10, borderWidth: 1, borderColor: "#E5E7EB",
+    backgroundColor: "#fff", marginBottom: 6,
+  },
+  downloadMenuItemTxt: {
+    fontSize: 14, fontWeight: "700", color: colors.text, flex: 1,
+  },
+  downloadMenuItemSub: {
+    fontSize: 11, color: "#059669", fontWeight: "700", marginTop: 1,
+  },
+  downloadMenuDivider: {
+    marginTop: 6, marginBottom: 4, paddingTop: 8,
+    borderTopWidth: 1, borderTopColor: "#F1F5F9",
+  },
+  downloadMenuDividerTxt: {
+    fontSize: 11, fontWeight: "800", color: "#94A3B8",
+    letterSpacing: 0.5, textTransform: "uppercase",
+    marginBottom: 6, paddingHorizontal: 4,
+  },
+  downloadMenuCancel: {
+    backgroundColor: "#F8FAFC", borderColor: "#F1F5F9",
+    marginTop: 6, justifyContent: "center",
+  },
+  downloadMenuCancelTxt: {
+    fontSize: 14, fontWeight: "700", color: "#64748B", textAlign: "center", flex: 1,
+  },
   header: {
     flexDirection: "row", alignItems: "center", justifyContent: "space-between",
     paddingHorizontal: 20, paddingTop: 10, paddingBottom: 8,
