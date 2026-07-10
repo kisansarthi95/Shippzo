@@ -12,6 +12,10 @@ Endpoints
     DELETE /api/shipments/{id}/complaint            → clear complaint
     POST   /api/shipments/export-complaints         → bulk India Post Excel
                                                        (ZIP with 500-row chunks)
+    POST   /api/shipments/complaint/ai-shorten      → LLM-rewrite Description
+                                                       to ≤250-char English
+                                                       (charges 0.5 AI credits
+                                                       ONLY on success)
 
 DB additions (all on the existing `shipments` collection, additive)
 ────────────────────────────────────────────────────────────────────
@@ -70,6 +74,17 @@ class _ComplaintPayload(BaseModel):
 class _ExportComplaintsBody(BaseModel):
     """Filtered-list ID payload — identical shape to /shipments/export/*"""
     ids: Optional[List[str]] = None
+
+
+class _AiShortenBody(BaseModel):
+    """Payload for POST /shipments/complaint/ai-shorten.
+
+    NOTE: MUST live at module scope. FastAPI/Pydantic v2 fail to
+    recognise Pydantic models defined inside a function as request-body
+    schemas and silently degrade them to query parameters. Keep this
+    class outside init().
+    """
+    description: str
 
 
 _VALID_SERVICES = {
@@ -385,7 +400,204 @@ def init() -> None:
             },
         )
 
+    # ═══════════════════════════════════════════════════════════════
+    #                    AI SHORTEN — LLM rewrite
+    # ═══════════════════════════════════════════════════════════════
+    #
+    # Contract:
+    #   • Accepts ANY language (Gujarati / Hindi / Marathi / mixed).
+    #   • Rewrites into professional English ≤ 250 characters.
+    #   • Loops up to 3 times if the model overshoots 250 chars — each
+    #     retry passes the previous output back with a stricter
+    #     length reminder.
+    #   • Charges 0.5 AI credits ONLY after a SUCCESSFUL rewrite
+    #     (no charge on timeout / API error / empty response).
+    #   • Every successful click is billed independently — there is no
+    #     "one shorten per complaint" throttle. This matches the user
+    #     spec: 1 click = 0.5, 2 clicks = 1.0, etc.
+    _AI_SHORTEN_COST = 0.5
+
+    _SHORTEN_SYSTEM = (
+        "You are an India Post complaint rewriter. The user gives you "
+        "a complaint description in ANY language (Gujarati, Hindi, "
+        "Marathi, English, or mixed). Your job:\n"
+        "  1. Auto-detect the language.\n"
+        "  2. Translate everything into professional English.\n"
+        "  3. Preserve EVERY important complaint fact (tracking IDs, "
+        "     dates, article names, amounts, delivery attempts, "
+        "     contact history, damage details, etc.).\n"
+        "  4. Do NOT change the meaning. Do NOT drop information.\n"
+        "  5. Remove ONLY redundant words, fillers and repetition.\n"
+        "  6. Write in a short, clear, professional complaint tone "
+        "     suitable for the India Post CBS Bulk Complaint upload.\n"
+        "  7. HARD LIMIT: the final English output MUST be at most "
+        "     250 characters (including spaces & punctuation).\n"
+        "  8. Return ONLY the rewritten English complaint text. NO "
+        "     preamble. NO markdown. NO quotes. NO labels."
+    )
+
+    @complaints_router.post("/shipments/complaint/ai-shorten")
+    async def ai_shorten_complaint(
+        payload: _AiShortenBody,
+        current_user: Dict[str, Any] = Depends(_get_current_user),
+    ):
+        import os as _os
+        import asyncio as _asyncio
+        from wallet import (  # local import so wallet stays optional
+            get_balance as _get_balance,
+            _apply_delta as _apply_wallet_delta,
+            record_history as _record_history,
+        )
+
+        raw = (payload.description or "").strip()
+        if not raw:
+            raise HTTPException(
+                status_code=422,
+                detail="Description is empty — nothing to shorten.",
+            )
+        # Guard against absurd inputs — India Post CBS won't accept
+        # anything above a few KB anyway, and the LLM is metered by
+        # token so we cap at 4 KB.
+        if len(raw) > 4000:
+            raise HTTPException(
+                status_code=413,
+                detail="Description too long to shorten (max 4000 chars).",
+            )
+
+        # ── Pre-flight: refuse if the wallet doesn't have 0.5 credits.
+        # We intentionally check BEFORE calling the LLM so we never
+        # burn tokens for a user who can't pay.
+        bal_before = await _get_balance(db, current_user["id"])
+        if bal_before < _AI_SHORTEN_COST - 1e-6:
+            raise HTTPException(
+                status_code=402,
+                detail=(
+                    f"Insufficient AI credits. AI Shorten needs "
+                    f"{_AI_SHORTEN_COST} credits; you have "
+                    f"{round(bal_before, 2)}. Top up from Wallet."
+                ),
+            )
+
+        api_key = _os.getenv("EMERGENT_LLM_KEY", "").strip()
+        if not api_key:
+            raise HTTPException(
+                status_code=503,
+                detail="AI service is not configured (EMERGENT_LLM_KEY missing).",
+            )
+
+        # ─── LLM call with up to 3 length-shrinking retries ────────
+        try:
+            from emergentintegrations.llm.chat import LlmChat, UserMessage
+        except Exception as e:  # pragma: no cover — package missing
+            raise HTTPException(
+                status_code=503,
+                detail=f"AI runtime unavailable: {e}",
+            )
+
+        last_output: str = ""
+        rewritten: Optional[str] = None
+        _timeout = float(_os.getenv("AI_SHORTEN_TIMEOUT", "20.0"))
+        # Provider/model tuned for short, deterministic transforms —
+        # nano is cheap + fast, works fine for translate-and-compress.
+        provider = _os.getenv("AI_SHORTEN_PROVIDER", "openai")
+        model    = _os.getenv("AI_SHORTEN_MODEL",    "gpt-4.1-mini")
+
+        try:
+            for attempt in range(3):
+                session_id = (
+                    f"complaint-shorten-{current_user['id']}-{attempt}-"
+                    f"{abs(hash(raw[:200]))}"
+                )
+                chat = (
+                    LlmChat(
+                        api_key=api_key,
+                        session_id=session_id,
+                        system_message=_SHORTEN_SYSTEM,
+                    )
+                    .with_model(provider, model)
+                )
+                if attempt == 0:
+                    user_text = (
+                        "Rewrite this complaint into professional "
+                        "English ≤250 characters:\n\n" + raw
+                    )
+                else:
+                    # Retry — feed both the original and the previous
+                    # (too-long) attempt so the model can compress
+                    # further without losing facts.
+                    user_text = (
+                        f"Your previous output was {len(last_output)} "
+                        "characters — TOO LONG. Rewrite the ORIGINAL "
+                        "complaint below in ≤250 characters of "
+                        "professional English WITHOUT losing any "
+                        f"important fact:\n\nORIGINAL:\n{raw}\n\n"
+                        f"PREVIOUS ATTEMPT:\n{last_output}\n\n"
+                        "Now output the ≤250-char English version:"
+                    )
+                out = await _asyncio.wait_for(
+                    chat.send_message(UserMessage(text=user_text)),
+                    timeout=_timeout,
+                )
+                out = (out or "").strip().strip('"').strip("'")
+                # Strip common leading labels ("English: ", "Rewritten: ").
+                for prefix in ("English:", "Rewritten:", "Output:", "Complaint:"):
+                    if out.lower().startswith(prefix.lower()):
+                        out = out[len(prefix):].strip()
+                last_output = out
+                if out and len(out) <= 250:
+                    rewritten = out
+                    break
+        except _asyncio.TimeoutError:
+            raise HTTPException(
+                status_code=504,
+                detail="AI Shorten timed out. Please try again.",
+            )
+        except HTTPException:
+            raise
+        except Exception as e:
+            _logger.warning("AI Shorten LLM error: %s", e)
+            raise HTTPException(
+                status_code=502,
+                detail=(
+                    "AI Shorten failed. No credits were deducted. "
+                    "Please try again."
+                ),
+            )
+
+        if not rewritten:
+            # Model couldn't fit 250 chars even after 3 tries — do NOT
+            # deduct credits (per spec: no charge unless a valid
+            # rewritten description is generated).
+            raise HTTPException(
+                status_code=502,
+                detail=(
+                    "AI Shorten couldn't fit the complaint under 250 "
+                    "characters. No credits were deducted."
+                ),
+            )
+
+        # ── Success → deduct 0.5 credits and log history ────────────
+        uid = current_user["id"]
+        w = await _apply_wallet_delta(db, uid, used_delta=_AI_SHORTEN_COST)
+        bal_after = float(w.get("remaining_credits", 0.0))
+        await _record_history(
+            db, uid,
+            credits=-_AI_SHORTEN_COST,
+            ctype="ai_processing",
+            description="AI Shorten · India Post Complaint",
+            balance_after=bal_after,
+        )
+        return {
+            "ok": True,
+            "rewritten": rewritten,
+            "credits_deducted": _AI_SHORTEN_COST,
+            "balance_after": bal_after,
+            "chars": len(rewritten),
+        }
+
     _logger.info(
-        "complaints router mounted: 3 endpoints "
-        "(PATCH + DELETE /shipments/{id}/complaint, POST /shipments/export-complaints)"
+        "complaints router mounted: 4 endpoints "
+        "(PATCH + DELETE /shipments/{id}/complaint, "
+        "POST /shipments/export-complaints, "
+        "POST /shipments/complaint/ai-shorten)"
     )

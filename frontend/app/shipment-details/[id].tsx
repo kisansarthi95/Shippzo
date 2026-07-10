@@ -74,6 +74,32 @@ const parseDDMMYYYY = (s: string | undefined): Date | null => {
   return isNaN(dt.getTime()) ? null : dt;
 };
 
+// ── Phase F7.4 — Description validation helpers ─────────────────
+//
+// "English" = only characters in the Basic Latin + Latin-1 Supplement
+// blocks plus common punctuation / whitespace. Any Devanagari,
+// Gujarati, Bengali, Tamil, Kannada, Malayalam, Telugu, Punjabi,
+// Oriya, or CJK glyph → NOT English. This is a fast client-side
+// gate; the backend AI Shorten call handles the actual translation.
+const NON_ENGLISH_RE = /[^\x00-\x7F\u00A0-\u00FF]/;
+const CHAR_LIMIT = 250;
+
+function validateDescription(text: string): string {
+  const t = (text || "").trim();
+  const notEnglish = NON_ENGLISH_RE.test(t);
+  const tooLong   = t.length > CHAR_LIMIT;
+  if (notEnglish && tooLong) {
+    return `Your description is not in English and exceeds ${CHAR_LIMIT} characters (currently ${t.length}).`;
+  }
+  if (notEnglish) {
+    return "Your description is not in English.";
+  }
+  if (tooLong) {
+    return `Your description exceeds ${CHAR_LIMIT} characters (currently ${t.length}).`;
+  }
+  return "";
+}
+
 const fmtDate = (iso?: string | null) => {
   if (!iso) return "—";
   try {
@@ -754,6 +780,17 @@ function IndiaPostComplaintSection({
   const [showDatePicker, setShowDatePicker] = useState(false);
   const [manualDateOpen, setManualDateOpen] = useState(false);
   const [manualDate, setManualDate] = useState<string>(bookingDate);
+  // Phase F7.4 — AI Shorten notification state.
+  //   validationOpen : the "Description must be English + ≤250 chars"
+  //                    notification modal is visible.
+  //   validationIssue: precomputed short message shown at the top of
+  //                    the modal.  Kept in state so re-opening the
+  //                    modal after a failed AI call preserves the
+  //                    reason without recomputing.
+  //   aiBusy         : true while the LLM call is in flight.
+  const [validationOpen, setValidationOpen] = useState(false);
+  const [validationIssue, setValidationIssue] = useState<string>("");
+  const [aiBusy, setAiBusy] = useState(false);
 
   const isCreated = !!existing.complaint_created;
 
@@ -801,8 +838,19 @@ function IndiaPostComplaintSection({
       Alert.alert("Complaint Type required", "Please choose a complaint type.");
       return;
     }
-    if (!description.trim()) {
+    const trimmed = description.trim();
+    if (!trimmed) {
       Alert.alert("Description required", "Please describe the complaint.");
+      return;
+    }
+    // ── Phase F7.4 — Description validation (English + ≤250) ────
+    // Both conditions must be satisfied. If EITHER fails we surface
+    // the AI Shorten notification modal instead of creating the
+    // complaint (per user spec).
+    const issue = validateDescription(trimmed);
+    if (issue) {
+      setValidationIssue(issue);
+      setValidationOpen(true);
       return;
     }
     setSaving(true);
@@ -814,7 +862,7 @@ function IndiaPostComplaintSection({
         // the API contract unchanged (backend ignores empty strings).
         service_name_other: "",
         complaint_type: complaintType,
-        complaint_description: description.trim(),
+        complaint_description: trimmed,
         complaint_status: complaintStatus,
       });
       await onSaved();
@@ -865,6 +913,52 @@ function IndiaPostComplaintSection({
       ],
     );
   };
+
+  // ── Phase F7.4 — AI Shorten flow ─────────────────────────────
+  //
+  // Run the same LLM rewrite the user requested. On success, replace
+  // the description in-place with the returned English text so the
+  // operator can immediately tap Create again — this time it will
+  // pass validation and save without any prompt.
+  const runAiShorten = async () => {
+    if (aiBusy) return;
+    setAiBusy(true);
+    try {
+      const raw = description.trim();
+      if (!raw) {
+        Alert.alert(
+          "Nothing to shorten",
+          "Please type a complaint description first.",
+        );
+        return;
+      }
+      const resp = await Api.aiShortenComplaint(raw);
+      setDescription(resp.rewritten);
+      setValidationOpen(false);
+      // Non-blocking confirmation of the credit spend so the user
+      // knows their wallet was debited (0.5 per successful click).
+      Alert.alert(
+        "AI Shorten Complete",
+        `${resp.chars} characters · English · 0.5 AI Credits used.\n` +
+        `Balance: ${resp.balance_after.toFixed(2)} credits.\n\n` +
+        `Tap "Create Complaint" to save.`,
+      );
+    } catch (e: any) {
+      // Backend guarantees: NO credit deducted on any failure path.
+      // The 402 path is a special-case (empty wallet) that we surface
+      // differently — user can top up.
+      const status = e?.response?.status;
+      const detail = e?.response?.data?.detail || e?.message ||
+                     "AI Shorten failed. Please try again.";
+      Alert.alert(
+        status === 402 ? "Not enough AI credits" : "AI Shorten failed",
+        `${detail}\n\nNo credits were deducted.`,
+      );
+    } finally {
+      setAiBusy(false);
+    }
+  };
+
 
   // Lazy-load DateTimePicker to avoid Metro trying to resolve it on web.
   const DateTimePicker = (() => {
@@ -1111,6 +1205,71 @@ function IndiaPostComplaintSection({
           </View>
         </View>
       </Modal>
+
+      {/* ── Phase F7.4 — AI Shorten notification modal ──────────
+          Only appears when Create is attempted with a description
+          that is NOT English or exceeds 250 chars (or both). Any
+          other failure path uses a plain Alert. */}
+      <Modal
+        visible={validationOpen}
+        transparent
+        animationType="fade"
+        onRequestClose={() => !aiBusy && setValidationOpen(false)}
+      >
+        <View style={cpStyles.modalRoot}>
+          <View style={cpStyles.aiModalCard}>
+            <View style={cpStyles.aiModalHeader}>
+              <PhIcon name="alert-circle" size={20} color="#B45309" />
+              <Text style={cpStyles.aiModalTitle}>
+                Description needs fixing
+              </Text>
+            </View>
+            <Text style={cpStyles.aiModalIssue}>{validationIssue}</Text>
+
+            <View style={cpStyles.aiModalDivider} />
+
+            <Text style={cpStyles.aiModalBody}>
+              Use <Text style={cpStyles.aiSparkle}>✨ AI Shorten</Text> to
+              automatically convert your complaint into professional
+              English and optimize it to 250 characters or less while
+              preserving all important complaint details.
+            </Text>
+
+            <View style={cpStyles.aiCreditRow}>
+              <PhIcon name="cash-outline" size={13} color="#7C3AED" />
+              <Text style={cpStyles.aiCreditTxt}>
+                AI Shorten Charge: 0.5 AI Credits
+              </Text>
+            </View>
+
+            <View style={{ flexDirection: "row", gap: 8, marginTop: 14 }}>
+              <TouchableOpacity
+                style={[cpStyles.modalBtn, cpStyles.modalBtnGhost]}
+                onPress={() => setValidationOpen(false)}
+                disabled={aiBusy}
+                testID="cp-ai-modal-cancel"
+              >
+                <Text style={cpStyles.modalBtnGhostTxt}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[
+                  cpStyles.modalBtn, cpStyles.aiShortenBtn,
+                  aiBusy && { opacity: 0.6 },
+                ]}
+                onPress={runAiShorten}
+                disabled={aiBusy}
+                testID="cp-ai-shorten"
+              >
+                {aiBusy ? (
+                  <ActivityIndicator size="small" color="#fff" />
+                ) : (
+                  <Text style={cpStyles.aiShortenTxt}>✨ AI Shorten</Text>
+                )}
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -1228,6 +1387,53 @@ const cpStyles = StyleSheet.create({
   modalBtnGhostTxt: { color: colors.text, fontSize: 13, fontWeight: "800" },
   modalBtnPrimary: { backgroundColor: colors.primary },
   modalBtnPrimaryTxt: { color: "#fff", fontSize: 13, fontWeight: "800" },
+
+  // ── Phase F7.4 — AI Shorten notification modal ─────────────
+  aiModalCard: {
+    backgroundColor: "#fff", borderRadius: 14,
+    padding: 18, minWidth: 300, maxWidth: 440, width: "100%",
+    borderWidth: 1, borderColor: "#FDE68A",
+  },
+  aiModalHeader: {
+    flexDirection: "row", alignItems: "center", gap: 8,
+    marginBottom: 8,
+  },
+  aiModalTitle: {
+    fontSize: 15, fontWeight: "800", color: "#78350F", letterSpacing: 0.3,
+  },
+  aiModalIssue: {
+    fontSize: 13, color: "#92400E", lineHeight: 18,
+    backgroundColor: "#FEF3C7",
+    paddingHorizontal: 10, paddingVertical: 8,
+    borderRadius: 8, marginTop: 4, fontWeight: "600",
+  },
+  aiModalDivider: {
+    height: 1, backgroundColor: "#F1F5F9",
+    marginVertical: 12,
+  },
+  aiModalBody: {
+    fontSize: 13, color: colors.text, lineHeight: 19,
+  },
+  aiSparkle: { fontWeight: "800", color: "#7C3AED" },
+  aiCreditRow: {
+    flexDirection: "row", alignItems: "center", gap: 6,
+    marginTop: 10,
+    backgroundColor: "#F5F3FF",
+    paddingHorizontal: 10, paddingVertical: 6,
+    borderRadius: 8, alignSelf: "flex-start",
+    borderWidth: 1, borderColor: "#DDD6FE",
+  },
+  aiCreditTxt: {
+    fontSize: 12, fontWeight: "700", color: "#6D28D9",
+  },
+  aiShortenBtn: {
+    backgroundColor: "#7C3AED",
+    flexDirection: "row", alignItems: "center",
+    justifyContent: "center", gap: 6,
+  },
+  aiShortenTxt: {
+    color: "#fff", fontSize: 13, fontWeight: "800", letterSpacing: 0.3,
+  },
 });
 
 const styles = StyleSheet.create({

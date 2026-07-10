@@ -1688,6 +1688,21 @@ export const Api = {
   deleteComplaint: (id: string) =>
     api.delete<{ ok: boolean }>(`/shipments/${id}/complaint`).then((r) => r.data),
 
+  // ── Phase F7.4 (Jun-2026) — AI Shorten complaint description ────
+  //
+  // Uses the Emergent LLM to translate + compress a multilingual
+  // complaint into professional English ≤250 chars. The server only
+  // deducts 0.5 AI credits AFTER a successful rewrite — timeouts,
+  // API errors, and no-rewrite responses are free of charge.
+  aiShortenComplaint: (description: string) =>
+    api.post<{
+      ok: boolean;
+      rewritten: string;
+      credits_deducted: number;
+      balance_after: number;
+      chars: number;
+    }>(`/shipments/complaint/ai-shorten`, { description }).then((r) => r.data),
+
   // Bulk India Post Complaint export. Server returns either:
   //   • a single .xlsx (≤ 500 rows), or
   //   • a .zip containing multiple .xlsx parts of 500 rows each.
