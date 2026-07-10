@@ -26,12 +26,20 @@ import { colors } from "../../lib/theme";
 
 // India Post CBS enums — MUST match backend `_VALID_SERVICES` / `_VALID_TYPES`
 // / `_VALID_STATUSES` in routers/complaints.py. Add here + backend in sync.
+// Phase F7.3 — official India Post service catalogue (verbatim copy
+// of the CBS complaint form dropdown). Order below is the display
+// order shown to the operator; the first item is the default.
 const SERVICE_OPTIONS = [
-  "SP_INLAND_PARCEL",
-  "SP_SPEED_POST_EMO",
-  "SP_BUSINESS_PARCEL",
-  "Other",
+  "Speed Post Parcel (Registered/Insured/COD)",
+  "Speed Post Letters (Insured/COD)",
+  "India Post Parcel- Contractual (Registered/Insured/COD)",
+  "India Post Parcel-retail (Registered/Insured/COD)",
+  "Letter (Registered/Insured/COD)",
+  "Magazine Post",
+  "Post Card/Book Post/Periodical Post/Registered Newspapers/Inland Letter Card/Ordinary letter",
+  "Tariff /GST Related",
 ] as const;
+const DEFAULT_SERVICE = SERVICE_OPTIONS[0];
 const COMPLAINT_TYPE_OPTIONS = [
   "Delay in delivery",
   "Non delivery of article",
@@ -728,7 +736,7 @@ function IndiaPostComplaintSection({
     existing.complaint_booking_date || "",
   );
   const [serviceName, setServiceName] = useState<string>(
-    existing.complaint_service_name || "SP_INLAND_PARCEL",
+    existing.complaint_service_name || DEFAULT_SERVICE,
   );
   const [serviceOther, setServiceOther] = useState<string>(
     existing.complaint_service_name_other || "",
@@ -797,19 +805,14 @@ function IndiaPostComplaintSection({
       Alert.alert("Description required", "Please describe the complaint.");
       return;
     }
-    if (serviceName === "Other" && !serviceOther.trim()) {
-      Alert.alert(
-        "Service Name required",
-        "You chose ‘Other’ — please type the service code.",
-      );
-      return;
-    }
     setSaving(true);
     try {
       await Api.saveComplaint(ship.id, {
         booking_date: bookingDate,
         service_name: serviceName,
-        service_name_other: serviceName === "Other" ? serviceOther.trim() : "",
+        // Phase F7.3 — "Other" removed; still send the field to keep
+        // the API contract unchanged (backend ignores empty strings).
+        service_name_other: "",
         complaint_type: complaintType,
         complaint_description: description.trim(),
         complaint_status: complaintStatus,
@@ -845,9 +848,9 @@ function IndiaPostComplaintSection({
               // Reset local form state so the section returns to
               // pristine "create new complaint" mode.
               setBookingDate("");
-              setServiceName("SP_INLAND_PARCEL");
+              setServiceName(DEFAULT_SERVICE);
               setServiceOther("");
-              setComplaintType("Non-Delivery");
+              setComplaintType("Delay in delivery");
               setDescription("");
               setComplaintStatus("Open");
               setExpanded(false);
@@ -955,17 +958,6 @@ function IndiaPostComplaintSection({
               </TouchableOpacity>
             ))}
           </View>
-          {serviceName === "Other" && (
-            <TextInput
-              style={cpStyles.input}
-              value={serviceOther}
-              onChangeText={setServiceOther}
-              placeholder="Enter service code (e.g. SP_LOGISTICS_POST)"
-              placeholderTextColor="#94A3B8"
-              autoCapitalize="characters"
-              testID="cp-svc-other"
-            />
-          )}
 
           {/* Complaint Type */}
           <Text style={cpStyles.fieldLabel}>Complaint Type</Text>

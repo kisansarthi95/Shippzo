@@ -100,7 +100,7 @@ class TestComplaintCRUD:
         _clear_complaint(sid, admin_headers)
         payload = {
             "booking_date": "05-07-2026",
-            "service_name": "SP_INLAND_PARCEL",
+            "service_name": "Speed Post Parcel (Registered/Insured/COD)",
             "complaint_type": "Delay in delivery",
             "complaint_description": "Package not delivered after 10 days",
             "complaint_status": "Open",
@@ -114,7 +114,7 @@ class TestComplaintCRUD:
         assert body["ok"] is True
         assert body["complaint_created"] is True
         assert body["complaint_booking_date"] == "05-07-2026"
-        assert body["complaint_service_name"] == "SP_INLAND_PARCEL"
+        assert body["complaint_service_name"] == "Speed Post Parcel (Registered/Insured/COD)"
         assert body["complaint_type"] == "Delay in delivery"
         assert body["complaint_status"] == "Open"
 
@@ -139,7 +139,7 @@ class TestComplaintCRUD:
         sid = admin_shipments[0]["id"]
         base = {
             "booking_date": "05-07-2026",
-            "service_name": "SP_INLAND_PARCEL",
+            "service_name": "Speed Post Parcel (Registered/Insured/COD)",
             "complaint_type": "Delay in delivery",
             "complaint_description": "x",
             "complaint_status": "Open",
@@ -152,6 +152,8 @@ class TestComplaintCRUD:
         assert r.status_code == 422, f"expected 422 for {field}={val}, got {r.status_code}"
 
     def test_service_other_with_free_text(self, admin_headers, admin_shipments):
+        """Phase F7.3 — "Other" service option removed from the UI.
+        Sending it should now be rejected as a 422 (invalid enum)."""
         sid = admin_shipments[0]["id"]
         r = requests.patch(
             f"{BASE_URL}/api/shipments/{sid}/complaint",
@@ -165,10 +167,9 @@ class TestComplaintCRUD:
                 "complaint_status": "Open",
             }, timeout=15,
         )
-        assert r.status_code == 200
-        body = r.json()
-        assert body["complaint_service_name"] == "Other"
-        assert body["complaint_service_name_other"] == "SP_LOGISTICS_POST"
+        assert r.status_code == 422, (
+            f"'Other' should now be rejected — got {r.status_code}"
+        )
 
     @pytest.mark.parametrize(
         "raw", ["2026-07-05", "05/07/2026", "05-07-2026"],
@@ -180,7 +181,7 @@ class TestComplaintCRUD:
             headers=admin_headers,
             json={
                 "booking_date": raw,
-                "service_name": "SP_INLAND_PARCEL",
+                "service_name": "Speed Post Parcel (Registered/Insured/COD)",
                 "complaint_type": "Delay in delivery",
                 "complaint_description": "d",
                 "complaint_status": "Open",
@@ -193,7 +194,7 @@ class TestComplaintCRUD:
         r = requests.patch(
             f"{BASE_URL}/api/shipments/does-not-exist-uuid/complaint",
             headers=admin_headers,
-            json={"service_name": "SP_INLAND_PARCEL", "complaint_type": "Delay in delivery",
+            json={"service_name": "Speed Post Parcel (Registered/Insured/COD)", "complaint_type": "Delay in delivery",
                   "complaint_description": "x", "complaint_status": "Open"},
             timeout=15,
         )
@@ -206,7 +207,7 @@ class TestComplaintCRUD:
         r = requests.patch(
             f"{BASE_URL}/api/shipments/{sid}/complaint",
             headers=admin_headers,   # wrong user
-            json={"service_name": "SP_INLAND_PARCEL", "complaint_type": "Delay in delivery",
+            json={"service_name": "Speed Post Parcel (Registered/Insured/COD)", "complaint_type": "Delay in delivery",
                   "complaint_description": "x", "complaint_status": "Open"},
             timeout=15,
         )
@@ -218,7 +219,7 @@ class TestComplaintCRUD:
         requests.patch(
             f"{BASE_URL}/api/shipments/{sid}/complaint",
             headers=admin_headers,
-            json={"booking_date": "05-07-2026", "service_name": "SP_INLAND_PARCEL",
+            json={"booking_date": "05-07-2026", "service_name": "Speed Post Parcel (Registered/Insured/COD)",
                   "complaint_type": "Delay in delivery", "complaint_description": "d",
                   "complaint_status": "Open"},
             timeout=15,
@@ -263,7 +264,7 @@ class TestComplaintExport:
             headers=admin_headers,
             json={
                 "booking_date": "05-07-2026",
-                "service_name": "SP_INLAND_PARCEL",
+                "service_name": "Speed Post Parcel (Registered/Insured/COD)",
                 "complaint_type": "Delay in delivery",
                 "complaint_description": "single-file test",
                 "complaint_status": "Open",
@@ -329,7 +330,7 @@ class TestComplaintExport:
                     "order_id": f"OF70-{i}",
                     "complaint_created": True,
                     "complaint_booking_date": "05-07-2026",
-                    "complaint_service_name": "SP_INLAND_PARCEL",
+                    "complaint_service_name": "Speed Post Parcel (Registered/Insured/COD)",
                     "complaint_type": "Delay in delivery",
                     "complaint_description": "bulk-seed",
                     "complaint_status": "Open",
@@ -387,8 +388,11 @@ class TestComplaintExport:
     def test_export_service_other_uses_free_text(
         self, admin_headers, admin_shipments,
     ):
+        """Phase F7.3 — "Other" removed from the UI. This test now
+        verifies the API rejects a PATCH with `service_name="Other"`
+        rather than round-tripping it through the export."""
         sid = admin_shipments[0]["id"]
-        requests.patch(
+        r = requests.patch(
             f"{BASE_URL}/api/shipments/{sid}/complaint",
             headers=admin_headers,
             json={"booking_date": "05-07-2026",
@@ -399,20 +403,9 @@ class TestComplaintExport:
                   "complaint_status": "Open"},
             timeout=15,
         )
-        r = requests.post(
-            f"{BASE_URL}/api/shipments/export-complaints",
-            headers=admin_headers, json={"ids": [sid]}, timeout=30,
+        assert r.status_code == 422, (
+            f"'Other' should now be rejected — got {r.status_code}"
         )
-        assert r.status_code == 200
-        from openpyxl import load_workbook
-        wb = load_workbook(io.BytesIO(r.content))
-        ws = wb.active
-        # Service Name column is E (index 5)
-        svc_cell = ws.cell(row=2, column=5).value
-        assert svc_cell == "SP_LOGISTICS_POST", (
-            f"expected free-text service name, got {svc_cell!r}"
-        )
-        _clear_complaint(sid, admin_headers)
 
     def test_export_ids_filter(self, admin_headers, admin_shipments):
         s1, s2 = admin_shipments[0]["id"], admin_shipments[1]["id"]
@@ -421,7 +414,7 @@ class TestComplaintExport:
                 f"{BASE_URL}/api/shipments/{sid}/complaint",
                 headers=admin_headers,
                 json={"booking_date": "05-07-2026",
-                      "service_name": "SP_INLAND_PARCEL",
+                      "service_name": "Speed Post Parcel (Registered/Insured/COD)",
                       "complaint_type": "Delay in delivery",
                       "complaint_description": f"filter-{tag}",
                       "complaint_status": "Open"},

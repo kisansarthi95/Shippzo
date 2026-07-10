@@ -72,7 +72,20 @@ class _ExportComplaintsBody(BaseModel):
     ids: Optional[List[str]] = None
 
 
-_VALID_SERVICES = {"SP_INLAND_PARCEL", "SP_SPEED_POST_EMO", "SP_BUSINESS_PARCEL", "Other"}
+_VALID_SERVICES = {
+    # Phase F7.3 (Jun-2026) — India Post service catalogue (verbatim
+    # copy of the CBS complaint form dropdown). Order in the frontend
+    # is defined separately; this set is only for validation.
+    "Speed Post Parcel (Registered/Insured/COD)",
+    "Speed Post Letters (Insured/COD)",
+    "India Post Parcel- Contractual (Registered/Insured/COD)",
+    "India Post Parcel-retail (Registered/Insured/COD)",
+    "Letter (Registered/Insured/COD)",
+    "Magazine Post",
+    "Post Card/Book Post/Periodical Post/Registered Newspapers/Inland Letter Card/Ordinary letter",
+    "Tariff /GST Related",
+}
+_DEFAULT_SERVICE = "Speed Post Parcel (Registered/Insured/COD)"
 # India Post CBS official complaint types — DO NOT reword, DO NOT translate.
 # The values below MUST match the official India Post complaint dropdown
 # character-for-character (including casing / spacing) or the CBS bulk
@@ -166,7 +179,7 @@ def init() -> None:
         update: Dict[str, Any] = {
             "complaint_created": True,
             "complaint_booking_date": _normalise_booking_date(payload.booking_date),
-            "complaint_service_name": svc or "SP_INLAND_PARCEL",
+            "complaint_service_name": svc or _DEFAULT_SERVICE,
             "complaint_service_name_other": (payload.service_name_other or "").strip(),
             "complaint_type": ctype,
             "complaint_description": (payload.complaint_description or "").strip(),
@@ -296,11 +309,12 @@ def init() -> None:
 
         rows: List[List[Any]] = []
         for d in docs:
-            svc = (d.get("complaint_service_name") or "SP_INLAND_PARCEL").strip()
+            svc = (d.get("complaint_service_name") or _DEFAULT_SERVICE).strip()
+            # Phase F7.3 — "Other" free-text fallback removed from the
+            # UI; if a legacy row still carries a `service_name_other`
+            # we honour it so pre-existing complaints still export
+            # meaningfully instead of silently dropping data.
             if svc == "Other":
-                # If the operator picked "Other", export the free-text
-                # value (India Post CBS accepts any service code the
-                # customer types provided it matches their contract).
                 svc = (d.get("complaint_service_name_other") or "Other").strip()
             rows.append([
                 d.get("order_id", "") or "",
