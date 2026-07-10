@@ -104,6 +104,12 @@ TARGET_FIELDS_BY_TYPE: Dict[str, List[str]] = {
         # sheet. Stored raw + classified into a short category for the
         # card badge (see classify_last_event()).
         "last_event",
+        # Phase F7.6 (Jun-2026) — courier remit sheets frequently
+        # carry a "Booked On" / "Booking Date" column. This is the
+        # SAME `booking_date` DB column set by the Booking import.
+        # Delivery import may only FILL the field when it is empty —
+        # never overwrite an existing booking date (see commit path).
+        "booking_date",
         # Still cross-verified even for delivery import
         "weight",
         "payment_mode",
@@ -148,6 +154,11 @@ FIELD_LABELS: Dict[str, str] = {
     "cod_payment_date":     "COD Payment / Remit Date",
     "cod_payer_name":       "COD Payer Name",
     "last_event":           "Last Event (India Post/Courier)",
+    # Phase F7.6 — mappable in Delivery Update; uses the SAME
+    # `booking_date` DB column set at booking-import time. Delivery
+    # import will only fill it when currently empty; existing values
+    # are preserved (never overwritten by remit-sheet data).
+    "booking_date":         "Booking Date",
 }
 
 
@@ -773,6 +784,13 @@ def init() -> None:
             "matched_no_change": 0,
             "unmatched":         0,
             "errors":            0,
+            # Phase F7.6 — Delivery-import-only stats for the newly
+            # mappable `booking_date` field. These counters are 0 for
+            # booking / cod_payment imports and never surfaced in
+            # their summaries.
+            "booking_date_updated":  0,
+            "booking_date_skipped":  0,
+            "booking_date_invalid":  0,
             "rows":              [],
         }
 
@@ -817,6 +835,13 @@ def init() -> None:
             mismatches: List[Dict[str, Any]] = []
             applied: Dict[str, Any] = {}
             row_error = ""
+            # Phase F7.6 — Per-row booking_date outcome (only meaningful
+            # for delivery imports). One of:
+            #   • ""        — field not mapped OR cell blank OR non-delivery.
+            #   • "updated" — cell parsed, no existing value → wrote it.
+            #   • "skipped" — cell parsed, existing value → left alone.
+            #   • "invalid" — cell present, parser rejected → Invalid Date.
+            booking_date_row_status: str = ""
 
             try:
                 if not tracking:
@@ -843,6 +868,27 @@ def init() -> None:
                                 continue
                             raw = row.get(col)
                             new_val = normalise_value(field, raw)
+                            # ── Phase F7.6 — Delivery-import booking_date
+                            # needs the "empty vs invalid" distinction which
+                            # the generic blank-guard below would collapse.
+                            # We check it here BEFORE that guard.
+                            #   • cell empty              → no counter (Blank)
+                            #   • cell present + parsed   → Updated / Skipped
+                            #   • cell present + unparsed → Invalid Date
+                            if field == "booking_date" and import_type == "delivery":
+                                raw_str = "" if raw is None else str(raw).strip()
+                                if not raw_str:
+                                    # Truly blank cell → don't touch anything.
+                                    continue
+                                if not new_val:
+                                    booking_date_row_status = "invalid"
+                                    continue
+                                if existing.get("booking_date"):
+                                    booking_date_row_status = "skipped"
+                                    continue
+                                booking_date_row_status = "updated"
+                                applied["booking_date"] = new_val
+                                continue
                             if new_val in ("", 0.0, None):
                                 # Blank cell → don't touch the existing value.
                                 continue
@@ -1004,6 +1050,15 @@ def init() -> None:
                 "applied":     applied,
                 "mismatches":  mismatches,
             }
+            # Phase F7.6 — per-row booking_date outcome + batch tallies.
+            if booking_date_row_status:
+                row_entry["booking_date_status"] = booking_date_row_status
+                if booking_date_row_status == "updated":
+                    batch_doc["booking_date_updated"] += 1
+                elif booking_date_row_status == "skipped":
+                    batch_doc["booking_date_skipped"] += 1
+                elif booking_date_row_status == "invalid":
+                    batch_doc["booking_date_invalid"] += 1
             if row_error:
                 row_entry["error"] = row_error
             batch_doc["rows"].append(row_entry)
@@ -1109,6 +1164,13 @@ def init() -> None:
             "unmatched":         batch_doc["unmatched"],
             "errors":            batch_doc["errors"],
             "db_modified":       wrote,
+            # Phase F7.6 — Delivery-import booking_date fill counters.
+            # Present on ALL commit responses (zero for non-delivery
+            # imports) so the frontend can conditionally render the
+            # summary section without a defensive branch per type.
+            "booking_date_updated": batch_doc["booking_date_updated"],
+            "booking_date_skipped": batch_doc["booking_date_skipped"],
+            "booking_date_invalid": batch_doc["booking_date_invalid"],
             # Phase F6.3 — surface the payment batch if one was created.
             "payment_batch":     pb_created,
             "duplicate_warning": duplicate_batch if (pb_created and duplicate_batch) else None,

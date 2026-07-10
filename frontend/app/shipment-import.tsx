@@ -883,6 +883,29 @@ export default function ShipmentImportScreen() {
               <ResultStat n={resultOpen?.errors || 0} l="Errors" tint="#DC2626" />
               <ResultStat n={resultOpen?.total_rows || 0} l="Total" tint="#0F172A" />
             </View>
+            {/* Phase F7.6 — Delivery-import-only "Booking Date" tally.
+                Server sends these counters on every import commit but
+                they're always 0 for booking / cod_payment imports, so
+                we only render the section when at least one row was
+                touched by the booking_date rule. */}
+            {(() => {
+              const bu = Number(resultOpen?.booking_date_updated || 0);
+              const bs = Number(resultOpen?.booking_date_skipped || 0);
+              const bi = Number(resultOpen?.booking_date_invalid || 0);
+              if (bu + bs + bi === 0) return null;
+              return (
+                <>
+                  <View style={styles.resultDivider}>
+                    <Text style={styles.resultDividerTxt}>Booking Date</Text>
+                  </View>
+                  <View style={styles.resultRow}>
+                    <ResultStat n={bu} l="Updated"                tint="#10B981" />
+                    <ResultStat n={bs} l="Skipped (Already)"      tint="#64748B" />
+                    <ResultStat n={bi} l="Invalid Date"           tint="#DC2626" />
+                  </View>
+                </>
+              );
+            })()}
             <TouchableOpacity
               style={styles.viewBatchBtn}
               onPress={() => {
@@ -1090,6 +1113,16 @@ const styles = StyleSheet.create({
   resultRow: {
     flexDirection: "row", justifyContent: "space-around",
     backgroundColor: "#F8FAFC", borderRadius: 12, padding: 12, marginTop: 6,
+  },
+  // Phase F7.6 — Booking Date section divider inside the summary sheet.
+  resultDivider: {
+    marginTop: 10, marginBottom: 2, paddingTop: 6,
+    borderTopWidth: 1, borderTopColor: "#E5E7EB",
+  },
+  resultDividerTxt: {
+    fontSize: 11, fontWeight: "800", color: "#64748B",
+    letterSpacing: 0.6, textTransform: "uppercase",
+    paddingHorizontal: 4,
   },
   viewBatchBtn: {
     flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6,

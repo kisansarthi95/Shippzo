@@ -177,6 +177,26 @@ export default function ShipmentImportBatchScreen() {
             <StatBox label="No Change" n={batch.matched_no_change} tint="#64748B" />
             <StatBox label="Errors"   n={batch.errors}             tint="#DC2626" />
           </View>
+          {/* Phase F7.6 — Booking Date stats (delivery-import-only).
+              Shown only when at least one row was touched by the
+              booking_date fill rule so booking/cod_payment imports
+              don't get a noisy empty section. */}
+          {(() => {
+            const bu = Number((batch as any).booking_date_updated || 0);
+            const bs = Number((batch as any).booking_date_skipped || 0);
+            const bi = Number((batch as any).booking_date_invalid || 0);
+            if (bu + bs + bi === 0) return null;
+            return (
+              <>
+                <Text style={styles.subSectionTitle}>Booking Date</Text>
+                <View style={styles.statsGrid}>
+                  <StatBox label="Updated"          n={bu} tint="#10B981" />
+                  <StatBox label="Skipped (Already)" n={bs} tint="#64748B" />
+                  <StatBox label="Invalid Date"     n={bi} tint="#DC2626" />
+                </View>
+              </>
+            );
+          })()}
           {mismatchOrUnmatched > 0 ? (
             <TouchableOpacity
               style={styles.dlBtn}
@@ -331,6 +351,12 @@ const styles = StyleSheet.create({
   summaryFile: { fontSize: 14, fontWeight: "600", color: "#0F172A" },
   summaryWhen: { fontSize: 11, color: "#94A3B8", marginTop: 2 },
   statsGrid: { flexDirection: "row", flexWrap: "wrap", marginTop: 10, gap: 6 },
+  // Phase F7.6 — Booking-date sub-section header inside the summary card.
+  subSectionTitle: {
+    fontSize: 11, fontWeight: "800", color: "#64748B",
+    letterSpacing: 0.6, textTransform: "uppercase",
+    marginTop: 14, marginBottom: 4,
+  },
   statBox:  {
     width: "31%", padding: 10, backgroundColor: "#F8FAFC", borderRadius: 8, alignItems: "center",
   },

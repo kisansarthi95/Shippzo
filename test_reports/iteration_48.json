@@ -1,0 +1,42 @@
+{
+  "summary": "Phase F7.6 (booking_date mappable in Delivery Update Import) backend-only test. Created new pytest suite test_phase_f76_booking_date_delivery_import.py with 11 tests covering: preview target_fields + auto-suggest (Booked On / Booking Date), commit UPDATED/SKIPPED/INVALID/BLANK per-row rules, DD/MM/YYYY vs DD-MM-YYYY equivalence, and booking/cod_payment import backward-compat for counters. Uncovered a contract bug — the commit response was missing the three new booking_date_* counters (spec item 5). Fixed by adding them to the response payload in shipment_import.py. Re-ran → 11/11 passing. Existing F60 shipment_import regression: 18/19 pass; the one failure (TestDeliveryImport.test_delivery_forces_status_and_sets_pod) is UNRELATED to F7.6 (Phase F6.6 changed status-routing to require last_event) and pre-existed before this iteration. All 8 seeded test shipments cleaned up after run.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "POST /api/shipments/import/commit",
+        "issue": "PRE-EXISTING (not F7.6): stale test_phase_f60_shipment_import.py::TestDeliveryImport expects delivery import to force status='Delivered' without any last_event mapping. Phase F6.6 intentionally removed that behaviour (line ~989: 'no last_event → keep existing status untouched'). Test needs updating to include a last_event column."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_phase_f76_booking_date_delivery_import.py",
+    "/app/test_reports/pytest/pytest_iteration_48_f76.xml",
+    "/app/test_reports/pytest/pytest_iteration_48_f60_regression.xml"
+  ],
+  "action_items": [
+    "Frontend integration: shipment-import.tsx + shipment-import-batch.tsx can now safely read booking_date_updated / booking_date_skipped / booking_date_invalid from the commit response (fixed in this iteration).",
+    "OPTIONAL: refresh stale test TestDeliveryImport.test_delivery_forces_status_and_sets_pod in test_phase_f60_shipment_import.py to include a 'Last Event' column mapping so the assertion 'status == Delivered' still holds under F6.6 semantics."
+  ],
+  "critical_code_review_comments": [
+    "shipment_import.py commit response was silently dropping the three booking_date_* counters even though they were computed and stored on the batch document. Would have caused the frontend summary section to always render zeros unless it fetched the batch detail separately. FIXED in this iteration."
+  ],
+  "updated_files": [
+    "/app/backend/routers/shipment_import.py (added booking_date_updated / _skipped / _invalid to commit response payload)",
+    "/app/backend/tests/test_phase_f76_booking_date_delivery_import.py (new test suite, 11 tests)"
+  ],
+  "success_rate": {
+    "backend": "100% (11/11 F7.6 tests); F60 regression 94.7% (18/19, 1 unrelated pre-existing failure)",
+    "frontend": "not tested (backend-only scope)"
+  },
+  "seed_data_creation": "Inserted 8 test shipments tagged __f76_test_marker=<run-id> (TEST_F76_<run>_TRK1..TRK8) directly via pymongo. All auto-deleted at module teardown along with any shipment_import_batches created against them (filename LIKE 'TEST_F76_<run>%'). No residual data.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "F7.6 booking_date rule verified: Delivery Import fills empty booking_date, never overwrites an existing one, marks unparseable cells as invalid, and ignores blank cells (no counter increment). Both DD/MM/YYYY and DD-MM-YYYY parse to identical ISO strings via normalise_timestamp (dateutil). Backend response now includes booking_date_updated/_skipped/_invalid on ALL commit responses (booking/delivery/cod_payment) so the frontend can render conditionally without a defensive fetch. The pre-existing F60 delivery-import status-forcing test is stale per Phase F6.6 semantics — flag to fix separately."
+}

@@ -553,6 +553,19 @@ HEADER_ALIASES: Dict[str, str] = {
     "tracking_status":       "last_event",
     "remark":                "last_event",
     "remarks":               "last_event",
+
+    # Phase F7.6 — Booking Date (mappable in Delivery Update too;
+    # only fills the DB when currently empty — see commit path).
+    "booking_date":          "booking_date",
+    "bookingdate":           "booking_date",
+    "booked_on":             "booking_date",
+    "booked":                "booking_date",
+    "booked_date":           "booking_date",
+    "booking_dt":            "booking_date",
+    "booked_at":             "booking_date",
+    "date_of_booking":       "booking_date",
+    "booking_day":           "booking_date",
+    "post_booking_date":     "booking_date",
 }
 
 
@@ -658,7 +671,7 @@ def normalise_value(field: str, raw: Any) -> Any:
         return normalise_status(raw)
     if field == "created_at_override":
         return normalise_timestamp(raw)
-    if field in ("delivered_at", "cod_payment_date"):
+    if field in ("delivered_at", "cod_payment_date", "booking_date"):
         return normalise_timestamp(raw)
     if field == "items" and isinstance(raw, list):
         # Phase F3.3.1+ — pretty-format Shopify/Dukaan-style line_items.
