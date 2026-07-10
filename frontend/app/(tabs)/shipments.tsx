@@ -58,16 +58,32 @@ import {
 // Phase F6.4 — Last Event category → badge visual. Mirrors the
 // server-side classify_last_event() output. Values kept to short
 // labels so the top-right slot on the Shipments card stays compact.
+// Phase F7.7 (Jun-2026) — enriched with the exact India Post CBS
+// event names + a new "Return Review" bucket. Priority ordering
+// (for card sorting) is expressed elsewhere; this table only defines
+// the visual palette.
 const LAST_EVENT_BADGE_META: Record<string, { bg: string; fg: string; icon: string }> = {
-  "Delivered":        { bg: "#DCFCE7", fg: "#166534", icon: "checkmark-circle" },
-  "Out for Delivery": { bg: "#DBEAFE", fg: "#1E40AF", icon: "bicycle" },
-  "Hold":             { bg: "#FEF3C7", fg: "#92400E", icon: "pause-circle" },
-  "Redirected":       { bg: "#EDE9FE", fg: "#5B21B6", icon: "shuffle" },
-  "Returned":         { bg: "#FEE2E2", fg: "#991B1B", icon: "return-up-back" },
-  "Dispatched":       { bg: "#E0F2FE", fg: "#075985", icon: "airplane" },
-  "Received":         { bg: "#F1F5F9", fg: "#334155", icon: "cube" },
-  "Bagged":           { bg: "#F1F5F9", fg: "#334155", icon: "briefcase" },
-  "Other":            { bg: "#F1F5F9", fg: "#334155", icon: "ellipsis-horizontal" },
+  "Delivered":                 { bg: "#DCFCE7", fg: "#166534", icon: "checkmark-circle" },
+  "Out for Delivery":          { bg: "#DBEAFE", fg: "#1E40AF", icon: "bicycle" },
+  // Phase F7.7 — priority OFD variants with distinct icons.
+  "Item Returned to Sender":   { bg: "#FEE2E2", fg: "#991B1B", icon: "return-up-back" },
+  "Item Kept on Hold":         { bg: "#FEF3C7", fg: "#92400E", icon: "pause-circle" },
+  // Phase F7.7 — In-Transit trio (Item Dispatched / Bagged / Received).
+  "Item Dispatched":           { bg: "#E0F2FE", fg: "#075985", icon: "airplane" },
+  "Item Bagged":               { bg: "#E0F2FE", fg: "#075985", icon: "briefcase" },
+  "Item Received":             { bg: "#E0F2FE", fg: "#075985", icon: "cube" },
+  // Return Review — RTS delivery acknowledgement pending merchant
+  // confirmation. Merchant must tap "Confirm Return" to actually
+  // move the shipment into the Returned bucket.
+  "Return Review":             { bg: "#FEE2E2", fg: "#7F1D1D", icon: "alert-circle" },
+  // Legacy / catch-alls (kept for shipments imported before F7.7).
+  "Hold":                      { bg: "#FEF3C7", fg: "#92400E", icon: "pause-circle" },
+  "Redirected":                { bg: "#EDE9FE", fg: "#5B21B6", icon: "shuffle" },
+  "Returned":                  { bg: "#FEE2E2", fg: "#991B1B", icon: "return-up-back" },
+  "Dispatched":                { bg: "#E0F2FE", fg: "#075985", icon: "airplane" },
+  "Received":                  { bg: "#F1F5F9", fg: "#334155", icon: "cube" },
+  "Bagged":                    { bg: "#F1F5F9", fg: "#334155", icon: "briefcase" },
+  "Other":                     { bg: "#F1F5F9", fg: "#334155", icon: "ellipsis-horizontal" },
 };
 
 export default function Shipments() {
@@ -116,6 +132,46 @@ export default function Shipments() {
   // be visible. Piggybacks the existing dateFilteredItems memo so
   // it composes cleanly with status + date + print filters.
   const [labelFilter, setLabelFilter] = useState<string>("");
+  // ── Phase F7.7 — Priority "Review Article" tracking (client-side).
+  //
+  // The reviewed set is a UI-only concern per the spec: it must NOT
+  // touch the shipment status, Last Event, or any courier data. So
+  // we persist it in AsyncStorage instead of hitting the backend.
+  // Sorting is stable and only kicks in when the list contains at
+  // least one priority-category item that hasn't been reviewed yet.
+  const [reviewedIds, setReviewedIds] = useState<Set<string>>(new Set());
+  useEffect(() => {
+    // Load once on mount. Silently ignore parse errors so a corrupt
+    // key never wedges the screen.
+    (async () => {
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const AS = require("@react-native-async-storage/async-storage").default;
+        const raw = await AS.getItem("ship_reviewed_ids_v1");
+        if (raw) {
+          const arr = JSON.parse(raw);
+          if (Array.isArray(arr)) setReviewedIds(new Set(arr));
+        }
+      } catch { /* noop */ }
+    })();
+  }, []);
+  const persistReviewed = useCallback((next: Set<string>) => {
+    (async () => {
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const AS = require("@react-native-async-storage/async-storage").default;
+        await AS.setItem("ship_reviewed_ids_v1", JSON.stringify([...next]));
+      } catch { /* noop */ }
+    })();
+  }, []);
+  const markReviewed = useCallback((shipmentId: string) => {
+    setReviewedIds((prev) => {
+      const next = new Set(prev);
+      next.add(shipmentId);
+      persistReviewed(next);
+      return next;
+    });
+  }, [persistReviewed]);
   // ── Phase A — Quick Filter dropdown chips + Filter Bottom Sheet
   // paymentFilter: "" = All | "COD" | "Prepaid" (Set covers both)
   // courierFilter: "" = All | courier_id
@@ -600,6 +656,42 @@ export default function Shipments() {
     codPaymentFilter, validationFilter,
     complaintFilter,
   ]);
+
+  // ── Phase F7.7 — Priority-first sort ─────────────────────────
+  //
+  // Item Returned to Sender (highest) → Item Kept on Hold → Out for
+  // Delivery → all others.  Only UN-reviewed priority items float to
+  // the top; once "Review Article" is tapped, the shipment falls
+  // back into its natural position (list is otherwise stable so we
+  // never disturb the merchant's mental ordering).
+  //
+  // Sort is a no-op when the current view has zero un-reviewed
+  // priority items — cheap fast-path.
+  const PRIORITY_RANK: Record<string, number> = {
+    "Item Returned to Sender": 1,   // top priority
+    "Item Kept on Hold":       2,
+    "Out for Delivery":        3,
+    "Return Review":           1,   // RTS deliveries also priority
+    // "Returned" (legacy alias) kept for historic rows.
+    "Returned":                2,
+  };
+  const sortedItems = useMemo(() => {
+    const rank = (s: any): number => {
+      if (reviewedIds.has(s.id)) return 999;
+      const cat = String(s.last_event_category || "");
+      // "Return Review" flag on the shipment doc bumps priority even
+      // when the last_event_category was overwritten by a later event.
+      if (s.needs_return_review) return PRIORITY_RANK["Return Review"];
+      return PRIORITY_RANK[cat] ?? 999;
+    };
+    const hasPriority = dateFilteredItems.some((s: any) => rank(s) < 999);
+    if (!hasPriority) return dateFilteredItems;
+    // Stable sort: preserve original relative order for equal ranks.
+    const decorated = dateFilteredItems.map((s, i) => ({ s, i, r: rank(s) }));
+    decorated.sort((a, b) => (a.r - b.r) || (a.i - b.i));
+    return decorated.map((d) => d.s);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dateFilteredItems, reviewedIds]);
 
   const toggleSelect = (id: string) => {
     setSelectedIds((prev) => {
@@ -1261,6 +1353,7 @@ export default function Shipments() {
     const counts: Record<StatusFilter, number> = {
       "All": countableItems.length,
       "Pending": 0, "Processing": 0, "Ready to Ship": 0, "Shipped": 0,
+      "In Transit": 0,
       "Out for Delivery": 0,
       "Delivered": 0, "Feedback": 0, "Modified": 0,
       "Cancel by buyer": 0, "Cancelled": 0, "Returned": 0,
@@ -2521,7 +2614,7 @@ export default function Shipments() {
 
       <FlatList
         testID="shipments-list"
-        data={dateFilteredItems}
+        data={sortedItems}
         keyExtractor={(i) => i.id}
         refreshControl={
           <RefreshControl refreshing={refreshing} onRefresh={() => {
@@ -2601,9 +2694,19 @@ export default function Shipments() {
                   const hasTracking = !!(item.tracking_id || (item as any).manual_tracking_id);
                   const status = String((item as any).status || "");
                   const evCat = String((item as any).last_event_category || "");
-                  const showEvent = status === "Out for Delivery" && !!evCat;
-                  if (showEvent) {
-                    const meta = LAST_EVENT_BADGE_META[evCat] || LAST_EVENT_BADGE_META.Other;
+                  // Phase F7.7 — On "In Transit" and "Out for Delivery"
+                  // stages the top-right slot ALWAYS shows the Last
+                  // Event category badge (never the Print/Printed pill),
+                  // per the user's explicit UX rule for those stages.
+                  // Fall back to "In Transit" / "Out for Delivery" text
+                  // when the shipment doesn't yet carry an event
+                  // category (e.g. manual status change without a
+                  // Delivery Import).
+                  const isTransitStage =
+                    status === "In Transit" || status === "Out for Delivery";
+                  if (isTransitStage) {
+                    const badgeCat = evCat || status;
+                    const meta = LAST_EVENT_BADGE_META[badgeCat] || LAST_EVENT_BADGE_META.Other;
                     return (
                       <View
                         style={[
@@ -2617,7 +2720,7 @@ export default function Shipments() {
                           numberOfLines={1}
                           style={[styles.printNowTxt, { color: meta.fg }]}
                         >
-                          {evCat}
+                          {badgeCat}
                         </Text>
                       </View>
                     );
@@ -2653,6 +2756,37 @@ export default function Shipments() {
                   );
                 })() : null}
               </View>
+              {/* ── Phase F7.7 — Priority "Review Article" chip ─────
+                  Shown on Item Returned to Sender / Item Kept on Hold
+                  / Return Review shipments that haven't been reviewed
+                  yet. Marks the article as reviewed in local state
+                  only — does NOT touch the shipment status, Last
+                  Event, or any courier data. */}
+              {(() => {
+                const cat = String((item as any).last_event_category || "");
+                const isPriority =
+                  cat === "Item Returned to Sender" ||
+                  cat === "Item Kept on Hold" ||
+                  cat === "Return Review" ||
+                  cat === "Returned" ||
+                  (item as any).needs_return_review;
+                const alreadyReviewed = reviewedIds.has(item.id);
+                if (!isPriority || alreadyReviewed) return null;
+                return (
+                  <TouchableOpacity
+                    onPress={() => markReviewed(item.id)}
+                    activeOpacity={0.8}
+                    testID={`review-article-${item.id}`}
+                    style={styles.reviewArticleBtn}
+                    hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+                  >
+                    <PhIcon name="alert-circle" size={12} color="#7F1D1D" />
+                    <Text style={styles.reviewArticleTxt} numberOfLines={1}>
+                      Review Article
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })()}
               <Text style={styles.name}>{item.customer_name}</Text>
               {!!item.order_id && (
                 <Text style={styles.order}>Order #{item.order_id}</Text>
@@ -3418,6 +3552,19 @@ export default function Shipments() {
 
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: colors.background },
+
+  // ── Phase F7.7 — Priority "Review Article" chip on card ─────
+  reviewArticleBtn: {
+    flexDirection: "row", alignItems: "center", gap: 4,
+    alignSelf: "flex-start",
+    backgroundColor: "#FEE2E2", borderColor: "#FCA5A5", borderWidth: 1,
+    paddingHorizontal: 10, paddingVertical: 4,
+    borderRadius: 999, marginTop: 4, marginBottom: 2,
+  },
+  reviewArticleTxt: {
+    fontSize: 11, fontWeight: "800", color: "#7F1D1D",
+    letterSpacing: 0.3,
+  },
 
   // ── Phase F7.5 — Download Data menu ─────────────────────────
   downloadMenuBackdrop: {

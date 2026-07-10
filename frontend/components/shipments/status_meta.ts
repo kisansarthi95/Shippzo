@@ -19,6 +19,7 @@ export type StatusFilter =
   | "Processing"
   | "Ready to Ship"
   | "Shipped"
+  | "In Transit"
   | "Out for Delivery"
   | "Delivered"
   | "Feedback"
@@ -90,6 +91,23 @@ export const STATUS_META: Record<
     activeBg: "#EEE9FF",
     activeFg: "#6B5BFF",
   },
+  // Phase F7.7 (Jun-2026) — In Transit is a new first-class stage
+  // between Shipped and Out for Delivery. Populated automatically by
+  // Delivery Import when the India Post "Last Event" text contains
+  // "Item Dispatched", "Item bagged", or "Item Received". Ocean-teal
+  // palette conveys "en-route, cross-hub" without clashing with the
+  // amber Out-for-Delivery step that follows.
+  "In Transit": {
+    value: "In Transit",
+    bg: "#CFFAFE",
+    fg: "#0369A1",
+    activeBg: "#CFFAFE",
+    activeFg: "#0369A1",
+    aliases: [
+      "in_transit", "In transit", "IN_TRANSIT", "InTransit",
+      "In-Transit", "in-transit",
+    ],
+  },
   // Phase-F5 (Jul-2026) — Out for Delivery is a first-class stage now.
   // Sits between Shipped (violet) and Delivered (green) in the
   // pipeline and uses a warm amber palette so the "en-route, arriving
@@ -135,7 +153,7 @@ export const STATUS_META: Record<
 
 export const STATUS_FILTER_ORDER: StatusFilter[] = [
   "All", "Pending", "Processing", "Ready to Ship", "Shipped",
-  "Out for Delivery", "Delivered", "Feedback",
+  "In Transit", "Out for Delivery", "Delivered", "Feedback",
   "Modified", "Cancel by buyer", "Cancelled", "Returned",
 ];
 

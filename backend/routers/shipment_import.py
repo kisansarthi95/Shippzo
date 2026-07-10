@@ -442,15 +442,39 @@ def _amount_equal(a: Any, b: Any, tol: float = 0.5) -> bool:
 # raw text to ONE of these fixed categories. Shipment Details keeps
 # the ORIGINAL text untouched. Order matters — more specific patterns
 # come first so "Out for Delivery" doesn't accidentally hit "Delivered".
+#
+# Phase F7.7 (Jun-2026) — added specific India Post phrasings so the
+# UI can show the actual event name (not just the generic bucket) on
+# the shipment card. New categories added:
+#   • "Return Review" ← "Item Delivered(Sender)" / "Delivered to Sender"
+#                       (RTS deliveries. Never auto-moves to Returned —
+#                        needs user confirmation, see UI flow.)
+#   • "Item Returned to Sender" ← "Item Returned to Sender" (priority)
+#   • "Item Kept on Hold"       ← keeps the exact India Post label
+#   • "Item Dispatched"         ← "Item Dispatched" specifically
+#   • "Item Bagged"             ← "Item bagged"
+#   • "Item Received"           ← "Item Received"
 _LAST_EVENT_PATTERNS: List[Tuple[str, str]] = [
-    (r"\bdelivered\b",                            "Delivered"),
-    (r"\bout\s*for\s*delivery\b|\bofd\b",         "Out for Delivery"),
-    (r"\bhold\b|\bon\s*hold\b|\bheld\b|\bmisc",   "Hold"),
-    (r"\bredirect(?:ed|ion)?\b|\brerout",         "Redirected"),
-    (r"\breturn(?:ed|ing|-\s*to)?\b|\brts\b",     "Returned"),
-    (r"\bdispatch(?:ed|ing)?\b|\bin\s*transit\b", "Dispatched"),
-    (r"\breceiv(?:ed|ing)?\b|\bbooked\b",         "Received"),
-    (r"\bbag(?:ged)?\b|\bin\s*bag\b",             "Bagged"),
+    # Return-to-Sender DELIVERY event — MUST match before plain
+    # "delivered" or the RTS acknowledgement gets absorbed into
+    # the Delivered bucket.
+    (r"deliver(?:ed|y)?\s*[\(\-\/\s]*sender",         "Return Review"),
+    (r"\bdelivered\b",                                "Delivered"),
+    (r"\bout\s*for\s*delivery\b|\bofd\b",             "Out for Delivery"),
+    # Priority OFD variants — kept as their exact India Post label so
+    # the card badge reads verbatim.
+    (r"return(?:ed)?\s*to\s*sender|\brts\b",          "Item Returned to Sender"),
+    (r"\bkept\s*on\s*hold\b|\bon\s*hold\b|\bheld\b",  "Item Kept on Hold"),
+    (r"\bhold\b|\bmisc\b",                            "Item Kept on Hold"),
+    (r"\bredirect(?:ed|ion)?\b|\brerout",             "Redirected"),
+    (r"\breturn(?:ed|ing)?\b",                        "Returned"),
+    # In-Transit signals (India Post uses these three verbatim).
+    (r"\bitem\s*dispatched\b|\bdispatch(?:ed|ing)?\b|\bin\s*transit\b",
+                                                      "Item Dispatched"),
+    (r"\bitem\s*bag(?:ged)?\b|\bbag(?:ged)?\b|\bin\s*bag\b",
+                                                      "Item Bagged"),
+    (r"\bitem\s*receiv(?:ed|ing)?\b|\breceiv(?:ed|ing)?\b|\bbooked\b",
+                                                      "Item Received"),
 ]
 _LAST_EVENT_COMPILED = [(re.compile(p, re.I), cat) for p, cat in _LAST_EVENT_PATTERNS]
 
@@ -973,41 +997,60 @@ def init() -> None:
                             if ev_cat:
                                 applied["last_event_category"] = ev_cat
 
-                            # ─── Phase F6.6 Bug-2 Fix — Deterministic
-                            # status routing per user rules:
-                            #   • Delivered              → Delivered
-                            #   • Out for Delivery       → Out for Delivery
-                            #   • Dispatched / Received  → Shipped (in-transit)
-                            #   • Bagged                 → Shipped (in-transit)
-                            #   • Hold / Redirected /
-                            #     Returned               → Out for Delivery
-                            #                              (exception queue)
-                            #   • Other / unknown        → Out for Delivery
-                            #                              (Rule 5 default —
-                            #                               never hide the
-                            #                               shipment)
-                            #   • no last_event          → keep existing
-                            #                              status untouched
-                            #                              (previously forced
-                            #                               Delivered — the
-                            #                               user explicitly
-                            #                               reported that as
-                            #                               Bug-3 "shipments
-                            #                               disappearing".)
+                            # ─── Phase F7.7 (Jun-2026) — updated
+                            # deterministic status routing:
+                            #   • Delivered                  → Delivered
+                            #   • Return Review              → keep existing
+                            #                                  status
+                            #                                  (needs user
+                            #                                   confirmation
+                            #                                   via UI — see
+                            #                                   `needs_return_review`
+                            #                                   flag below)
+                            #   • Out for Delivery           → Out for Delivery
+                            #   • Item Returned to Sender    → Out for Delivery
+                            #                                  (priority within OFD)
+                            #   • Item Kept on Hold          → Out for Delivery
+                            #   • Item Dispatched / Item
+                            #     Bagged / Item Received     → In Transit  (NEW)
+                            #   • Redirected                 → Out for Delivery
+                            #   • Returned (generic)         → Out for Delivery
+                            #   • Other / unknown            → Out for Delivery
+                            #                                  (Rule-5 default —
+                            #                                   never hide the
+                            #                                   shipment)
+                            #   • no last_event              → keep existing
+                            #                                  status untouched
                             STATUS_ROUTE_BY_EVENT = {
-                                "Delivered":        "Delivered",
-                                "Out for Delivery": "Out for Delivery",
-                                "Dispatched":       "Shipped",
-                                "Received":         "Shipped",
-                                "Bagged":           "Shipped",
-                                "Hold":             "Out for Delivery",
-                                "Redirected":       "Out for Delivery",
-                                "Returned":         "Out for Delivery",
-                                "Other":            "Out for Delivery",
+                                "Delivered":                "Delivered",
+                                "Out for Delivery":         "Out for Delivery",
+                                "Item Returned to Sender":  "Out for Delivery",
+                                "Item Kept on Hold":        "Out for Delivery",
+                                "Item Dispatched":          "In Transit",
+                                "Item Bagged":              "In Transit",
+                                "Item Received":            "In Transit",
+                                "Redirected":               "Out for Delivery",
+                                "Returned":                 "Out for Delivery",
+                                "Other":                    "Out for Delivery",
+                                # Phase F7.7 — "Return Review" does NOT
+                                # route (mapped later; see block below).
                             }
-                            if ev_cat:
+                            if ev_cat and ev_cat != "Return Review":
                                 routed = STATUS_ROUTE_BY_EVENT.get(ev_cat, "Out for Delivery")
                                 applied["status"] = routed
+
+                            # ─── Phase F7.7 — "Item Delivered(Sender)"
+                            # RTS delivery event. We DO NOT auto-move
+                            # to Returned — the merchant must confirm
+                            # via the "Confirm Return" action in the
+                            # UI. Set a durable flag + timestamp so
+                            # the Shipments card can show the "Return
+                            # Review" badge until confirmation.
+                            if ev_cat == "Return Review":
+                                applied["needs_return_review"] = True
+                                applied["return_review_at"] = now
+                                # keep whatever status the shipment
+                                # already had — no forced routing.
 
                             # `delivered_at` is only stamped when we're
                             # actually marking Delivered.
