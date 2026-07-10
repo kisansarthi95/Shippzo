@@ -73,7 +73,19 @@ class _ExportComplaintsBody(BaseModel):
 
 
 _VALID_SERVICES = {"SP_INLAND_PARCEL", "SP_SPEED_POST_EMO", "SP_BUSINESS_PARCEL", "Other"}
-_VALID_TYPES    = {"Non-Delivery", "Delayed Delivery", "Damaged/Loss", "Wrong Delivery"}
+# India Post CBS official complaint types — DO NOT reword, DO NOT translate.
+# The values below MUST match the official India Post complaint dropdown
+# character-for-character (including casing / spacing) or the CBS bulk
+# uploader rejects the row.
+_VALID_TYPES = {
+    "Delay in delivery",
+    "Non delivery of article",
+    "Abstraction of Contents",
+    "Loss of article",
+    "Non payment of COD Amount",
+    "Damage of Article",
+    "Fake/Non-updation of delivery remarks/Scans",
+}
 _VALID_STATUSES = {"Open", "In Progress", "Resolved", "Closed"}
 
 
@@ -203,10 +215,12 @@ def init() -> None:
     #                    EXCEL BUILDER (chunked)
     # ═══════════════════════════════════════════════════════════════
     _CHUNK_SIZE = 500  # India Post CBS bulk-upload cap.
+    # Column headers — MUST match the official India Post CBS complaint
+    # template character-for-character. Do NOT reword or shorten.
     _COLUMNS = [
-        "Serial No",
-        "Order No",
-        "Article No (e.g. EA123456789IN)",
+        "Serial No.",
+        "Order / Transaction Number",
+        "Article Number",
         "Booking Date",
         "Service Name",
         "Complaint Type",
@@ -217,21 +231,20 @@ def init() -> None:
         """Build one India Post Complaint xlsx file for up to 500 rows."""
         # Lazy import — openpyxl is chunky and only needed for the export path.
         from openpyxl import Workbook
-        from openpyxl.styles import Font, Alignment, PatternFill
+        from openpyxl.styles import Font, Alignment
         from openpyxl.utils import get_column_letter
 
         wb = Workbook()
         ws = wb.active
         ws.title = "IndiaPost Complaints"
 
-        # Header row with subtle bold + pale-blue fill so a QA operator
-        # can spot the header at a glance when auditing before upload.
+        # Header row — plain (no background fill) to exactly mirror the
+        # official India Post template. We keep only a subtle bold so
+        # the header is still visually distinguishable in wide sheets.
         ws.append(_COLUMNS)
-        header_font = Font(bold=True, color="0F172A")
-        header_fill = PatternFill("solid", fgColor="DBEAFE")
+        header_font = Font(bold=True)
         for cell in ws[1]:
             cell.font = header_font
-            cell.fill = header_fill
             cell.alignment = Alignment(horizontal="left", vertical="center")
 
         # Data rows — Serial No is 1-based INSIDE THIS FILE (not across
@@ -241,7 +254,7 @@ def init() -> None:
 
         # Freeze header + widen readable columns.
         ws.freeze_panes = "A2"
-        widths = [8, 22, 34, 14, 22, 22, 60]
+        widths = [10, 28, 22, 14, 22, 42, 60]
         for col_idx, w in enumerate(widths, start=1):
             ws.column_dimensions[get_column_letter(col_idx)].width = w
 

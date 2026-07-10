@@ -31,9 +31,9 @@ EXCEL_MIME = (
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 )
 EXPECTED_COLUMNS = [
-    "Serial No",
-    "Order No",
-    "Article No (e.g. EA123456789IN)",
+    "Serial No.",
+    "Order / Transaction Number",
+    "Article Number",
     "Booking Date",
     "Service Name",
     "Complaint Type",
@@ -101,7 +101,7 @@ class TestComplaintCRUD:
         payload = {
             "booking_date": "05-07-2026",
             "service_name": "SP_INLAND_PARCEL",
-            "complaint_type": "Non-Delivery",
+            "complaint_type": "Delay in delivery",
             "complaint_description": "Package not delivered after 10 days",
             "complaint_status": "Open",
         }
@@ -115,7 +115,7 @@ class TestComplaintCRUD:
         assert body["complaint_created"] is True
         assert body["complaint_booking_date"] == "05-07-2026"
         assert body["complaint_service_name"] == "SP_INLAND_PARCEL"
-        assert body["complaint_type"] == "Non-Delivery"
+        assert body["complaint_type"] == "Delay in delivery"
         assert body["complaint_status"] == "Open"
 
         # GET verifies persistence
@@ -140,7 +140,7 @@ class TestComplaintCRUD:
         base = {
             "booking_date": "05-07-2026",
             "service_name": "SP_INLAND_PARCEL",
-            "complaint_type": "Non-Delivery",
+            "complaint_type": "Delay in delivery",
             "complaint_description": "x",
             "complaint_status": "Open",
         }
@@ -160,7 +160,7 @@ class TestComplaintCRUD:
                 "booking_date": "05-07-2026",
                 "service_name": "Other",
                 "service_name_other": "SP_LOGISTICS_POST",
-                "complaint_type": "Non-Delivery",
+                "complaint_type": "Delay in delivery",
                 "complaint_description": "custom",
                 "complaint_status": "Open",
             }, timeout=15,
@@ -181,7 +181,7 @@ class TestComplaintCRUD:
             json={
                 "booking_date": raw,
                 "service_name": "SP_INLAND_PARCEL",
-                "complaint_type": "Non-Delivery",
+                "complaint_type": "Delay in delivery",
                 "complaint_description": "d",
                 "complaint_status": "Open",
             }, timeout=15,
@@ -193,7 +193,7 @@ class TestComplaintCRUD:
         r = requests.patch(
             f"{BASE_URL}/api/shipments/does-not-exist-uuid/complaint",
             headers=admin_headers,
-            json={"service_name": "SP_INLAND_PARCEL", "complaint_type": "Non-Delivery",
+            json={"service_name": "SP_INLAND_PARCEL", "complaint_type": "Delay in delivery",
                   "complaint_description": "x", "complaint_status": "Open"},
             timeout=15,
         )
@@ -206,7 +206,7 @@ class TestComplaintCRUD:
         r = requests.patch(
             f"{BASE_URL}/api/shipments/{sid}/complaint",
             headers=admin_headers,   # wrong user
-            json={"service_name": "SP_INLAND_PARCEL", "complaint_type": "Non-Delivery",
+            json={"service_name": "SP_INLAND_PARCEL", "complaint_type": "Delay in delivery",
                   "complaint_description": "x", "complaint_status": "Open"},
             timeout=15,
         )
@@ -219,7 +219,7 @@ class TestComplaintCRUD:
             f"{BASE_URL}/api/shipments/{sid}/complaint",
             headers=admin_headers,
             json={"booking_date": "05-07-2026", "service_name": "SP_INLAND_PARCEL",
-                  "complaint_type": "Non-Delivery", "complaint_description": "d",
+                  "complaint_type": "Delay in delivery", "complaint_description": "d",
                   "complaint_status": "Open"},
             timeout=15,
         )
@@ -264,7 +264,7 @@ class TestComplaintExport:
             json={
                 "booking_date": "05-07-2026",
                 "service_name": "SP_INLAND_PARCEL",
-                "complaint_type": "Non-Delivery",
+                "complaint_type": "Delay in delivery",
                 "complaint_description": "single-file test",
                 "complaint_status": "Open",
             }, timeout=15,
@@ -330,7 +330,7 @@ class TestComplaintExport:
                     "complaint_created": True,
                     "complaint_booking_date": "05-07-2026",
                     "complaint_service_name": "SP_INLAND_PARCEL",
-                    "complaint_type": "Non-Delivery",
+                    "complaint_type": "Delay in delivery",
                     "complaint_description": "bulk-seed",
                     "complaint_status": "Open",
                     "complaint_created_at": now,
@@ -394,7 +394,7 @@ class TestComplaintExport:
             json={"booking_date": "05-07-2026",
                   "service_name": "Other",
                   "service_name_other": "SP_LOGISTICS_POST",
-                  "complaint_type": "Non-Delivery",
+                  "complaint_type": "Delay in delivery",
                   "complaint_description": "other-test",
                   "complaint_status": "Open"},
             timeout=15,
@@ -422,7 +422,7 @@ class TestComplaintExport:
                 headers=admin_headers,
                 json={"booking_date": "05-07-2026",
                       "service_name": "SP_INLAND_PARCEL",
-                      "complaint_type": "Non-Delivery",
+                      "complaint_type": "Delay in delivery",
                       "complaint_description": f"filter-{tag}",
                       "complaint_status": "Open"},
                 timeout=15,

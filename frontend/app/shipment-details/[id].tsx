@@ -33,10 +33,13 @@ const SERVICE_OPTIONS = [
   "Other",
 ] as const;
 const COMPLAINT_TYPE_OPTIONS = [
-  "Non-Delivery",
-  "Delayed Delivery",
-  "Damaged/Loss",
-  "Wrong Delivery",
+  "Delay in delivery",
+  "Non delivery of article",
+  "Abstraction of Contents",
+  "Loss of article",
+  "Non payment of COD Amount",
+  "Damage of Article",
+  "Fake/Non-updation of delivery remarks/Scans",
 ] as const;
 const COMPLAINT_STATUS_OPTIONS = [
   "Open",
@@ -731,7 +734,7 @@ function IndiaPostComplaintSection({
     existing.complaint_service_name_other || "",
   );
   const [complaintType, setComplaintType] = useState<string>(
-    existing.complaint_type || "Non-Delivery",
+    existing.complaint_type || "Delay in delivery",
   );
   const [description, setDescription] = useState<string>(
     existing.complaint_description || "",
