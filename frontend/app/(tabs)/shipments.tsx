@@ -382,8 +382,23 @@ export default function Shipments() {
     // Client-side compound filter: status (8 tabs) + date range +
     // print status (Phase F4.3) + label (Phase F4.6). All four combine
     // — an item must pass every filter to be visible.
+    // Phase F6.7 — the "Out for Delivery" tab is the Rule-5 catch-all:
+    // shipments with a status that matches no other tab must still be
+    // visible somewhere. We route them here so they can be actioned
+    // (no shipment disappears + tab totals = All).
     const byStatus = status === "All"
       ? items
+      : status === "Out for Delivery"
+      ? items.filter((s) => {
+          const st = s.status || "";
+          if (matchesStatusFilter(st, "Out for Delivery")) return true;
+          // Orphan check — status matches NO other tab at all.
+          for (const f of STATUS_FILTER_ORDER) {
+            if (f === "All" || f === "Out for Delivery") continue;
+            if (matchesStatusFilter(st, f)) return false;
+          }
+          return true;   // no other tab claimed it → falls to OFD
+        })
       : items.filter((s) => matchesStatusFilter(s.status || "", status));
     const byPrint = printFilter === "All"
       ? byStatus
@@ -1152,11 +1167,34 @@ export default function Shipments() {
       "Delivered": 0, "Feedback": 0, "Modified": 0,
       "Cancel by buyer": 0, "Cancelled": 0, "Returned": 0,
     };
+    // ── Phase F6.7 — CANONICAL 1:1 counting ──
+    // Enforce the user's invariant:
+    //   All  =  Pending + Processing + Ready to Ship + Shipped
+    //         + Out for Delivery + Delivered + Feedback + Modified
+    //         + Cancel by buyer + Cancelled + Returned
+    //
+    // Each shipment MUST land in exactly ONE tab:
+    //   • Match the tabs in STATUS_FILTER_ORDER order and stop at the
+    //     FIRST hit (prevents double-counting when a status has
+    //     overlapping aliases).
+    //   • If NO tab matches (empty status, courier-webhook value we
+    //     haven't mapped yet, or a novel India Post event) we default
+    //     to "Out for Delivery" per Rule-5 — the shipment stays
+    //     visible in the follow-up queue instead of disappearing.
     for (const s of countableItems) {
       const st = s.status || "";
+      let hit = false;
       for (const f of STATUS_FILTER_ORDER) {
         if (f === "All") continue;
-        if (matchesStatusFilter(st, f)) counts[f] += 1;
+        if (matchesStatusFilter(st, f)) {
+          counts[f] += 1;
+          hit = true;
+          break;    // 1:1 guarantee — stop after first match
+        }
+      }
+      if (!hit) {
+        // Rule-5 fallback so total always equals sum of tabs.
+        counts["Out for Delivery"] += 1;
       }
     }
     return counts;
