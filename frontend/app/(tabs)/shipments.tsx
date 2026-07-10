@@ -146,6 +146,68 @@ export default function Shipments() {
   // Excel path whenever `complaintFilter.size > 0`.
   const [complaintFilter, setComplaintFilter] = useState<Set<"Open" | "In Progress" | "Resolved" | "Closed">>(new Set());
 
+  // ── Phase F7.2 (Jun-2026) — Filter icon acts as "Clear all" ──
+  //
+  // Consolidates every filter-active check + reset action into a
+  // single source of truth so the Filter icon on the top bar can
+  // (a) show a red ✕ indicator whenever anything is filtered, and
+  // (b) tap → wipe every filter in one shot without opening the
+  // Filter Bottom Sheet. The same reset callback is also passed to
+  // the sheet's "Clear all" button so both entry points stay in
+  // lockstep — no drift possible.
+  //
+  // NOTE: labelFilter/labelPickerFor are covered elsewhere; we DO
+  // reset the top-bar label filter here so tapping the icon truly
+  // returns to the default list even when a label chip was active.
+  const anyFilterActive = useMemo(
+    () =>
+      dateFilter !== "all" ||
+      !!customFrom || !!customTo ||
+      paymentFilter.size > 0 ||
+      !!courierFilter ||
+      !!labelFilter ||
+      status !== "All" ||
+      printFilter !== "All" ||
+      importStatus !== "all" ||
+      importTypes.size > 0 ||
+      bookingFilter.size > 0 ||
+      deliveryFilter.size > 0 ||
+      codPaymentFilter.size > 0 ||
+      validationFilter.size > 0 ||
+      !!importBatchPick || !!paymentBatchPick ||
+      complaintFilter.size > 0,
+    [
+      dateFilter, customFrom, customTo, paymentFilter, courierFilter,
+      labelFilter, status, printFilter,
+      importStatus, importTypes, bookingFilter, deliveryFilter,
+      codPaymentFilter, validationFilter,
+      importBatchPick, paymentBatchPick, complaintFilter,
+    ],
+  );
+
+  const handleClearAllFilters = useCallback(() => {
+    setStatus("All");
+    setPrintFilter("All");
+    setDateFilter("all");
+    setCustomFrom(null);
+    setCustomTo(null);
+    setPaymentFilter(new Set());
+    setCourierFilter("");
+    setLabelFilter("");
+    setImportStatus("all");
+    setImportTypes(new Set());
+    setBookingFilter(new Set());
+    setDeliveryFilter(new Set());
+    setCodPaymentFilter(new Set());
+    setValidationFilter(new Set());
+    setImportBatchPick(null);
+    setPaymentBatchPick(null);
+    setComplaintFilter(new Set());
+    // Kick a reload since Batch/status filters are server-side.
+    load().catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // Phase F6.6 — "Suggested Filters" section was permanently removed
   // from the Filter Bottom Sheet at user request. The product-suggestion
   // state and its `/api/shipments/product-suggestions` fetch have been
@@ -1974,21 +2036,36 @@ export default function Shipments() {
         </View>
         {/* Phase A — Filter icon opens the Filter Bottom Sheet with
             Date + Payment + Labels sections. Red dot when any filter
-            (managed inside the sheet) is currently active. */}
+            (managed inside the sheet) is currently active.
+            Phase F7.2 (Jun-2026) — When ANY filter is active, the
+            icon flips to a "Clear" (✕) indicator and a single tap
+            clears every active filter in one shot without opening
+            the panel. Prevents the "open sheet → scroll → tap Clear
+            all → tap Apply" 3-tap grind for the common reset case. */}
         <TouchableOpacity
           testID="filter-icon"
-          onPress={() => setFilterSheetOpen(true)}
+          onPress={anyFilterActive ? handleClearAllFilters : () => setFilterSheetOpen(true)}
+          accessibilityLabel={anyFilterActive ? "Clear all filters" : "Open filters"}
           style={{
             width: 44, height: 44, borderRadius: 10, borderWidth: 1,
-            borderColor: "#E5E7EB", alignItems: "center", justifyContent: "center",
-            backgroundColor: "#fff",
+            borderColor: anyFilterActive ? "#DC2626" : "#E5E7EB",
+            alignItems: "center", justifyContent: "center",
+            backgroundColor: anyFilterActive ? "#FEF2F2" : "#fff",
           }}
         >
-          <PhIcon name="filter" size={20} color={colors.primary} />
-          {(dateFilter !== "all" || paymentFilter.size > 0 || labelFilter) ? (
+          <PhIcon
+            name={anyFilterActive ? "close" : "filter"}
+            size={anyFilterActive ? 22 : 20}
+            color={anyFilterActive ? "#DC2626" : colors.primary}
+          />
+          {anyFilterActive ? (
+            // Small red dot indicator remains visible so the tap
+            // affordance reads as "active state → destructive action"
+            // rather than a generic close button. Sits top-right.
             <View style={{
-              position: "absolute", top: 8, right: 8, width: 8, height: 8,
+              position: "absolute", top: 6, right: 6, width: 8, height: 8,
               borderRadius: 4, backgroundColor: "#DC2626",
+              borderWidth: 1, borderColor: "#fff",
             }} />
           ) : null}
         </TouchableOpacity>
@@ -3131,24 +3208,7 @@ export default function Shipments() {
         onOpenCustomDate={() => setShowDateModal(true)}
         paymentFilter={paymentFilter}
         setPaymentFilter={setPaymentFilter}
-        onClearAll={() => {
-          setDateFilter("all");
-          setCustomFrom(null);
-          setCustomTo(null);
-          setPaymentFilter(new Set());
-          // Phase F6.3 — also reset the Import filters
-          setImportStatus("all");
-          setImportTypes(new Set());
-          setBookingFilter(new Set());
-          setDeliveryFilter(new Set());
-          setCodPaymentFilter(new Set());
-          setValidationFilter(new Set());
-          setImportBatchPick(null);
-          setPaymentBatchPick(null);
-          setComplaintFilter(new Set());
-          // Kick a reload since Batch filters are server-side
-          load().catch(() => {});
-        }}
+        onClearAll={handleClearAllFilters}
         // Phase F6.3 — Import filter props
         importStatus={importStatus}
         setImportStatus={setImportStatus}
