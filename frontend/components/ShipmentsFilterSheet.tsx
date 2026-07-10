@@ -37,7 +37,14 @@ export type ValidationKey = "weight" | "payment_mode" | "amount";
 export type CodPaymentKey = "received" | "pending" | "amount_mismatch";
 export type DeliveryKey = "imported" | "pending" | "confirmed";
 export type BookingKey = "imported" | "pending";
-export type ComplaintKey = "created" | "not_created";  // Phase F7.0
+// Phase F7.1 (Jun-2026) — replaced the old "Complaint Created / No Complaint"
+// pair with the official India Post CBS complaint status axis. Semantics
+// match /app/backend/routers/complaints.py `_VALID_STATUSES` exactly.
+export type ComplaintKey =
+  | "Open"
+  | "In Progress"
+  | "Resolved"
+  | "Closed";
 
 export type BatchRef = { id: string; label: string; sub?: string };
 
@@ -131,10 +138,15 @@ const VALIDATION_CHIPS: { key: ValidationKey; label: string }[] = [
   { key: "payment_mode", label: "Payment Type Mismatch" },
   { key: "amount",       label: "COD Amount Mismatch" },
 ];
-// Phase F7.0 — India Post Complaint filter chips.
-const COMPLAINT_CHIPS: { key: ComplaintKey; label: string; icon: any }[] = [
-  { key: "created",     label: "Complaint Created", icon: "warning" },
-  { key: "not_created", label: "No Complaint",      icon: "checkmark-circle-outline" },
+// Phase F7.1 — India Post Complaint STATUS filter chips. Selecting
+// any of these ALSO acts as the trigger for the India Post bulk
+// complaint export on the Shipments screen (see the export intercept
+// in /app/frontend/app/(tabs)/shipments.tsx).
+const COMPLAINT_CHIPS: { key: ComplaintKey; label: string; icon: any; color: string }[] = [
+  { key: "Open",        label: "Open",         icon: "alert-circle-outline",     color: "#DC2626" },
+  { key: "In Progress", label: "In Progress",  icon: "hourglass-outline",        color: "#B45309" },
+  { key: "Resolved",    label: "Resolved",     icon: "checkmark-done-outline",   color: "#059669" },
+  { key: "Closed",      label: "Closed",       icon: "lock-closed-outline",      color: "#475569" },
 ];
 
 export default function ShipmentsFilterSheet({
@@ -510,38 +522,32 @@ export default function ShipmentsFilterSheet({
             <PhIcon name="chevron-forward" size={16} color="#94A3B8" />
           </TouchableOpacity>
 
-          {/* ── Phase F7.0 — India Post Complaint ───────────────── */}
-          <Text style={styles.sectionTitle}>India Post Complaint</Text>
+          {/* ── Phase F7.1 — India Post Complaint Status ────────── */}
+          <Text style={styles.sectionTitle}>India Post Complaint Status</Text>
           <View style={styles.chipWrap}>
             {COMPLAINT_CHIPS.map((c) => {
               const active = complaintFilter.has(c.key);
-              const isCreated = c.key === "created";
-              const activeBg = isCreated ? "#DC2626" : colors.primary;
               return (
                 <TouchableOpacity
                   key={c.key}
-                  testID={`fs-complaint-${c.key}`}
+                  testID={`fs-complaint-${c.key.toLowerCase().replace(/\s+/g, "-")}`}
                   onPress={() =>
                     toggleSet(setComplaintFilter, complaintFilter, c.key)
                   }
                   style={[
                     styles.chip,
-                    { flexDirection: "row", gap: 5, alignItems: "center" },
-                    isCreated && !active && { borderColor: "#DC2626" },
-                    active && { backgroundColor: activeBg, borderColor: activeBg },
+                    { flexDirection: "row", gap: 5, alignItems: "center", borderColor: c.color },
+                    active && { backgroundColor: c.color, borderColor: c.color },
                   ]}
                 >
                   <PhIcon
                     name={c.icon}
                     size={12}
-                    color={active ? "#fff" : (isCreated ? "#DC2626" : colors.primary)}
+                    color={active ? "#fff" : c.color}
                   />
                   <Text
                     numberOfLines={1} allowFontScaling={false}
-                    style={[
-                      styles.chipTxt,
-                      { color: active ? "#fff" : (isCreated ? "#DC2626" : colors.primary) },
-                    ]}
+                    style={[styles.chipTxt, { color: active ? "#fff" : c.color }]}
                   >
                     {c.label}
                   </Text>
@@ -549,6 +555,15 @@ export default function ShipmentsFilterSheet({
               );
             })}
           </View>
+          {/* Contextual hint — reinforces the export-trigger side-effect
+              so operators aren't surprised when the Download button
+              stops asking the format question. */}
+          {complaintFilter.size > 0 ? (
+            <Text style={styles.complaintHint}>
+              Download Data will export the India Post complaint format for
+              matching shipments.
+            </Text>
+          ) : null}
         </ScrollView>
 
         {/* Footer actions */}
@@ -634,6 +649,10 @@ const styles = StyleSheet.create({
   batchPickerLbl:  { fontSize: 13, fontWeight: "700", color: colors.text },
   batchPickerSub:  { fontSize: 11, color: "#64748B", marginTop: 2 },
   batchPickerPlaceholder: { fontSize: 13, color: "#94A3B8", fontStyle: "italic" },
+  complaintHint: {
+    fontSize: 11, color: "#B45309", marginTop: 8, lineHeight: 15,
+    fontStyle: "italic", fontWeight: "600",
+  },
   footer: {
     flexDirection: "row", gap: 10, marginTop: 12, paddingTop: 10,
     borderTopWidth: 1, borderTopColor: "#F1F5F9",

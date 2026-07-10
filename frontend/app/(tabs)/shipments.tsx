@@ -139,11 +139,12 @@ export default function Shipments() {
   const [paymentBatchPick, setPaymentBatchPick] = useState<{ id: string; label: string; sub?: string } | null>(null);
   const [importBatchPickerOpen, setImportBatchPickerOpen]   = useState(false);
   const [paymentBatchPickerOpen, setPaymentBatchPickerOpen] = useState(false);
-  // Phase F7.0 — India Post Complaint filter (multi-select). When the
-  // "created" chip is active, `handleExportCsv` routes to the
-  // India Post CBS bulk-complaint export path instead of the standard
-  // CSV / XLSX all-fields dump.
-  const [complaintFilter, setComplaintFilter] = useState<Set<"created" | "not_created">>(new Set());
+  // Phase F7.1 (Jun-2026) — India Post Complaint STATUS filter
+  // (replaces the earlier "created / not_created" pair). Selecting
+  // ANY status also acts as the trigger for the India Post bulk
+  // complaint export: `handleExportCsv` routes to the CBS-format
+  // Excel path whenever `complaintFilter.size > 0`.
+  const [complaintFilter, setComplaintFilter] = useState<Set<"Open" | "In Progress" | "Resolved" | "Closed">>(new Set());
 
   // Phase F6.6 — "Suggested Filters" section was permanently removed
   // from the Filter Bottom Sheet at user request. The product-suggestion
@@ -492,16 +493,18 @@ export default function Shipments() {
         return false;
       });
     }
-    // Phase F7.0 — India Post Complaint filter.  When "created" is
-    // selected, only complaint-flagged shipments survive; when
-    // "not_created" is selected, only those WITHOUT a complaint
-    // record. Selecting both == identity (no filter).
-    if (complaintFilter.size > 0 && complaintFilter.size < 2) {
+    // Phase F7.1 — India Post Complaint STATUS filter. Keeps only
+    // shipments that (a) have a complaint record AND (b) whose
+    // `complaint_status` matches at least one selected chip.
+    // A shipment without a complaint never survives this filter, so
+    // the downstream export path is guaranteed to receive complaint-
+    // flagged ids only.
+    if (complaintFilter.size > 0) {
       byImp = byImp.filter((s) => {
-        const hasComplaint = !!(s as any).complaint_created;
-        if (complaintFilter.has("created")     && hasComplaint)  return true;
-        if (complaintFilter.has("not_created") && !hasComplaint) return true;
-        return false;
+        const anyS = s as any;
+        if (!anyS.complaint_created) return false;
+        const st = String(anyS.complaint_status || "Open");
+        return complaintFilter.has(st as any);
       });
     }
     // ─────────────────────────────────────────────────────────────
@@ -1146,16 +1149,18 @@ export default function Shipments() {
         return false;
       });
     }
-    // Phase F7.0 — India Post Complaint filter.  When "created" is
-    // selected, only complaint-flagged shipments survive; when
-    // "not_created" is selected, only those WITHOUT a complaint
-    // record. Selecting both == identity (no filter).
-    if (complaintFilter.size > 0 && complaintFilter.size < 2) {
+    // Phase F7.1 — India Post Complaint STATUS filter. Keeps only
+    // shipments that (a) have a complaint record AND (b) whose
+    // `complaint_status` matches at least one selected chip.
+    // A shipment without a complaint never survives this filter, so
+    // the downstream export path is guaranteed to receive complaint-
+    // flagged ids only.
+    if (complaintFilter.size > 0) {
       byImp = byImp.filter((s) => {
-        const hasComplaint = !!(s as any).complaint_created;
-        if (complaintFilter.has("created")     && hasComplaint)  return true;
-        if (complaintFilter.has("not_created") && !hasComplaint) return true;
-        return false;
+        const anyS = s as any;
+        if (!anyS.complaint_created) return false;
+        const st = String(anyS.complaint_status || "Open");
+        return complaintFilter.has(st as any);
       });
     }
     // ─────────────────────────────────────────────────────────────
@@ -1759,16 +1764,15 @@ export default function Shipments() {
 
   const handleExportCsv = async () => {
     if (exportCsvBusy) return;
-    // ── Phase F7.0 — India Post Complaint override ──────────────
-    // When "Complaint Created" is the active filter (and "No
-    // Complaint" is NOT also active — that combo is identity), we
-    // bypass the standard export chooser entirely and generate the
-    // strict India Post CBS complaint upload template automatically.
-    // Design decision (per user requirement): do NOT ask the operator
-    // which format they want — the filter alone decides.
-    const complaintOnly =
-      complaintFilter.has("created") && !complaintFilter.has("not_created");
-    if (complaintOnly) {
+    // ── Phase F7.1 — India Post Complaint STATUS override ────────
+    // When ANY India Post Complaint STATUS filter is active (Open,
+    // In Progress, Resolved, or Closed), bypass the standard export
+    // chooser entirely and generate the strict India Post CBS
+    // complaint upload template automatically. Design decision (per
+    // user requirement): do NOT ask the operator which format they
+    // want — the filter alone decides.
+    const complaintExportActive = complaintFilter.size > 0;
+    if (complaintExportActive) {
       setExportCsvBusy(true);
       try { await _doExportComplaints(); }
       catch (e: any) {
