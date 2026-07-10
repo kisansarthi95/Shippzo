@@ -1,0 +1,39 @@
+{
+  "summary": "Phase F7.0 India Post Complaint Management — Backend fully verified (16/16 pytest passing). One HIGH-priority bug discovered & FIXED by testing agent: `Shipment` Pydantic response model was silently dropping every `complaint_*` field on GET /api/shipments/{id} (because `response_model=Shipment` coerces the doc), which would have made the UI lose complaint state on every reload. Added the 9 complaint fields to the `Shipment` model in /app/backend/server.py. Frontend UI shell also verified via Playwright: India Post Complaint section renders, auto-expands & auto-fills Order/Article, all 4 service chips + 4 type chips + 4 status chips exist with correct testIDs, booking-date modal opens on web, filter sheet exposes fs-complaint-created / fs-complaint-not_created chips. Standard xlsx (single) and ZIP (multi-part) exports both use the exact 7-column India Post CBS header order with NO Complaint Status column, Serial No is 1-based per Part file, `Other` service exports the free-text value, and `ids` payload filter works.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "GET /api/shipments/{id}", "issue": "Shipment response_model was dropping complaint_* fields — FIXED by testing agent by adding 9 optional complaint_ fields to Shipment Pydantic model in /app/backend/server.py."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_phase_f70_complaints.py",
+    "/app/test_reports/pytest/pytest_iteration_46_f70.xml"
+  ],
+  "action_items": [
+    "Main agent: verify the /app/backend/server.py edit (added 9 complaint_ fields to Shipment model at ~line 782). No behaviour change beyond letting GET /api/shipments{,id} echo the fields the client just saved. Optional: mirror the same fields onto ShipmentUpdate if you want PUT /api/shipments/{id} to also accept them (currently they are managed only via the PATCH /complaint endpoint, which is fine).",
+    "Optional: run the multi-part ZIP test locally with MONGO_URL/DB_NAME env vars set — the test seeds 510 rows directly into Mongo for speed and cleans up afterwards."
+  ],
+  "critical_code_review_comments": [
+    "PATCH /shipments/{id}/complaint uses `find_one_and_update` semantics correctly — creates complaint_created_at only once, always updates complaint_updated_at.",
+    "Export endpoint properly guards status_code=404 when no complaint-flagged shipments match user_id.",
+    "Chunking at exactly 500 rows via range(0, len(rows), 500) is correct; each part gets its own workbook so Serial No is 1-based per file as per India Post CBS spec.",
+    "Content-Disposition uses correct filename pattern IndiaPost_Complaint_DD-MM-YYYY_Part{N}.xlsx and X-Complaint-Parts / X-Complaint-Total-Rows headers are set."
+  ],
+  "updated_files": [
+    "/app/backend/server.py  (added 9 complaint_* fields to Shipment model)",
+    "/app/backend/tests/test_phase_f70_complaints.py (new — 16 tests)"
+  ],
+  "success_rate": {"backend": "100% (16/16)", "frontend": "smoke-verified — all critical testIDs present, save flow reachable"},
+  "seed_data_creation": "test_export_multi_part_zip seeds 510 shipments directly into Mongo (id prefix TESTF70-…) then deletes them in the finally block. No leftover data expected.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Backend is watertight — all 16 tests pass in ~3 min. The multi-part ZIP test requires MONGO_URL and DB_NAME env vars because it seeds directly to Mongo (creating 510 shipments through the public API would take 5+ minutes). The Shipment response model now includes complaint_* fields, so GET /api/shipments{,/id} returns full complaint state. Frontend testIDs to remember: cp-toggle, cp-date-picker, cp-manual-date-input, cp-manual-date-save, cp-svc-{SP_INLAND_PARCEL,SP_SPEED_POST_EMO,SP_BUSINESS_PARCEL,Other}, cp-svc-other (free-text input when Other is picked), cp-type-{Non-Delivery,Delayed Delivery,Damaged/Loss,Wrong Delivery}, cp-desc, cp-status-{Open,In Progress,Resolved,Closed}, cp-save, cp-delete. Filter sheet chips: fs-complaint-created, fs-complaint-not_created.",
+  "rca_of_issue": "Root cause of the read-back bug: FastAPI's `response_model=Shipment` runs Pydantic coercion on the Mongo doc before returning it — any field NOT declared on the Shipment BaseModel gets silently stripped. Because /app/backend/routers/complaints.py writes new `complaint_*` fields directly to the shipments collection but the Shipment model in /app/backend/server.py was never taught about them, every GET /shipments{,id} response returned an empty complaint state. Fix: declared complaint_created (bool), complaint_booking_date, complaint_service_name, complaint_service_name_other, complaint_type, complaint_description, complaint_status, complaint_created_at, complaint_updated_at as Optional fields with default '' or False."
+}

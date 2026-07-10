@@ -37,6 +37,7 @@ export type ValidationKey = "weight" | "payment_mode" | "amount";
 export type CodPaymentKey = "received" | "pending" | "amount_mismatch";
 export type DeliveryKey = "imported" | "pending" | "confirmed";
 export type BookingKey = "imported" | "pending";
+export type ComplaintKey = "created" | "not_created";  // Phase F7.0
 
 export type BatchRef = { id: string; label: string; sub?: string };
 
@@ -81,6 +82,12 @@ type Props = {
   // Payment Batch (single-select)
   paymentBatch: BatchRef | null;
   onOpenPaymentBatchPicker: () => void;
+
+  // Phase F7.0 — India Post Complaint filter (multi-select).
+  //   "created"     → shipments with `complaint_created === true`
+  //   "not_created" → shipments without a complaint record
+  complaintFilter: Set<ComplaintKey>;
+  setComplaintFilter: (v: Set<ComplaintKey>) => void;
 };
 
 const DATE_CHIPS: { key: DateFilterKey; label: string }[] = [
@@ -124,6 +131,11 @@ const VALIDATION_CHIPS: { key: ValidationKey; label: string }[] = [
   { key: "payment_mode", label: "Payment Type Mismatch" },
   { key: "amount",       label: "COD Amount Mismatch" },
 ];
+// Phase F7.0 — India Post Complaint filter chips.
+const COMPLAINT_CHIPS: { key: ComplaintKey; label: string; icon: any }[] = [
+  { key: "created",     label: "Complaint Created", icon: "warning" },
+  { key: "not_created", label: "No Complaint",      icon: "checkmark-circle-outline" },
+];
 
 export default function ShipmentsFilterSheet({
   visible, onClose,
@@ -139,6 +151,7 @@ export default function ShipmentsFilterSheet({
   validationFilter, setValidationFilter,
   importBatch, onOpenImportBatchPicker,
   paymentBatch, onOpenPaymentBatchPicker,
+  complaintFilter, setComplaintFilter,
 }: Props) {
   const togglePayment = (mode: string) => {
     const next = new Set(paymentFilter);
@@ -163,7 +176,8 @@ export default function ShipmentsFilterSheet({
     (codPaymentFilter.size > 0 ? 1 : 0) +
     (validationFilter.size > 0 ? 1 : 0) +
     (importBatch ? 1 : 0) +
-    (paymentBatch ? 1 : 0);
+    (paymentBatch ? 1 : 0) +
+    (complaintFilter.size > 0 ? 1 : 0);
 
   const customLabel = (() => {
     if (dateFilter !== "custom") return "Custom";
@@ -495,6 +509,46 @@ export default function ShipmentsFilterSheet({
             </View>
             <PhIcon name="chevron-forward" size={16} color="#94A3B8" />
           </TouchableOpacity>
+
+          {/* ── Phase F7.0 — India Post Complaint ───────────────── */}
+          <Text style={styles.sectionTitle}>India Post Complaint</Text>
+          <View style={styles.chipWrap}>
+            {COMPLAINT_CHIPS.map((c) => {
+              const active = complaintFilter.has(c.key);
+              const isCreated = c.key === "created";
+              const activeBg = isCreated ? "#DC2626" : colors.primary;
+              return (
+                <TouchableOpacity
+                  key={c.key}
+                  testID={`fs-complaint-${c.key}`}
+                  onPress={() =>
+                    toggleSet(setComplaintFilter, complaintFilter, c.key)
+                  }
+                  style={[
+                    styles.chip,
+                    { flexDirection: "row", gap: 5, alignItems: "center" },
+                    isCreated && !active && { borderColor: "#DC2626" },
+                    active && { backgroundColor: activeBg, borderColor: activeBg },
+                  ]}
+                >
+                  <PhIcon
+                    name={c.icon}
+                    size={12}
+                    color={active ? "#fff" : (isCreated ? "#DC2626" : colors.primary)}
+                  />
+                  <Text
+                    numberOfLines={1} allowFontScaling={false}
+                    style={[
+                      styles.chipTxt,
+                      { color: active ? "#fff" : (isCreated ? "#DC2626" : colors.primary) },
+                    ]}
+                  >
+                    {c.label}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
         </ScrollView>
 
         {/* Footer actions */}

@@ -139,6 +139,11 @@ export default function Shipments() {
   const [paymentBatchPick, setPaymentBatchPick] = useState<{ id: string; label: string; sub?: string } | null>(null);
   const [importBatchPickerOpen, setImportBatchPickerOpen]   = useState(false);
   const [paymentBatchPickerOpen, setPaymentBatchPickerOpen] = useState(false);
+  // Phase F7.0 — India Post Complaint filter (multi-select). When the
+  // "created" chip is active, `handleExportCsv` routes to the
+  // India Post CBS bulk-complaint export path instead of the standard
+  // CSV / XLSX all-fields dump.
+  const [complaintFilter, setComplaintFilter] = useState<Set<"created" | "not_created">>(new Set());
 
   // Phase F6.6 — "Suggested Filters" section was permanently removed
   // from the Filter Bottom Sheet at user request. The product-suggestion
@@ -487,6 +492,18 @@ export default function Shipments() {
         return false;
       });
     }
+    // Phase F7.0 — India Post Complaint filter.  When "created" is
+    // selected, only complaint-flagged shipments survive; when
+    // "not_created" is selected, only those WITHOUT a complaint
+    // record. Selecting both == identity (no filter).
+    if (complaintFilter.size > 0 && complaintFilter.size < 2) {
+      byImp = byImp.filter((s) => {
+        const hasComplaint = !!(s as any).complaint_created;
+        if (complaintFilter.has("created")     && hasComplaint)  return true;
+        if (complaintFilter.has("not_created") && !hasComplaint) return true;
+        return false;
+      });
+    }
     // ─────────────────────────────────────────────────────────────
 
     if (dateFilter === "all") return byImp;
@@ -516,6 +533,7 @@ export default function Shipments() {
     // Phase F6.3
     importStatus, importTypes, bookingFilter, deliveryFilter,
     codPaymentFilter, validationFilter,
+    complaintFilter,
   ]);
 
   const toggleSelect = (id: string) => {
@@ -1128,6 +1146,18 @@ export default function Shipments() {
         return false;
       });
     }
+    // Phase F7.0 — India Post Complaint filter.  When "created" is
+    // selected, only complaint-flagged shipments survive; when
+    // "not_created" is selected, only those WITHOUT a complaint
+    // record. Selecting both == identity (no filter).
+    if (complaintFilter.size > 0 && complaintFilter.size < 2) {
+      byImp = byImp.filter((s) => {
+        const hasComplaint = !!(s as any).complaint_created;
+        if (complaintFilter.has("created")     && hasComplaint)  return true;
+        if (complaintFilter.has("not_created") && !hasComplaint) return true;
+        return false;
+      });
+    }
     // ─────────────────────────────────────────────────────────────
 
     if (dateFilter === "all") return byImp;
@@ -1157,6 +1187,7 @@ export default function Shipments() {
     // Phase F6.6 — Import filters must invalidate the counter cache.
     importStatus, importTypes, bookingFilter, deliveryFilter,
     codPaymentFilter, validationFilter,
+    complaintFilter,
   ]);
 
   const statusCounts = useMemo(() => {
@@ -1626,8 +1657,130 @@ export default function Shipments() {
     }
   };
 
+  // ── Phase F7.0 — India Post Complaint export ──────────────────
+  //
+  // Called automatically when the "Complaint Created" filter is
+  // active. The backend returns either a single .xlsx (≤ 500 rows)
+  // or a .zip containing multiple 500-row parts (larger batches).
+  // Filename comes from Content-Disposition so we always mirror
+  // whatever the server generated (IndiaPost_Complaint_DD-MM-YYYY_PartX.xlsx).
+  const _parseFilenameFromDisposition = (
+    disposition: string, fallback: string,
+  ): string => {
+    // RFC-2183 style: `attachment; filename="XYZ.zip"`. Also handle
+    // the RFC-5987 `filename*=UTF-8''XYZ` variant just in case.
+    const m1 = /filename\*=UTF-8''([^;]+)/i.exec(disposition);
+    if (m1?.[1]) {
+      try { return decodeURIComponent(m1[1]); } catch { /* noop */ }
+    }
+    const m2 = /filename="?([^";]+)"?/i.exec(disposition);
+    if (m2?.[1]) return m2[1];
+    return fallback;
+  };
+
+  const _doExportComplaints = async () => {
+    const visibleIds = dateFilteredItems
+      .filter((s) => !!(s as any).complaint_created)
+      .map((s) => s.id)
+      .filter(Boolean);
+    if (visibleIds.length === 0) {
+      Alert.alert(
+        "No complaints to export",
+        "There are no complaint-flagged shipments in the current view. " +
+        "Open a shipment and use the ‘India Post Complaint’ section to " +
+        "create one first.",
+      );
+      return;
+    }
+    const result = await Api.exportComplaints(visibleIds);
+    if (!result?.data || result.data.byteLength < 200) {
+      Alert.alert(
+        "No data",
+        "The complaint export was empty — nothing to save.",
+      );
+      return;
+    }
+    const isZip =
+      (result.contentType || "").toLowerCase().includes("zip") ||
+      (result.parts || 1) > 1;
+    const stampDDMMYYYY = (() => {
+      const d = new Date();
+      const dd = String(d.getDate()).padStart(2, "0");
+      const mm = String(d.getMonth() + 1).padStart(2, "0");
+      const yy = d.getFullYear();
+      return `${dd}-${mm}-${yy}`;
+    })();
+    const fallback = isZip
+      ? `IndiaPost_Complaint_${stampDDMMYYYY}.zip`
+      : `IndiaPost_Complaint_${stampDDMMYYYY}_Part1.xlsx`;
+    const filename = _parseFilenameFromDisposition(
+      result.contentDisposition || "", fallback,
+    );
+    const mime = isZip
+      ? "application/zip"
+      : "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+    const utiTag = isZip
+      ? "public.zip-archive"
+      : "org.openxmlformats.spreadsheetml.sheet";
+
+    if (Platform.OS === "web") {
+      const blob = new Blob([result.data], { type: mime });
+      const url  = URL.createObjectURL(blob);
+      const a    = document.createElement("a");
+      a.href = url; a.download = filename;
+      document.body.appendChild(a); a.click();
+      a.remove(); URL.revokeObjectURL(url);
+    } else {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const FileSystem = require("expo-file-system/legacy");
+      const path = `${FileSystem.cacheDirectory || ""}${filename}`;
+      await FileSystem.writeAsStringAsync(path, _abToBase64(result.data), {
+        encoding: FileSystem.EncodingType.Base64,
+      });
+      if (await Sharing.isAvailableAsync()) {
+        await Sharing.shareAsync(path, {
+          mimeType: mime,
+          dialogTitle: "India Post Complaint Export",
+          UTI: utiTag,
+        });
+      } else {
+        Alert.alert("Export ready", `Saved to ${path}`);
+      }
+    }
+    if ((result.parts || 1) > 1) {
+      Alert.alert(
+        "India Post Complaint Export",
+        `Generated ${result.parts} files (${result.totalRows} complaints) — ` +
+        `India Post accepts max 500 rows per upload. Each Part file inside ` +
+        `the ZIP can be uploaded independently to CBS.`,
+      );
+    }
+  };
+
   const handleExportCsv = async () => {
     if (exportCsvBusy) return;
+    // ── Phase F7.0 — India Post Complaint override ──────────────
+    // When "Complaint Created" is the active filter (and "No
+    // Complaint" is NOT also active — that combo is identity), we
+    // bypass the standard export chooser entirely and generate the
+    // strict India Post CBS complaint upload template automatically.
+    // Design decision (per user requirement): do NOT ask the operator
+    // which format they want — the filter alone decides.
+    const complaintOnly =
+      complaintFilter.has("created") && !complaintFilter.has("not_created");
+    if (complaintOnly) {
+      setExportCsvBusy(true);
+      try { await _doExportComplaints(); }
+      catch (e: any) {
+        Alert.alert(
+          "Complaint export failed",
+          e?.response?.data?.detail || e?.message ||
+          "Please make sure at least one complaint has been created.",
+        );
+      } finally { setExportCsvBusy(false); }
+      return;
+    }
+    // ─────────────────────────────────────────────────────────────
     // Give users the choice: Excel-native XLSX (Recommended for
     // Gujarati / Hindi customer names — never breaks in old Windows
     // Excel) OR the classic CSV (compact, works in any spreadsheet
@@ -2988,6 +3141,7 @@ export default function Shipments() {
           setValidationFilter(new Set());
           setImportBatchPick(null);
           setPaymentBatchPick(null);
+          setComplaintFilter(new Set());
           // Kick a reload since Batch filters are server-side
           load().catch(() => {});
         }}
@@ -3008,6 +3162,8 @@ export default function Shipments() {
         onOpenImportBatchPicker={() => setImportBatchPickerOpen(true)}
         paymentBatch={paymentBatchPick}
         onOpenPaymentBatchPicker={() => setPaymentBatchPickerOpen(true)}
+        complaintFilter={complaintFilter}
+        setComplaintFilter={setComplaintFilter}
       />
 
       {/* Phase F6.3 — Batch pickers (import + payment). Server-side

@@ -781,6 +781,21 @@ class Shipment(BaseModel):
     last_event:                     Optional[str] = ""
     last_event_category:            Optional[str] = ""
 
+    # Phase F7.0 — India Post Complaint Management.
+    # Populated by PATCH /api/shipments/{id}/complaint. Declared here so
+    # GET /api/shipments and GET /api/shipments/{id} echo them back to
+    # the UI (the response_model=Shipment coercion drops any field not
+    # declared on this model).
+    complaint_created:            Optional[bool] = False
+    complaint_booking_date:       Optional[str]  = ""
+    complaint_service_name:       Optional[str]  = ""
+    complaint_service_name_other: Optional[str]  = ""
+    complaint_type:               Optional[str]  = ""
+    complaint_description:        Optional[str]  = ""
+    complaint_status:             Optional[str]  = ""
+    complaint_created_at:         Optional[str]  = ""
+    complaint_updated_at:         Optional[str]  = ""
+
 
 class ShipmentCreate(BaseModel):
     tracking_id: str
@@ -5487,6 +5502,25 @@ except Exception as _se_exc:
     import logging as _lg
     _lg.getLogger("server.bootstrap").exception(
         f"Failed to mount shipments_export router: {_se_exc}",
+    )
+
+# Phase F7.0 (Jun-2026) modular: India Post Complaint Management.
+# Adds PATCH/DELETE /api/shipments/{id}/complaint + a bulk export
+# endpoint that returns a ZIP of 500-row India Post CBS xlsx chunks.
+# MUST be registered BEFORE shipments_read.py because it owns
+# `/shipments/{id}/complaint` — the read router's catch-all
+# `/shipments/{shipment_id}` GET would otherwise swallow the URL.
+try:
+    from routers.complaints import (
+        complaints_router as _complaints_router,
+        init as _init_complaints_router,
+    )
+    _init_complaints_router()
+    app.include_router(_complaints_router)
+except Exception as _cp_exc:
+    import logging as _lg
+    _lg.getLogger("server.bootstrap").exception(
+        f"Failed to mount complaints router: {_cp_exc}",
     )
 
 # Phase-4c modular: read-only shipments + lookup endpoints.

@@ -15,7 +15,7 @@
 import React, { useCallback, useEffect, useState } from "react";
 import {
   View, Text, ScrollView, StyleSheet, TouchableOpacity,
-  ActivityIndicator, Alert, Linking,
+  ActivityIndicator, Alert, Linking, TextInput, Platform, Modal,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
@@ -23,6 +23,45 @@ import PhIcon from "../../components/PhIcon";
 import { Api, type Shipment } from "../../lib/api";
 import { scannerBridge } from "../../lib/scannerBridge";
 import { colors } from "../../lib/theme";
+
+// India Post CBS enums — MUST match backend `_VALID_SERVICES` / `_VALID_TYPES`
+// / `_VALID_STATUSES` in routers/complaints.py. Add here + backend in sync.
+const SERVICE_OPTIONS = [
+  "SP_INLAND_PARCEL",
+  "SP_SPEED_POST_EMO",
+  "SP_BUSINESS_PARCEL",
+  "Other",
+] as const;
+const COMPLAINT_TYPE_OPTIONS = [
+  "Non-Delivery",
+  "Delayed Delivery",
+  "Damaged/Loss",
+  "Wrong Delivery",
+] as const;
+const COMPLAINT_STATUS_OPTIONS = [
+  "Open",
+  "In Progress",
+  "Resolved",
+  "Closed",
+] as const;
+
+// India Post's only accepted date format on their CBS bulk complaint
+// uploader is DD-MM-YYYY. We normalise on both sides (backend also
+// normalises) so the operator never sees a rejection due to formatting.
+const toDDMMYYYY = (d: Date): string => {
+  const dd = String(d.getDate()).padStart(2, "0");
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  return `${dd}-${mm}-${d.getFullYear()}`;
+};
+
+const parseDDMMYYYY = (s: string | undefined): Date | null => {
+  if (!s) return null;
+  const m = /^(\d{1,2})[\/-](\d{1,2})[\/-](\d{4})$/.exec(s.trim());
+  if (!m) return null;
+  const d = Number(m[1]), mo = Number(m[2]) - 1, y = Number(m[3]);
+  const dt = new Date(y, mo, d);
+  return isNaN(dt.getTime()) ? null : dt;
+};
 
 const fmtDate = (iso?: string | null) => {
   if (!iso) return "—";
@@ -620,6 +659,16 @@ export default function ShipmentDetailsScreen() {
           </Section>
         )}
 
+        {/* ────────── Phase F7.0 — India Post Complaint ──────────
+            Compact inline form so operators can raise / update / clear
+            a complaint against the shipment in-place. Serial No is
+            never edited manually — it's generated per-file at export
+            time. Order No + Article No / Tracking are auto-derived. */}
+        <IndiaPostComplaintSection
+          ship={ship}
+          onSaved={loadShipment}
+        />
+
         {/* Confirmation / Feedback / Return — if any */}
         {((ship as any).confirmation_status ||
           (ship as any).feedback ||
@@ -656,6 +705,535 @@ export default function ShipmentDetailsScreen() {
     </SafeAreaView>
   );
 }
+
+// ─── Phase F7.0 — India Post Complaint sub-component ──────────────
+//
+// Kept inside the same file as the parent screen (not in /components)
+// because it is 100% coupled to the shipment context here — it never
+// mounts standalone. Splitting it out would just add an import layer
+// for zero reuse benefit.
+function IndiaPostComplaintSection({
+  ship,
+  onSaved,
+}: {
+  ship: Shipment;
+  onSaved: () => Promise<void> | void;
+}) {
+  const existing = ship as any;
+  const [expanded, setExpanded] = useState<boolean>(!!existing.complaint_created);
+  const [bookingDate, setBookingDate] = useState<string>(
+    existing.complaint_booking_date || "",
+  );
+  const [serviceName, setServiceName] = useState<string>(
+    existing.complaint_service_name || "SP_INLAND_PARCEL",
+  );
+  const [serviceOther, setServiceOther] = useState<string>(
+    existing.complaint_service_name_other || "",
+  );
+  const [complaintType, setComplaintType] = useState<string>(
+    existing.complaint_type || "Non-Delivery",
+  );
+  const [description, setDescription] = useState<string>(
+    existing.complaint_description || "",
+  );
+  const [complaintStatus, setComplaintStatus] = useState<string>(
+    existing.complaint_status || "Open",
+  );
+  const [saving, setSaving] = useState(false);
+  const [showDatePicker, setShowDatePicker] = useState(false);
+  const [manualDateOpen, setManualDateOpen] = useState(false);
+  const [manualDate, setManualDate] = useState<string>(bookingDate);
+
+  const isCreated = !!existing.complaint_created;
+
+  // Booking Date UX: The native date picker opens on tap. If the
+  // operator cancels the picker, we fall back to a manual DD-MM-YYYY
+  // TextInput popup so they can type the exact date they intend to
+  // book (parcel may go out on a different date than it was created).
+  const openDatePicker = () => {
+    // Try native DateTimePicker; fall back to manual entry modal.
+    setShowDatePicker(true);
+  };
+  const onNativeDateChange = (event: any, selected?: Date) => {
+    // Android fires "dismissed" when the user hits back / outside tap.
+    setShowDatePicker(false);
+    if (Platform.OS === "android" && event?.type === "dismissed") {
+      // Cancelled → open manual entry so they can type instead.
+      setManualDate(bookingDate);
+      setManualDateOpen(true);
+      return;
+    }
+    if (selected) setBookingDate(toDDMMYYYY(selected));
+  };
+  const saveManualDate = () => {
+    const t = manualDate.trim();
+    if (!t) { setBookingDate(""); setManualDateOpen(false); return; }
+    const parsed = parseDDMMYYYY(t);
+    if (!parsed) {
+      Alert.alert(
+        "Invalid date",
+        "Please enter the date as DD-MM-YYYY (e.g. 05-07-2026).",
+      );
+      return;
+    }
+    setBookingDate(toDDMMYYYY(parsed));
+    setManualDateOpen(false);
+  };
+
+  const onSave = async () => {
+    if (saving) return;
+    if (!bookingDate) {
+      Alert.alert("Booking Date required", "Please select the booking date first.");
+      return;
+    }
+    if (!complaintType) {
+      Alert.alert("Complaint Type required", "Please choose a complaint type.");
+      return;
+    }
+    if (!description.trim()) {
+      Alert.alert("Description required", "Please describe the complaint.");
+      return;
+    }
+    if (serviceName === "Other" && !serviceOther.trim()) {
+      Alert.alert(
+        "Service Name required",
+        "You chose ‘Other’ — please type the service code.",
+      );
+      return;
+    }
+    setSaving(true);
+    try {
+      await Api.saveComplaint(ship.id, {
+        booking_date: bookingDate,
+        service_name: serviceName,
+        service_name_other: serviceName === "Other" ? serviceOther.trim() : "",
+        complaint_type: complaintType,
+        complaint_description: description.trim(),
+        complaint_status: complaintStatus,
+      });
+      await onSaved();
+      Alert.alert(
+        "Complaint saved",
+        "This shipment is now flagged for the India Post bulk complaint export.",
+      );
+    } catch (e: any) {
+      Alert.alert(
+        "Couldn't save complaint",
+        e?.response?.data?.detail || e?.message || "Try again.",
+      );
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const onDelete = async () => {
+    if (!isCreated) return;
+    Alert.alert(
+      "Delete complaint?",
+      "This will remove the complaint from this shipment. The export will no longer include it.",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Delete", style: "destructive",
+          onPress: async () => {
+            try {
+              await Api.deleteComplaint(ship.id);
+              await onSaved();
+              // Reset local form state so the section returns to
+              // pristine "create new complaint" mode.
+              setBookingDate("");
+              setServiceName("SP_INLAND_PARCEL");
+              setServiceOther("");
+              setComplaintType("Non-Delivery");
+              setDescription("");
+              setComplaintStatus("Open");
+              setExpanded(false);
+            } catch (e: any) {
+              Alert.alert(
+                "Couldn't delete complaint",
+                e?.response?.data?.detail || e?.message || "Try again.",
+              );
+            }
+          },
+        },
+      ],
+    );
+  };
+
+  // Lazy-load DateTimePicker to avoid Metro trying to resolve it on web.
+  const DateTimePicker = (() => {
+    if (Platform.OS === "web") return null;
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      return require("@react-native-community/datetimepicker").default;
+    } catch { return null; }
+  })();
+
+  return (
+    <View style={cpStyles.section}>
+      <TouchableOpacity
+        style={cpStyles.header}
+        activeOpacity={0.7}
+        onPress={() => setExpanded((v) => !v)}
+        testID="cp-toggle"
+      >
+        <PhIcon
+          name={isCreated ? "warning" : "megaphone-outline"}
+          size={16}
+          color={isCreated ? "#DC2626" : colors.primary}
+        />
+        <Text
+          style={[cpStyles.title, isCreated && { color: "#DC2626" }]}
+        >
+          India Post Complaint
+        </Text>
+        {isCreated ? (
+          <View style={cpStyles.statusPill}>
+            <Text style={cpStyles.statusPillTxt}>
+              {existing.complaint_status || "Open"}
+            </Text>
+          </View>
+        ) : null}
+        <View style={{ flex: 1 }} />
+        <PhIcon
+          name={expanded ? "chevron-up" : "chevron-down"}
+          size={18}
+          color="#94A3B8"
+        />
+      </TouchableOpacity>
+
+      {expanded && (
+        <View style={cpStyles.body}>
+          {/* Read-only auto-derived rows so operators see exactly what
+              will be exported without opening the Excel. */}
+          <FormRow label="Order No" value={ship.order_id || "—"} />
+          <FormRow
+            label="Article No (Tracking)"
+            value={ship.tracking_id || "—"}
+            mono
+          />
+
+          {/* Booking Date */}
+          <Text style={cpStyles.fieldLabel}>Booking Date</Text>
+          <TouchableOpacity
+            style={cpStyles.datePickerBtn}
+            onPress={openDatePicker}
+            testID="cp-date-picker"
+          >
+            <PhIcon name="calendar" size={14} color={colors.primary} />
+            <Text style={[
+              cpStyles.datePickerTxt,
+              !bookingDate && { color: "#94A3B8", fontStyle: "italic" },
+            ]}>
+              {bookingDate || "Tap to select date"}
+            </Text>
+            <PhIcon name="chevron-forward" size={14} color="#94A3B8" />
+          </TouchableOpacity>
+
+          {/* Service Name */}
+          <Text style={cpStyles.fieldLabel}>Service Name</Text>
+          <View style={cpStyles.chipWrap}>
+            {SERVICE_OPTIONS.map((s) => (
+              <TouchableOpacity
+                key={s}
+                onPress={() => setServiceName(s)}
+                style={[
+                  cpStyles.chip,
+                  serviceName === s && cpStyles.chipActive,
+                ]}
+                testID={`cp-svc-${s}`}
+              >
+                <Text style={[
+                  cpStyles.chipTxt,
+                  serviceName === s && cpStyles.chipTxtActive,
+                ]}>
+                  {s}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+          {serviceName === "Other" && (
+            <TextInput
+              style={cpStyles.input}
+              value={serviceOther}
+              onChangeText={setServiceOther}
+              placeholder="Enter service code (e.g. SP_LOGISTICS_POST)"
+              placeholderTextColor="#94A3B8"
+              autoCapitalize="characters"
+              testID="cp-svc-other"
+            />
+          )}
+
+          {/* Complaint Type */}
+          <Text style={cpStyles.fieldLabel}>Complaint Type</Text>
+          <View style={cpStyles.chipWrap}>
+            {COMPLAINT_TYPE_OPTIONS.map((t) => (
+              <TouchableOpacity
+                key={t}
+                onPress={() => setComplaintType(t)}
+                style={[
+                  cpStyles.chip,
+                  complaintType === t && cpStyles.chipActive,
+                ]}
+                testID={`cp-type-${t}`}
+              >
+                <Text style={[
+                  cpStyles.chipTxt,
+                  complaintType === t && cpStyles.chipTxtActive,
+                ]}>
+                  {t}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+
+          {/* Description */}
+          <Text style={cpStyles.fieldLabel}>Description</Text>
+          <TextInput
+            style={[cpStyles.input, cpStyles.textarea]}
+            value={description}
+            onChangeText={setDescription}
+            placeholder="Describe the complaint (what went wrong, when, and any relevant reference numbers)…"
+            placeholderTextColor="#94A3B8"
+            multiline
+            numberOfLines={4}
+            textAlignVertical="top"
+            testID="cp-desc"
+          />
+
+          {/* Complaint Status (internal — NOT exported) */}
+          <Text style={cpStyles.fieldLabel}>
+            Complaint Status <Text style={cpStyles.helperInline}>(internal)</Text>
+          </Text>
+          <View style={cpStyles.chipWrap}>
+            {COMPLAINT_STATUS_OPTIONS.map((s) => (
+              <TouchableOpacity
+                key={s}
+                onPress={() => setComplaintStatus(s)}
+                style={[
+                  cpStyles.chip,
+                  complaintStatus === s && cpStyles.chipActive,
+                ]}
+                testID={`cp-status-${s}`}
+              >
+                <Text style={[
+                  cpStyles.chipTxt,
+                  complaintStatus === s && cpStyles.chipTxtActive,
+                ]}>
+                  {s}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+
+          {/* Actions */}
+          <View style={cpStyles.actionsRow}>
+            {isCreated ? (
+              <TouchableOpacity
+                style={cpStyles.deleteBtn}
+                onPress={onDelete}
+                disabled={saving}
+                testID="cp-delete"
+              >
+                <PhIcon name="trash-outline" size={14} color="#DC2626" />
+                <Text style={cpStyles.deleteBtnTxt}>Delete</Text>
+              </TouchableOpacity>
+            ) : null}
+            <View style={{ flex: 1 }} />
+            <TouchableOpacity
+              style={[cpStyles.saveBtn, saving && { opacity: 0.6 }]}
+              onPress={onSave}
+              disabled={saving}
+              testID="cp-save"
+            >
+              {saving ? (
+                <ActivityIndicator size="small" color="#fff" />
+              ) : (
+                <PhIcon
+                  name={isCreated ? "save-outline" : "add-circle-outline"}
+                  size={14}
+                  color="#fff"
+                />
+              )}
+              <Text style={cpStyles.saveBtnTxt}>
+                {saving ? "Saving…" : (isCreated ? "Update" : "Create Complaint")}
+              </Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      )}
+
+      {/* Native DateTimePicker */}
+      {showDatePicker && DateTimePicker && (
+        <DateTimePicker
+          value={parseDDMMYYYY(bookingDate) || new Date()}
+          mode="date"
+          display={Platform.OS === "ios" ? "spinner" : "default"}
+          maximumDate={new Date()}
+          onChange={onNativeDateChange}
+        />
+      )}
+
+      {/* Manual DD-MM-YYYY entry — used when the native picker isn't
+          available (web) or when the user cancels the native picker. */}
+      <Modal
+        visible={manualDateOpen || (showDatePicker && !DateTimePicker)}
+        transparent
+        animationType="fade"
+        onRequestClose={() => { setManualDateOpen(false); setShowDatePicker(false); }}
+      >
+        <View style={cpStyles.modalRoot}>
+          <View style={cpStyles.modalCard}>
+            <Text style={cpStyles.modalTitle}>Booking Date</Text>
+            <Text style={cpStyles.modalSub}>
+              Enter the date in DD-MM-YYYY format.
+            </Text>
+            <TextInput
+              style={cpStyles.input}
+              value={manualDate}
+              onChangeText={setManualDate}
+              placeholder="DD-MM-YYYY"
+              placeholderTextColor="#94A3B8"
+              keyboardType="numbers-and-punctuation"
+              autoFocus
+              testID="cp-manual-date-input"
+            />
+            <View style={{ flexDirection: "row", gap: 8, marginTop: 12 }}>
+              <TouchableOpacity
+                style={[cpStyles.modalBtn, cpStyles.modalBtnGhost]}
+                onPress={() => { setManualDateOpen(false); setShowDatePicker(false); }}
+              >
+                <Text style={cpStyles.modalBtnGhostTxt}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[cpStyles.modalBtn, cpStyles.modalBtnPrimary]}
+                onPress={saveManualDate}
+                testID="cp-manual-date-save"
+              >
+                <Text style={cpStyles.modalBtnPrimaryTxt}>OK</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+    </View>
+  );
+}
+
+function FormRow({ label, value, mono = false }: { label: string; value: string; mono?: boolean }) {
+  return (
+    <View style={cpStyles.formRow}>
+      <Text style={cpStyles.formLabel}>{label}</Text>
+      <Text
+        style={[cpStyles.formValue, mono && { fontFamily: "monospace" }]}
+        selectable
+      >
+        {value}
+      </Text>
+    </View>
+  );
+}
+
+const cpStyles = StyleSheet.create({
+  section: {
+    backgroundColor: "#fff",
+    borderRadius: 12,
+    borderWidth: 1, borderColor: "#E5E7EB",
+    marginBottom: 12,
+    overflow: "hidden",
+  },
+  header: {
+    flexDirection: "row", alignItems: "center", gap: 8,
+    paddingHorizontal: 14, paddingVertical: 12,
+    backgroundColor: "#FEF2F2",
+    borderBottomWidth: 1, borderBottomColor: "#FEE2E2",
+  },
+  title: { fontSize: 13, fontWeight: "800", color: colors.text, letterSpacing: 0.3 },
+  statusPill: {
+    backgroundColor: "#FCA5A5",
+    paddingHorizontal: 8, paddingVertical: 2, borderRadius: 8,
+  },
+  statusPillTxt: { fontSize: 10, fontWeight: "800", color: "#7F1D1D", letterSpacing: 0.4 },
+  body: { paddingHorizontal: 14, paddingVertical: 10 },
+
+  formRow: {
+    flexDirection: "row", paddingVertical: 6,
+    borderBottomWidth: 1, borderBottomColor: "#F1F5F9", gap: 12,
+  },
+  formLabel: { fontSize: 12, color: "#64748B", fontWeight: "600", width: 130 },
+  formValue: { flex: 1, fontSize: 13, color: colors.text, fontWeight: "600" },
+
+  fieldLabel: {
+    fontSize: 12, fontWeight: "700", color: "#334155",
+    marginTop: 12, marginBottom: 6, letterSpacing: 0.2,
+  },
+  helperInline: { fontSize: 10, color: "#94A3B8", fontWeight: "600" },
+
+  datePickerBtn: {
+    flexDirection: "row", alignItems: "center", gap: 8,
+    borderWidth: 1, borderColor: "#E5E7EB", borderRadius: 8,
+    paddingHorizontal: 12, paddingVertical: 10,
+    backgroundColor: "#F8FAFC",
+  },
+  datePickerTxt: { flex: 1, fontSize: 13, color: colors.text, fontWeight: "600" },
+
+  chipWrap: { flexDirection: "row", flexWrap: "wrap", gap: 6 },
+  chip: {
+    borderWidth: 1, borderColor: "#E5E7EB",
+    paddingHorizontal: 10, paddingVertical: 6, borderRadius: 999,
+    backgroundColor: "#fff",
+  },
+  chipActive: { backgroundColor: colors.primary, borderColor: colors.primary },
+  chipTxt: { fontSize: 12, fontWeight: "700", color: "#334155" },
+  chipTxtActive: { color: "#fff" },
+
+  input: {
+    borderWidth: 1, borderColor: "#E5E7EB", borderRadius: 8,
+    paddingHorizontal: 12, paddingVertical: 8,
+    fontSize: 13, color: colors.text,
+    backgroundColor: "#fff",
+    marginTop: 6,
+  },
+  textarea: { minHeight: 80, maxHeight: 180 },
+
+  actionsRow: {
+    flexDirection: "row", alignItems: "center", gap: 10,
+    marginTop: 14, paddingTop: 12,
+    borderTopWidth: 1, borderTopColor: "#F1F5F9",
+  },
+  saveBtn: {
+    flexDirection: "row", alignItems: "center", gap: 6,
+    backgroundColor: colors.primary,
+    paddingHorizontal: 14, paddingVertical: 10,
+    borderRadius: 8,
+  },
+  saveBtnTxt: { color: "#fff", fontSize: 13, fontWeight: "800" },
+  deleteBtn: {
+    flexDirection: "row", alignItems: "center", gap: 4,
+    paddingHorizontal: 10, paddingVertical: 8,
+    borderRadius: 8, borderWidth: 1, borderColor: "#FCA5A5",
+    backgroundColor: "#FEF2F2",
+  },
+  deleteBtnTxt: { color: "#DC2626", fontSize: 12, fontWeight: "700" },
+
+  modalRoot: {
+    flex: 1, alignItems: "center", justifyContent: "center",
+    backgroundColor: "rgba(0,0,0,0.4)", padding: 24,
+  },
+  modalCard: {
+    backgroundColor: "#fff", borderRadius: 12,
+    padding: 18, minWidth: 280, maxWidth: 400, width: "100%",
+  },
+  modalTitle: { fontSize: 16, fontWeight: "800", color: colors.text, marginBottom: 4 },
+  modalSub: { fontSize: 12, color: "#64748B", marginBottom: 6 },
+  modalBtn: {
+    flex: 1, paddingVertical: 10, borderRadius: 8, alignItems: "center",
+  },
+  modalBtnGhost: { backgroundColor: "#F1F5F9" },
+  modalBtnGhostTxt: { color: colors.text, fontSize: 13, fontWeight: "800" },
+  modalBtnPrimary: { backgroundColor: colors.primary },
+  modalBtnPrimaryTxt: { color: "#fff", fontSize: 13, fontWeight: "800" },
+});
 
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: colors.background },

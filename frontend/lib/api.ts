@@ -270,6 +270,17 @@ export type Shipment = {
   // Phase F6.4 — Last Event (India Post remit sheet)
   last_event?: string;
   last_event_category?: string;
+
+  // Phase F7.0 (Jun-2026) — India Post Complaint Management.
+  complaint_created?: boolean;
+  complaint_booking_date?: string;         // DD-MM-YYYY (India Post format)
+  complaint_service_name?: string;         // enum: SP_INLAND_PARCEL / SP_SPEED_POST_EMO / SP_BUSINESS_PARCEL / Other
+  complaint_service_name_other?: string;   // free-text when service = "Other"
+  complaint_type?: string;                 // enum: Non-Delivery / Delayed Delivery / Damaged/Loss / Wrong Delivery
+  complaint_description?: string;
+  complaint_status?: string;               // enum: Open / In Progress / Resolved / Closed
+  complaint_created_at?: string;
+  complaint_updated_at?: string;
 };
 
 export type SheetPreview = {
@@ -1642,6 +1653,60 @@ export const Api = {
       responseType: "arraybuffer",
     } as any).then((r) => r.data as ArrayBuffer);
   },
+
+  // ─── Phase F7.0 (Jun-2026) — India Post Complaint Management ────
+  //
+  // Save (or update) the complaint fields on a single shipment. The
+  // server flips `complaint_created` to true, timestamps the record,
+  // and returns the freshly-persisted subset so the UI can reconcile
+  // optimistically without re-fetching.
+  saveComplaint: (
+    id: string,
+    payload: {
+      booking_date?: string;
+      service_name?: string;
+      service_name_other?: string;
+      complaint_type?: string;
+      complaint_description?: string;
+      complaint_status?: string;
+    },
+  ) =>
+    api.patch<{
+      ok: boolean;
+      complaint_created: boolean;
+      complaint_booking_date: string;
+      complaint_service_name: string;
+      complaint_service_name_other: string;
+      complaint_type: string;
+      complaint_description: string;
+      complaint_status: string;
+      complaint_updated_at: string;
+    }>(`/shipments/${id}/complaint`, payload).then((r) => r.data),
+
+  // Clear the complaint sub-record entirely — used by the "Delete
+  // complaint" affordance on the shipment details screen.
+  deleteComplaint: (id: string) =>
+    api.delete<{ ok: boolean }>(`/shipments/${id}/complaint`).then((r) => r.data),
+
+  // Bulk India Post Complaint export. Server returns either:
+  //   • a single .xlsx (≤ 500 rows), or
+  //   • a .zip containing multiple .xlsx parts of 500 rows each.
+  // Both bodies are binary → arraybuffer end-to-end.  Consumers get
+  // the raw bytes + the `content-type` / suggested filename via the
+  // response headers so they can decide the correct MIME/extension.
+  exportComplaints: (ids?: string[]) =>
+    api.post<ArrayBuffer>(
+      "/shipments/export-complaints",
+      { ids: ids && ids.length > 0 ? ids : undefined },
+      { responseType: "arraybuffer" } as any,
+    ).then((r) => ({
+      data: r.data as ArrayBuffer,
+      contentType: (r.headers?.["content-type"] as string) || "",
+      contentDisposition:
+        (r.headers?.["content-disposition"] as string) || "",
+      totalRows: Number(r.headers?.["x-complaint-total-rows"] || 0),
+      parts: Number(r.headers?.["x-complaint-parts"] || 1),
+    })),
 
   // Smart Paste & Pending Orders
   smartPasteParse: (text: string) =>
