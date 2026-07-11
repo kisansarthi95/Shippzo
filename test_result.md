@@ -24167,3 +24167,6 @@ agent_communication:
             All 48 courier_sync + whitelist tests pass. The A7
             "wrong sender" test still correctly rejects unrelated
             senders because "IndiaPost" body-tag isn't in the regex.
+
+  - agent: "main"
+    message: "Phase F8.0 — SMS/Notification Auto-Sync REPAIRED. Root causes: (1) native master switch never armed by Courier Partner Settings path, (2) ingest config only pushed from /courier-sync screen, (3) hardcoded 'IndiaPost' sender filter, (4) missing successful/unsuccessful scanning rules, (5) SMS path duplicated (and missed) import-engine side effects. Fixes: shared apply_last_event_engine() reused by Delivery Import AND courier-sync ingest; F8.0 startup migration patches existing courier rules (idempotent); dd-mm-yyyy + time parsing; Shipment model exposes booking_date/needs_return_review; native offline queue (IngestQueue.kt) + multi-pattern filter + onIngestResult JS event; lib/courier_sync_native.ts syncs config on app start/foreground/courier save; event-driven UI refresh (list/details/dashboard). Testing agent iteration_49: backend 16/16 PASS, frontend verified (agent fixed missing CourierSyncListener import in shipment-details). Native changes REQUIRE a new Android build via Publish. Pre-existing hooks-order warning (iteration_43) still open, non-blocking."
