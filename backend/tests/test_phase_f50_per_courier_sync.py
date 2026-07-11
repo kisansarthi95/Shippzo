@@ -74,10 +74,12 @@ class TestDefaultsEndpoint:
         data = r.json()
         assert data["matched"] is True
         cfg = data["config"]
-        assert cfg["auto_sync_sender_patterns"] == ["INPOST"]
+        # Phase F5.4 broadened senders to 3 DLT variants; Phase F8.0
+        # added the successful/unsuccessful rules (14 → 16).
+        assert cfg["auto_sync_sender_patterns"] == ["INPOST", "IPOSTV", "INDPOSTV"]
         assert cfg["auto_sync_tracking_regex"]
         rules = cfg["auto_sync_status_rules"]
-        assert len(rules) == 14, f"Expected 14 rules, got {len(rules)}"
+        assert len(rules) == 16, f"Expected 16 rules, got {len(rules)}"
 
     def test_unknown_name_returns_null(self, api):
         r = api.get(
@@ -415,8 +417,8 @@ class TestMigration:
         assert len(found) >= 1, "No India Post-named courier in DB"
         migrated = [
             c for c in found
-            if c.get("auto_sync_sender_patterns") == ["INPOST"]
-            and len(c.get("auto_sync_status_rules") or []) == 14
+            if c.get("auto_sync_sender_patterns") == ["INPOST", "IPOSTV", "INDPOSTV"]
+            and len(c.get("auto_sync_status_rules") or []) == 16
         ]
         assert len(migrated) >= 1, (
             "No India Post courier has been migrated. Found summaries: "

@@ -1,0 +1,46 @@
+{
+  "summary": "Phase F8.0 SMS/Notification Auto-Sync + Phase F7.7 Shipment Stage Routing verified. Backend 16/16 tests PASS (7 base + 9 extended edge cases: rule count=16, In-Transit whitelist stage, Delivery Import engine parity, already-Delivered/unknown-AWB/wrong-sender guards, GET shipments now exposes booking_date + needs_return_review). Frontend: Dashboard loads, Shipments tab shows In Transit + Out for Delivery filter chips (F7.7 stage tabs), 27 OFD items render Last Event category badges, /courier-sync page renders without crash. CRITICAL BUG FIXED: /app/frontend/app/shipment-details/[id].tsx referenced CourierSyncListener without importing it → ReferenceError red-screen every time a shipment card was opened on web. Added the missing default import. After fix, shipment detail page loads cleanly (no ErrorBoundary, no console CourierSyncListener errors). Review Article button and In-Transit items are not present in seed data (no shipments currently classified as 'Item Returned to Sender'/'Item Kept on Hold'/'In Transit') but the code path is wired and tab renders correctly (empty state). Deprecated shadow* style warnings noted (non-blocking).",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "shipment-details/[id].tsx", "issue": "FIXED by testing agent — CourierSyncListener was referenced on line 189 (addIngestResultListener) without being imported, causing ReferenceError red-screen on every shipment-details navigation on web. Added `import CourierSyncListener from '../../modules/courier-sync-listener'`.", "testID": "n/a", "priority": "CRITICAL_FIXED"}
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "auth/welcome + others", "issues": ["Non-blocking dev-warning spam: \"shadow*\" style props deprecated. Use boxShadow (react-native web). Many repeats in Expo logs — should migrate to boxShadow when time permits."]}
+    ],
+    "react_native_issues": [
+      {"component": "React hooks order", "issue": "'React has detected a change in the order of Hooks called' warning fires during login navigation. Not a crash but violates Rules of Hooks and may cause bugs. Investigate conditional hook usage in login/auth flow. Reference: seen post-login in browser console."}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_phase_f80_sms_engine.py (7 tests — PASS, pre-existing)",
+    "/app/backend/tests/test_phase_f80_edge_cases.py (9 tests — new, PASS)",
+    "/app/test_reports/pytest/pytest_iteration_49_f80.xml",
+    "/app/test_reports/pytest/pytest_iteration_49_f80_edge.xml"
+  ],
+  "action_items": [
+    "OPTIONAL — Investigate the React 'change in the order of Hooks' warning around login flow (non-blocking but risky).",
+    "OPTIONAL — Manually verify FRONTEND 2 details (Delivery Staff name / Beat / Attempt Date-Time / Attempt History with full raw SMS) on a shipment that has actual OFD-via-SMS history. Testing environment has no such seed data; backend tests already confirm the DB fields populate correctly, so this is a visual QA-only follow-up.",
+    "OPTIONAL — Migrate deprecated shadow* styles to boxShadow to silence dev warnings."
+  ],
+  "critical_code_review_comments": [
+    "Missing import bug in shipment-details/[id].tsx caused an unrecoverable red-screen ErrorBoundary on web — this same bug would have made Android release builds crash IF the module resolved differently. Sanity-check every screen that uses CourierSyncListener has the import (already grep-verified: shipments.tsx, index.tsx, courier-sync.tsx, lib/courier_sync_native.ts all import it correctly).",
+    "apply_last_event_engine in shipment_import.py is the single source of truth used by both SMS ingest and Delivery Import — good separation. F7.7 Return Review policy 'never auto-moves' is enforced correctly in both paths.",
+    "Ingest endpoint correctly returns action='ignored_intermediate_status' for Unsuccessful SMS and 'ignored_delivered' when already Delivered — both verified by backend tests.",
+    "Scanning Rules migration correctly seeds 16 rules for default India Post with unsuccessful BEFORE successful ordering — verified by test."
+  ],
+  "updated_files": [
+    "/app/frontend/app/shipment-details/[id].tsx (added missing CourierSyncListener import)",
+    "/app/backend/tests/test_phase_f80_edge_cases.py (new file, 9 tests)"
+  ],
+  "success_rate": {"backend": "100% (16/16 F8.0 tests)", "frontend": "95% (all screens load, no crash after fix; Review Article + In-Transit stage visual not exercised due to no seed data)"},
+  "seed_data_creation": "Tests create shipments (courier_name='Indian post') and delete them via fixture teardown. AWB pattern EG#########IN. No lingering TEST_ data expected.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Backend F8.0 fully green (16 tests). Frontend crash fixed. Ensure any new screen referencing CourierSyncListener has the import present. To visually verify FRONTEND 2 (Delivery Staff / Beat / Attempt History / Booking Date rows), first ingest a real OFD + Booking SMS for an existing shipment then open its details.",
+  "rca_of_issue": "Root cause of red-screen crash: /app/frontend/app/shipment-details/[id].tsx line 189 called `CourierSyncListener.addIngestResultListener(...)` inside a useEffect (Phase F8.0 wiring) but the file was missing `import CourierSyncListener from '../../modules/courier-sync-listener'`. On Android the native module symbol may have leaked via bundler; on web (Metro strict scoping) the variable was undefined → ReferenceError caught by ErrorBoundary. Reproduction: log in as admin → Shipments → open any shipment card → red-screen. Mitigation: added the import (same path other files use). Verified: shipment-details now renders correctly, console shows no CourierSyncListener / ReferenceError / ErrorBoundary messages."
+}

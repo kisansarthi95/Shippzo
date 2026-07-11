@@ -494,6 +494,139 @@ def classify_last_event(text: Any) -> str:
     return "Other"
 
 
+# ════════════════════════════════════════════════════════════════════
+# Phase F8.0 — SHARED Shipment Update Engine.
+#
+# One single place that applies a "delivery event" (raw Last-Event
+# text) to a shipment. Used by BOTH:
+#   • the Delivery Import commit loop (source="import"), and
+#   • the Courier-Sync SMS ingest pipeline (source="sms",
+#     routers/courier_sync.py).
+# so the two paths can never drift apart on business rules.
+#
+# Status routing (F7.7):
+#   • Delivered                → Delivered  (+ delivered_at,
+#                                confirmation_status="confirmed")
+#   • Return Review            → NO status change; sets
+#                                needs_return_review flag
+#   • Item Dispatched/Bagged/
+#     Received                 → In Transit
+#   • everything else known    → Out for Delivery
+#
+# SMS specifics (source="sms"):
+#   • status comes from the courier's configured Scanning Rules
+#     (status_override) — NOT from the route table — so the operator's
+#     per-courier keyword→stage config remains the single authority.
+#   • `category_fallback` = canonical status from the matched rule.
+#     Used when the raw SMS doesn't classify (e.g. "is Successful"
+#     carries no known event words) so badges & confirmations still
+#     fire per the configured rule.
+#   • booking_date is stamped from the SMS ONLY when currently empty.
+#   • delivered_at prefers the datetime extracted from the SMS.
+# ════════════════════════════════════════════════════════════════════
+
+STATUS_ROUTE_BY_EVENT: Dict[str, str] = {
+    "Delivered":                "Delivered",
+    "Out for Delivery":         "Out for Delivery",
+    "Item Returned to Sender":  "Out for Delivery",
+    "Item Kept on Hold":        "Out for Delivery",
+    "Item Dispatched":          "In Transit",
+    "Item Bagged":              "In Transit",
+    "Item Received":            "In Transit",
+    "Redirected":               "Out for Delivery",
+    "Returned":                 "Out for Delivery",
+    "Other":                    "Out for Delivery",
+    # "Return Review" intentionally absent — never auto-routes.
+}
+
+
+def apply_last_event_engine(
+    existing: Dict[str, Any],
+    applied: Dict[str, Any],
+    *,
+    raw_event: str,
+    now: str,
+    source: str = "import",              # "import" | "sms"
+    status_override: Optional[str] = None,  # sms: rule-driven status
+    category_fallback: str = "",            # sms: canonical from rule
+    event_dt: str = "",                     # sms: datetime parsed from SMS
+) -> str:
+    """Apply one delivery/courier event to the `applied` update dict.
+
+    Mutates `applied` in place (mirrors how the import commit loop
+    builds its per-row update) and returns the final event category.
+    `existing` is the current shipment document (read-only).
+    """
+    raw_ev = (raw_event or "").strip()
+    ev_cat = classify_last_event(raw_ev) if raw_ev else ""
+
+    if source == "sms":
+        # SMS body IS the event — persist it so Shipment Details and
+        # the card badge behave exactly like a Delivery Import row.
+        if raw_ev:
+            applied["last_event"] = raw_ev
+        # Fall back to the Scanning-Rule canonical when the raw text
+        # doesn't classify (keeps rule config as the authority).
+        if (not ev_cat or ev_cat == "Other") and category_fallback:
+            ev_cat = category_fallback
+
+    if ev_cat:
+        applied["last_event_category"] = ev_cat
+
+    # ── Status routing ───────────────────────────────────────────
+    if source == "import":
+        if ev_cat and ev_cat != "Return Review":
+            applied["status"] = STATUS_ROUTE_BY_EVENT.get(ev_cat, "Out for Delivery")
+        elif not ev_cat and applied.get("delivered_at"):
+            # F6.0 contract — a delivery row carrying an explicit
+            # delivery date but NO event text IS a delivered row.
+            applied["status"] = "Delivered"
+            applied["confirmation_status"] = "confirmed"
+    else:
+        # SMS: the courier's Scanning Rule decides the status.
+        # Return Review NEVER auto-moves (F7.7 policy) even if the
+        # rule keyword also matched.
+        if status_override and ev_cat != "Return Review":
+            applied["status"] = status_override
+
+    # ── Return Review flag (both paths) ──────────────────────────
+    if ev_cat == "Return Review":
+        applied["needs_return_review"] = True
+        applied["return_review_at"] = now
+
+    # ── delivered_at stamp ────────────────────────────────────────
+    if source == "import":
+        if applied.get("status") == "Delivered" and not applied.get("delivered_at"):
+            applied["delivered_at"] = now
+    else:
+        delivered_now = ev_cat != "Return Review" and (
+            applied.get("status") == "Delivered"
+            or ev_cat == "Delivered"
+            or category_fallback == "Delivered"
+        )
+        if (
+            delivered_now
+            and not existing.get("delivered_at")
+            and not applied.get("delivered_at")
+        ):
+            applied["delivered_at"] = event_dt or now
+
+    # ── Delivery Confirmation — auto-confirm ONLY on Delivered. ──
+    if ev_cat == "Delivered":
+        applied["confirmation_status"] = "confirmed"
+
+    # ── Booking SMS → booking_date, ONLY if currently empty. ─────
+    if (
+        source == "sms"
+        and category_fallback == "Booked"
+        and event_dt
+        and not existing.get("booking_date")
+    ):
+        applied["booking_date"] = event_dt
+
+    return ev_cat
+
+
 def _weight_equal(a: Any, b: Any) -> bool:
     ga = _weight_to_grams(a)
     gb = _weight_to_grams(b)
@@ -988,79 +1121,25 @@ def init() -> None:
 
                         # Type-specific post-processing.
                         if import_type == "delivery":
-                            # Phase F6.4 — Compute a compact category for
-                            # the Shipments-card badge. RAW text stays
-                            # untouched so Shipment Details can show it
-                            # verbatim.
+                            # Phase F8.0 — routed through the SHARED
+                            # Shipment Update Engine (see
+                            # apply_last_event_engine above). The SMS
+                            # ingest pipeline (routers/courier_sync.py)
+                            # calls the SAME function, so import + SMS
+                            # can never drift on business rules:
+                            #   • last_event_category badge
+                            #   • F7.7 status routing (Delivered /
+                            #     In Transit / Out for Delivery)
+                            #   • Return Review flag (no auto-move)
+                            #   • delivered_at stamp
+                            #   • confirmation_status="confirmed"
                             raw_ev = applied.get("last_event") or ""
-                            ev_cat = classify_last_event(raw_ev) if raw_ev else ""
-                            if ev_cat:
-                                applied["last_event_category"] = ev_cat
-
-                            # ─── Phase F7.7 (Jun-2026) — updated
-                            # deterministic status routing:
-                            #   • Delivered                  → Delivered
-                            #   • Return Review              → keep existing
-                            #                                  status
-                            #                                  (needs user
-                            #                                   confirmation
-                            #                                   via UI — see
-                            #                                   `needs_return_review`
-                            #                                   flag below)
-                            #   • Out for Delivery           → Out for Delivery
-                            #   • Item Returned to Sender    → Out for Delivery
-                            #                                  (priority within OFD)
-                            #   • Item Kept on Hold          → Out for Delivery
-                            #   • Item Dispatched / Item
-                            #     Bagged / Item Received     → In Transit  (NEW)
-                            #   • Redirected                 → Out for Delivery
-                            #   • Returned (generic)         → Out for Delivery
-                            #   • Other / unknown            → Out for Delivery
-                            #                                  (Rule-5 default —
-                            #                                   never hide the
-                            #                                   shipment)
-                            #   • no last_event              → keep existing
-                            #                                  status untouched
-                            STATUS_ROUTE_BY_EVENT = {
-                                "Delivered":                "Delivered",
-                                "Out for Delivery":         "Out for Delivery",
-                                "Item Returned to Sender":  "Out for Delivery",
-                                "Item Kept on Hold":        "Out for Delivery",
-                                "Item Dispatched":          "In Transit",
-                                "Item Bagged":              "In Transit",
-                                "Item Received":            "In Transit",
-                                "Redirected":               "Out for Delivery",
-                                "Returned":                 "Out for Delivery",
-                                "Other":                    "Out for Delivery",
-                                # Phase F7.7 — "Return Review" does NOT
-                                # route (mapped later; see block below).
-                            }
-                            if ev_cat and ev_cat != "Return Review":
-                                routed = STATUS_ROUTE_BY_EVENT.get(ev_cat, "Out for Delivery")
-                                applied["status"] = routed
-
-                            # ─── Phase F7.7 — "Item Delivered(Sender)"
-                            # RTS delivery event. We DO NOT auto-move
-                            # to Returned — the merchant must confirm
-                            # via the "Confirm Return" action in the
-                            # UI. Set a durable flag + timestamp so
-                            # the Shipments card can show the "Return
-                            # Review" badge until confirmation.
-                            if ev_cat == "Return Review":
-                                applied["needs_return_review"] = True
-                                applied["return_review_at"] = now
-                                # keep whatever status the shipment
-                                # already had — no forced routing.
-
-                            # `delivered_at` is only stamped when we're
-                            # actually marking Delivered.
-                            if applied.get("status") == "Delivered" and not applied.get("delivered_at"):
-                                applied["delivered_at"] = now
-
-                            # Auto-confirm delivery ONLY when the event
-                            # actually says Delivered.
-                            if ev_cat == "Delivered":
-                                applied["confirmation_status"] = "confirmed"
+                            apply_last_event_engine(
+                                existing, applied,
+                                raw_event=raw_ev,
+                                now=now,
+                                source="import",
+                            )
 
                             applied["delivery_source"] = "imported"
                             applied["last_import_at"] = now

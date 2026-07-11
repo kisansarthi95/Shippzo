@@ -23,6 +23,7 @@ import PhIcon from "../../components/PhIcon";
 import { Api, type Shipment } from "../../lib/api";
 import { scannerBridge } from "../../lib/scannerBridge";
 import { colors } from "../../lib/theme";
+import CourierSyncListener from "../../modules/courier-sync-listener";
 
 // India Post CBS enums — MUST match backend `_VALID_SERVICES` / `_VALID_TYPES`
 // / `_VALID_STATUSES` in routers/complaints.py. Add here + backend in sync.
@@ -110,6 +111,29 @@ const fmtDate = (iso?: string | null) => {
   } catch { return iso; }
 };
 
+// Phase F8.0 — SMS-extracted event stamps come in TWO shapes:
+//   "2026-07-10"           (date only — most OFD SMS carry no clock)
+//   "2026-07-10T20:42:19"  (full datetime — booking / delivered SMS)
+// Render the time ONLY when it exists so date-only stamps don't show
+// a misleading "12:00 AM".
+const fmtEventStamp = (iso?: string | null) => {
+  if (!iso) return "";
+  try {
+    const hasTime = String(iso).includes("T") || String(iso).includes(":");
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return String(iso);
+    if (!hasTime) {
+      return d.toLocaleDateString(undefined, {
+        day: "numeric", month: "short", year: "numeric",
+      });
+    }
+    return d.toLocaleString(undefined, {
+      day: "numeric", month: "short", year: "numeric",
+      hour: "2-digit", minute: "2-digit",
+    });
+  } catch { return String(iso); }
+};
+
 const fmtMoney = (n?: number | null) =>
   n == null ? "—" : `₹${Number(n).toLocaleString("en-IN", { maximumFractionDigits: 2 })}`;
 
@@ -157,6 +181,18 @@ export default function ShipmentDetailsScreen() {
 
   useEffect(() => {
     loadShipment();
+  }, [loadShipment]);
+
+  // Phase F8.0 — refresh the moment an SMS auto-sync event updates a
+  // shipment (Android native listener fires "onIngestResult" after a
+  // successful backend ingest). No-op on iOS / web / Expo Go.
+  useEffect(() => {
+    const sub = CourierSyncListener.addIngestResultListener(() => {
+      loadShipment();
+    });
+    return () => {
+      try { sub?.remove(); } catch { /* no-op */ }
+    };
   }, [loadShipment]);
 
   // Phase F6.2 — Auto-refresh on screen focus so a Shipment Import
@@ -504,25 +540,49 @@ export default function ShipmentDetailsScreen() {
             {!!(ship as any).last_delivery_beat && (
               <Row label="Beat" value={(ship as any).last_delivery_beat} />
             )}
+            {!!(ship as any).last_delivery_attempt_at && (
+              <Row
+                label="Attempt Date / Time"
+                value={fmtEventStamp((ship as any).last_delivery_attempt_at)}
+              />
+            )}
             <Row
               label="Attempts"
               value={String((ship as any).delivery_attempt_count || 1)}
             />
-            {/* Attempt history — one line per SMS-parsed attempt. */}
+            {/* Attempt history — one entry per SMS-parsed attempt.
+                Phase F8.0 — shows attempt date+time AND the complete
+                original OFD SMS (raw_message) per attempt. */}
             {Array.isArray((ship as any).out_for_delivery_history) &&
-              (ship as any).out_for_delivery_history.length > 1 && (
+              (ship as any).out_for_delivery_history.length >= 1 && (
                 <View style={{ marginTop: 6 }}>
                   <Text style={styles.kvKey}>Attempt History</Text>
                   {(ship as any).out_for_delivery_history.map(
                     (h: any, i: number) => (
-                      <Text
-                        key={`ofd-h-${i}`}
-                        style={[styles.kvVal, { marginTop: 4, fontSize: 12 }]}
-                        selectable
-                      >
-                        #{i + 1} · {h.postman_name || "—"}
-                        {h.beat ? ` (${h.beat})` : ""} · {h.attempted_on || fmtDate(h.received_at)}
-                      </Text>
+                      <View key={`ofd-h-${i}`} style={{ marginTop: 6 }}>
+                        <Text
+                          style={[styles.kvVal, { fontSize: 12 }]}
+                          selectable
+                        >
+                          #{i + 1} · {h.postman_name || "—"}
+                          {h.beat ? ` (${h.beat})` : ""} · {
+                            fmtEventStamp(h.attempted_on) || fmtDate(h.received_at)
+                          }
+                        </Text>
+                        {!!h.raw_message && (
+                          <Text
+                            style={{
+                              fontSize: 11,
+                              color: "#64748B",
+                              marginTop: 2,
+                              lineHeight: 15,
+                            }}
+                            selectable
+                          >
+                            {h.raw_message}
+                          </Text>
+                        )}
+                      </View>
                     ),
                   )}
                 </View>
@@ -533,7 +593,13 @@ export default function ShipmentDetailsScreen() {
         {/* Timestamps */}
         <Section title="Timeline" icon="time-outline">
           <Row label="Order Date / Time" value={fmtDate(ship.created_at)} />
-          {!!(ship as any).imported_booking_at && (
+          {/* Phase F8.0 — booking_date is set by Booking import,
+              Delivery-import mapper, or the Booking SMS (whichever
+              lands first — only-if-empty rule). */}
+          {!!(ship as any).booking_date && (
+            <Row label="Booking Date / Time" value={fmtEventStamp((ship as any).booking_date)} />
+          )}
+          {!(ship as any).booking_date && !!(ship as any).imported_booking_at && (
             <Row label="Booking Date / Time" value={fmtDate((ship as any).imported_booking_at)} />
           )}
           {!!(ship as any).processing_started_at && (

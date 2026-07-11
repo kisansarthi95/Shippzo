@@ -2,15 +2,12 @@ package expo.modules.couriersynclistener
 
 import android.app.Notification
 import android.content.Context
+import android.net.ConnectivityManager
+import android.net.Network
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
 import android.util.Log
-import okhttp3.MediaType.Companion.toMediaType
-import okhttp3.OkHttpClient
-import okhttp3.Request
-import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
-import java.util.concurrent.TimeUnit
 import java.util.concurrent.Executors
 
 /**
@@ -40,12 +37,46 @@ import java.util.concurrent.Executors
 class CourierNotificationListenerService : NotificationListenerService() {
 
   private val executor = Executors.newSingleThreadExecutor()
-  private val httpClient: OkHttpClient by lazy {
-    OkHttpClient.Builder()
-      .connectTimeout(10, TimeUnit.SECONDS)
-      .writeTimeout(15,  TimeUnit.SECONDS)
-      .readTimeout(15,   TimeUnit.SECONDS)
-      .build()
+  private var networkCallback: ConnectivityManager.NetworkCallback? = null
+
+  // ── Phase F8.0 — Offline recovery hooks ─────────────────────────
+  // 1. When connectivity returns (mobile data toggled back ON), drain
+  //    every SMS payload that queued up while the device was offline.
+  // 2. When the OS (re)binds the listener, drain too — covers reboots
+  //    and app updates where queued entries may be waiting.
+  override fun onCreate() {
+    super.onCreate()
+    try {
+      val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+      val cb = object : ConnectivityManager.NetworkCallback() {
+        override fun onAvailable(network: Network) {
+          Log.d(TAG, "network=available — flushing pending ingest queue")
+          executor.execute { IngestQueue.flush(applicationContext) }
+        }
+      }
+      cm.registerDefaultNetworkCallback(cb)
+      networkCallback = cb
+      Log.d(TAG, "network callback registered")
+    } catch (e: Exception) {
+      Log.w(TAG, "network callback registration failed: " + (e.message ?: ""))
+    }
+  }
+
+  override fun onDestroy() {
+    try {
+      val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+      networkCallback?.let { cm.unregisterNetworkCallback(it) }
+    } catch (_: Exception) {
+      // no-op
+    }
+    networkCallback = null
+    super.onDestroy()
+  }
+
+  override fun onListenerConnected() {
+    super.onListenerConnected()
+    Log.d(TAG, "listener=connected — flushing pending ingest queue")
+    executor.execute { IngestQueue.flush(applicationContext) }
   }
 
   override fun onNotificationPosted(sbn: StatusBarNotification?) {
@@ -120,9 +151,18 @@ class CourierNotificationListenerService : NotificationListenerService() {
     }
 
     if (senderFilter.isNotEmpty()) {
+      // Phase F8.0 — Multi-courier filter. The React layer joins every
+      // enabled courier's sender-pattern tokens with "|" (e.g.
+      // "INPOST|IPOSTV|IndiaPost|NANDAN"). A notification passes when
+      // ANY token appears in the title+text (case-insensitive) — the
+      // backend per-courier Scanning Rules remain the real gate.
       val haystack = "$title $text".uppercase()
-      val match = haystack.contains(senderFilter.uppercase())
-      Log.d(TAG, "[$sid] gate=sender_filter needle=\"$senderFilter\" match=$match")
+      val needles = senderFilter
+        .split("|")
+        .map { it.trim().uppercase() }
+        .filter { it.isNotEmpty() }
+      val match = needles.isEmpty() || needles.any { haystack.contains(it) }
+      Log.d(TAG, "[" + sid + "] gate=sender_filter needles=" + needles.size + " match=" + match)
       if (!match) return
     } else {
       Log.d(TAG, "[$sid] gate=sender_filter needle=EMPTY — pass-through")
@@ -141,39 +181,31 @@ class CourierNotificationListenerService : NotificationListenerService() {
     val postedAt = try { sbn.postTime } catch (_: Exception) { System.currentTimeMillis() }
 
     executor.execute {
-      val url = "${backendUrl.trimEnd('/')}/api/courier-sync/ingest"
-      Log.d(TAG, "[$sid] http=POST_pre url=$url textLen=${text.length}")
-      try {
-        val payload = JSONObject().apply {
-          put("sender",    title)            // SMS app puts the sender in the title
-          put("title",     title)
-          put("text",      text)
-          put("package",   pkg)
-          put("posted_at", java.time.Instant.ofEpochMilli(postedAt).toString())
-          put("device_id", deviceId)
+      // Phase F8.0 — delivery is routed through IngestQueue so an
+      // offline device (mobile data OFF) never loses an SMS: RETRY
+      // outcomes are persisted and re-sent when connectivity returns
+      // (see onCreate network callback + onListenerConnected).
+      val payload = JSONObject().apply {
+        put("sender",    title)            // SMS app puts the sender in the title
+        put("title",     title)
+        put("text",      text)
+        put("package",   pkg)
+        put("posted_at", java.time.Instant.ofEpochMilli(postedAt).toString())
+        put("device_id", deviceId)
+      }
+      Log.d(TAG, "[" + sid + "] http=POST_pre textLen=" + text.length)
+      when (IngestQueue.post(applicationContext, payload)) {
+        IngestQueue.OUTCOME_OK -> {
+          Log.d(TAG, "[" + sid + "] http=POST_ok — piggyback flush of queued entries")
+          IngestQueue.flush(applicationContext)
         }
-        val req = Request.Builder()
-          .url(url)
-          .addHeader("Authorization", "Bearer $authToken")
-          .addHeader("Content-Type",  "application/json")
-          .post(payload.toString().toRequestBody("application/json".toMediaType()))
-          .build()
-        val started = System.currentTimeMillis()
-        httpClient.newCall(req).execute().use { resp ->
-          val took = System.currentTimeMillis() - started
-          val bodySnippet = try {
-            resp.peekBody(400).string()
-          } catch (_: Exception) { "<unreadable>" }
-          Log.d(
-            TAG,
-            "[$sid] http=POST_response status=${resp.code} tookMs=$took bodyPreview=$bodySnippet",
-          )
-          if (!resp.isSuccessful) {
-            Log.w(TAG, "[$sid] ingest non-2xx: ${resp.code}")
-          }
+        IngestQueue.OUTCOME_RETRY -> {
+          Log.w(TAG, "[" + sid + "] http=POST_retry — queued for later delivery")
+          IngestQueue.enqueue(applicationContext, payload)
         }
-      } catch (e: Exception) {
-        Log.w(TAG, "[$sid] http=POST_exception msg=${e.message} class=${e.javaClass.simpleName}")
+        else -> {
+          Log.w(TAG, "[" + sid + "] http=POST_dropped (permanent rejection)")
+        }
       }
     }
   }

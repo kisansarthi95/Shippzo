@@ -18,13 +18,13 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Stack, router } from "expo-router";
-import AsyncStorage from "@react-native-async-storage/async-storage";
 import PhIcon from "../components/PhIcon";
 import { Api } from "../lib/api";
 import type {
   CourierSyncPartner, CourierSyncEvent, CourierSyncParseResult,
 } from "../lib/api";
 import CourierSyncListener from "../modules/courier-sync-listener";
+import { syncNativeCourierSync } from "../lib/courier_sync_native";
 
 const COLORS = {
   bg:          "#F7F8FA",
@@ -86,48 +86,18 @@ export default function CourierSyncScreen() {
     }
   }, []);
 
-  // Push backend URL + JWT + device id down to the native service so it
-  // can POST /api/courier-sync/ingest without needing the React layer.
-  // Re-fired on every focus so a fresh JWT (after re-login) propagates.
+  // Push backend URL + JWT + device id + ALL enabled couriers' sender
+  // patterns down to the native service so it can POST
+  // /api/courier-sync/ingest without needing the React layer.
+  // Phase F8.0 — routed through the SHARED syncNativeCourierSync()
+  // helper (lib/courier_sync_native.ts) which reads the per-courier
+  // Scanning Rules config, arms the master switch, and drains the
+  // offline SMS queue. Re-fired on every focus so a fresh JWT (after
+  // re-login) propagates.
   const pushIngestConfig = useCallback(async () => {
     if (!CourierSyncListener.isAvailable()) return;
     try {
-      const token =
-        (await AsyncStorage.getItem("@auth_token")) ||
-        (await AsyncStorage.getItem("auth_token")) ||
-        "";
-      const backendUrl =
-        (process.env as any).EXPO_PUBLIC_BACKEND_URL ||
-        (process.env as any).EXPO_PUBLIC_API_URL ||
-        "";
-      let deviceId = await AsyncStorage.getItem("@device_id");
-      if (!deviceId) {
-        deviceId = `dev_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-        await AsyncStorage.setItem("@device_id", deviceId);
-      }
-      if (token && backendUrl) {
-        CourierSyncListener.setIngestConfig({
-          backendUrl,
-          authToken:     token,
-          deviceId,
-          // Phase F4.8 — Real India Post identifier.
-          //
-          // Every legitimate India Post SMS ends with "- IndiaPost"
-          // in the body regardless of the DLT sender prefix used
-          // (VA-INPOST-G / AD-IPOSTA / VM-IPOSTS / etc.) — the
-          // headers vary by telco but the brand tag in the body is
-          // constant. Using "IndiaPost" therefore matches EVERY
-          // real India Post notification via the native listener's
-          // `title + text` substring check, while safely rejecting
-          // unrelated messages.
-          //
-          // The backend regex (backend/courier_sync/india_post.py
-          // `_SENDER_RE`) is kept in lock-step — it accepts both
-          // this identifier AND the legacy IN?POST DLT prefixes so
-          // no historical events are dropped.
-          senderPattern: "IndiaPost",
-        });
-      }
+      await syncNativeCourierSync();
       refreshNativeStatus();
     } catch {
       /* no-op */
@@ -162,9 +132,11 @@ export default function CourierSyncScreen() {
       setPartners((prev) =>
         prev.map((p) => (p.key === partner.key ? { ...p, enabled: next } : p)),
       );
-      // Mirror the toggle to the native service so it can drop / forward
-      // notifications without another round-trip.
-      CourierSyncListener.setEnabled(next);
+      // Phase F8.0 — re-derive the native config (master switch +
+      // sender needles) from ALL enabled sources instead of blindly
+      // mirroring this one toggle (which used to disarm the listener
+      // even when per-courier configs were still enabled).
+      syncNativeCourierSync().catch(() => {});
       refreshNativeStatus();
     } catch (e: any) {
       Alert.alert(

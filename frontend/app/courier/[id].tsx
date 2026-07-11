@@ -8,6 +8,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import * as Clipboard from "expo-clipboard";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { Api, Courier } from "../../lib/api";
+import { syncNativeCourierSync } from "../../lib/courier_sync_native";
 import { cleanPhone } from "../../lib/format";
 import { colors } from "../../lib/theme";
 import { useFeatureFlag } from "../../lib/feature_flags";
@@ -138,6 +139,9 @@ export default function CourierEdit() {
       } else {
         await Api.updateCourier(String(id), payload);
       }
+      // Phase F8.0 — re-arm the Android SMS listener so pattern /
+      // enable changes take effect immediately (fire-and-forget).
+      syncNativeCourierSync().catch(() => {});
       router.back();
     } catch (e: any) {
       // Plan-enforced courier cap hit (silver=1 / gold=2). Backend replies

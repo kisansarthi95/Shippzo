@@ -1,11 +1,9 @@
-"""Tests for the new Courier Sync Status Whitelist + Structured Logging feature.
+"""Tests for the Courier Sync Status Whitelist + Structured Logging feature.
 
-Verifies:
-  A. Parser-level (test-parse): intermediate canonicals return empty shipment_status.
-  B. Ingest-level guard: only Booked/Delivered mutate shipment.status; intermediate
-     events are written to audit with action='ignored_intermediate_status'.
-  C. Audit log contains expected canonical_status + action rows.
-  D. Structured logs in backend.err.log carry per-event correlation id and step markers.
+Phase F8.0 update — "In Transit" is now a whitelisted stage (Stage
+Routing parity with the Delivery Import engine), so transit SMS DO
+mutate shipment.status. Non-whitelisted canonicals (Undelivered, RTO)
+remain audit-only.
 """
 from __future__ import annotations
 
@@ -105,7 +103,7 @@ class TestParserWhitelist:
          True, "Out for Delivery", "Out for Delivery"),
         ("A4", "VA-INPOST-G",
          "Item: EG350860840IN in transit at DELHI - IndiaPost",
-         True, "In Transit", ""),
+         True, "In Transit", "In Transit"),
         ("A5", "VA-INPOST-G",
          "Item: EG350860840IN could not be delivered. - IndiaPost",
          True, "Undelivered", ""),
@@ -164,18 +162,34 @@ class TestIngestWhitelist:
         assert initial != "Delivered", f"Precondition: shipment must not start Delivered, got {initial!r}"
         TestIngestWhitelist._state["initial_status"] = initial
 
-    def test_B1_in_transit_ignored(self, admin_session, test_shipment):
+    def test_B1_in_transit_updates(self, admin_session, test_shipment):
+        """Phase F8.0 — In Transit is whitelisted now and MUST move the
+        shipment into the In Transit stage (Stage Routing parity)."""
         d = self._ingest(
             admin_session,
             f"Item: {TEST_AWB} in transit at DELHI - IndiaPost",
         )
         TestIngestWhitelist._state["ingest_results"]["B1"] = d
-        assert d.get("action") == "ignored_intermediate_status", f"B1: {d}"
+        assert d.get("action") == "updated", f"B1: {d}"
         assert d.get("canonical") == "In Transit", f"B1 canonical: {d}"
+        assert d.get("new_status") == "In Transit", f"B1 new_status: {d}"
         ship = _get_shipment(admin_session, test_shipment["id"])
-        assert ship.get("status") == TestIngestWhitelist._state["initial_status"], (
-            f"B1: shipment status changed unexpectedly. Initial="
-            f"{TestIngestWhitelist._state['initial_status']!r}, now={ship.get('status')!r}"
+        assert ship.get("status") == "In Transit", (
+            f"B1: shipment status must be In Transit, got {ship.get('status')!r}"
+        )
+
+    def test_B1b_undelivered_ignored(self, admin_session, test_shipment):
+        """Undelivered stays NON-whitelisted — audit-only, no status change."""
+        d = self._ingest(
+            admin_session,
+            f"Item: {TEST_AWB} could not be delivered. - IndiaPost",
+        )
+        TestIngestWhitelist._state["ingest_results"]["B1b"] = d
+        assert d.get("action") == "ignored_intermediate_status", f"B1b: {d}"
+        assert d.get("canonical") == "Undelivered", f"B1b canonical: {d}"
+        ship = _get_shipment(admin_session, test_shipment["id"])
+        assert ship.get("status") == "In Transit", (
+            f"B1b: shipment status changed unexpectedly, now={ship.get('status')!r}"
         )
 
     def test_B2_out_for_delivery_updates(self, admin_session, test_shipment):
@@ -241,10 +255,11 @@ class TestIngestWhitelist:
         ship_events = [e for e in all_events if e.get("shipment_id") == test_shipment["id"]]
 
         expected = {
-            "B1": ("In Transit", "ignored_intermediate_status"),
-            "B2": ("Out for Delivery", "updated"),
-            "B3": ("Booked", "updated"),
-            "B4": ("Delivered", "updated"),
+            "B1":  ("In Transit", "updated"),
+            "B1b": ("Undelivered", "ignored_intermediate_status"),
+            "B2":  ("Out for Delivery", "updated"),
+            "B3":  ("Booked", "updated"),
+            "B4":  ("Delivered", "updated"),
         }
         for tag, (canon, action) in expected.items():
             evt_id = TestIngestWhitelist._state["ingest_results"][tag].get("event_id")
@@ -305,19 +320,19 @@ class TestStructuredLogs:
             f"B3 missing log markers {missing}.\nLines found for evt={prefix}:\n{joined}"
         )
 
-    def test_D2_b1_skip_marker(self, admin_session):
-        b1 = TestIngestWhitelist._state["ingest_results"].get("B1")
-        assert b1, "B1 must run first"
-        event_id = b1["event_id"]
+    def test_D2_b1b_skip_marker(self, admin_session):
+        b1b = TestIngestWhitelist._state["ingest_results"].get("B1b")
+        assert b1b, "B1b must run first"
+        event_id = b1b["event_id"]
         prefix = event_id[:8]
         time.sleep(0.5)
         log = self._read_log_tail()
         lines = [ln for ln in log.splitlines() if f"evt={prefix}" in ln]
-        assert lines, f"No log lines for B1 evt={prefix}"
+        assert lines, f"No log lines for B1b evt={prefix}"
         joined = "\n".join(lines)
         assert "step=6 update_decision=SKIP" in joined, (
-            f"B1: missing SKIP decision line.\n{joined}"
+            f"B1b: missing SKIP decision line.\n{joined}"
         )
         assert "ignored_intermediate_status" in joined, (
-            f"B1: missing ignored_intermediate_status reason.\n{joined}"
+            f"B1b: missing ignored_intermediate_status reason.\n{joined}"
         )

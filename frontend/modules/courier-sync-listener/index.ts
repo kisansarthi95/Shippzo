@@ -30,10 +30,18 @@ type ListenerStatus = {
   permissionGranted: boolean;  // has the user enabled Notification Access?
   ingestConfigured: boolean;   // do we have a backendUrl + authToken cached?
   enabled: boolean;            // master switch — false suppresses forwarding
+  pendingQueueCount?: number;  // SMS payloads queued while offline (F8.0)
+};
+
+/** Payload of the "onIngestResult" event — fired after every
+ *  SUCCESSFUL POST to /api/courier-sync/ingest (incl. queued retries). */
+type IngestResultEvent = {
+  status: number;   // HTTP status (2xx)
+  body: string;     // raw response body (JSON string with action/shipment_id)
 };
 
 interface CourierSyncListenerEvents {
-  // Reserved for future: "onIngestResult" with delivery stats.
+  onIngestResult(event: IngestResultEvent): void;
 }
 
 declare class CourierSyncListenerNativeModule extends NativeModule<CourierSyncListenerEvents> {
@@ -43,6 +51,8 @@ declare class CourierSyncListenerNativeModule extends NativeModule<CourierSyncLi
   setIngestConfig(cfg: IngestConfig): void;
   setEnabled(enabled: boolean): void;
   getStatus(): ListenerStatus;
+  flushPendingQueue(): void;
+  getPendingQueueCount(): number;
 }
 
 // `requireOptionalNativeModule` returns null when the native module is not
@@ -127,7 +137,48 @@ export const CourierSyncListener = {
       return { ...FALLBACK_STATUS };
     }
   },
+
+  /**
+   * Phase F8.0 — retry-deliver any SMS payloads that queued up while
+   * the device was offline. Fire-and-forget (native does the HTTP on
+   * a background thread).
+   */
+  flushPendingQueue(): void {
+    if (!CourierSyncListener.isAvailable()) return;
+    try {
+      NativeMod!.flushPendingQueue();
+    } catch {
+      /* no-op */
+    }
+  },
+
+  /** Number of SMS payloads waiting for connectivity. */
+  getPendingQueueCount(): number {
+    if (!CourierSyncListener.isAvailable()) return 0;
+    try {
+      return NativeMod!.getPendingQueueCount() || 0;
+    } catch {
+      return 0;
+    }
+  },
+
+  /**
+   * Phase F8.0 — subscribe to successful ingest results so open
+   * screens can refetch the moment an SMS updates a shipment.
+   * Returns a subscription with `.remove()`, or null when the native
+   * module is absent (Expo Go / iOS / web).
+   */
+  addIngestResultListener(
+    cb: (e: IngestResultEvent) => void,
+  ): { remove: () => void } | null {
+    if (!CourierSyncListener.isAvailable()) return null;
+    try {
+      return NativeMod!.addListener("onIngestResult", cb);
+    } catch {
+      return null;
+    }
+  },
 };
 
-export type { IngestConfig, ListenerStatus };
+export type { IngestConfig, ListenerStatus, IngestResultEvent };
 export default CourierSyncListener;

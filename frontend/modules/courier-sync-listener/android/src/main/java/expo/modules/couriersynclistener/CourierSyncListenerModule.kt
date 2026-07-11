@@ -31,6 +31,22 @@ class CourierSyncListenerModule : Module() {
   override fun definition() = ModuleDefinition {
     Name("CourierSyncListener")
 
+    // Phase F8.0 — fired by IngestQueue after each SUCCESSFUL POST to
+    // /api/courier-sync/ingest. Open screens (Shipments list, Shipment
+    // Details) subscribe and refetch, so the UI refreshes THE MOMENT
+    // an SMS lands — no polling.
+    Events("onIngestResult")
+
+    OnCreate {
+      activeModule = this@CourierSyncListenerModule
+    }
+
+    OnDestroy {
+      if (activeModule === this@CourierSyncListenerModule) {
+        activeModule = null
+      }
+    }
+
     Function("isAvailable") {
       // Always true on Android 24+ — we ship the service in this module.
       Build.VERSION.SDK_INT >= Build.VERSION_CODES.N
@@ -94,7 +110,28 @@ class CourierSyncListenerModule : Module() {
         "permissionGranted" to isNotificationListenerEnabled(ctx),
         "ingestConfigured"  to (urlOk && tokenOk),
         "enabled"           to (prefs?.getBoolean(KEY_ENABLED, false) ?: false),
+        "pendingQueueCount" to (ctx?.let { IngestQueue.count(it.applicationContext) } ?: 0),
       )
+    }
+
+    // Phase F8.0 — drain any SMS payloads that queued up while the
+    // device was offline. Called by the React layer on app open /
+    // foreground so a fresh JWT is already persisted before retrying.
+    Function("flushPendingQueue") {
+      val ctx = appContext.reactContext ?: return@Function null
+      Thread {
+        try {
+          IngestQueue.flush(ctx.applicationContext)
+        } catch (_: Exception) {
+          // never crash the bridge
+        }
+      }.start()
+      null
+    }
+
+    Function("getPendingQueueCount") {
+      val ctx = appContext.reactContext ?: return@Function 0
+      IngestQueue.count(ctx.applicationContext)
     }
   }
 
@@ -105,6 +142,20 @@ class CourierSyncListenerModule : Module() {
     const val KEY_DEVICE_ID      = "device_id"
     const val KEY_SENDER_PATTERN = "sender_pattern"
     const val KEY_ENABLED        = "enabled"
+
+    // Phase F8.0 — live module instance for service→JS event delivery.
+    // Null whenever the React runtime is not up (app killed); the
+    // emit is then a silent no-op and screens refresh on next focus.
+    @Volatile
+    private var activeModule: CourierSyncListenerModule? = null
+
+    fun emitIngestResult(data: Map<String, Any?>) {
+      try {
+        activeModule?.sendEvent("onIngestResult", data)
+      } catch (_: Exception) {
+        // no-op — never let a JS-bridge hiccup break SMS delivery
+      }
+    }
 
     fun isNotificationListenerEnabled(ctx: Context?): Boolean {
       if (ctx == null) return false

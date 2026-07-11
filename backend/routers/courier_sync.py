@@ -31,6 +31,7 @@ from pydantic import BaseModel, Field
 
 import courier_sync as _cs_pkg  # noqa: WPS433 — local pkg
 from courier_sync import generic_parser as _generic_parser  # noqa: WPS433 — local pkg
+from routers.shipment_import import apply_last_event_engine  # noqa: WPS433 — shared engine
 
 _logger = logging.getLogger("routers.courier_sync")
 
@@ -577,6 +578,19 @@ def init() -> None:
         )
 
         # ── Step 6: build update set ───────────────────────────────
+        # Phase F8.0 — the status/side-effect application now runs
+        # through the SAME Shipment Update Engine used by the Booking
+        # / Delivery / COD imports (apply_last_event_engine in
+        # routers/shipment_import.py). The SMS body acts as the raw
+        # Last Event, so card badges, stage routing, delivered_at,
+        # confirmation_status and booking_date behave identically to
+        # a Delivery Import row. Status itself remains rule-driven —
+        # whatever the courier's configured Scanning Rule says.
+        raw_sms_body = " ".join(
+            s for s in (payload.title, payload.text) if s
+        ).strip()
+        event_dt = str(result.get("event_date") or "")
+
         update_set: Dict[str, Any] = {
             "last_courier_status_text":     canonical,
             "last_courier_status_at":       now_iso,
@@ -585,12 +599,25 @@ def init() -> None:
             "updated_at":                   now_iso,
         }
         push_ops: Dict[str, Any] = {}
-        if new_status and current_status != new_status:
-            update_set["status"] = new_status
-        if canonical == "Delivered" and not ship.get("delivered_at"):
-            update_set["delivered_at"] = (
-                result.get("event_date") or now_iso
-            )
+
+        engine_status = new_status if (new_status and current_status != new_status) else None
+        ev_cat_final = apply_last_event_engine(
+            ship, update_set,
+            raw_event=raw_sms_body[:300],
+            now=now_iso,
+            source="sms",
+            status_override=engine_status,
+            category_fallback=canonical,
+            event_dt=event_dt,
+        )
+        _logger.info(
+            "%s step=6a engine_applied ev_cat=%r event_dt=%r "
+            "booking_date_set=%s delivered_at_set=%s confirm_set=%s",
+            log_tag, ev_cat_final, event_dt,
+            "booking_date" in update_set,
+            "delivered_at" in update_set,
+            "confirmation_status" in update_set,
+        )
 
         # ── Out for Delivery — append attempt history + set anchor. ───
         # First-attempt anchor `out_for_delivery_at` is only set if
@@ -599,20 +626,21 @@ def init() -> None:
         # the timer keeps counting from the original OFD moment.
         if canonical == "Out for Delivery":
             postman = result.get("postman") or {}
-            attempt_iso = (
-                result.get("event_date") or now_iso
-            )
+            attempt_iso = event_dt or now_iso
             attempt_entry = {
                 "postman_name":  str(postman.get("postman_name") or ""),
                 "beat":          str(postman.get("beat") or ""),
                 "attempted_on":  str(attempt_iso),
                 "received_at":   now_iso,
                 "raw_phrase":    (result.get("matched_phrase") or "")[:80],
+                # Phase F8.0 — persist the COMPLETE original OFD event
+                # so Shipment Details can show the full SMS verbatim.
+                "raw_message":   raw_sms_body[:500],
             }
             push_ops["out_for_delivery_history"] = attempt_entry
             update_set["last_delivery_person"]     = attempt_entry["postman_name"]
             update_set["last_delivery_beat"]       = attempt_entry["beat"]
-            update_set["last_delivery_attempt_at"] = now_iso
+            update_set["last_delivery_attempt_at"] = attempt_iso
             update_set["delivery_attempt_count"]   = int(
                 ship.get("delivery_attempt_count") or 0,
             ) + 1
@@ -627,7 +655,12 @@ def init() -> None:
         if canonical == "Delivered":
             update_set["ofd_alert_fired_at"] = None
 
-        meaningful_fields = {"status", "delivered_at", "out_for_delivery_at"}
+        meaningful_fields = {
+            "status", "delivered_at", "out_for_delivery_at",
+            # Phase F8.0 — engine side-effects are user-visible too.
+            "booking_date", "confirmation_status",
+            "last_event_category", "needs_return_review",
+        }
         meaningful_change = any(
             (k in update_set and update_set[k] != ship.get(k))
             for k in meaningful_fields

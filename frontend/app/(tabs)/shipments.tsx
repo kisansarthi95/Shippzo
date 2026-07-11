@@ -15,6 +15,7 @@ import { useFocusEffect, useRouter, useLocalSearchParams } from "expo-router";
 // (Phase F4.6). No longer imported here.
 import { Api, Shipment, Settings, Courier } from "../../lib/api";
 import { SyncQueue } from "../../lib/syncQueue";
+import CourierSyncListener from "../../modules/courier-sync-listener";
 import {
   StatusFilter,
   DateFilter,
@@ -482,6 +483,22 @@ export default function Shipments() {
     loadNeedConfirm().catch(() => {});
     loadLabels().catch(() => {});
   }, [load, loadNeedConfirm, loadLabels]));
+
+  // ── Phase F8.0 — Event-driven refresh from SMS auto-sync. ────
+  // The Android NotificationListener fires "onIngestResult" after a
+  // courier SMS successfully updates a shipment on the backend. We
+  // refetch immediately so the list, tab counters and stage badges
+  // reflect the change the moment the SMS lands (no polling).
+  // No-ops on iOS / web / Expo Go (listener returns null).
+  useEffect(() => {
+    const sub = CourierSyncListener.addIngestResultListener(() => {
+      load().catch(() => {});
+      loadNeedConfirm().catch(() => {});
+    });
+    return () => {
+      try { sub?.remove(); } catch { /* no-op */ }
+    };
+  }, [load, loadNeedConfirm]);
 
   // Handle deep-link params from Dashboard quick actions.
   React.useEffect(() => {

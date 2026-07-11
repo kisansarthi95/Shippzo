@@ -38,25 +38,60 @@ from typing import Any, Dict, List, Optional
 
 
 # --------------------------------------------------------------------
-# Reusable extractors (identical to the legacy india_post module)
+# Reusable extractors (shared with the legacy india_post module)
 # --------------------------------------------------------------------
-_DATE_RE = re.compile(r"\b(20\d{2}-\d{2}-\d{2})\b")
+# Phase F8.0 — date AND time extraction. India Post templates carry
+# BOTH shapes:
+#   • "has been booked on 2026-07-10 14:53:40"      (YYYY-MM-DD HH:MM:SS)
+#   • "is Successful on 10-07-2026 20:42:19"        (DD-MM-YYYY HH:MM:SS)
+#   • "on 2026-07-10 - IndiaPost"                   (date only)
+# DD-MM is treated day-first (Indian convention — matches the
+# behaviour of import_schema.normalise_timestamp used by imports).
+_DT_RE = re.compile(
+    r"\b(?:"
+    r"(20\d{2})-(\d{1,2})-(\d{1,2})"           # 1-3: YYYY-MM-DD
+    r"|"
+    r"(\d{1,2})[-/](\d{1,2})[-/](20\d{2})"     # 4-6: DD-MM-YYYY / DD/MM/YYYY
+    r")"
+    r"(?:[ T,]+(\d{1,2}):(\d{2})(?::(\d{2}))?)?"  # 7-9: optional HH:MM[:SS]
+)
 _POSTMAN_RE = re.compile(
-    r"by\s*-\s*([A-Z][A-Za-z .\-]+?)\s*\((BEAT_\d+)\)",
+    r"by\s*-\s*([A-Z][A-Za-z .\-]+?)\s*\((BEAT_\w+)\)",
 )
 
 
-def _parse_event_date(text: str) -> Optional[str]:
+def parse_event_datetime(text: str) -> Optional[str]:
+    """Extract the FIRST valid date (+ optional time) from `text`.
+
+    Returns ISO string:
+      • "YYYY-MM-DD"            when the SMS carries no clock, or
+      • "YYYY-MM-DDTHH:MM:SS"   when hours/minutes are present.
+    None when nothing parseable is found.
+    """
     if not text:
         return None
-    m = _DATE_RE.search(text)
-    if not m:
-        return None
-    try:
-        datetime.strptime(m.group(1), "%Y-%m-%d")
-        return m.group(1)
-    except ValueError:
-        return None
+    for m in _DT_RE.finditer(text):
+        try:
+            if m.group(1):   # YYYY-MM-DD
+                y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
+            else:            # DD-MM-YYYY (day-first)
+                d, mo, y = int(m.group(4)), int(m.group(5)), int(m.group(6))
+            hh = int(m.group(7)) if m.group(7) else None
+            mi = int(m.group(8)) if m.group(8) else 0
+            ss = int(m.group(9)) if m.group(9) else 0
+            if hh is None:
+                dt = datetime(y, mo, d)
+                return dt.strftime("%Y-%m-%d")
+            dt = datetime(y, mo, d, hh, mi, ss)
+            return dt.strftime("%Y-%m-%dT%H:%M:%S")
+        except ValueError:
+            continue   # e.g. 2026-13-40 → try the next candidate
+    return None
+
+
+def _parse_event_date(text: str) -> Optional[str]:
+    """Back-compat alias — now returns full datetime when available."""
+    return parse_event_datetime(text)
 
 
 def _parse_postman(text: str) -> Optional[Dict[str, str]]:
@@ -310,6 +345,10 @@ INDIA_POST_DEFAULT_CONFIG: Dict[str, Any] = {
         # the bare "delivered" rule below otherwise).
         {"keyword": r"could\s+not\s+be\s+delivered",
          "canonical_status": "Undelivered",       "shipment_status": "",                 "whitelisted": False},
+        # Phase F8.0 — "Delivery attempt … is Unsuccessful" template.
+        # MUST come before the bare \bsuccessful\b rule below.
+        {"keyword": r"\bunsuccessful\b",
+         "canonical_status": "Undelivered",       "shipment_status": "",                 "whitelisted": False},
         {"keyword": r"undelivered",
          "canonical_status": "Undelivered",       "shipment_status": "",                 "whitelisted": False},
         {"keyword": r"return(ed)?\s+to\s+sender",
@@ -318,16 +357,19 @@ INDIA_POST_DEFAULT_CONFIG: Dict[str, Any] = {
          "canonical_status": "RTO",               "shipment_status": "",                 "whitelisted": False},
         {"keyword": r"out\s+for\s+delivery",
          "canonical_status": "Out for Delivery",  "shipment_status": "Out for Delivery", "whitelisted": True},
+        # Phase F8.0 — "In Transit" is a real shipment stage now (Stage
+        # Routing F7.7). Transit SMS therefore route the shipment into
+        # the In Transit stage, same as the Delivery Import engine.
         {"keyword": r"in\s+transit",
-         "canonical_status": "In Transit",        "shipment_status": "",                 "whitelisted": False},
+         "canonical_status": "In Transit",        "shipment_status": "In Transit",       "whitelisted": True},
         {"keyword": r"dispatched",
-         "canonical_status": "In Transit",        "shipment_status": "",                 "whitelisted": False},
+         "canonical_status": "In Transit",        "shipment_status": "In Transit",       "whitelisted": True},
         {"keyword": r"arrived\s+at",
-         "canonical_status": "In Transit",        "shipment_status": "",                 "whitelisted": False},
+         "canonical_status": "In Transit",        "shipment_status": "In Transit",       "whitelisted": True},
         {"keyword": r"received\s+at",
-         "canonical_status": "In Transit",        "shipment_status": "",                 "whitelisted": False},
+         "canonical_status": "In Transit",        "shipment_status": "In Transit",       "whitelisted": True},
         {"keyword": r"bag\s+received",
-         "canonical_status": "In Transit",        "shipment_status": "",                 "whitelisted": False},
+         "canonical_status": "In Transit",        "shipment_status": "In Transit",       "whitelisted": True},
         {"keyword": r"has\s+been\s+delivered",
          "canonical_status": "Delivered",         "shipment_status": "Delivered",        "whitelisted": True},
         {"keyword": r"\bdelivered\b",
@@ -336,6 +378,13 @@ INDIA_POST_DEFAULT_CONFIG: Dict[str, Any] = {
          "canonical_status": "Booked",            "shipment_status": "Shipped",          "whitelisted": True},
         {"keyword": r"\bbooked\b",
          "canonical_status": "Booked",            "shipment_status": "Shipped",          "whitelisted": True},
+        # Phase F8.0 — "Delivery attempt for SP… No: XX is Successful
+        # on 10-07-2026 20:42:19 - IndiaPost". No "delivered" word in
+        # this template, so it needs its own rule. Kept LAST so it can
+        # never shadow more specific phrasings above. \b guarantees
+        # "Unsuccessful" does NOT match.
+        {"keyword": r"\bsuccessful\b",
+         "canonical_status": "Delivered",         "shipment_status": "Delivered",        "whitelisted": True},
     ],
 }
 
@@ -360,6 +409,8 @@ def _common_status_rules(extra_prefix: Optional[List[Dict[str, Any]]] = None) ->
         # Negatives first — must not be masked by the bare "delivered".
         {"keyword": r"could\s+not\s+be\s+delivered",
          "canonical_status": "Undelivered",       "shipment_status": "",                 "whitelisted": False},
+        {"keyword": r"\bunsuccessful\b",
+         "canonical_status": "Undelivered",       "shipment_status": "",                 "whitelisted": False},
         {"keyword": r"undelivered",
          "canonical_status": "Undelivered",       "shipment_status": "",                 "whitelisted": False},
         {"keyword": r"return(ed)?\s+to\s+(sender|origin|shipper)",
@@ -369,13 +420,13 @@ def _common_status_rules(extra_prefix: Optional[List[Dict[str, Any]]] = None) ->
         {"keyword": r"out\s+for\s+delivery",
          "canonical_status": "Out for Delivery",  "shipment_status": "Out for Delivery", "whitelisted": True},
         {"keyword": r"in\s+transit",
-         "canonical_status": "In Transit",        "shipment_status": "",                 "whitelisted": False},
+         "canonical_status": "In Transit",        "shipment_status": "In Transit",       "whitelisted": True},
         {"keyword": r"dispatched",
-         "canonical_status": "In Transit",        "shipment_status": "",                 "whitelisted": False},
+         "canonical_status": "In Transit",        "shipment_status": "In Transit",       "whitelisted": True},
         {"keyword": r"arrived\s+at",
-         "canonical_status": "In Transit",        "shipment_status": "",                 "whitelisted": False},
+         "canonical_status": "In Transit",        "shipment_status": "In Transit",       "whitelisted": True},
         {"keyword": r"reached\s+at",
-         "canonical_status": "In Transit",        "shipment_status": "",                 "whitelisted": False},
+         "canonical_status": "In Transit",        "shipment_status": "In Transit",       "whitelisted": True},
         {"keyword": r"has\s+been\s+delivered",
          "canonical_status": "Delivered",         "shipment_status": "Delivered",        "whitelisted": True},
         {"keyword": r"\bdelivered\b",
@@ -384,6 +435,8 @@ def _common_status_rules(extra_prefix: Optional[List[Dict[str, Any]]] = None) ->
          "canonical_status": "Booked",            "shipment_status": "Shipped",          "whitelisted": True},
         {"keyword": r"\b(shipped|manifested|picked\s+up|booked)\b",
          "canonical_status": "Booked",            "shipment_status": "Shipped",          "whitelisted": True},
+        {"keyword": r"\bsuccessful\b",
+         "canonical_status": "Delivered",         "shipment_status": "Delivered",        "whitelisted": True},
     ]
     if extra_prefix:
         # Prepend courier-specific rules so they win match order.
@@ -511,7 +564,7 @@ def canonical_status_choices() -> List[Dict[str, str]]:
     can map to. Kept in sync with the shipment.status vocabulary."""
     return [
         {"label": "Booked (→ Shipped)",       "canonical": "Booked",             "shipment": "Shipped",             "whitelisted": True},
-        {"label": "In Transit",               "canonical": "In Transit",         "shipment": "",                    "whitelisted": False},
+        {"label": "In Transit",               "canonical": "In Transit",         "shipment": "In Transit",          "whitelisted": True},
         {"label": "Out for Delivery",         "canonical": "Out for Delivery",   "shipment": "Out for Delivery",    "whitelisted": True},
         {"label": "Delivered",                "canonical": "Delivered",          "shipment": "Delivered",           "whitelisted": True},
         {"label": "Undelivered",              "canonical": "Undelivered",        "shipment": "",                    "whitelisted": False},

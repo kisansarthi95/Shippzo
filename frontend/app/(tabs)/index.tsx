@@ -23,6 +23,7 @@ import * as Clipboard from "expo-clipboard";
 import * as ImagePicker from "expo-image-picker";
 import * as ImageManipulator from "expo-image-manipulator";
 import { Api, Shipment } from "../../lib/api";
+import CourierSyncListener from "../../modules/courier-sync-listener";
 import { colors } from "../../lib/theme";
 import UsageMeter from "../../components/UsageMeter";
 import HomeAlerts from "../../components/HomeAlerts";
@@ -140,6 +141,17 @@ export default function Dashboard() {
       load().catch(() => {});
     }, [load])
   );
+
+  // Phase F8.0 — refresh dashboard counters the moment a courier SMS
+  // auto-sync event updates a shipment (Android only; no-op elsewhere).
+  useEffect(() => {
+    const sub = CourierSyncListener.addIngestResultListener(() => {
+      load().catch(() => {});
+    });
+    return () => {
+      try { sub?.remove(); } catch { /* no-op */ }
+    };
+  }, [load]);
 
   const onRefresh = useCallback(() => {
     setRefreshing(true);

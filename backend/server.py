@@ -796,6 +796,19 @@ class Shipment(BaseModel):
     complaint_created_at:         Optional[str]  = ""
     complaint_updated_at:         Optional[str]  = ""
 
+    # Phase F7.6 — Booking date/time. Written by the Booking import,
+    # the Delivery-import mapper AND (Phase F8.0) the courier-sync SMS
+    # ingest ("has been booked on 2026-07-10 14:53:40" templates).
+    # Only ever set when currently empty — first writer wins.
+    booking_date:                 Optional[str]  = ""
+
+    # Phase F7.7 — "Item Delivered(Sender)" RTS review flag. Set by the
+    # shared Shipment Update Engine (delivery import + SMS ingest).
+    # Never auto-moves the shipment — drives the "Return Review"
+    # priority badge until the operator confirms.
+    needs_return_review:          Optional[bool] = False
+    return_review_at:             Optional[str]  = ""
+
 
 class ShipmentCreate(BaseModel):
     tracking_id: str
@@ -6095,6 +6108,68 @@ async def on_startup():
             logger.info("India Post auto_sync migration seeded %d courier(s).", migrated)
     except Exception:
         logger.exception("India Post auto_sync migration failed (non-fatal)")
+
+    # Phase F8.0 — SMS Scanning-Rules upgrade migration (idempotent).
+    # Patches EXISTING courier auto_sync_status_rules in-place:
+    #   1. Adds the "Unsuccessful" (→ Undelivered) and "Successful"
+    #      (→ Delivered) rules needed for the India Post
+    #      "Delivery attempt … is Successful/Unsuccessful" templates
+    #      — ONLY when the courier has no successful-keyword rule yet
+    #      (never clobbers operator-customised rule sets).
+    #   2. Upgrades "In Transit" rules that still have an empty
+    #      shipment_status to route into the new In Transit stage
+    #      (Stage Routing F7.7 parity with the Delivery Import).
+    # Runs on every startup; second run is a no-op.
+    try:
+        cursor = db.couriers.find(
+            {"auto_sync_status_rules.0": {"$exists": True}},
+            {"_id": 0, "id": 1, "name": 1, "auto_sync_status_rules": 1},
+        )
+        patched = 0
+        async for c in cursor:
+            rules = list(c.get("auto_sync_status_rules") or [])
+            changed = False
+            all_kw = " ".join(
+                str(r.get("keyword") or "") for r in rules
+            ).lower()
+            if "successful" not in all_kw:
+                rules.insert(0, {
+                    "keyword":          r"\bunsuccessful\b",
+                    "canonical_status": "Undelivered",
+                    "shipment_status":  "",
+                    "whitelisted":      False,
+                })
+                rules.append({
+                    "keyword":          r"\bsuccessful\b",
+                    "canonical_status": "Delivered",
+                    "shipment_status":  "Delivered",
+                    "whitelisted":      True,
+                })
+                changed = True
+            for r in rules:
+                if (
+                    str(r.get("canonical_status") or "") == "In Transit"
+                    and not str(r.get("shipment_status") or "").strip()
+                ):
+                    r["shipment_status"] = "In Transit"
+                    r["whitelisted"] = True
+                    changed = True
+            if changed:
+                await db.couriers.update_one(
+                    {"id": c["id"]},
+                    {"$set": {
+                        "auto_sync_status_rules": rules,
+                        "updated_at":             utcnow_iso(),
+                    }},
+                )
+                patched += 1
+        if patched:
+            logger.info(
+                "F8.0 SMS scanning-rules migration patched %d courier(s).",
+                patched,
+            )
+    except Exception:
+        logger.exception("F8.0 SMS scanning-rules migration failed (non-fatal)")
 
     logger.info("Courier Label Manager API started; defaults seeded.")
 

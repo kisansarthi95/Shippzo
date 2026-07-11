@@ -3,7 +3,7 @@ import PhIcon from "../components/PhIcon";
 import { Stack, useRouter, useSegments } from "expo-router";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { StatusBar } from "expo-status-bar";
-import { Platform, View, ActivityIndicator, Text, LogBox } from "react-native";
+import { Platform, View, ActivityIndicator, Text, LogBox, AppState } from "react-native";
 import * as SplashScreen from "expo-splash-screen";
 import { useFonts } from "expo-font";
 import { AuthProvider, useAuth } from "../lib/auth";
@@ -11,6 +11,7 @@ import { Api } from "../lib/api";
 import { FeatureFlagsProvider } from "../lib/feature_flags";
 import { PermissionsProvider } from "../lib/permissions";
 import ErrorBoundary from "../components/ErrorBoundary";
+import { syncNativeCourierSync } from "../lib/courier_sync_native";
 
 import OfflineBanner from "../components/OfflineBanner";
 
@@ -290,9 +291,39 @@ function AuthGate({ children }: { children: React.ReactNode }) {
   return (
     <>
       <NotificationDeepLinker />
+      <CourierSyncNativeBridge />
       {children}
     </>
   );
+}
+
+/**
+ * Phase F8.0 — keeps the Android SMS NotificationListener armed.
+ *
+ * Root-cause fix: the native listener's config (backend URL, JWT,
+ * sender patterns, master switch) used to be pushed ONLY from the
+ * /courier-sync screen, so for most sessions the service dropped every
+ * SMS at its `enabled`/`config_present` gates. This bridge re-syncs:
+ *   • right after login / app start,
+ *   • every time the app returns to the foreground (also drains the
+ *     offline SMS queue the moment data comes back + app opens).
+ * No-ops entirely on iOS / web / Expo Go.
+ */
+function CourierSyncNativeBridge() {
+  const { user } = useAuth();
+
+  useEffect(() => {
+    if (!user || Platform.OS !== "android") return;
+    syncNativeCourierSync().catch(() => {});
+    const sub = AppState.addEventListener("change", (st) => {
+      if (st === "active") syncNativeCourierSync().catch(() => {});
+    });
+    return () => {
+      try { sub.remove(); } catch { /* no-op */ }
+    };
+  }, [user]);
+
+  return null;
 }
 
 /**

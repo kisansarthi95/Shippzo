@@ -82,7 +82,9 @@ _POSTMAN_RE = re.compile(
 # the whitelist for Phase 1 (manual confirmation required) and may
 # be added in a later phase.
 # --------------------------------------------------------------------
-STATUS_UPDATE_WHITELIST: frozenset[str] = frozenset({"Booked", "Out for Delivery", "Delivered"})
+STATUS_UPDATE_WHITELIST: frozenset[str] = frozenset({
+    "Booked", "In Transit", "Out for Delivery", "Delivered",
+})
 
 # --------------------------------------------------------------------
 # Status keyword map  (canonical_status, shipment_status)
@@ -98,25 +100,29 @@ _STATUS_RULES = [
     # phrase                             canonical            ship status
     # ── Negative / RTO phrasings first (would false-match "delivered" below)
     (r"could\s+not\s+be\s+delivered",    "Undelivered",       ""),
+    # Phase F8.0 — "Delivery attempt … is Unsuccessful" template.
+    (r"\bunsuccessful\b",                "Undelivered",       ""),
     (r"undelivered",                     "Undelivered",       ""),
     (r"return(ed)?\s+to\s+sender",       "RTO",               ""),
     (r"\brto\b",                         "RTO",               ""),
-    # ── Intermediate transit / scan events — parsed but ignored
-    # Note: "Out for Delivery" IS whitelisted (see STATUS_UPDATE_WHITELIST)
-    #       so we DO set shipment_status="Out for Delivery" — the router
-    #       then also appends to `out_for_delivery_history` with postman
-    #       details for the 2-hour SLA alert.
+    # ── Whitelisted stages (see STATUS_UPDATE_WHITELIST above).
+    # Phase F8.0 — "In Transit" is a real shipment stage now (Stage
+    # Routing F7.7) so transit scans route the shipment accordingly,
+    # mirroring the Delivery Import engine.
     (r"out\s+for\s+delivery",            "Out for Delivery",  "Out for Delivery"),
-    (r"in\s+transit",                    "In Transit",        ""),
-    (r"dispatched",                      "In Transit",        ""),
-    (r"arrived\s+at",                    "In Transit",        ""),
-    (r"received\s+at",                   "In Transit",        ""),
-    (r"bag\s+received",                  "In Transit",        ""),
-    # ── Whitelisted terminal/initial statuses that DO mutate shipment.status
+    (r"in\s+transit",                    "In Transit",        "In Transit"),
+    (r"dispatched",                      "In Transit",        "In Transit"),
+    (r"arrived\s+at",                    "In Transit",        "In Transit"),
+    (r"received\s+at",                   "In Transit",        "In Transit"),
+    (r"bag\s+received",                  "In Transit",        "In Transit"),
     (r"has\s+been\s+delivered",          "Delivered",         "Delivered"),
     (r"\bdelivered\b",                   "Delivered",         "Delivered"),
     (r"has\s+been\s+booked",             "Booked",            "Shipped"),
     (r"\bbooked\b",                      "Booked",            "Shipped"),
+    # Phase F8.0 — "Delivery attempt for SP… is Successful on
+    # 10-07-2026 20:42:19 - IndiaPost" carries no "delivered" word.
+    # Kept LAST so it never shadows more specific phrasings.
+    (r"\bsuccessful\b",                  "Delivered",         "Delivered"),
 ]
 _STATUS_RULES = [(re.compile(p, re.IGNORECASE), c, s) for (p, c, s) in _STATUS_RULES]
 
@@ -169,21 +175,14 @@ def classify_status(text: str) -> tuple[str, str, str]:
 
 
 def _parse_event_date(text: str) -> Optional[str]:
-    """Extract YYYY-MM-DD from the SMS and return ISO date string
-    (no time component — India Post SMS rarely carries the clock).
-    Returns None if no date is found.
+    """Extract the first date (+ optional time) from the SMS.
+
+    Phase F8.0 — delegates to the shared generic extractor so BOTH
+    parsers (legacy + per-courier) return identical ISO stamps and
+    the newer DD-MM-YYYY HH:MM:SS India Post templates parse too.
     """
-    if not text:
-        return None
-    m = _DATE_RE.search(text)
-    if not m:
-        return None
-    try:
-        # Validate it's a real date (rejects 2026-13-40 etc.)
-        datetime.strptime(m.group(1), "%Y-%m-%d")
-        return m.group(1)
-    except ValueError:
-        return None
+    from .generic_parser import parse_event_datetime
+    return parse_event_datetime(text)
 
 
 def _parse_postman(text: str) -> Optional[Dict[str, str]]:
