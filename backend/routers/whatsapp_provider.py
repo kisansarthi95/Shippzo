@@ -88,18 +88,31 @@ EVENT_CATALOG: List[Dict[str, Any]] = [
     {"event_key": "otp_login",        "category": "auth",
      "label":   "OTP — Login",
      "sub":     "Sent when an existing user signs in with their phone",
-     "default_fields": ["customer_name", "customer_phone", "otp", "event_type"],
+     "default_fields": ["customer_name", "customer_phone", "otp", "event_type",
+                        "contact_email"],
      "default_template":
         "🔐 Your Shippzo login OTP is *{otp}*.\n"
         "It expires in 10 minutes. Don't share it with anyone."},
     {"event_key": "otp_signup",       "category": "auth",
      "label":   "OTP — Signup",
      "sub":     "Sent when a new account is being created",
-     "default_fields": ["customer_name", "customer_phone", "otp", "event_type"],
+     "default_fields": ["customer_name", "customer_phone", "otp", "event_type",
+                        "contact_email"],
      "default_template":
         "👋 Welcome to Shippzo!\n"
         "Your signup verification OTP is *{otp}*.\n"
         "It expires in 10 minutes."},
+    # Phase F8.1 — OTP-verified password reset. `contact_email` carries
+    # the user's registered email so the operator's automation can also
+    # deliver the code via email.
+    {"event_key": "otp_password_reset", "category": "auth",
+     "label":   "OTP — Password Reset",
+     "sub":     "Sent when a user resets their password (includes contact_email)",
+     "default_fields": ["customer_name", "customer_phone", "otp", "event_type",
+                        "contact_email"],
+     "default_template":
+        "🔑 Your Shippzo password reset OTP is *{otp}*.\n"
+        "It expires in 10 minutes. If you didn't request this, ignore it."},
 
     # ── Shipment-stage events (must mirror stage_rules.STAGES) ──
     {"event_key": "stage_pending",       "category": "stage",
@@ -199,6 +212,7 @@ AVAILABLE_FIELDS: List[Dict[str, str]] = [
     {"key": "business_name",     "label": "Business / Shop Name"},
     {"key": "business_phone",    "label": "Business Phone"},
     {"key": "otp",               "label": "OTP Code (auth events only)"},
+    {"key": "contact_email",     "label": "Registered Email (auth events)"},
     {"key": "event_type",        "label": "Event Type"},
 ]
 
@@ -559,6 +573,14 @@ def _build_payload(
             # them against its own contact record downstream.
             payload[name] = _substitute_placeholders(value, context)
 
+    # Phase F8.1 — the registered email ALWAYS rides along on auth
+    # events (user requirement: `"contact_email": <registered email>`
+    # in the current webhook payload) even when the operator's saved
+    # field list pre-dates this feature. Ticked/custom fields above win
+    # if they already set the key.
+    if context.get("contact_email") and "contact_email" not in payload:
+        payload["contact_email"] = str(context["contact_email"])
+
     return payload
 
 
@@ -893,6 +915,11 @@ def init() -> None:
             "eta_days":       "3",
             "token_amount":   "100",
             "total_amount":   "1000",
+            # Phase F8.1 — registered email rides along on auth events.
+            "contact_email":  (
+                (current_user.get("contact_email") or "").strip()
+                or (current_user.get("email") or "").strip()
+            ),
         }
         context = {**defaults, **sample}
         outcome = await dispatch_event(

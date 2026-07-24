@@ -49,7 +49,8 @@ from pydantic import BaseModel
 
 from auth import (
     SignupRequest, LoginRequest, UserPublic,
-    ForgotPasswordRequest, CompleteProfileRequest,
+    ForgotPasswordRequest, ForgotPasswordOtpRequest, ContactEmailRequest,
+    CompleteProfileRequest,
     hash_password, verify_password, make_token, user_public,
     utcnow_iso as auth_utcnow_iso,
     seed_default_courier, claim_legacy_data_for_admin,
@@ -258,6 +259,25 @@ def init() -> None:
     async def auth_me(current_user: Dict[str, Any] = Depends(_get_current_user)):
         return user_public(current_user)
 
+    # ── POST /api/auth/contact-email ─────────────────────────────────
+    # Phase F8.1 — dedicated OTP contact email. When set, OTP webhook
+    # payloads carry this address as `contact_email`; when blank they
+    # fall back to the registered login email.
+    @auth_router.post("/contact-email", response_model=UserPublic)
+    async def auth_set_contact_email(
+        payload: ContactEmailRequest,
+        current_user: Dict[str, Any] = Depends(_get_current_user),
+    ):
+        val = (payload.contact_email or "").strip().lower()
+        if val and not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", val):
+            raise HTTPException(status_code=400, detail="Enter a valid email address.")
+        await db.users.update_one(
+            {"id": current_user["id"]},
+            {"$set": {"contact_email": val}},
+        )
+        fresh = await db.users.find_one({"id": current_user["id"]}, {"_id": 0}) or current_user
+        return user_public(fresh)
+
     # ── GET /api/auth/context ───────────────────────────────────────
     @auth_router.get("/context")
     async def auth_context(current_user: Dict[str, Any] = Depends(_get_current_user)):
@@ -380,10 +400,90 @@ def init() -> None:
         # JWT is stateless; the client just drops the token.
         return {"ok": True}
 
+    # ── POST /api/auth/forgot-password/request-otp ───────────────────
+    # Phase F8.1 — step 1 of the OTP-verified reset. Validates the
+    # email+phone 2-factor gate (same checks as the final reset call)
+    # and dispatches a "password_reset" OTP through the configured
+    # webhook. The payload carries `contact_email` = the user's
+    # registered email so the operator's automation can deliver the
+    # code via email as well as WhatsApp.
+    @auth_router.post("/forgot-password/request-otp")
+    async def auth_forgot_password_request_otp(payload: ForgotPasswordOtpRequest):
+        from services.otp_service import (
+            CooldownError, LockoutError,
+            OTP_RESEND_COOLDOWN_S, OTP_TTL_SECONDS, issue_otp,
+        )
+        from services.otp_whatsapp import send_otp_via_whatsapp
+
+        email = payload.email.lower().strip()
+        phone_digits = re.sub(r"\D", "", (payload.phone or "").strip())
+        if len(phone_digits) < 10:
+            raise HTTPException(
+                status_code=400,
+                detail="Please enter your registered 10-digit mobile number.",
+            )
+        phone = phone_digits[-10:]
+
+        # Same abuse gate as the final reset call.
+        failures = await _count_recent_pwd_failures(email)
+        if failures >= _PWD_RESET_MAX_ATTEMPTS:
+            raise HTTPException(
+                status_code=429,
+                detail=(
+                    "Too many failed attempts. For security, please wait an hour "
+                    "and try again, or contact support."
+                ),
+            )
+
+        user = await db.users.find_one({"email": email})
+        if not user:
+            await _log_pwd_attempt(email, False, "otp-request: no user")
+            raise HTTPException(
+                status_code=404,
+                detail="No account with that email. Check your spelling or sign up.",
+            )
+        user_phone_digits = re.sub(r"\D", "", (user.get("phone") or ""))[-10:]
+        if not user_phone_digits or user_phone_digits != phone:
+            await _log_pwd_attempt(email, False, "otp-request: phone mismatch")
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "The details don't match our records. Double-check your "
+                    "registered mobile number and try again."
+                ),
+            )
+
+        try:
+            code, normalised_phone = await issue_otp(db, phone, "password_reset")
+        except (CooldownError, LockoutError) as ce:
+            raise HTTPException(status_code=429, detail=str(ce))
+        except Exception:
+            _LOG.exception("forgot-password OTP issue failed")
+            raise HTTPException(status_code=500, detail="Could not send OTP")
+
+        contact_email = (
+            (user.get("contact_email") or "").strip()
+            or (user.get("email") or "").strip()
+        )
+        await send_otp_via_whatsapp(
+            phone=normalised_phone,
+            otp=code,
+            event_type="password_reset",
+            db=db,
+            user_name=(user.get("name") or "").strip(),
+            contact_email=contact_email,
+        )
+        return {
+            "ok":              True,
+            "expires_in":      OTP_TTL_SECONDS,
+            "resend_cooldown": OTP_RESEND_COOLDOWN_S,
+        }
+
     # ── POST /api/auth/forgot-password ──────────────────────────────
     @auth_router.post("/forgot-password")
     async def auth_forgot_password(payload: ForgotPasswordRequest):
-        """Reset password using registered email + phone as a 2-factor gate."""
+        """Reset password: registered email + phone gate + Phase F8.1
+        OTP verification (event_type "password_reset")."""
         email = payload.email.lower().strip()
         phone_raw = (payload.phone or "").strip()
         phone_digits = re.sub(r"\D", "", phone_raw)
@@ -434,6 +534,33 @@ def init() -> None:
                 ),
             )
 
+        # ── Phase F8.1 — 3rd factor: OTP verification. ────────────
+        # The code was issued by /forgot-password/request-otp with
+        # purpose "password_reset" and is bound to this phone.
+        otp_code = re.sub(r"\D", "", (payload.otp or "").strip())
+        if not otp_code:
+            raise HTTPException(
+                status_code=400,
+                detail="Enter the OTP sent to your registered contact.",
+            )
+        from services.otp_service import (
+            LockoutError as _OtpLockout, verify_otp as _verify_otp,
+        )
+        try:
+            otp_ok, otp_reason = await _verify_otp(db, phone, otp_code, "password_reset")
+        except _OtpLockout as le:
+            await _log_pwd_attempt(email, False, "otp lockout")
+            raise HTTPException(status_code=429, detail=str(le))
+        if not otp_ok:
+            await _log_pwd_attempt(email, False, f"otp {otp_reason}")
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "The OTP is incorrect or has expired. Request a new one "
+                    "and try again."
+                ),
+            )
+
         await db.users.update_one(
             {"id": user["id"]},
             {"$set": {
@@ -441,7 +568,7 @@ def init() -> None:
                 "password_changed_at": datetime.utcnow().isoformat() + "+00:00",
             }},
         )
-        await _log_pwd_attempt(email, True, "self-reset via phone")
+        await _log_pwd_attempt(email, True, "self-reset via phone+otp")
         token = make_token(user["id"], email)
         fresh = await db.users.find_one({"id": user["id"]}, {"_id": 0}) or user
         return {**user_public(fresh), "token": token}

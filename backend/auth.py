@@ -138,14 +138,30 @@ class LoginRequest(BaseModel):
 
 
 class ForgotPasswordRequest(BaseModel):
-    """Email + registered phone acts as a 2-factor gate so the user can
-    reset their own password without SMTP/OTP infra. The combination is
-    rare enough in practice (attacker needs BOTH email and phone) to
-    be a reasonable MVP trade-off. Rate-limited per-email.
+    """Email + registered phone acts as a 2-factor gate, and (Phase F8.1)
+    an OTP delivered via the operator's webhook (event_type
+    "password_reset") is REQUIRED as the 3rd factor before the reset
+    goes through. Rate-limited per-email.
     """
     email: EmailStr
     phone: str = Field(min_length=10, max_length=15)
     new_password: str = Field(min_length=6, max_length=128)
+    # Phase F8.1 — OTP from the password_reset event. Kept optional at
+    # the model layer (endpoint enforces it) so stale clients get a
+    # friendly 400 instead of a raw 422.
+    otp: str = Field("", max_length=10)
+
+
+class ForgotPasswordOtpRequest(BaseModel):
+    """Phase F8.1 — body for POST /auth/forgot-password/request-otp."""
+    email: EmailStr
+    phone: str = Field(min_length=10, max_length=15)
+
+
+class ContactEmailRequest(BaseModel):
+    """Phase F8.1 — body for POST /auth/contact-email. Blank clears the
+    dedicated OTP email (falls back to the login email)."""
+    contact_email: str = Field("", max_length=254)
 
 
 class UserPublic(BaseModel):
@@ -157,6 +173,9 @@ class UserPublic(BaseModel):
     phone: str = ""
     is_admin: bool = False
     plan: str = "free_trial"
+    # Phase F8.1 — optional dedicated contact email for OTP delivery.
+    # Falls back to the registered login email when blank.
+    contact_email: str = ""
     # Phase G — primary business category (slug). Empty string for
     # legacy accounts and Google sign-in users who haven't picked one.
     primary_business_category: str = ""
@@ -421,6 +440,8 @@ def user_public(u: Dict[str, Any]) -> Dict[str, Any]:
         "phone": u.get("phone", ""),
         "is_admin": bool(u.get("is_admin", False)),
         "plan": u.get("plan", "free_trial"),
+        # Phase F8.1 — dedicated contact email for OTP delivery.
+        "contact_email": u.get("contact_email", "") or "",
         # Phase G — surface the slug so the client can show
         # category-aware analytics / settings without an extra round-trip.
         "primary_business_category": (u.get("primary_business_category") or ""),

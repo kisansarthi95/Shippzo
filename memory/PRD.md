@@ -29,3 +29,10 @@
 - **Native (requires new Android build!):** multi-pattern sender filter ("|"-joined needles), offline SMS queue (IngestQueue.kt, flush on network-available/listener-connect/app-foreground), "onIngestResult" event → JS for instant UI refresh.
 - **Frontend:** lib/courier_sync_native.ts syncs native config on app start + foreground + courier save; shipments list / details / dashboard refetch on ingest event (event-driven, no polling); OFD section shows staff, beat, attempt date/time + full original SMS; Timeline shows booking_date.
 - Backend tests: tests/test_phase_f80_sms_engine.py + test_phase_f80_edge_cases.py (all green, 145 total inc. regressions).
+
+## Phase F8.1 (Jun-2026) — contact_email + OTP-verified Password Reset
+- `contact_email` (user's registered email; overridable via new profile field) now rides on EVERY auth OTP webhook payload (`otp_login`, `otp_signup`, new `otp_password_reset`) — even when the operator's saved field list pre-dates the feature — so their automation can deliver OTP via email.
+- New endpoints: POST /api/auth/forgot-password/request-otp (email+phone gate → fires password_reset OTP webhook), POST /api/auth/contact-email (set/clear dedicated OTP email). /api/auth/forgot-password now REQUIRES a valid single-use OTP (3rd factor).
+- New event `otp_password_reset` auto-seeded into whatsapp_event_triggers; `contact_email` added to AVAILABLE_FIELDS + auth defaults; test-send debug includes it.
+- Frontend: 2-step Forgot Password screen (Send OTP → OTP+new password, resend cooldown); Settings → My Account → "Contact Email (for OTP)" editor.
+- Tests: tests/test_phase_f81_contact_email_otp.py (11 pass). Dedicated test user f81-reset-user@example.com.

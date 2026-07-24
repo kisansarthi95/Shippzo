@@ -98,6 +98,20 @@ class OtpVerifyBody(BaseModel):
     shop_name:  Optional[str] = None
 
 
+# ─── Helpers ────────────────────────────────────────────────────────
+async def _find_user_by_phone(db: Any, normalised_phone: str) -> Optional[Dict[str, Any]]:
+    """Locate a user by phone — normalised match first, then a legacy
+    raw-digit suffix fallback (rows that pre-date normalisation)."""
+    user = await db.users.find_one({"phone": normalised_phone})
+    if not user:
+        digits = "".join(c for c in normalised_phone if c.isdigit())
+        if digits:
+            user = await db.users.find_one({
+                "phone": {"$regex": digits[-10:] + "$"},
+            })
+    return user
+
+
 # ─── /request ──────────────────────────────────────────────────────
 @otp_auth_router.post("/request")
 async def otp_request(payload: OtpRequestBody) -> Dict[str, Any]:
@@ -131,6 +145,24 @@ async def otp_request(payload: OtpRequestBody) -> Dict[str, Any]:
         _LOG.exception("otp_request: issue_otp failed: %s", e)
         raise HTTPException(status_code=500, detail="Could not issue OTP")
 
+    # Phase F8.1 — attach the user's registered email (prefers the
+    # dedicated contact_email profile field, falls back to the login
+    # email) so the outbound webhook payload carries
+    # `"contact_email": <registered email>` and the operator's
+    # automation can deliver the OTP via email too.
+    contact_email = ""
+    user_name = ""
+    try:
+        existing_user = await _find_user_by_phone(_db, normalised_phone)
+        if existing_user:
+            contact_email = (
+                (existing_user.get("contact_email") or "").strip()
+                or (existing_user.get("email") or "").strip()
+            )
+            user_name = (existing_user.get("name") or "").strip()
+    except Exception:
+        _LOG.exception("otp_request: user email lookup failed (non-fatal)")
+
     # Best-effort delivery — non-blocking failure semantics. Even if
     # WhatsApp delivery fails we still return success so the user
     # can retry verification (they may have received it on a previous
@@ -140,6 +172,8 @@ async def otp_request(payload: OtpRequestBody) -> Dict[str, Any]:
         otp=code,
         event_type=payload.event_type,       # type: ignore[arg-type]
         db=_db,
+        user_name=user_name,
+        contact_email=contact_email,
     )
 
     # Surface a coarse delivery status so the UI can show a helpful
@@ -191,18 +225,8 @@ async def otp_verify(payload: OtpVerifyBody) -> Dict[str, Any]:
 
     normalised_phone = normalise_phone(payload.phone)
 
-    # Look up existing user. We match on the normalised phone first
-    # (which is how every modern signup stores it) and fall back to
-    # raw-digit comparison for legacy rows that pre-date normalisation.
-    user = await _db.users.find_one({"phone": normalised_phone})
-    if not user:
-        # Legacy fallback — strip non-digits and compare suffixes so
-        # "+91 98765 43210" stored without spaces still matches.
-        digits = "".join(c for c in normalised_phone if c.isdigit())
-        if digits:
-            user = await _db.users.find_one({
-                "phone": {"$regex": digits[-10:] + "$"},
-            })
+    # Look up existing user (normalised match + legacy fallback).
+    user = await _find_user_by_phone(_db, normalised_phone)
 
     if user:
         # ─── LOGIN ────────────────────────────────────────────────

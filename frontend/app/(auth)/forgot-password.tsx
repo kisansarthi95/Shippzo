@@ -1,15 +1,16 @@
 /**
- * Forgot Password screen.
+ * Forgot Password screen — Phase F8.1 OTP-verified flow.
  *
- * MVP no-OTP flow: user enters their registered email + registered
- * mobile number and a new password. If email+phone match a user in
- * the DB, the password is reset and a fresh JWT is issued (auto-
- * login). Rate-limited to 3 failed attempts per email per hour.
- *
- * This trade-off lets us ship self-serve password reset without SMTP
- * or SMS infra — the phone number acts as the 2nd factor.
+ * Step 1: user enters their registered email + registered mobile
+ *         number → "Send OTP". The backend validates the pair and
+ *         dispatches a "password_reset" OTP through the configured
+ *         WhatsApp/webhook automation (payload includes
+ *         `contact_email` = the registered email so the operator's
+ *         automation can also deliver the code by email).
+ * Step 2: user enters the OTP + a new password → reset + auto-return
+ *         to login. Rate-limited to 3 failed attempts per email/hour.
  */
-import React, { useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import PhIcon from "../../components/PhIcon";
 import {
   View, Text, StyleSheet, TextInput, TouchableOpacity, Alert,
@@ -18,29 +19,77 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Stack, useRouter } from "expo-router";
 import { api } from "../../lib/api";
-import { useAuth } from "../../lib/auth";
 import { colors } from "../../lib/theme";
 
 export default function ForgotPasswordScreen() {
   const router = useRouter();
-  const { user } = useAuth();
 
+  const [step, setStep]     = useState<1 | 2>(1);
   const [email, setEmail]   = useState("");
   const [phone, setPhone]   = useState("");
+  const [otp, setOtp]       = useState("");
   const [pwd, setPwd]       = useState("");
   const [pwd2, setPwd2]     = useState("");
   const [showPwd, setShowPwd] = useState(false);
   const [busy, setBusy]     = useState(false);
+  const [cooldown, setCooldown] = useState(0);
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  const submit = async () => {
+  // Resend cooldown ticker.
+  useEffect(() => {
+    if (cooldown <= 0) return;
+    timerRef.current = setInterval(() => {
+      setCooldown((c) => (c <= 1 ? 0 : c - 1));
+    }, 1000);
+    return () => {
+      if (timerRef.current) clearInterval(timerRef.current);
+    };
+  }, [cooldown > 0]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const validateContact = () => {
     const e = email.trim().toLowerCase();
     const phoneDigits = phone.replace(/\D/g, "");
     if (!e || !phoneDigits) {
       Alert.alert("Missing fields", "Please enter both your email and registered mobile number.");
-      return;
+      return null;
     }
     if (phoneDigits.length < 10) {
       Alert.alert("Invalid phone", "Enter your 10-digit registered mobile number.");
+      return null;
+    }
+    return { e, phoneDigits };
+  };
+
+  const sendOtp = async () => {
+    const v = validateContact();
+    if (!v) return;
+    setBusy(true);
+    try {
+      const r = await api.post("/auth/forgot-password/request-otp", {
+        email: v.e,
+        phone: v.phoneDigits,
+      });
+      setStep(2);
+      setCooldown(Number(r?.data?.resend_cooldown || 60));
+      Alert.alert(
+        "OTP sent ✅",
+        "We've sent a one-time code to your registered contact (WhatsApp / email). Enter it below.",
+      );
+    } catch (err: any) {
+      const status = err?.response?.status;
+      const detail = err?.response?.data?.detail || err?.message || "Please try again";
+      Alert.alert(status === 429 ? "Please wait" : "Could not send OTP", detail);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const submit = async () => {
+    const v = validateContact();
+    if (!v) return;
+    const otpDigits = otp.replace(/\D/g, "");
+    if (otpDigits.length < 4) {
+      Alert.alert("Missing OTP", "Enter the one-time code we sent to your registered contact.");
       return;
     }
     if (!pwd || pwd.length < 6) {
@@ -54,8 +103,9 @@ export default function ForgotPasswordScreen() {
     setBusy(true);
     try {
       await api.post("/auth/forgot-password", {
-        email: e,
-        phone: phoneDigits,
+        email: v.e,
+        phone: v.phoneDigits,
+        otp: otpDigits,
         new_password: pwd,
       });
       Alert.alert(
@@ -101,8 +151,9 @@ export default function ForgotPasswordScreen() {
             </View>
             <Text style={styles.title}>Forgot your password?</Text>
             <Text style={styles.sub}>
-              Enter the email and mobile number you used when signing up.
-              If they match, you'll be able to set a new password right away.
+              {step === 1
+                ? "Enter the email and mobile number you used when signing up. We'll send a one-time code to your registered contact."
+                : "Enter the one-time code we sent you, then pick a new password."}
             </Text>
           </View>
 
@@ -116,8 +167,9 @@ export default function ForgotPasswordScreen() {
               keyboardType="email-address"
               autoCapitalize="none"
               autoCorrect={false}
+              editable={step === 1}
               placeholderTextColor="#94A3B8"
-              style={styles.input}
+              style={[styles.input, step === 2 && styles.inputLocked]}
             />
 
             <Text style={[styles.label, { marginTop: 14 }]}>Registered Mobile Number</Text>
@@ -128,56 +180,101 @@ export default function ForgotPasswordScreen() {
               placeholder="10-digit mobile number"
               keyboardType="phone-pad"
               maxLength={15}
+              editable={step === 1}
               placeholderTextColor="#94A3B8"
-              style={styles.input}
+              style={[styles.input, step === 2 && styles.inputLocked]}
             />
 
-            <Text style={[styles.label, { marginTop: 14 }]}>New Password (min 6)</Text>
-            <View style={styles.pwRow}>
-              <TextInput
-                testID="forgot-new-password"
-                value={pwd}
-                onChangeText={setPwd}
-                placeholder="Pick a new password"
-                secureTextEntry={!showPwd}
-                placeholderTextColor="#94A3B8"
-                style={[styles.input, { flex: 1 }]}
-              />
-              <TouchableOpacity style={styles.eyeBtn} onPress={() => setShowPwd((v) => !v)}>
-                <PhIcon name={showPwd ? "eye-off" : "eye"} size={20} color="#64748B" />
+            {step === 1 ? (
+              <TouchableOpacity
+                testID="forgot-send-otp"
+                onPress={sendOtp}
+                disabled={busy}
+                style={[styles.cta, busy && { opacity: 0.6 }]}
+                activeOpacity={0.85}
+              >
+                {busy ? (
+                  <ActivityIndicator color="#fff" />
+                ) : (
+                  <Text style={styles.ctaTxt}>Send OTP</Text>
+                )}
               </TouchableOpacity>
-            </View>
+            ) : (
+              <>
+                <Text style={[styles.label, { marginTop: 14 }]}>One-Time Code (OTP)</Text>
+                <TextInput
+                  testID="forgot-otp"
+                  value={otp}
+                  onChangeText={(t) => setOtp(t.replace(/\D/g, ""))}
+                  placeholder="6-digit code"
+                  keyboardType="number-pad"
+                  maxLength={8}
+                  placeholderTextColor="#94A3B8"
+                  style={[styles.input, { letterSpacing: 4, fontWeight: "800" }]}
+                />
+                <View style={styles.resendRow}>
+                  <TouchableOpacity
+                    testID="forgot-resend-otp"
+                    onPress={sendOtp}
+                    disabled={busy || cooldown > 0}
+                  >
+                    <Text style={[styles.resendTxt, (busy || cooldown > 0) && { opacity: 0.5 }]}>
+                      {cooldown > 0 ? `Resend OTP in ${cooldown}s` : "Resend OTP"}
+                    </Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity onPress={() => { setStep(1); setOtp(""); }}>
+                    <Text style={styles.resendTxt}>Change details</Text>
+                  </TouchableOpacity>
+                </View>
 
-            <Text style={[styles.label, { marginTop: 14 }]}>Confirm New Password</Text>
-            <TextInput
-              testID="forgot-new-password-2"
-              value={pwd2}
-              onChangeText={setPwd2}
-              placeholder="Re-type the new password"
-              secureTextEntry={!showPwd}
-              placeholderTextColor="#94A3B8"
-              style={styles.input}
-            />
+                <Text style={[styles.label, { marginTop: 14 }]}>New Password (min 6)</Text>
+                <View style={styles.pwRow}>
+                  <TextInput
+                    testID="forgot-new-password"
+                    value={pwd}
+                    onChangeText={setPwd}
+                    placeholder="Pick a new password"
+                    secureTextEntry={!showPwd}
+                    placeholderTextColor="#94A3B8"
+                    style={[styles.input, { flex: 1 }]}
+                  />
+                  <TouchableOpacity style={styles.eyeBtn} onPress={() => setShowPwd((v) => !v)}>
+                    <PhIcon name={showPwd ? "eye-off" : "eye"} size={20} color="#64748B" />
+                  </TouchableOpacity>
+                </View>
 
-            <TouchableOpacity
-              testID="forgot-submit"
-              onPress={submit}
-              disabled={busy}
-              style={[styles.cta, busy && { opacity: 0.6 }]}
-              activeOpacity={0.85}
-            >
-              {busy ? (
-                <ActivityIndicator color="#fff" />
-              ) : (
-                <Text style={styles.ctaTxt}>Reset Password</Text>
-              )}
-            </TouchableOpacity>
+                <Text style={[styles.label, { marginTop: 14 }]}>Confirm New Password</Text>
+                <TextInput
+                  testID="forgot-new-password-2"
+                  value={pwd2}
+                  onChangeText={setPwd2}
+                  placeholder="Re-type the new password"
+                  secureTextEntry={!showPwd}
+                  placeholderTextColor="#94A3B8"
+                  style={styles.input}
+                />
+
+                <TouchableOpacity
+                  testID="forgot-submit"
+                  onPress={submit}
+                  disabled={busy}
+                  style={[styles.cta, busy && { opacity: 0.6 }]}
+                  activeOpacity={0.85}
+                >
+                  {busy ? (
+                    <ActivityIndicator color="#fff" />
+                  ) : (
+                    <Text style={styles.ctaTxt}>Reset Password</Text>
+                  )}
+                </TouchableOpacity>
+              </>
+            )}
 
             <View style={styles.noteBox}>
               <PhIcon name="information-circle-outline" size={15} color="#64748B" />
               <Text style={styles.noteTxt}>
                 For security we allow max 3 failed attempts per hour.
-                Can't remember your registered mobile? Contact support and
+                Can&apos;t remember your registered mobile? Contact support and
                 an admin will reset your password for you.
               </Text>
             </View>
@@ -225,8 +322,14 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: "#0F172A",
   },
+  inputLocked: { opacity: 0.6 },
   pwRow: { flexDirection: "row", alignItems: "center", gap: 6 },
   eyeBtn: { padding: 8 },
+  resendRow: {
+    flexDirection: "row", justifyContent: "space-between",
+    marginTop: 8,
+  },
+  resendTxt: { color: colors.primary, fontSize: 12.5, fontWeight: "700" },
   cta: {
     backgroundColor: colors.primary,
     borderRadius: 10,

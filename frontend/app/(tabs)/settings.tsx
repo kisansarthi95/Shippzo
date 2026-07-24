@@ -173,7 +173,38 @@ function fillTemplate(tpl: string, brand?: string): string {
 export default function SettingsScreen() {
   const router = useRouter();
   const navigation = useNavigation();
-  const { user, signOut } = useAuth();
+  const { user, signOut, refresh: refreshUser } = useAuth();
+
+  // Phase F8.1 — dedicated OTP contact email editor state.
+  const [contactEmail, setContactEmail] = useState<string>(
+    (user as any)?.contact_email || "",
+  );
+  const [savingContactEmail, setSavingContactEmail] = useState(false);
+
+  // Keep the editor in sync when the user profile (re)loads.
+  useEffect(() => {
+    setContactEmail((user as any)?.contact_email || "");
+  }, [(user as any)?.contact_email]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const saveContactEmail = async () => {
+    const val = contactEmail.trim().toLowerCase();
+    if (val && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(val)) {
+      Alert.alert("Invalid email", "Enter a valid email address (or leave blank to use your login email).");
+      return;
+    }
+    setSavingContactEmail(true);
+    try {
+      await api.post("/auth/contact-email", { contact_email: val });
+      await refreshUser().catch(() => {});
+      Alert.alert("Saved ✅", val
+        ? `OTPs will be sent to ${val}.`
+        : "Cleared — OTPs will use your login email.");
+    } catch (e: any) {
+      Alert.alert("Save failed", e?.response?.data?.detail || e?.message || "Try again");
+    } finally {
+      setSavingContactEmail(false);
+    }
+  };
   // Phase B+C — when the active session is a TEAM-MEMBER (sub-account),
   // hide admin-only sections and the Team Members management entry
   // even if the parent is an admin. Owners see everything.
@@ -1177,6 +1208,54 @@ export default function SettingsScreen() {
                 couriers, so there is nothing to "clear" any more.
                 The backend endpoint `/api/demo/clear` is kept for
                 one-off support cleanups but no longer wired to UI. */}
+
+            {/* Phase F8.1 — dedicated Contact Email for OTP delivery.
+                Sent as `contact_email` in the OTP webhook payload
+                (login / signup / password reset). Blank = falls back
+                to the registered login email. */}
+            <View style={{ marginTop: 12 }}>
+              <Text style={{ fontSize: 12, fontWeight: "800", color: "#0F172A", marginBottom: 6 }}>
+                Contact Email (for OTP)
+              </Text>
+              <View style={{ flexDirection: "row", gap: 8, alignItems: "center" }}>
+                <TextInput
+                  testID="contact-email-input"
+                  value={contactEmail}
+                  onChangeText={setContactEmail}
+                  placeholder={user?.email || "you@example.com"}
+                  keyboardType="email-address"
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  placeholderTextColor="#94A3B8"
+                  style={{
+                    flex: 1, backgroundColor: "#F8FAFC", borderWidth: 1,
+                    borderColor: "#E5E7EB", borderRadius: 10,
+                    paddingHorizontal: 12, paddingVertical: 10,
+                    fontSize: 13, color: "#0F172A",
+                  }}
+                />
+                <TouchableOpacity
+                  testID="contact-email-save"
+                  onPress={saveContactEmail}
+                  disabled={savingContactEmail}
+                  style={{
+                    backgroundColor: colors.primary, borderRadius: 10,
+                    paddingHorizontal: 16, paddingVertical: 11,
+                    opacity: savingContactEmail ? 0.6 : 1,
+                  }}
+                >
+                  {savingContactEmail ? (
+                    <ActivityIndicator color="#fff" size="small" />
+                  ) : (
+                    <Text style={{ color: "#fff", fontSize: 13, fontWeight: "800" }}>Save</Text>
+                  )}
+                </TouchableOpacity>
+              </View>
+              <Text style={{ fontSize: 11, color: "#64748B", marginTop: 5, lineHeight: 15 }}>
+                OTP codes (login / password reset) are sent here via your
+                WhatsApp automation. Leave blank to use your login email.
+              </Text>
+            </View>
 
             <TouchableOpacity
               testID="sign-out-btn"

@@ -114,6 +114,7 @@ async def send_otp_via_whatsapp(
     event_type: OtpEventType = "auth",
     db: Any | None = None,
     user_name: str = "",
+    contact_email: str = "",
     extra: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Deliver ``otp`` to ``phone`` via the currently-active provider.
@@ -157,13 +158,14 @@ async def send_otp_via_whatsapp(
     # (one automation per event). If that path is unconfigured or
     # disabled, fall back to the legacy single-endpoint provider so
     # nothing breaks for existing deployments.
-    if event_type in ("login", "signup", "phone_verification"):
+    if event_type in ("login", "signup", "phone_verification", "password_reset"):
         try:
             from routers.whatsapp_provider import dispatch_event as _wpp_dispatch
             event_key_map = {
                 "login":              "otp_login",
                 "signup":             "otp_signup",
                 "phone_verification": "otp_signup",
+                "password_reset":     "otp_password_reset",
             }
             ev_key = event_key_map.get(str(event_type)) or "otp_login"
             ctx = {
@@ -173,6 +175,10 @@ async def send_otp_via_whatsapp(
                 "event_type":     str(event_type),
                 "business_name":  "Shippzo",
                 "current_stage":  "Auth",
+                # Phase F8.1 — the user's registered email travels with
+                # the webhook payload as "contact_email" so the
+                # operator's automation can deliver the OTP via email.
+                "contact_email":  (contact_email or "").strip(),
             }
             t0 = datetime.now(timezone.utc).timestamp()
             outcome = await _wpp_dispatch(db, ev_key, ctx, phone=phone)
