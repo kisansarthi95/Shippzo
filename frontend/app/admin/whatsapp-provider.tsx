@@ -290,6 +290,21 @@ export default function AdminWhatsAppProviderScreen() {
     ((cfg.api_token || "").trim().length > 0 || (cfg.api_token_masked || "").trim().length > 0)
   );
 
+  // Phase F8.2 — Detect if the operator's Base URL is a single
+  // automation endpoint (e.g. ".../<uuid>/execute") — typically the
+  // OTP template. In simple mode (no per-event automation_id), ALL
+  // stage events would fire through this same OTP automation, which
+  // misroutes customer stage messages through the OTP flow. Backend
+  // now blocks these sends; the UI must warn the operator before the
+  // block manifests as a mysterious "silent drop" in logs. Cheap
+  // regex — plain const (no useMemo) to avoid rules-of-hooks after
+  // the early-return guard above.
+  const baseUrlLooksLikeSingleAutomation = (() => {
+    const u = (cfg?.base_url || "").trim();
+    if (!u) return false;
+    return /\/[^/]+\/execute\/?$/.test(u);
+  })();
+
   return (
     <SafeAreaView style={styles.safe} edges={["top"]}>
       <Stack.Screen options={{ headerShown: false }} />
@@ -357,6 +372,7 @@ export default function AdminWhatsAppProviderScreen() {
               key={e.event_key}
               row={e}
               providerReady={providerReady}
+              sharesOtpAutomation={false}
               onToggle={() => toggleEvent(e)}
               onEdit={() => setEditing(e)}
               onTest={() => { setTestFor(e); setTestPhone(""); }}
@@ -372,6 +388,9 @@ export default function AdminWhatsAppProviderScreen() {
               key={e.event_key}
               row={e}
               providerReady={providerReady}
+              sharesOtpAutomation={
+                baseUrlLooksLikeSingleAutomation && !(e.automation_id || "").trim()
+              }
               onToggle={() => toggleEvent(e)}
               onEdit={() => setEditing(e)}
               onTest={() => { setTestFor(e); setTestPhone(""); }}
@@ -711,12 +730,14 @@ function ProviderConfigCard({
 function EventCard({
   row,
   providerReady,
+  sharesOtpAutomation,
   onToggle,
   onEdit,
   onTest,
 }: {
   row: EventRow;
   providerReady: boolean;
+  sharesOtpAutomation: boolean;
   onToggle: () => void;
   onEdit: () => void;
   onTest: () => void;
@@ -761,6 +782,18 @@ function EventCard({
         />
       </View>
 
+      {sharesOtpAutomation ? (
+        <View style={styles.otpShareWarn}>
+          <PhIcon name="warning-outline" size={16} color="#B45309" />
+          <Text style={styles.otpShareWarnTxt}>
+            Sharing OTP automation URL. Backend will BLOCK this stage
+            event until you add a per-event Automation ID (Configure →
+            Advanced Settings) or change the provider Base URL to the
+            automations root.
+          </Text>
+        </View>
+      ) : null}
+
       <View style={styles.cardMetaRow}>
         <View style={[styles.metaPill, configured ? styles.metaPillOk : styles.metaPillWarn]}>
           <Text style={[
@@ -784,9 +817,9 @@ function EventCard({
           <Text style={styles.actionTxt}>Configure</Text>
         </TouchableOpacity>
         <TouchableOpacity
-          style={[styles.actionBtn, !configured && { opacity: 0.45 }]}
+          style={[styles.actionBtn, (!configured || sharesOtpAutomation) && { opacity: 0.45 }]}
           onPress={onTest}
-          disabled={!configured}
+          disabled={!configured || sharesOtpAutomation}
         >
           <PhIcon name="paper-plane-outline" size={16} color="#1E40AF" />
           <Text style={styles.actionTxt}>Test Send</Text>
@@ -1481,6 +1514,31 @@ const styles = StyleSheet.create({
   metaPillWarn: { backgroundColor: "#FEF3C7" },
   metaPillTxt:  { fontSize: 11.5, fontWeight: "700" },
   fieldsCount:  { fontSize: 11.5, color: "#64748B", marginLeft: "auto" },
+
+  // Phase F8.2 — inline warning banner shown on a stage event card
+  // when the provider's Base URL is a single-automation URL and this
+  // event has no per-event automation_id override. Backend will block
+  // the send in this state.
+  otpShareWarn: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    backgroundColor: "#FEF3C7",
+    borderWidth: 1,
+    borderColor: "#F59E0B",
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    marginTop: 6,
+    marginBottom: 4,
+    gap: 6,
+  },
+  otpShareWarnTxt: {
+    flex: 1,
+    fontSize: 11.5,
+    lineHeight: 15,
+    color: "#92400E",
+    fontWeight: "600",
+  },
 
   cardActions: {
     flexDirection: "row",

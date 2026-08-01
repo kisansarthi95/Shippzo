@@ -636,6 +636,50 @@ async def dispatch_event(
             result["skipped"] = True
             result["reason"]  = "provider not fully configured"
             return result
+
+        # Phase F8.2 — Guard against stage events accidentally reusing a
+        # single-automation OTP URL. If the operator saved base_url as a
+        # full "…/execute" endpoint (i.e. a specific automation, which
+        # is typically reserved for OTP templates) AND this stage event
+        # has NO per-event automation_id override, sending would
+        # misroute customer stage notifications through the OTP
+        # automation. Fail fast with a clear error so the operator
+        # fixes the config in Admin → WhatsApp Provider. Auth events
+        # are exempt — they are the legitimate consumer of an OTP
+        # automation URL.
+        _is_stage_event = (event_key or "").lower().startswith("stage_")
+        _looks_like_single_automation_url = bool(
+            re.search(r"/[^/]+/execute/?$", base_url)
+        )
+        if _is_stage_event and (not automation_id) and _looks_like_single_automation_url:
+            reason = (
+                "stage event blocked: Base URL points to a specific "
+                "automation endpoint (…/execute) that is typically the "
+                "OTP template. Set a per-event automation_id for this "
+                "stage in Admin → WhatsApp Provider → Advanced Settings, "
+                "or change the provider Base URL to the automations "
+                "root (…/api/automations)."
+            )
+            result.update({
+                "success": False,
+                "skipped": False,
+                "reason":  reason,
+            })
+            try:
+                await _write_log(
+                    db,
+                    event_key=event_key,
+                    phone=phone or context.get("customer_phone") or "",
+                    success=False, status_code=None,
+                    request={"guard": "stage_event_blocked_on_otp_url"},
+                    response=None,
+                    error=reason,
+                    duration_ms=0,
+                )
+            except Exception:
+                pass
+            return result
+
         if not automation_id:
             # Simple mode: base_url is treated as the full execute
             # endpoint. Used by events that share the single default
