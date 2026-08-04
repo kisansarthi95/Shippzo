@@ -1587,6 +1587,25 @@ export const Api = {
       }),
   bulkFetch: (ids: string[]) =>
     api.post<Shipment[]>(`/shipments/bulk-fetch`, { ids }).then((r) => r.data),
+  // Phase F8.3 — Ask the backend for the WhatsApp text appropriate
+  // to a shipment's CURRENT stage (Processing / Shipped / Delivered /
+  // etc.). The server picks the operator's admin-customised template
+  // if present, else the built-in catalogue default, and pre-resolves
+  // placeholders. Returns `{ ok: false, ... }` when no stage-event
+  // maps to the shipment's status (e.g. Cancelled) — callers should
+  // fall back to their legacy template in that case.
+  getShipmentWhatsAppStageMessage: (shipmentId: string) =>
+    api
+      .get<{
+        ok: boolean;
+        event_key?: string;
+        label?: string;
+        status?: string;
+        source?: "admin" | "default";
+        message?: string | null;
+        reason?: string;
+      }>(`/shipments/${encodeURIComponent(shipmentId)}/whatsapp-stage-message`)
+      .then((r) => r.data),
   getShipment: (id: string) =>
     api.get<Shipment>(`/shipments/${id}`).then((r) => r.data),
   createShipment: (data: Partial<Shipment>) =>

@@ -995,6 +995,83 @@ def init() -> None:
         return {"items": rows, "count": len(rows)}
 
 
+# ─── Phase F8.3 — Stage-aware WhatsApp message renderer ─────────────
+# Powers the Shipments-tab WhatsApp button. Instead of hard-coding a
+# single "Shipped" template on the client, the button now asks the
+# backend "what should I say for THIS shipment right now?", and the
+# server picks the right template based on `shipment.status` — using
+# the operator's admin-customised body if present, else falling back
+# to the built-in catalogue default. Placeholders like {customer_name}
+# and {order_id} are resolved server-side against the shipment row so
+# the client just deep-links WhatsApp with the ready-to-send text.
+async def resolve_stage_message(
+    db: Any,
+    shipment: Dict[str, Any],
+    *,
+    business_name: str = "",
+    business_phone: str = "",
+) -> Optional[Dict[str, Any]]:
+    """Return the WhatsApp text appropriate for the shipment's CURRENT
+    stage, or None if no stage-event maps to `shipment.status` (e.g.
+    the shipment is in a terminal `Cancelled` / `Returned` state).
+
+    Payload shape:
+        {
+          "event_key":  "stage_delivered",
+          "label":      "Stage: Delivered",
+          "status":     "Delivered",
+          "source":     "admin" | "default",   # where the text came from
+          "message":    "✅ Hi Rita, your order …",
+        }
+    """
+    if not shipment:
+        return None
+    status = (shipment.get("status") or "").strip()
+    event_key = STAGE_TO_EVENT_KEY.get(status)
+    if not event_key:
+        return None
+
+    ctx = _shipment_to_context(
+        shipment,
+        business_name=business_name,
+        business_phone=business_phone,
+    )
+
+    # Prefer the operator's admin-configured body.
+    trigger = await _load_event(db, event_key) or {}
+    text = (trigger.get("template_preview") or "").strip()
+    source = "admin"
+
+    # Fall back to the built-in catalogue default so a fresh workspace
+    # (before the operator has customised anything) still produces a
+    # useful message per stage.
+    if not text:
+        for item in EVENT_CATALOG:
+            if item["event_key"] == event_key:
+                text = (item.get("default_template") or "").strip()
+                source = "default"
+                break
+
+    if not text:
+        return None
+
+    rendered = _substitute_placeholders(text, ctx)
+
+    label = event_key
+    for item in EVENT_CATALOG:
+        if item["event_key"] == event_key:
+            label = item.get("label") or event_key
+            break
+
+    return {
+        "event_key": event_key,
+        "label":     label,
+        "status":    status,
+        "source":    source,
+        "message":   rendered,
+    }
+
+
 # Public re-exports for server.py wiring.
 __all__ = [
     "whatsapp_provider_router",
@@ -1004,4 +1081,5 @@ __all__ = [
     "STAGE_TO_EVENT_KEY",
     "_shipment_to_context",
     "EVENT_CATALOG",
+    "resolve_stage_message",
 ]

@@ -1436,28 +1436,56 @@ export default function Shipments() {
       Alert.alert("No phone", "Customer phone not set.");
       return;
     }
-    // Phase-23 (2026-05-17) — WhatsApp template binding fix.
-    // The older `buildWhatsAppText()` helper only knew about 6
-    // variables, so customer-saved templates that used keys like
-    // `{order_items}`, `{tracking_link}`, `{estimated_delivery}` got
-    // sent as raw text. We now route through the canonical resolver
-    // (`fillFromShipment`) so EVERY registered placeholder — and
-    // every alias (`order_items` ↔ `items`, `courier_name` ↔ `courier`,
-    // `tracking_link` ↔ `tracking_url`) — is replaced from this exact
-    // shipment row. Unknown placeholders fall back to empty strings
-    // courtesy of the underlying `fillTemplate()` (it strips any
-    // `{xyz}` token whose key wasn't resolved). If the user hasn't
-    // saved a personal template we fall back to the legacy
-    // `buildWhatsAppText()` output so the message is still useful.
-    const tpl = String((settings as any)?.whatsapp_template || "").trim();
-    const msg = tpl
-      ? fillFromShipment(tpl, s, settings, user, findCourier(s))
-      : buildWhatsAppText(s, settings, findCourier(s));
+    // Phase F8.3 — Stage-aware WhatsApp message.
+    // Ask the backend for the template matching this shipment's
+    // CURRENT stage (Processing / Shipped / Delivered / …). The
+    // server picks the operator's admin-customised text if present,
+    // else the built-in per-stage default, and resolves placeholders
+    // like {customer_name} / {order_id} / {tracking_id} against this
+    // exact shipment row. Falls back to the legacy personal template
+    // + `buildWhatsAppText()` output only when:
+    //   • the stage has no mapped event (Cancelled / Returned), OR
+    //   • the API call itself fails (network / auth blip).
+    // This replaces the previous behaviour where every WhatsApp send
+    // used the single hard-coded "Shipped" template regardless of
+    // what stage the order was actually in.
+    let msg = "";
+    let stageLabel = "Stage message";
+    try {
+      const stage = await Api.getShipmentWhatsAppStageMessage(s.id);
+      if (stage?.ok && stage.message) {
+        msg = stage.message;
+        stageLabel = stage.label || stageLabel;
+      }
+    } catch {
+      // silent — fall through to the legacy template below.
+    }
+
+    if (!msg) {
+      // Phase-23 (2026-05-17) — WhatsApp template binding fix.
+      // The older `buildWhatsAppText()` helper only knew about 6
+      // variables, so customer-saved templates that used keys like
+      // `{order_items}`, `{tracking_link}`, `{estimated_delivery}` got
+      // sent as raw text. We now route through the canonical resolver
+      // (`fillFromShipment`) so EVERY registered placeholder — and
+      // every alias (`order_items` ↔ `items`, `courier_name` ↔ `courier`,
+      // `tracking_link` ↔ `tracking_url`) — is replaced from this exact
+      // shipment row. Unknown placeholders fall back to empty strings
+      // courtesy of the underlying `fillTemplate()` (it strips any
+      // `{xyz}` token whose key wasn't resolved). If the user hasn't
+      // saved a personal template we fall back to the legacy
+      // `buildWhatsAppText()` output so the message is still useful.
+      const tpl = String((settings as any)?.whatsapp_template || "").trim();
+      msg = tpl
+        ? fillFromShipment(tpl, s, settings, user, findCourier(s))
+        : buildWhatsAppText(s, settings, findCourier(s));
+    }
+
     // Phase-15 D: route through the daily-limit guard so the user gets
     // soft-warn / confirm / hard-block per admin policy, and the
     // server-side counter stays in sync across devices.
     await requestWhatsAppSend(s.customer_phone, msg, {
-      templateLabel: "Shipped tracking message",
+      templateLabel: stageLabel,
     });
   };
 

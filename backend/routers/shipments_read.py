@@ -423,6 +423,53 @@ def init() -> None:
         ordered = [by_id[i].model_dump() for i in ids if i in by_id]
         return ordered
 
+    # Phase F8.3 — Stage-aware WhatsApp message endpoint.
+    # The Shipments-tab WhatsApp button used to send a single hard-
+    # coded "Shipped tracking message" regardless of what stage the
+    # order was actually in. This endpoint returns the CORRECT text
+    # for the shipment's current status (Processing / Delivered /
+    # Out for Delivery / etc.), using the admin-configured template
+    # if present or the built-in catalogue default as a fallback.
+    # Placeholders like {customer_name}, {order_id}, {tracking_id},
+    # {courier_name}, {business_name} are resolved server-side against
+    # the shipment row so the client can deep-link WhatsApp with the
+    # ready-to-send text.
+    @shipments_read_router.get(
+        "/shipments/{shipment_id}/whatsapp-stage-message",
+    )
+    async def get_shipment_whatsapp_stage_message(
+        shipment_id: str,
+        current_user: Dict[str, Any] = Depends(_get_current_user),
+    ):
+        doc = await db.shipments.find_one(
+            {"user_id": current_user["id"], "id": shipment_id},
+            {"_id": 0},
+        )
+        if not doc:
+            raise HTTPException(status_code=404, detail="Not found")
+        # Late import to avoid a circular dep at module load: this
+        # router loads before whatsapp_provider seeds itself.
+        from routers.whatsapp_provider import (  # noqa: WPS433
+            resolve_stage_message as _resolve,
+        )
+        payload = await _resolve(
+            db,
+            doc,
+            business_name=(current_user.get("shop_name")
+                           or current_user.get("name") or ""),
+            business_phone=(current_user.get("phone") or ""),
+        )
+        if not payload:
+            # Terminal / unmapped status (e.g. Cancelled, Returned) —
+            # tell the client to fall back to its legacy template.
+            return {
+                "ok":       False,
+                "reason":   "no stage-event maps for this status",
+                "status":   (doc.get("status") or ""),
+                "message":  None,
+            }
+        return {"ok": True, **payload}
+
     # =================  Customer + address lookup  ====================
 
     @shipments_read_router.get("/customers/by-phone/{phone}")
