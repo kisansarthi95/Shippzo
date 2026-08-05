@@ -6366,6 +6366,13 @@ async def _abandoned_recovery_worker() -> None:
     except Exception:
         logger.exception("abandoned recovery worker: whatsapp_provider import failed")
         return
+    try:
+        from routers.short_links import get_or_create_short_link as _mk_short  # noqa: WPS433
+    except Exception:
+        _mk_short = None  # type: ignore
+        logger.exception(
+            "abandoned recovery worker: short_links import failed (checkout_url will fall back to raw recovery_url)",
+        )
 
     _DELAY_SEC = {
         "instant": 0, "5m": 300, "15m": 900, "30m": 1800, "1h": 3600,
@@ -6417,6 +6424,32 @@ async def _abandoned_recovery_worker() -> None:
                     # variable set used by stages, so no bespoke
                     # mapping is required in the trigger editor).
                     line0 = ((cart.get("line_items") or [{}]) or [{}])[0]
+                    # Phase F8.10 — Same shortened checkout URL the
+                    # operator sends in the manual recovery flow.
+                    # Idempotent: repeated calls for this cart return
+                    # the same short_url so operator + auto flows never
+                    # diverge. Falls back to the raw recovery_url when
+                    # the short-link helper isn't available.
+                    raw_url = (cart.get("recovery_url") or "").strip()
+                    checkout_url = ""
+                    if raw_url and _mk_short:
+                        try:
+                            sl = await _mk_short(
+                                db,
+                                cart.get("user_id") or "",
+                                raw_url,
+                                cart.get("id"),
+                            )
+                            checkout_url = sl.get("short_url") or raw_url
+                        except Exception:
+                            logger.exception(
+                                "short_link creation failed for cart %s",
+                                cart.get("id"),
+                            )
+                            checkout_url = raw_url
+                    elif raw_url:
+                        checkout_url = raw_url
+
                     ctx = {
                         "customer_name":  cart.get("customer_name") or "",
                         "customer_phone": cart.get("customer_phone") or "",
@@ -6426,6 +6459,7 @@ async def _abandoned_recovery_worker() -> None:
                         "product_name":   line0.get("title") or "your item",
                         "quantity":       str(line0.get("quantity") or ""),
                         "total_amount":   str(cart.get("total") or ""),
+                        "checkout_url":   checkout_url,
                         "business_name":  "",     # filled below
                         "current_stage":  "Abandoned",
                         "_user_id":       cart.get("user_id") or "",

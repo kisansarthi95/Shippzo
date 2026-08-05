@@ -33,6 +33,7 @@ Schema (`db.short_links`)
 """
 from __future__ import annotations
 
+import os
 import random
 import string
 from datetime import datetime, timezone
@@ -52,6 +53,53 @@ _ALPHABET = string.ascii_lowercase + string.ascii_uppercase + string.digits
 
 def _gen_code(n: int = 6) -> str:
     return "".join(random.choice(_ALPHABET) for _ in range(n))
+
+
+async def get_or_create_short_link(
+    db: Any,
+    user_id: str,
+    target_url: str,
+    cart_id: Optional[str] = None,
+) -> Dict[str, str]:
+    """Phase F8.10 — server-side (no-HTTP-context) helper for background
+    workers (e.g. the abandoned-cart auto-recovery scanner) that need
+    the same tidy `/api/s/<code>` URL the manual WhatsApp flow uses.
+
+    Returns `{code, short_url}` where `short_url` uses the operator's
+    APP_PUBLIC_URL as the base host so the link is externally reachable
+    from a customer's phone. Idempotent: repeated calls with the same
+    `(user_id, target_url)` return the same code.
+    """
+    target_url = (target_url or "").strip()
+    if not (target_url.startswith("http://") or target_url.startswith("https://")):
+        return {"code": "", "short_url": ""}
+
+    existing = await db.short_links.find_one(
+        {"user_id": user_id, "target_url": target_url},
+        {"_id": 0, "code": 1},
+    )
+    if existing:
+        code = existing["code"]
+    else:
+        code = _gen_code(6)
+        for _ in range(5):
+            clash = await db.short_links.find_one({"code": code}, {"_id": 1})
+            if not clash:
+                break
+            code = _gen_code(6)
+        now = datetime.now(timezone.utc).isoformat()
+        await db.short_links.insert_one({
+            "code":            code,
+            "user_id":         user_id,
+            "target_url":      target_url,
+            "cart_id":         cart_id or None,
+            "hits":            0,
+            "last_clicked_at": None,
+            "created_at":      now,
+        })
+
+    base = (os.getenv("APP_PUBLIC_URL") or "https://app.shippzo.com").rstrip("/")
+    return {"code": code, "short_url": f"{base}/api/s/{code}"}
 
 
 class _CreatePayload(BaseModel):

@@ -185,11 +185,11 @@ EVENT_CATALOG: List[Dict[str, Any]] = [
      "sub":     "Fires after the merchant-set delay for abandoned carts",
      "default_fields": ["customer_name", "customer_phone", "order_id",
                         "product_name", "total_amount", "customer_email",
-                        "business_name"],
+                        "checkout_url", "business_name"],
      "default_template":
         "👋 Hi {customer_name}, we noticed you left *{product_name}* in "
-        "your cart. Complete your order *{order_id}* now — we've saved "
-        "it for you!\n— {business_name}"},
+        "your cart. Complete your order here: {checkout_url}\n— "
+        "{business_name}"},
 ]
 
 
@@ -234,6 +234,11 @@ AVAILABLE_FIELDS: List[Dict[str, str]] = [
     # to the operator's own admin email, so admin@… can never leak
     # into a customer-facing stage payload.
     {"key": "customer_email",    "label": "Customer Email"},
+    # Phase F8.10 — Abandoned-cart checkout link. Populated by the
+    # auto-recovery worker (server.py::_abandoned_recovery_worker) as
+    # the SAME short URL the operator sends manually — so customers
+    # see one consistent link across both flows.
+    {"key": "checkout_url",      "label": "Checkout URL (abandoned cart)"},
     {"key": "google_review_link","label": "Google Review Link (feedback events)"},
     {"key": "event_type",        "label": "Event Type"},
 ]
@@ -690,6 +695,13 @@ def _build_payload(
     # this only fills the gap for pre-existing trigger docs.
     if context.get("google_review_link") and "google_review_link" not in payload:
         payload["google_review_link"] = str(context["google_review_link"])
+
+    # Phase F8.10 — the abandoned-cart Checkout URL ALWAYS rides along
+    # on the auto-recovery event so operators don't have to remember to
+    # tick a field. Backfills for any legacy trigger doc that pre-dates
+    # this feature; ticked/custom fields still win.
+    if context.get("checkout_url") and "checkout_url" not in payload:
+        payload["checkout_url"] = str(context["checkout_url"])
 
     return payload
 
