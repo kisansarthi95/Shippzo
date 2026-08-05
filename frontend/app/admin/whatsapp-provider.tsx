@@ -115,6 +115,18 @@ export default function AdminWhatsAppProviderScreen() {
   // Test-send modal state
   const [testFor, setTestFor]       = useState<EventRow | null>(null);
   const [testPhone, setTestPhone]   = useState("");
+  // Phase F8.6 — Test Send popup enrichment (STAGE events only).
+  // `testMode` toggles between hand-keying every variable ("manual")
+  // and pulling the latest matching shipment via GET
+  // /admin/whatsapp-provider/latest-shipment-context ("auto"). Auth /
+  // OTP events keep their existing single-form UI — they don't need
+  // per-variable inputs because the backend auto-generates every
+  // field (OTP + defaults). The autoLoading + autoNote state powers
+  // the loading / empty-result UX inside the Auto Fetch tab.
+  const [testMode, setTestMode]     = useState<"manual" | "auto">("manual");
+  const [testCtx, setTestCtx]       = useState<Record<string, string>>({});
+  const [autoLoading, setAutoLoading] = useState(false);
+  const [autoNote, setAutoNote]     = useState<string>("");
   const [testSending, setTestSending] = useState(false);
   // Phase F5.8 — inline "Live Response Viewer" state. When null, the
   // modal only shows the phone input. After a Send, this holds the
@@ -239,9 +251,21 @@ export default function AdminWhatsAppProviderScreen() {
     setTestSending(true);
     setTestResult(null);
     try {
+      // Phase F8.6 — stage events pass through the operator's typed /
+      // auto-fetched variable map. Auth events keep the legacy behavior
+      // (empty sample_context, backend auto-generates OTP + defaults).
+      const isStage = testFor.category === "stage";
+      const sample: Record<string, string> = {};
+      if (isStage) {
+        Object.entries(testCtx).forEach(([k, v]) => {
+          const s = String(v ?? "").trim();
+          if (s) sample[k] = s;
+        });
+      }
       const r: any = await Api.adminWppTestSend({
-        event_key: testFor.event_key,
-        phone:     phoneTrim,
+        event_key:      testFor.event_key,
+        phone:          phoneTrim,
+        sample_context: isStage ? sample : undefined,
       });
       const res = r.result || {};
       // Phase F5.8 — hold the full snapshot in state so the modal
@@ -269,6 +293,39 @@ export default function AdminWhatsAppProviderScreen() {
       });
     } finally {
       setTestSending(false);
+    }
+  };
+
+  // ── Auto-fetch the latest matching shipment's context ──────────────
+  // Phase F8.6 — pulls real production-shaped data (customer_name,
+  // order_id, tracking_id, courier_name, business_name, address, etc.)
+  // from the most-recent shipment currently in this stage's status.
+  // On success we merge the returned map into testCtx so the manual
+  // input row for each variable pre-fills. On empty result we surface
+  // the reason inline so the operator knows to switch to Manual mode.
+  const runAutoFetch = async () => {
+    if (!testFor || testFor.category !== "stage") return;
+    setAutoLoading(true);
+    setAutoNote("");
+    try {
+      const r = await Api.adminWppLatestShipmentContext(testFor.event_key);
+      if (!r.ok) {
+        setAutoNote(r.reason || "No matching shipment found.");
+        return;
+      }
+      setTestCtx({ ...(testCtx || {}), ...(r.context || {}) });
+      // Also seed the phone if we don't already have one, so a single
+      // tap of Send Test works out of the box.
+      const cp = String(r.context?.customer_phone || "").trim();
+      if (cp && !testPhone.trim()) setTestPhone(cp);
+      setAutoNote(
+        `✅ Loaded from shipment ${(r.shipment_id || "").slice(0, 8)}… ` +
+        `(status: ${r.status || "—"}). All fields are editable below.`,
+      );
+    } catch (e: any) {
+      setAutoNote(e?.response?.data?.detail || e?.message || "Fetch failed.");
+    } finally {
+      setAutoLoading(false);
     }
   };
 
@@ -364,7 +421,13 @@ export default function AdminWhatsAppProviderScreen() {
               providerReady={providerReady}
               onToggle={() => toggleEvent(e)}
               onEdit={() => setEditing(e)}
-              onTest={() => { setTestFor(e); setTestPhone(""); }}
+              onTest={() => {
+                setTestFor(e);
+                setTestPhone("");
+                setTestCtx({});
+                setAutoNote("");
+                setTestMode("manual");
+              }}
             />
           ))}
 
@@ -379,7 +442,13 @@ export default function AdminWhatsAppProviderScreen() {
               providerReady={providerReady}
               onToggle={() => toggleEvent(e)}
               onEdit={() => setEditing(e)}
-              onTest={() => { setTestFor(e); setTestPhone(""); }}
+              onTest={() => {
+                setTestFor(e);
+                setTestPhone("");
+                setTestCtx({});
+                setAutoNote("");
+                setTestMode("manual");
+              }}
             />
           ))}
 
@@ -419,15 +488,26 @@ export default function AdminWhatsAppProviderScreen() {
             <Text style={styles.testTitle}>🧪 Test Send</Text>
             <Text style={styles.testSub}>{testFor?.label}</Text>
 
-            {/* Explain what data is auto-generated so ops know
-                what to expect on the phone. */}
-            <View style={styles.testHint}>
-              <Text style={styles.testHintTxt}>
-                A random <Text style={{ fontWeight: "800" }}>6-digit OTP</Text>{" "}
-                is auto-generated for every test. The full payload &
-                provider response are shown below after Send.
-              </Text>
-            </View>
+            {/* Phase F8.6 — Auth events keep the "6-digit OTP auto-
+                generated" hint (that IS what happens for them). Stage
+                events replace it with a stage-appropriate hint and a
+                Manual/Auto-Fetch tab bar. */}
+            {testFor?.category === "auth" ? (
+              <View style={styles.testHint}>
+                <Text style={styles.testHintTxt}>
+                  A random <Text style={{ fontWeight: "800" }}>6-digit OTP</Text>{" "}
+                  is auto-generated for every test. The full payload &
+                  provider response are shown below after Send.
+                </Text>
+              </View>
+            ) : (
+              <View style={styles.testHint}>
+                <Text style={styles.testHintTxt}>
+                  Choose how test values are supplied. All fields below
+                  are editable — nothing is auto-injected on your behalf.
+                </Text>
+              </View>
+            )}
 
             <Text style={styles.fieldLabel}>Phone number (with or without +91)</Text>
             <TextInput
@@ -439,6 +519,117 @@ export default function AdminWhatsAppProviderScreen() {
               autoFocus
               editable={!testSending}
             />
+
+            {/* Phase F8.6 — Manual / Auto Fetch tab bar (stage only). */}
+            {testFor?.category === "stage" ? (
+              <>
+                <View style={styles.modeTabs}>
+                  <TouchableOpacity
+                    style={[
+                      styles.modeTab,
+                      testMode === "manual" && styles.modeTabActive,
+                    ]}
+                    onPress={() => setTestMode("manual")}
+                    disabled={testSending || autoLoading}
+                  >
+                    <PhIcon
+                      name="create-outline"
+                      size={14}
+                      color={testMode === "manual" ? "#1E40AF" : "#64748B"}
+                    />
+                    <Text style={[
+                      styles.modeTabTxt,
+                      testMode === "manual" && styles.modeTabTxtActive,
+                    ]}>Manual</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[
+                      styles.modeTab,
+                      testMode === "auto" && styles.modeTabActive,
+                    ]}
+                    onPress={() => setTestMode("auto")}
+                    disabled={testSending || autoLoading}
+                  >
+                    <PhIcon
+                      name="cloud-download-outline"
+                      size={14}
+                      color={testMode === "auto" ? "#1E40AF" : "#64748B"}
+                    />
+                    <Text style={[
+                      styles.modeTabTxt,
+                      testMode === "auto" && styles.modeTabTxtActive,
+                    ]}>Auto Fetch</Text>
+                  </TouchableOpacity>
+                </View>
+
+                {testMode === "auto" ? (
+                  <View style={{ marginTop: 6 }}>
+                    <TouchableOpacity
+                      style={[
+                        styles.autoFetchBtn,
+                        (autoLoading || testSending) && { opacity: 0.6 },
+                      ]}
+                      onPress={runAutoFetch}
+                      disabled={autoLoading || testSending}
+                    >
+                      {autoLoading ? (
+                        <ActivityIndicator color="#1E40AF" />
+                      ) : (
+                        <>
+                          <PhIcon name="download-outline" size={16} color="#1E40AF" />
+                          <Text style={styles.autoFetchTxt}>
+                            Fetch latest {testFor.label.replace("Stage: ", "")} order
+                          </Text>
+                        </>
+                      )}
+                    </TouchableOpacity>
+                    {!!autoNote && (
+                      <Text style={styles.autoNote}>{autoNote}</Text>
+                    )}
+                  </View>
+                ) : null}
+
+                {/* Variable input rows for THIS stage's selected fields
+                    (excluding customer_phone which has its own top-of-
+                    form input). Shown in BOTH manual and auto modes so
+                    the operator can review/tweak fetched values before
+                    sending. */}
+                {(() => {
+                  const fields = (testFor.selected_fields || []).filter(
+                    (k) => k !== "customer_phone",
+                  );
+                  if (fields.length === 0) {
+                    return (
+                      <Text style={styles.autoNote}>
+                        No mapping variables selected for this stage.
+                        Add some in Configure → Data Fields.
+                      </Text>
+                    );
+                  }
+                  return (
+                    <View style={{ marginTop: 8 }}>
+                      {fields.map((k) => (
+                        <View key={k} style={{ marginTop: 6 }}>
+                          <Text style={styles.varRowLbl}>{k}</Text>
+                          <TextInput
+                            style={styles.input}
+                            placeholder={`Enter test ${k}`}
+                            placeholderTextColor="#94A3B8"
+                            autoCapitalize="none"
+                            autoCorrect={false}
+                            value={testCtx[k] ?? ""}
+                            editable={!testSending}
+                            onChangeText={(v) =>
+                              setTestCtx({ ...testCtx, [k]: v })
+                            }
+                          />
+                        </View>
+                      ))}
+                    </View>
+                  );
+                })()}
+              </>
+            ) : null}
 
             <View style={{ flexDirection: "row", gap: 10, marginTop: 16 }}>
               <TouchableOpacity
@@ -1538,6 +1729,68 @@ const styles = StyleSheet.create({
   metaPillWarn: { backgroundColor: "#FEF3C7" },
   metaPillTxt:  { fontSize: 11.5, fontWeight: "700" },
   fieldsCount:  { fontSize: 11.5, color: "#64748B", marginLeft: "auto" },
+
+  // Phase F8.6 — Test Send popup Manual/Auto tab bar + variable rows.
+  modeTabs: {
+    flexDirection: "row",
+    gap: 8,
+    marginTop: 12,
+  },
+  modeTab: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+    borderRadius: 8,
+    backgroundColor: "#F1F5F9",
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+  },
+  modeTabActive: {
+    backgroundColor: "#DBEAFE",
+    borderColor: "#93C5FD",
+  },
+  modeTabTxt: {
+    fontSize: 12.5,
+    fontWeight: "700",
+    color: "#64748B",
+  },
+  modeTabTxtActive: {
+    color: "#1E40AF",
+  },
+  autoFetchBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    borderWidth: 1,
+    borderColor: "#93C5FD",
+    borderRadius: 8,
+    backgroundColor: "#EFF6FF",
+    paddingVertical: 10,
+    marginTop: 6,
+  },
+  autoFetchTxt: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: "#1E40AF",
+  },
+  autoNote: {
+    marginTop: 6,
+    fontSize: 11.5,
+    lineHeight: 15,
+    color: "#475569",
+    fontStyle: "italic",
+  },
+  varRowLbl: {
+    fontSize: 11.5,
+    fontWeight: "700",
+    color: "#334155",
+    marginBottom: 2,
+  },
 
   cardActions: {
     flexDirection: "row",

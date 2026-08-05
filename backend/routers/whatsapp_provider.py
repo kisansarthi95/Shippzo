@@ -1047,6 +1047,74 @@ def init() -> None:
         rows = [r async for r in cursor]
         return {"items": rows, "count": len(rows)}
 
+    # ── GET /latest-shipment-context ─────────────────────────────────
+    # Phase F8.6 — powers the Test Send popup's "Auto Fetch" mode. Given
+    # a stage event_key (e.g. `stage_delivered`), find the most-recent
+    # shipment belonging to this admin that is currently in the
+    # corresponding status, flatten it via `_shipment_to_context`, and
+    # return the resulting variable map so the frontend can pre-fill
+    # every mapping field with real data. OTP / auth events are not
+    # supported (no shipment analogue) — the frontend gates this call
+    # to stage-only cards.
+    @whatsapp_provider_router.get("/latest-shipment-context")
+    async def latest_shipment_context(
+        event_key: str,
+        current_user: Dict[str, Any] = Depends(_get_current_user),
+    ) -> Dict[str, Any]:
+        _require_admin_helper(current_user)
+        if not (event_key or "").startswith("stage_"):
+            return {
+                "ok":      False,
+                "reason":  "auto-fetch is only available for stage events",
+                "context": {},
+            }
+        # Reverse STAGE_TO_EVENT_KEY → find the shipment status(es)
+        # that map to this event_key. Multiple statuses can theoretically
+        # collapse onto one event (defensive against future aliasing).
+        wanted_statuses = [
+            st for st, ev in STAGE_TO_EVENT_KEY.items() if ev == event_key
+        ]
+        if not wanted_statuses:
+            return {
+                "ok":      False,
+                "reason":  f"no shipment status maps to {event_key}",
+                "context": {},
+            }
+        doc = await db["shipments"].find_one(
+            {
+                "user_id": current_user["id"],
+                "status":  {"$in": wanted_statuses},
+            },
+            {"_id": 0},
+            sort=[("created_at", -1)],
+        )
+        if not doc:
+            return {
+                "ok":      False,
+                "reason":  (
+                    f"no shipment found in status {wanted_statuses} for "
+                    "this account. Auto-fetch is unavailable — use "
+                    "Manual mode to key in test values."
+                ),
+                "context": {},
+            }
+        ctx = _shipment_to_context(
+            doc,
+            business_name=(current_user.get("shop_name")
+                           or current_user.get("name") or ""),
+            business_phone=(current_user.get("phone") or ""),
+        )
+        # Strip the underscore-prefixed sidecars (`_user_id`) — they
+        # are dispatcher-internal and should not leak into the UI.
+        ctx_public = {k: v for k, v in ctx.items() if not k.startswith("_")}
+        return {
+            "ok":            True,
+            "event_key":     event_key,
+            "shipment_id":   doc.get("id"),
+            "status":        doc.get("status"),
+            "context":       ctx_public,
+        }
+
 
 # ─── Phase F8.3 — Stage-aware WhatsApp message renderer ─────────────
 # Powers the Shipments-tab WhatsApp button. Instead of hard-coding a

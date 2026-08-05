@@ -2702,6 +2702,25 @@ export const Api = {
       })
       .then((r) => r.data),
 
+  // Phase F8.6 — Auto-Fetch mode for the Test Send popup. Pulls the
+  // latest shipment matching this stage event's status and returns
+  // the resolved context map so the operator can pre-fill every
+  // mapping variable with real production-shaped data. Only supports
+  // stage_* events; auth/OTP events return ok:false.
+  adminWppLatestShipmentContext: (event_key: string) =>
+    api
+      .get<{
+        ok: boolean;
+        reason?: string;
+        event_key?: string;
+        shipment_id?: string;
+        status?: string;
+        context: Record<string, string>;
+      }>("/admin/whatsapp-provider/latest-shipment-context", {
+        params: { event_key },
+      })
+      .then((r) => r.data),
+
   // ─── Phase-29: Native Support-Center Articles ───────────────────
   // In-app article reader replaces the previous external website
   // redirect. Public read + Super-Admin CRUD.
