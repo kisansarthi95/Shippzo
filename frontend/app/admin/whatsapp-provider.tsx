@@ -71,7 +71,7 @@ type EventRow = {
   event_key: string;
   label: string;
   sub: string;
-  category: "auth" | "stage";
+  category: "auth" | "stage" | "recovery" | "custom";
   enabled: boolean;
   automation_id: string;
   // Phase F8.4 — per-event webhook URL. Stage events route to THIS
@@ -127,6 +127,10 @@ export default function AdminWhatsAppProviderScreen() {
   const [testCtx, setTestCtx]       = useState<Record<string, string>>({});
   const [autoLoading, setAutoLoading] = useState(false);
   const [autoNote, setAutoNote]     = useState<string>("");
+  // Phase F8.9 — Custom Automations UI state.
+  const [showAddCustom, setShowAddCustom] = useState(false);
+  const [newCustomLabel, setNewCustomLabel] = useState("");
+  const [creatingCustom, setCreatingCustom] = useState(false);
   const [testSending, setTestSending] = useState(false);
   // Phase F5.8 — inline "Live Response Viewer" state. When null, the
   // modal only shows the phone input. After a Send, this holds the
@@ -240,6 +244,57 @@ export default function AdminWhatsAppProviderScreen() {
     }
   };
 
+  // ── Phase F8.9 — Custom Automations create + delete ───────────────
+  const createCustomEvent = async () => {
+    const label = newCustomLabel.trim();
+    if (label.length < 2) {
+      Alert.alert("Name required", "Enter a name for this automation.");
+      return;
+    }
+    setCreatingCustom(true);
+    try {
+      const r = await Api.adminWppCreateCustomEvent({ label });
+      setEvents((prev) => [...prev, r.item]);
+      setShowAddCustom(false);
+      setNewCustomLabel("");
+      // Auto-open the editor so the operator can paste the Webhook URL.
+      setEditing(r.item);
+    } catch (e: any) {
+      Alert.alert(
+        "Could not create",
+        e?.response?.data?.detail || e?.message || "Create failed",
+      );
+    } finally {
+      setCreatingCustom(false);
+    }
+  };
+
+  const confirmDeleteCustom = (row: EventRow) => {
+    Alert.alert(
+      "Delete this automation?",
+      `“${row.label}” will be removed permanently.`,
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Delete", style: "destructive",
+          onPress: async () => {
+            try {
+              await Api.adminWppDeleteEvent(row.event_key);
+              setEvents((prev) =>
+                prev.filter((e) => e.event_key !== row.event_key),
+              );
+            } catch (e: any) {
+              Alert.alert(
+                "Could not delete",
+                e?.response?.data?.detail || e?.message || "Delete failed",
+              );
+            }
+          },
+        },
+      ],
+    );
+  };
+
   // ── Run a test send ───────────────────────────────────────────────
   const runTest = async () => {
     if (!testFor) return;
@@ -254,7 +309,7 @@ export default function AdminWhatsAppProviderScreen() {
       // Phase F8.6 — stage events pass through the operator's typed /
       // auto-fetched variable map. Auth events keep the legacy behavior
       // (empty sample_context, backend auto-generates OTP + defaults).
-      const isStage = testFor.category === "stage";
+      const isStage = testFor.category !== "auth";
       const sample: Record<string, string> = {};
       if (isStage) {
         Object.entries(testCtx).forEach(([k, v]) => {
@@ -452,6 +507,76 @@ export default function AdminWhatsAppProviderScreen() {
             />
           ))}
 
+        {/* Phase F8.9 — Group: Recovery events (abandoned_cart_recovery
+            and any future recovery triggers). */}
+        {events.some((e) => e.category === "recovery") && (
+          <>
+            <Text style={styles.groupHead}>🛒 Recovery</Text>
+            {events
+              .filter((e) => e.category === "recovery")
+              .map((e) => (
+                <EventCard
+                  key={e.event_key}
+                  row={e}
+                  providerReady={providerReady}
+                  onToggle={() => toggleEvent(e)}
+                  onEdit={() => setEditing(e)}
+                  onTest={() => {
+                    setTestFor(e);
+                    setTestPhone("");
+                    setTestCtx({});
+                    setAutoNote("");
+                    setTestMode("manual");
+                  }}
+                />
+              ))}
+          </>
+        )}
+
+        {/* Phase F8.9 — Group: Custom Automations. Operator-created
+            triggers using the same variable set as stages so no new
+            mapping is required. `+ Add` opens a small inline prompt
+            asking for the label; a trash icon on each card deletes. */}
+        <View style={styles.customHeaderRow}>
+          <Text style={[styles.groupHead, { marginBottom: 0 }]}>
+            ⚙️ Custom Automations
+          </Text>
+          <TouchableOpacity
+            style={styles.customAddBtn}
+            onPress={() => setShowAddCustom(true)}
+          >
+            <PhIcon name="add" size={16} color="#1E40AF" />
+            <Text style={styles.customAddTxt}>Add</Text>
+          </TouchableOpacity>
+        </View>
+        {events.filter((e) => e.category === "custom").length === 0 ? (
+          <Text style={styles.customEmptyTxt}>
+            No custom automations yet. Tap “Add” to create one — it uses
+            the same variables as your Stage triggers, so you only need
+            to paste a Webhook URL after creating.
+          </Text>
+        ) : (
+          events
+            .filter((e) => e.category === "custom")
+            .map((e) => (
+              <EventCard
+                key={e.event_key}
+                row={e}
+                providerReady={providerReady}
+                onToggle={() => toggleEvent(e)}
+                onEdit={() => setEditing(e)}
+                onTest={() => {
+                  setTestFor(e);
+                  setTestPhone("");
+                  setTestCtx({});
+                  setAutoNote("");
+                  setTestMode("manual");
+                }}
+                onDelete={() => confirmDeleteCustom(e)}
+              />
+            ))
+        )}
+
         <Text style={styles.footnote}>
           Templates live inside the provider's own automation. From here
           we only push the DATA your template needs (variables). Use the
@@ -531,8 +656,12 @@ export default function AdminWhatsAppProviderScreen() {
               editable={!testSending}
             />
 
-            {/* Phase F8.6 — Manual / Auto Fetch tab bar (stage only). */}
-            {testFor?.category === "stage" ? (
+            {/* Phase F8.6 — Manual / Auto Fetch tab bar for every
+                non-auth event. Auto Fetch is only meaningful for
+                Shipment Stage events (they map to a shipment status);
+                for Recovery / Custom automations we hide the Auto tab
+                and let the operator hand-key the test values. */}
+            {testFor && testFor.category !== "auth" ? (
               <>
                 <View style={styles.modeTabs}>
                   <TouchableOpacity
@@ -553,24 +682,26 @@ export default function AdminWhatsAppProviderScreen() {
                       testMode === "manual" && styles.modeTabTxtActive,
                     ]}>Manual</Text>
                   </TouchableOpacity>
-                  <TouchableOpacity
-                    style={[
-                      styles.modeTab,
-                      testMode === "auto" && styles.modeTabActive,
-                    ]}
-                    onPress={() => setTestMode("auto")}
-                    disabled={testSending || autoLoading}
-                  >
-                    <PhIcon
-                      name="cloud-download-outline"
-                      size={14}
-                      color={testMode === "auto" ? "#1E40AF" : "#64748B"}
-                    />
-                    <Text style={[
-                      styles.modeTabTxt,
-                      testMode === "auto" && styles.modeTabTxtActive,
-                    ]}>Auto Fetch</Text>
-                  </TouchableOpacity>
+                  {testFor.category === "stage" && (
+                    <TouchableOpacity
+                      style={[
+                        styles.modeTab,
+                        testMode === "auto" && styles.modeTabActive,
+                      ]}
+                      onPress={() => setTestMode("auto")}
+                      disabled={testSending || autoLoading}
+                    >
+                      <PhIcon
+                        name="cloud-download-outline"
+                        size={14}
+                        color={testMode === "auto" ? "#1E40AF" : "#64748B"}
+                      />
+                      <Text style={[
+                        styles.modeTabTxt,
+                        testMode === "auto" && styles.modeTabTxtActive,
+                      ]}>Auto Fetch</Text>
+                    </TouchableOpacity>
+                  )}
                 </View>
 
                 {testMode === "auto" ? (
@@ -762,6 +893,72 @@ export default function AdminWhatsAppProviderScreen() {
           </Pressable>
         </Pressable>
       </Modal>
+
+      {/* Phase F8.9 — Custom Automation create prompt. Tiny centered
+          modal with a label input and a Create button; on success we
+          jump straight into the freshly-created event's editor so the
+          operator can paste the Webhook URL immediately. */}
+      <Modal
+        visible={showAddCustom}
+        transparent
+        animationType="fade"
+        onRequestClose={() => {
+          if (!creatingCustom) {
+            setShowAddCustom(false);
+            setNewCustomLabel("");
+          }
+        }}
+      >
+        <Pressable
+          style={styles.modalBackdrop}
+          onPress={() => {
+            if (!creatingCustom) {
+              setShowAddCustom(false);
+              setNewCustomLabel("");
+            }
+          }}
+        >
+          <Pressable style={styles.testCard} onPress={() => {}}>
+            <Text style={styles.testTitle}>➕ New Custom Automation</Text>
+            <Text style={styles.testSub}>
+              Give this automation a name. You'll paste the Webhook URL
+              in the next step. All standard order / shipment variables
+              are already available — no new mapping needed.
+            </Text>
+            <Text style={styles.fieldLabel}>Automation name</Text>
+            <TextInput
+              value={newCustomLabel}
+              onChangeText={setNewCustomLabel}
+              placeholder="e.g. Cross-sell offer, VIP welcome, …"
+              placeholderTextColor="#94A3B8"
+              autoFocus
+              style={styles.input}
+              editable={!creatingCustom}
+            />
+            <View style={{ flexDirection: "row", gap: 10, marginTop: 16 }}>
+              <TouchableOpacity
+                style={[styles.testBtnGhost, { flex: 1 }]}
+                disabled={creatingCustom}
+                onPress={() => {
+                  setShowAddCustom(false);
+                  setNewCustomLabel("");
+                }}
+              >
+                <Text style={styles.testBtnGhostTxt}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.testBtnPrimary, { flex: 1 }]}
+                disabled={creatingCustom}
+                onPress={createCustomEvent}
+              >
+                {creatingCustom
+                  ? <ActivityIndicator color="#fff" />
+                  : <Text style={styles.testBtnPrimaryTxt}>Create</Text>}
+              </TouchableOpacity>
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -922,12 +1119,14 @@ function EventCard({
   onToggle,
   onEdit,
   onTest,
+  onDelete,
 }: {
   row: EventRow;
   providerReady: boolean;
   onToggle: () => void;
   onEdit: () => void;
   onTest: () => void;
+  onDelete?: () => void;
 }) {
   // Phase F5.7 — "configured" is now driven by GLOBAL provider
   // readiness (Base URL + API Token set at the top card), NOT by
@@ -940,10 +1139,10 @@ function EventCard({
   // needs a per-event override.
   const configured  = providerReady;
   const hasOverride = !!row.automation_id;
-  // Phase F8.4 — Stage cards display their own dedicated webhook URL
-  // status pill so operators can see at a glance which stages are
-  // routed to their own automation vs. still-unconfigured.
-  const isStage    = row.category === "stage";
+  // Phase F8.4 — All non-auth cards display their own dedicated
+  // webhook URL status pill so operators can see at a glance which
+  // events are routed to their own automation vs. still-unconfigured.
+  const isStage    = row.category !== "auth";
   const hasWebhook = !!(row.webhook_url || "").trim();
   return (
     <View style={[styles.card, { paddingBottom: 0 }]}>
@@ -953,14 +1152,27 @@ function EventCard({
             styles.iconBubble,
             {
               backgroundColor:
-                row.category === "auth" ? "#FEF3C7" : "#DCFCE7",
+                row.category === "auth"     ? "#FEF3C7" :
+                row.category === "recovery" ? "#FCE7F3" :
+                row.category === "custom"   ? "#E0E7FF" :
+                                              "#DCFCE7",
             },
           ]}
         >
           <PhIcon
-            name={row.category === "auth" ? "shield-checkmark-outline" : "cube-outline"}
+            name={
+              row.category === "auth"     ? "shield-checkmark-outline" :
+              row.category === "recovery" ? "cart-outline" :
+              row.category === "custom"   ? "settings-outline" :
+                                            "cube-outline"
+            }
             size={20}
-            color={row.category === "auth" ? "#92400E" : "#15803D"}
+            color={
+              row.category === "auth"     ? "#92400E" :
+              row.category === "recovery" ? "#BE185D" :
+              row.category === "custom"   ? "#3730A3" :
+                                            "#15803D"
+            }
           />
         </View>
         <View style={{ flex: 1 }}>
@@ -1018,6 +1230,14 @@ function EventCard({
           <PhIcon name="paper-plane-outline" size={16} color="#1E40AF" />
           <Text style={styles.actionTxt}>Test Send</Text>
         </TouchableOpacity>
+        {onDelete ? (
+          <TouchableOpacity
+            style={[styles.actionBtn, { backgroundColor: "#FEE2E2" }]}
+            onPress={onDelete}
+          >
+            <PhIcon name="trash-outline" size={16} color="#B91C1C" />
+          </TouchableOpacity>
+        ) : null}
       </View>
     </View>
   );
@@ -1214,17 +1434,12 @@ function EventEditorModal({
             </TouchableOpacity>
 
             {advancedOpen && <>
-            {/* Phase F8.4 — Per-event Webhook URL (stage events only).
+            {/* Phase F8.4 + F8.9 — Per-event Webhook URL for every
+                non-auth event (stages, recovery, custom automations).
                 Auth events (OTP Login/Signup/Password Reset) continue
                 to use the global Base URL configured at the top of the
-                page — those go through the operator's OTP automation.
-                Stage events (Pending / Shipped / Delivered / …) each
-                get their OWN webhook URL below, so customer stage
-                notifications NEVER share the OTP automation endpoint.
-                If left blank for a stage event, the backend will skip
-                that stage's send with a clear reason (rather than
-                fall through to the OTP URL). */}
-            {draft.category === "stage" && (
+                page — those go through the operator's OTP automation. */}
+            {draft.category !== "auth" && (
               <View style={{ marginTop: 4 }}>
                 <Text style={styles.fieldLabel}>Webhook URL</Text>
                 <Text style={styles.hint}>
@@ -1802,6 +2017,40 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     color: "#334155",
     marginBottom: 2,
+  },
+
+  // Phase F8.9 — Custom Automations header row + Add button + empty
+  // state hint. Sits directly above the list of custom event cards.
+  customHeaderRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginTop: 12,
+    marginBottom: 6,
+  },
+  customAddBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 8,
+    backgroundColor: "#DBEAFE",
+    borderWidth: 1,
+    borderColor: "#93C5FD",
+  },
+  customAddTxt: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: "#1E40AF",
+  },
+  customEmptyTxt: {
+    fontSize: 12,
+    lineHeight: 17,
+    color: "#64748B",
+    fontStyle: "italic",
+    paddingHorizontal: 4,
+    paddingVertical: 6,
   },
 
   cardActions: {

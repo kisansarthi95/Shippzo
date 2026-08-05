@@ -42,6 +42,16 @@ class _RecoverPayload(BaseModel):
     create_shipment: bool = False
 
 
+# Phase F8.9 — Auto-Recovery settings body. MUST be at module scope:
+# this file uses `from __future__ import annotations`, so FastAPI
+# resolves body ForwardRefs against module globals only. A class
+# defined inside init() isn't reachable — the PUT would 422 with
+# "Field required" on `body`.
+class _AutoRecoveryPayload(BaseModel):
+    mode:  str = "manual"     # "manual" | "auto"
+    delay: str = "5m"         # one of instant | 5m | 15m | 30m | 1h
+
+
 def _serialise(c: Dict[str, Any]) -> Dict[str, Any]:
     sm = c.get("source_meta") or {}
     return {
@@ -300,4 +310,56 @@ def init() -> None:
             raise HTTPException(status_code=404, detail="Cart not found")
         return {"ok": True, "deleted": cart_id}
 
-    _logger.info("abandoned_carts router mounted (6 endpoints)")
+    # ─── Phase F8.9 — Auto-recovery WhatsApp trigger settings ─────────
+    # Persisted per user in the `settings` collection. When Auto mode
+    # is on, the background scanner (server.py::_abandoned_recovery_
+    # worker) fires the `abandoned_cart_recovery` WhatsApp event after
+    # the configured delay from the moment a cart is ingested.
+    _VALID_DELAYS = {
+        "instant":  0,
+        "5m":       300,
+        "15m":      900,
+        "30m":      1800,
+        "1h":       3600,
+    }
+
+    @abandoned_carts_router.get("/me/abandoned-recovery/settings")
+    async def get_ac_recovery_settings(
+        current_user: Dict[str, Any] = Depends(_get_current_user),
+    ):
+        s = await db.settings.find_one(
+            {"user_id": current_user["id"]},
+            {"_id": 0, "abandoned_recovery": 1},
+        ) or {}
+        cfg = s.get("abandoned_recovery") or {}
+        return {
+            "mode":  cfg.get("mode", "manual"),
+            "delay": cfg.get("delay", "5m"),
+            "delay_options": [
+                {"key": "instant", "label": "Instant"},
+                {"key": "5m",      "label": "5 Minutes",  "recommended": True},
+                {"key": "15m",     "label": "15 Minutes"},
+                {"key": "30m",     "label": "30 Minutes"},
+                {"key": "1h",      "label": "1 Hour"},
+            ],
+        }
+
+    @abandoned_carts_router.put("/me/abandoned-recovery/settings")
+    async def set_ac_recovery_settings(
+        body: _AutoRecoveryPayload,
+        current_user: Dict[str, Any] = Depends(_get_current_user),
+    ):
+        mode = "auto" if body.mode == "auto" else "manual"
+        delay = body.delay if body.delay in _VALID_DELAYS else "5m"
+        await db.settings.update_one(
+            {"user_id": current_user["id"]},
+            {"$set": {
+                "user_id":            current_user["id"],
+                "abandoned_recovery": {"mode": mode, "delay": delay},
+                "updated_at":         datetime.now(timezone.utc).isoformat(),
+            }},
+            upsert=True,
+        )
+        return {"ok": True, "mode": mode, "delay": delay}
+
+    _logger.info("abandoned_carts router mounted (8 endpoints)")

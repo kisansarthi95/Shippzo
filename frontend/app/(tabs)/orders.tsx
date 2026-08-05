@@ -105,6 +105,55 @@ export default function OrdersFromSheet() {
   >(null);
   const [cancelSubmitting, setCancelSubmitting] = useState(false);
 
+  // Phase F8.9 — Abandoned Cart Auto-Recovery settings. Shown behind
+  // a gear button that appears next to Upload only when the current
+  // filter is "abandoned". Modal lets the merchant pick Manual/Auto
+  // mode + a delay window; the backend scheduler drains matching
+  // carts and fires the `abandoned_cart_recovery` WhatsApp event.
+  const [showAcRecoveryModal, setShowAcRecoveryModal] = useState(false);
+  const [acRecoveryMode, setAcRecoveryMode] = useState<"manual" | "auto">("manual");
+  const [acRecoveryDelay, setAcRecoveryDelay] = useState<string>("5m");
+  const [acRecoveryOptions, setAcRecoveryOptions] = useState<
+    { key: string; label: string; recommended?: boolean }[]
+  >([
+    { key: "instant", label: "Instant" },
+    { key: "5m",      label: "5 Minutes", recommended: true },
+    { key: "15m",     label: "15 Minutes" },
+    { key: "30m",     label: "30 Minutes" },
+    { key: "1h",      label: "1 Hour" },
+  ]);
+  const [acRecoverySaving, setAcRecoverySaving] = useState(false);
+  const openAcRecoverySettings = async () => {
+    try {
+      const r = await Api.getAbandonedRecoverySettings();
+      setAcRecoveryMode(r.mode || "manual");
+      setAcRecoveryDelay(r.delay || "5m");
+      if (r.delay_options && r.delay_options.length) {
+        setAcRecoveryOptions(r.delay_options);
+      }
+    } catch {
+      // silent — modal will still open with defaults
+    }
+    setShowAcRecoveryModal(true);
+  };
+  const saveAcRecoverySettings = async () => {
+    setAcRecoverySaving(true);
+    try {
+      await Api.updateAbandonedRecoverySettings({
+        mode:  acRecoveryMode,
+        delay: acRecoveryDelay,
+      });
+      setShowAcRecoveryModal(false);
+    } catch (e: any) {
+      Alert.alert(
+        "Could not save",
+        e?.response?.data?.detail || e?.message || "Save failed",
+      );
+    } finally {
+      setAcRecoverySaving(false);
+    }
+  };
+
   const loadPasteOrders = useCallback(async () => {
     try {
       const [pos, fos, wos, aros, cs, wcfg, ac] = await Promise.all([
@@ -930,6 +979,18 @@ export default function OrdersFromSheet() {
           </Text>
         </View>
         <View style={{ flexDirection: "row", alignItems: "center" }}>
+          {/* Phase F8.9 — Auto-Recovery settings gear. Visible only
+              while the Abandoned filter is active so it never clutters
+              the main pending flows. */}
+          {sourceFilter === "abandoned" && (
+            <TouchableOpacity
+              testID="ac-recovery-settings-btn"
+              style={[styles.refreshBtn, { backgroundColor: "#6366F1", marginRight: 8 }]}
+              onPress={openAcRecoverySettings}
+            >
+              <PhIcon name="settings-outline" size={20} color="#fff" />
+            </TouchableOpacity>
+          )}
           <TouchableOpacity
             testID="orders-upload-btn"
             style={[styles.refreshBtn, { backgroundColor: "#10B981", marginRight: 8 }]}
@@ -1157,9 +1218,203 @@ export default function OrdersFromSheet() {
         onClose={() => !cancelSubmitting && setPendingCancel(null)}
         onConfirm={submitCancelPending}
       />
+
+      {/* Phase F8.9 — Abandoned Cart Auto-Recovery settings modal. */}
+      <Modal
+        visible={showAcRecoveryModal}
+        transparent
+        animationType="fade"
+        onRequestClose={() => !acRecoverySaving && setShowAcRecoveryModal(false)}
+      >
+        <View style={acStyles.backdrop}>
+          <View style={acStyles.card}>
+            <Text style={acStyles.title}>🛒 Auto-Recovery Settings</Text>
+            <Text style={acStyles.sub}>
+              When Auto is ON, we send an abandoned_cart_recovery
+              WhatsApp message to the customer after your chosen delay.
+              Requires the trigger's Webhook URL to be set in Admin →
+              WhatsApp Provider → Recovery.
+            </Text>
+
+            <Text style={acStyles.sectionLbl}>Mode</Text>
+            <View style={acStyles.radioRow}>
+              {(["manual", "auto"] as const).map((m) => (
+                <TouchableOpacity
+                  key={m}
+                  style={[
+                    acStyles.radio,
+                    acRecoveryMode === m && acStyles.radioActive,
+                  ]}
+                  onPress={() => setAcRecoveryMode(m)}
+                  disabled={acRecoverySaving}
+                >
+                  <PhIcon
+                    name={acRecoveryMode === m
+                      ? "radio-button-on"
+                      : "radio-button-off"}
+                    size={18}
+                    color={acRecoveryMode === m ? "#6366F1" : "#94A3B8"}
+                  />
+                  <Text style={acStyles.radioTxt}>
+                    {m === "manual" ? "Manual" : "Auto"}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+
+            {acRecoveryMode === "auto" && (
+              <>
+                <Text style={acStyles.sectionLbl}>Delay</Text>
+                <View style={{ gap: 6 }}>
+                  {acRecoveryOptions.map((opt) => {
+                    const active = acRecoveryDelay === opt.key;
+                    return (
+                      <TouchableOpacity
+                        key={opt.key}
+                        style={[
+                          acStyles.delayRow,
+                          active && acStyles.delayRowActive,
+                        ]}
+                        onPress={() => setAcRecoveryDelay(opt.key)}
+                        disabled={acRecoverySaving}
+                      >
+                        <PhIcon
+                          name={active
+                            ? "radio-button-on"
+                            : "radio-button-off"}
+                          size={16}
+                          color={active ? "#6366F1" : "#94A3B8"}
+                        />
+                        <Text style={acStyles.delayTxt}>{opt.label}</Text>
+                        {opt.recommended && (
+                          <Text style={acStyles.recommendedTag}>
+                            (Recommended)
+                          </Text>
+                        )}
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+              </>
+            )}
+
+            <View style={acStyles.btnRow}>
+              <TouchableOpacity
+                style={[acStyles.btnGhost, { flex: 1 }]}
+                disabled={acRecoverySaving}
+                onPress={() => setShowAcRecoveryModal(false)}
+              >
+                <Text style={acStyles.btnGhostTxt}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[acStyles.btnPrimary, { flex: 1 }]}
+                disabled={acRecoverySaving}
+                onPress={saveAcRecoverySettings}
+              >
+                {acRecoverySaving
+                  ? <ActivityIndicator color="#fff" />
+                  : <Text style={acStyles.btnPrimaryTxt}>Save</Text>}
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
+
+// Phase F8.9 — Auto-Recovery modal styles (kept module-local to avoid
+// polluting the huge orders.tsx StyleSheet with one-off keys).
+const acStyles = StyleSheet.create({
+  backdrop: {
+    flex: 1,
+    backgroundColor: "rgba(15,23,42,0.55)",
+    justifyContent: "center",
+    alignItems: "center",
+    padding: 24,
+  },
+  card: {
+    width: "100%",
+    maxWidth: 420,
+    backgroundColor: "#fff",
+    borderRadius: 14,
+    padding: 18,
+  },
+  title: { fontSize: 17, fontWeight: "800", color: "#0F172A" },
+  sub: {
+    fontSize: 12,
+    color: "#64748B",
+    marginTop: 4,
+    marginBottom: 12,
+    lineHeight: 17,
+  },
+  sectionLbl: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: "#475569",
+    marginTop: 10,
+    marginBottom: 6,
+  },
+  radioRow: { flexDirection: "row", gap: 8 },
+  radio: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+    backgroundColor: "#F8FAFC",
+  },
+  radioActive: {
+    backgroundColor: "#EEF2FF",
+    borderColor: "#A5B4FC",
+  },
+  radioTxt: { fontSize: 13.5, fontWeight: "700", color: "#334155" },
+  delayRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+    backgroundColor: "#F8FAFC",
+  },
+  delayRowActive: {
+    backgroundColor: "#EEF2FF",
+    borderColor: "#A5B4FC",
+  },
+  delayTxt: { fontSize: 13, color: "#334155", fontWeight: "600" },
+  recommendedTag: {
+    marginLeft: 4,
+    fontSize: 11.5,
+    fontWeight: "700",
+    // Green accent per the spec so end-users immediately spot the
+    // 5-minute default as the recommended delay window.
+    color: "#059669",
+  },
+  btnRow: { flexDirection: "row", gap: 10, marginTop: 16 },
+  btnGhost: {
+    paddingVertical: 12,
+    borderRadius: 10,
+    alignItems: "center",
+    backgroundColor: "#F1F5F9",
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+  },
+  btnGhostTxt: { fontSize: 14, fontWeight: "700", color: "#475569" },
+  btnPrimary: {
+    paddingVertical: 12,
+    borderRadius: 10,
+    alignItems: "center",
+    backgroundColor: "#6366F1",
+  },
+  btnPrimaryTxt: { fontSize: 14, fontWeight: "800", color: "#fff" },
+});
 
 function timeAgo(d: Date): string {
   const s = Math.floor((Date.now() - d.getTime()) / 1000);

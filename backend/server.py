@@ -6056,6 +6056,15 @@ async def on_startup():
         _asyncio.create_task(_user_sheet_drain_worker())
     except Exception:
         logger.exception("Failed to start user-sheet drain worker (non-fatal)")
+    # Phase F8.9 — Abandoned Cart Auto-Recovery worker. Every 30s it
+    # scans for abandoned carts whose per-user delay window has
+    # elapsed and dispatches the `abandoned_cart_recovery` WhatsApp
+    # event, then stamps `recovery_sent_at` so we never double-send.
+    try:
+        import asyncio as _asyncio
+        _asyncio.create_task(_abandoned_recovery_worker())
+    except Exception:
+        logger.exception("Failed to start abandoned recovery worker (non-fatal)")
     # Phase F5.0 — Migrate existing "India Post" couriers to the new
     # per-courier auto_sync config. Zero-disruption: only touches
     # couriers whose sender_patterns list is empty (i.e. not yet
@@ -6334,6 +6343,137 @@ async def _user_sheet_drain_worker() -> None:
         except Exception:
             logger.exception("user-sheet drain iteration failed")
         await _asyncio.sleep(90.0)
+
+
+async def _abandoned_recovery_worker() -> None:
+    """Phase F8.9 — Abandoned Cart Auto-Recovery.
+
+    Every 30s scans `db.abandoned_carts` for carts that:
+      • belong to a user with `settings.abandoned_recovery.mode = auto`
+      • were `abandoned_at >= now - delay` window BUT the delay has
+        already elapsed (i.e. it's time to send)
+      • do NOT already carry a `recovery_sent_at` stamp
+    Dispatches the WhatsApp `abandoned_cart_recovery` event via the
+    existing whatsapp_provider dispatcher, then stamps
+    `recovery_sent_at` on the cart so a subsequent tick never double-
+    sends. All failures are logged and skipped — the worker will try
+    them again on the next tick.
+    """
+    import asyncio as _asyncio
+    from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+    try:
+        from routers.whatsapp_provider import dispatch_event as _dispatch
+    except Exception:
+        logger.exception("abandoned recovery worker: whatsapp_provider import failed")
+        return
+
+    _DELAY_SEC = {
+        "instant": 0, "5m": 300, "15m": 900, "30m": 1800, "1h": 3600,
+    }
+
+    await _asyncio.sleep(45.0)  # boot grace so ingress is warm
+    while True:
+        try:
+            # Pull the set of Auto-mode users up front so we hit the
+            # settings collection just once per tick, not once per cart.
+            users_auto: Dict[str, int] = {}
+            async for s in db.settings.find(
+                {"abandoned_recovery.mode": "auto"},
+                {"_id": 0, "user_id": 1, "abandoned_recovery": 1},
+            ):
+                cfg = s.get("abandoned_recovery") or {}
+                delay_key = cfg.get("delay") or "5m"
+                users_auto[s["user_id"]] = _DELAY_SEC.get(delay_key, 300)
+
+            if users_auto:
+                now = _dt.now(_tz.utc)
+                # Cheap first-pass: only look at carts whose window
+                # MIGHT be due (past the smallest delay we could care
+                # about). We still recheck per-user below.
+                cutoff = (now - _td(hours=2)).isoformat()
+                q = {
+                    "user_id":            {"$in": list(users_auto.keys())},
+                    "status":             "abandoned",
+                    "abandoned_at":       {"$gte": cutoff},
+                    "recovery_sent_at":   {"$exists": False},
+                }
+                due = [c async for c in db.abandoned_carts.find(q).limit(50)]
+                sent = 0
+                for cart in due:
+                    delay = users_auto.get(cart["user_id"], 300)
+                    aban_at_raw = cart.get("abandoned_at") or ""
+                    try:
+                        aban_at = _dt.fromisoformat(
+                            str(aban_at_raw).replace("Z", "+00:00"),
+                        )
+                    except Exception:
+                        continue
+                    if aban_at.tzinfo is None:
+                        aban_at = aban_at.replace(tzinfo=_tz.utc)
+                    if (now - aban_at).total_seconds() < delay:
+                        continue  # not yet due
+
+                    # Build context from the cart doc (mirrors the
+                    # variable set used by stages, so no bespoke
+                    # mapping is required in the trigger editor).
+                    line0 = ((cart.get("line_items") or [{}]) or [{}])[0]
+                    ctx = {
+                        "customer_name":  cart.get("customer_name") or "",
+                        "customer_phone": cart.get("customer_phone") or "",
+                        "customer_email": cart.get("customer_email") or "",
+                        "order_id":       cart.get("external_cart_id")
+                                         or cart.get("id") or "",
+                        "product_name":   line0.get("title") or "your item",
+                        "quantity":       str(line0.get("quantity") or ""),
+                        "total_amount":   str(cart.get("total") or ""),
+                        "business_name":  "",     # filled below
+                        "current_stage":  "Abandoned",
+                        "_user_id":       cart.get("user_id") or "",
+                    }
+                    # Fill business_name from the merchant's user doc.
+                    try:
+                        u = await db.users.find_one(
+                            {"id": cart["user_id"]},
+                            {"_id": 0, "shop_name": 1, "name": 1, "phone": 1},
+                        ) or {}
+                        ctx["business_name"] = (
+                            u.get("shop_name") or u.get("name") or ""
+                        )
+                        ctx["business_phone"] = u.get("phone") or ""
+                    except Exception:
+                        pass
+
+                    try:
+                        outcome = await _dispatch(
+                            db, "abandoned_cart_recovery", ctx,
+                            phone=ctx["customer_phone"],
+                        )
+                        await db.abandoned_carts.update_one(
+                            {"id": cart["id"]},
+                            {"$set": {
+                                "recovery_sent_at": now.isoformat(),
+                                "recovery_outcome": {
+                                    "success": bool(outcome.get("success")),
+                                    "skipped": bool(outcome.get("skipped")),
+                                    "reason":  outcome.get("reason"),
+                                },
+                            }},
+                        )
+                        sent += 1
+                    except Exception:
+                        logger.exception(
+                            "abandoned recovery dispatch failed cart_id=%s",
+                            cart.get("id"),
+                        )
+                if sent:
+                    logger.info(
+                        "abandoned recovery worker: dispatched=%s carts", sent,
+                    )
+        except _asyncio.CancelledError:
+            return
+        except Exception:
+            logger.exception("abandoned recovery iteration failed")
+        await _asyncio.sleep(30.0)
 
 
 

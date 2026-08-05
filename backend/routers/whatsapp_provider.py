@@ -175,6 +175,21 @@ EVENT_CATALOG: List[Dict[str, Any]] = [
         "⭐ Hi {customer_name}, how was your experience with order "
         "*{order_id}*? Please share your review here: "
         "{google_review_link}\n— {business_name}"},
+    # Phase F8.9 — Abandoned cart recovery. Fires when an abandoned
+    # cart crosses the merchant-configured delay threshold (Instant /
+    # 5m / 15m / 30m / 1h). Uses the same shipment/order variables
+    # the operator already maps for stages, so no new mapping is
+    # required — just a Webhook URL in the event editor.
+    {"event_key": "abandoned_cart_recovery", "category": "recovery",
+     "label":   "Abandoned Cart Recovery",
+     "sub":     "Fires after the merchant-set delay for abandoned carts",
+     "default_fields": ["customer_name", "customer_phone", "order_id",
+                        "product_name", "total_amount", "customer_email",
+                        "business_name"],
+     "default_template":
+        "👋 Hi {customer_name}, we noticed you left *{product_name}* in "
+        "your cart. Complete your order *{order_id}* now — we've saved "
+        "it for you!\n— {business_name}"},
 ]
 
 
@@ -258,6 +273,16 @@ class EventTriggerUpdate(BaseModel):
     selected_fields:  Optional[List[str]]         = None
     custom_fields:    Optional[List[CustomField]] = None
     variable_mapping: Optional[Dict[str, str]]    = None
+
+
+# Phase F8.9 — Custom Automation create body. MUST live at module
+# scope: this file uses `from __future__ import annotations`, so
+# FastAPI resolves body ForwardRefs against module globals — a class
+# defined inside init() isn't reachable and every POST fails with a
+# 422 "Field required" on `body`.
+class CustomEventCreate(BaseModel):
+    label: str = Field(..., min_length=2, max_length=64)
+    sub:   Optional[str] = Field(None, max_length=200)
 
 
 class TestSendRequest(BaseModel):
@@ -642,22 +667,18 @@ def _build_payload(
     if _cat.startswith("otp_"):
         if context.get("contact_email") and "contact_email" not in payload:
             payload["contact_email"] = str(context["contact_email"])
-    elif _cat.startswith("stage_"):
-        # Emit customer_email even when empty so downstream automations
-        # can distinguish "no customer email on file" from "field
-        # missing". Existing ticked fields still win.
+    elif _cat:
+        # Any non-auth event (stage_*, recovery, custom_*, abandoned
+        # cart etc.): emit customer_email — the shipment/order's own
+        # email — and strictly strip contact_email to prevent admin
+        # email leakage.
         if "customer_email" not in payload:
             payload["customer_email"] = str(
                 context.get("customer_email") or ""
             )
-        # Belt-and-braces: strip any accidental contact_email that
-        # slipped in via a ticked `contact_email` selected_field on a
-        # legacy stage trigger, to eliminate any risk of admin email
-        # leakage into stage sends.
         payload.pop("contact_email", None)
     else:
-        # Legacy fallback: preserve pre-F8.8 behaviour for any event
-        # that doesn't match the two known prefixes.
+        # Truly unknown / legacy code paths: preserve pre-F8.8 fallback.
         if context.get("contact_email") and "contact_email" not in payload:
             payload["contact_email"] = str(context["contact_email"])
 
@@ -716,24 +737,23 @@ async def dispatch_event(
         base_url      = (cfg.get("base_url") or "").strip()
         template      = (cfg.get("endpoint_template") or "").strip()
 
-        # ── Phase F8.4 — Route resolution ─────────────────────────────
-        # Auth events (otp_*)   → global base_url  (OTP automation)
-        # Stage events (stage_*)→ per-event webhook_url ONLY. If empty,
-        #                         skip cleanly — we NEVER fall back to
-        #                         base_url for stage events, because
-        #                         base_url is reserved for OTP and
-        #                         cross-contaminating the two flows is
-        #                         exactly the bug this phase fixes.
-        # Anything else         → global base_url (legacy path).
-        _is_stage_event = (event_key or "").lower().startswith("stage_")
+        # ── Phase F8.4 + F8.9 — Route resolution ──────────────────────
+        # Auth events (otp_*)                   → global base_url (OTP)
+        # Everything else (stage_*, recovery_*,
+        #   abandoned_cart_recovery, custom_*)  → per-event webhook_url
+        # If webhook_url is empty for a non-auth event, skip cleanly.
+        # We NEVER fall back to base_url for non-auth events because
+        # base_url is reserved for the OTP automation and cross-
+        # contaminating those flows is exactly the bug we prevent.
         _is_auth_event  = (event_key or "").lower().startswith("otp_")
+        _needs_webhook  = not _is_auth_event
 
-        if _is_stage_event:
+        if _needs_webhook:
             if not webhook_url:
                 result["skipped"] = True
                 result["reason"]  = (
-                    "stage event has no webhook URL configured. Add one "
-                    "in Admin → WhatsApp Provider → this stage → "
+                    "event has no webhook URL configured. Add one in "
+                    "Admin → WhatsApp Provider → this event → "
                     "Advanced Settings → Webhook URL."
                 )
                 return result
@@ -946,7 +966,13 @@ def init() -> None:
         current_user: Dict[str, Any] = Depends(_get_current_user),
     ) -> Dict[str, Any]:
         _require_admin_helper(current_user)
-        if not any(c["event_key"] == event_key for c in EVENT_CATALOG):
+        # Phase F8.9 — custom_* events are runtime-created (not in the
+        # built-in EVENT_CATALOG) so exempt them from the catalog check.
+        # Their existence is enforced by the DB (find-one-and-update
+        # below returns 404 if the doc doesn't exist).
+        if not event_key.startswith("custom_") and not any(
+            c["event_key"] == event_key for c in EVENT_CATALOG
+        ):
             raise HTTPException(status_code=404, detail="Unknown event_key")
         patch: Dict[str, Any] = {}
         if payload.enabled is not None:
@@ -1011,6 +1037,78 @@ def init() -> None:
     ) -> Dict[str, Any]:
         _require_admin_helper(current_user)
         return {"fields": AVAILABLE_FIELDS}
+
+    # ── POST /custom-events ───────────────────────────────────────
+    # Phase F8.9 — Create a new Custom Automation. Uses the standard
+    # shipment/order variable set (no bespoke mapping required) so
+    # the operator only needs to paste a Webhook URL in the editor
+    # after creation. The `event_key` is derived from the label and
+    # de-duplicated with a short random suffix.
+    @whatsapp_provider_router.post("/custom-events")
+    async def create_custom_event(
+        body: CustomEventCreate,
+        current_user: Dict[str, Any] = Depends(_get_current_user),
+    ) -> Dict[str, Any]:
+        _require_admin_helper(current_user)
+        label = body.label.strip()
+        # Derive a URL-safe key from the label; guarantee uniqueness
+        # via a 6-char random suffix.
+        slug = re.sub(r"[^a-z0-9]+", "_", label.lower()).strip("_") or "auto"
+        suffix = "".join(random.choices("abcdefghijklmnopqrstuvwxyz0123456789", k=6))
+        event_key = f"custom_{slug[:24]}_{suffix}"
+
+        # Standard shipment/order variable set — same as stages so no
+        # new mapping is required. The operator only needs to set a
+        # Webhook URL to activate the trigger.
+        doc = {
+            "event_key":        event_key,
+            "label":            label,
+            "sub":              (body.sub or "Custom automation").strip(),
+            "category":         "custom",
+            "enabled":          True,
+            "automation_id":    "",
+            "webhook_url":      "",
+            "template_preview": "",
+            "template_enabled": False,
+            "selected_fields":  [
+                "customer_name", "customer_phone", "order_id",
+                "product_name", "quantity", "total_amount",
+                "tracking_id", "courier_name", "business_name",
+                "customer_email",
+            ],
+            "custom_fields":    [],
+            "variable_mapping": {},
+            "created_at":       _now_iso(),
+            "updated_at":       _now_iso(),
+            "updated_by":       current_user.get("email") or "admin",
+        }
+        await db.whatsapp_event_triggers.insert_one(doc)
+        return {"ok": True, "item": _event_doc_to_dto(doc)}
+
+    # ── DELETE /events/{event_key} ────────────────────────────────
+    # Phase F8.9 — Custom automations can be removed by the operator.
+    # Built-in events (stage_*, otp_*, abandoned_cart_recovery) are
+    # ONLY seed-owned — a delete on them is disallowed to protect the
+    # catalogue and prevent accidental data loss.
+    @whatsapp_provider_router.delete("/events/{event_key}")
+    async def delete_custom_event(
+        event_key: str,
+        current_user: Dict[str, Any] = Depends(_get_current_user),
+    ) -> Dict[str, Any]:
+        _require_admin_helper(current_user)
+        if not event_key.startswith("custom_"):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Only custom automations can be deleted. Built-in "
+                    "events (stages / OTP / abandoned cart recovery) "
+                    "are catalogue-managed."
+                ),
+            )
+        res = await db.whatsapp_event_triggers.delete_one({"event_key": event_key})
+        if res.deleted_count == 0:
+            raise HTTPException(status_code=404, detail="Not found")
+        return {"ok": True, "deleted": event_key}
 
     # ── POST /test ────────────────────────────────────────────────
     @whatsapp_provider_router.post("/test")

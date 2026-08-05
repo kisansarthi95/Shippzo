@@ -2721,6 +2721,47 @@ export const Api = {
       })
       .then((r) => r.data),
 
+  // Phase F8.9 — Custom Automations CRUD. Custom events share the
+  // exact same variable set as stages, so the operator only needs to
+  // paste a Webhook URL after creation. Delete is scoped to
+  // `custom_*` keys by the backend to protect the built-in catalogue.
+  adminWppCreateCustomEvent: (body: { label: string; sub?: string }) =>
+    api
+      .post<{ ok: boolean; item: any }>(
+        "/admin/whatsapp-provider/custom-events",
+        body,
+      )
+      .then((r) => r.data),
+
+  adminWppDeleteEvent: (event_key: string) =>
+    api
+      .delete<{ ok: boolean; deleted: string }>(
+        `/admin/whatsapp-provider/events/${encodeURIComponent(event_key)}`,
+      )
+      .then((r) => r.data),
+
+  // Phase F8.9 — Abandoned-cart Auto-Recovery per-user settings.
+  // Consumed by the gear-icon modal on the Orders → Abandoned tab.
+  getAbandonedRecoverySettings: () =>
+    api
+      .get<{
+        mode: "manual" | "auto";
+        delay: string;
+        delay_options: { key: string; label: string; recommended?: boolean }[];
+      }>("/me/abandoned-recovery/settings")
+      .then((r) => r.data),
+
+  updateAbandonedRecoverySettings: (body: {
+    mode: "manual" | "auto";
+    delay: string;
+  }) =>
+    api
+      .put<{ ok: boolean; mode: string; delay: string }>(
+        "/me/abandoned-recovery/settings",
+        body,
+      )
+      .then((r) => r.data),
+
   // ─── Phase-29: Native Support-Center Articles ───────────────────
   // In-app article reader replaces the previous external website
   // redirect. Public read + Super-Admin CRUD.
