@@ -214,6 +214,11 @@ AVAILABLE_FIELDS: List[Dict[str, str]] = [
     {"key": "business_phone",    "label": "Business Phone"},
     {"key": "otp",               "label": "OTP Code (auth events only)"},
     {"key": "contact_email",     "label": "Registered Email (auth events)"},
+    # Phase F8.8 — stage-side email carries the SHIPMENT's customer
+    # email pulled straight from the shipments row. Never falls back
+    # to the operator's own admin email, so admin@… can never leak
+    # into a customer-facing stage payload.
+    {"key": "customer_email",    "label": "Customer Email"},
     {"key": "google_review_link","label": "Google Review Link (feedback events)"},
     {"key": "event_type",        "label": "Event Type"},
 ]
@@ -454,6 +459,11 @@ def _shipment_to_context(
         "current_stage":  shipment.get("status") or "",
         "business_name":  business_name or "",
         "business_phone": business_phone or "",
+        # Phase F8.8 — customer email pulled from the shipments row.
+        # Blank when the row has none; NEVER auto-fills to the
+        # operator's admin email (that lived under `contact_email`
+        # and is now scoped strictly to auth/OTP events).
+        "customer_email": (shipment.get("customer_email") or "").strip(),
         # Phase F8.5 — non-outgoing sidecar used by the dispatcher to
         # look up per-user business_links (Google Review link etc.)
         # for the Feedback stage. Underscore-prefixed keys are stripped
@@ -574,6 +584,7 @@ def _build_payload(
     trigger:    Dict[str, Any],
     context:    Dict[str, Any],
     phone:      str,
+    event_key:  str = "",
 ) -> Dict[str, str]:
     """Compose the query-param payload to ship to the provider.
 
@@ -611,13 +622,44 @@ def _build_payload(
             # them against its own contact record downstream.
             payload[name] = _substitute_placeholders(value, context)
 
-    # Phase F8.1 — the registered email ALWAYS rides along on auth
-    # events (user requirement: `"contact_email": <registered email>`
-    # in the current webhook payload) even when the operator's saved
-    # field list pre-dates this feature. Ticked/custom fields above win
-    # if they already set the key.
-    if context.get("contact_email") and "contact_email" not in payload:
-        payload["contact_email"] = str(context["contact_email"])
+    # Phase F8.1 / F8.8 — Email routing is strictly split by event
+    # category so admin@… can never leak into a customer-facing stage
+    # payload:
+    #   • Auth events (otp_*)     → auto-inject `contact_email` from
+    #                                context (the operator's own
+    #                                registered / contact email).
+    #   • Stage events (stage_*)  → auto-inject `customer_email` from
+    #                                context (the shipment row's
+    #                                customer_email; blank when none).
+    #                                `contact_email` is NEVER emitted
+    #                                for stage events, even if some
+    #                                legacy trigger doc still ticks
+    #                                it in selected_fields — the loop
+    #                                above will send the raw context
+    #                                value (empty for stages) which
+    #                                is the correct blank behaviour.
+    _cat = (event_key or "").lower()
+    if _cat.startswith("otp_"):
+        if context.get("contact_email") and "contact_email" not in payload:
+            payload["contact_email"] = str(context["contact_email"])
+    elif _cat.startswith("stage_"):
+        # Emit customer_email even when empty so downstream automations
+        # can distinguish "no customer email on file" from "field
+        # missing". Existing ticked fields still win.
+        if "customer_email" not in payload:
+            payload["customer_email"] = str(
+                context.get("customer_email") or ""
+            )
+        # Belt-and-braces: strip any accidental contact_email that
+        # slipped in via a ticked `contact_email` selected_field on a
+        # legacy stage trigger, to eliminate any risk of admin email
+        # leakage into stage sends.
+        payload.pop("contact_email", None)
+    else:
+        # Legacy fallback: preserve pre-F8.8 behaviour for any event
+        # that doesn't match the two known prefixes.
+        if context.get("contact_email") and "contact_email" not in payload:
+            payload["contact_email"] = str(context["contact_email"])
 
     # Phase F8.5 — the Google Review link ALWAYS rides along on the
     # Feedback stage (user requirement: fetch from admin/business
@@ -754,6 +796,7 @@ async def dispatch_event(
         endpoint = endpoint  # already computed above (Phase F5.3)
         payload  = _build_payload(
             cfg=cfg, trigger=trigger, context=context, phone=target_phone,
+            event_key=event_key,
         )
         safe_payload = {**payload, "api_token": "***"}
 
@@ -992,8 +1035,17 @@ def init() -> None:
         # 6 digits is the industry standard (matches SBI, HDFC, Google,
         # Meta, etc.) and gives 1 in 1M brute-force space.
         generated_otp = f"{random.randint(100000, 999999):06d}"
+        # Phase F8.8 — email defaults are STRICTLY category-scoped so
+        # admin@… can never leak into a stage-event test:
+        #   • Auth events  → `contact_email` = admin's registered email.
+        #   • Stage events → `customer_email` = "" (operator fills via
+        #                    Manual entry or Auto Fetch which pulls
+        #                    from the shipment row); `contact_email`
+        #                    is deliberately NOT set.
+        _is_auth  = (payload.event_key or "").startswith("otp_")
+        _is_stage = (payload.event_key or "").startswith("stage_")
         # Sensible auto-fill so OTP-type events still have a code.
-        defaults = {
+        defaults: Dict[str, str] = {
             "customer_name":  current_user.get("name") or "Test User",
             "customer_phone": payload.phone,
             "otp":            generated_otp,
@@ -1006,12 +1058,16 @@ def init() -> None:
             "eta_days":       "3",
             "token_amount":   "100",
             "total_amount":   "1000",
-            # Phase F8.1 — registered email rides along on auth events.
-            "contact_email":  (
+        }
+        if _is_auth:
+            defaults["contact_email"] = (
                 (current_user.get("contact_email") or "").strip()
                 or (current_user.get("email") or "").strip()
-            ),
-        }
+            )
+        if _is_stage:
+            # Blank customer_email default; the real value must come
+            # from the operator's Manual input or the Auto Fetch pull.
+            defaults["customer_email"] = ""
         context = {**defaults, **sample}
         # Phase F8.5 — expose the current admin's user_id so the
         # stage_feedback dispatcher can look up their business_links
