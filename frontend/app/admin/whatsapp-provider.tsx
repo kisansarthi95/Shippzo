@@ -488,6 +488,17 @@ export default function AdminWhatsAppProviderScreen() {
             <Text style={styles.testTitle}>🧪 Test Send</Text>
             <Text style={styles.testSub}>{testFor?.label}</Text>
 
+            {/* Phase F8.7 — Scrollable body so the fixed footer buttons
+                (Close / Send Test) never get pushed off-screen when
+                Auto Fetch pulls a shipment with many mapping variables.
+                Only the middle section scrolls; the title above and
+                the action row below stay pinned. */}
+            <ScrollView
+              style={styles.testScroll}
+              contentContainerStyle={{ paddingBottom: 4 }}
+              keyboardShouldPersistTaps="handled"
+              showsVerticalScrollIndicator
+            >
             {/* Phase F8.6 — Auth events keep the "6-digit OTP auto-
                 generated" hint (that IS what happens for them). Stage
                 events replace it with a stage-appropriate hint and a
@@ -630,6 +641,7 @@ export default function AdminWhatsAppProviderScreen() {
                 })()}
               </>
             ) : null}
+            </ScrollView>
 
             <View style={{ flexDirection: "row", gap: 10, marginTop: 16 }}>
               <TouchableOpacity
@@ -2072,9 +2084,21 @@ const styles = StyleSheet.create({
     borderRadius: 14,
     padding: 18,
     maxHeight: "85%",
+    // Phase F8.7 — column layout so the inner ScrollView flexes and
+    // the pinned action-buttons row stays visible even when Auto
+    // Fetch populates 8+ mapping variables.
+    flexDirection: "column",
   },
   testTitle: { fontSize: 17, fontWeight: "800", color: "#0F172A" },
   testSub:   { fontSize: 12, color: "#64748B", marginTop: 2, marginBottom: 10 },
+
+  // Phase F8.7 — scrollable middle section of the Test Send popup.
+  // `flexShrink: 1` lets it collapse under the fixed header + footer
+  // instead of stretching the card past the screen; the intrinsic
+  // scroll then reveals any overflow content (long variable lists).
+  testScroll: {
+    flexShrink: 1,
+  },
 
   // Phase F5.8 — Live Response Viewer styles (Test Send modal).
   testHint: {
