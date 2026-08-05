@@ -170,10 +170,11 @@ EVENT_CATALOG: List[Dict[str, Any]] = [
      "label":   "Stage: Feedback",
      "sub":     "Sent when the order moves to the Feedback request stage",
      "default_fields": ["customer_name", "customer_phone", "order_id",
-                        "business_name"],
+                        "business_name", "google_review_link"],
      "default_template":
         "⭐ Hi {customer_name}, how was your experience with order "
-        "*{order_id}*? Reply 1–5 to rate us.\n— {business_name}"},
+        "*{order_id}*? Please share your review here: "
+        "{google_review_link}\n— {business_name}"},
 ]
 
 
@@ -213,6 +214,7 @@ AVAILABLE_FIELDS: List[Dict[str, str]] = [
     {"key": "business_phone",    "label": "Business Phone"},
     {"key": "otp",               "label": "OTP Code (auth events only)"},
     {"key": "contact_email",     "label": "Registered Email (auth events)"},
+    {"key": "google_review_link","label": "Google Review Link (feedback events)"},
     {"key": "event_type",        "label": "Event Type"},
 ]
 
@@ -240,6 +242,11 @@ class CustomField(BaseModel):
 class EventTriggerUpdate(BaseModel):
     enabled:          Optional[bool]              = None
     automation_id:    Optional[str]               = Field(None, max_length=120)
+    # Phase F8.4 — per-event webhook URL. Stage events now route to
+    # THIS URL (bypassing the global base_url which is reserved for
+    # OTP / auth automations), so operators can point each shipment
+    # stage at its own dedicated automation without collision.
+    webhook_url:      Optional[str]               = Field(None, max_length=500)
     template_preview: Optional[str]               = Field(None, max_length=3000)
     # Phase F4.9 — first-class boolean so the toggle survives reloads.
     template_enabled: Optional[bool]              = None
@@ -314,6 +321,7 @@ def _build_event_doc_from_catalog(item: Dict[str, Any]) -> Dict[str, Any]:
         "category":          item["category"],
         "enabled":           True,
         "automation_id":     "",
+        "webhook_url":       "",
         "template_preview":  item.get("default_template") or "",
         "selected_fields":   list(item.get("default_fields") or []),
         "custom_fields":     [],
@@ -332,6 +340,10 @@ def _event_doc_to_dto(d: Dict[str, Any]) -> Dict[str, Any]:
         "category":         d.get("category") or "stage",
         "enabled":          bool(d.get("enabled", True)),
         "automation_id":    d.get("automation_id") or "",
+        # Phase F8.4 — per-event webhook URL used by stage events to
+        # bypass the global (OTP-shared) base_url. Empty string when
+        # not configured; dispatcher treats empty as "skip this send".
+        "webhook_url":      d.get("webhook_url") or "",
         "template_preview": d.get("template_preview") or "",
         # Phase F4.9 — `template_enabled` is a first-class persisted
         # bool. Prior versions derived this from `bool(template_preview)`
@@ -442,7 +454,33 @@ def _shipment_to_context(
         "current_stage":  shipment.get("status") or "",
         "business_name":  business_name or "",
         "business_phone": business_phone or "",
+        # Phase F8.5 — non-outgoing sidecar used by the dispatcher to
+        # look up per-user business_links (Google Review link etc.)
+        # for the Feedback stage. Underscore-prefixed keys are stripped
+        # from the outgoing payload by `_build_payload` (only ticked
+        # `selected_fields` / `custom_fields` are sent to the BSP).
+        "_user_id":       shipment.get("user_id") or "",
     }
+
+
+async def _fetch_business_google_review_link(db: Any, user_id: str) -> str:
+    """Look up the operator's Google Review URL from the user-level
+    `settings.business_links` sub-object (populated via Settings →
+    WhatsApp Templates in the app; see routers/messaging.py). Returns
+    an empty string when unset or on any error so the dispatcher can
+    fall through gracefully."""
+    if not user_id:
+        return ""
+    try:
+        doc = await db["settings"].find_one(
+            {"user_id": user_id},
+            {"_id": 0, "business_links": 1},
+        )
+        links = (doc or {}).get("business_links") or {}
+        return str(links.get("google_review_url") or "").strip()
+    except Exception:
+        _LOG.exception("_fetch_business_google_review_link failed")
+        return ""
 
 
 async def _load_active_config(db: Any) -> Dict[str, Any]:
@@ -581,6 +619,15 @@ def _build_payload(
     if context.get("contact_email") and "contact_email" not in payload:
         payload["contact_email"] = str(context["contact_email"])
 
+    # Phase F8.5 — the Google Review link ALWAYS rides along on the
+    # Feedback stage (user requirement: fetch from admin/business
+    # settings and add `google_review_link` to the payload) even when
+    # the operator's saved `selected_fields` predates this feature.
+    # Ticked/custom fields still win if they already set the key —
+    # this only fills the gap for pre-existing trigger docs.
+    if context.get("google_review_link") and "google_review_link" not in payload:
+        payload["google_review_link"] = str(context["google_review_link"])
+
     return payload
 
 
@@ -622,86 +669,81 @@ async def dispatch_event(
             return result
 
         automation_id = (trigger.get("automation_id") or "").strip()
+        webhook_url   = (trigger.get("webhook_url") or "").strip()
         api_token     = (cfg.get("api_token") or "").strip()
         base_url      = (cfg.get("base_url") or "").strip()
         template      = (cfg.get("endpoint_template") or "").strip()
-        # Phase F5.3 — Simple mode. If the operator hasn't set a
-        # per-event automation_id, we treat the Base URL as the full
-        # endpoint (POST data straight to it). This is the recommended
-        # happy path for providers like FlowConnect where each
-        # automation is a distinct URL that already contains all
-        # routing info. The template + automation_id fields are kept
-        # for advanced integrations (e.g. Twilio-style with sub-paths).
-        if not (api_token and base_url):
-            result["skipped"] = True
-            result["reason"]  = "provider not fully configured"
-            return result
 
-        # Phase F8.2 — Guard against stage events accidentally reusing a
-        # single-automation OTP URL. If the operator saved base_url as a
-        # full "…/execute" endpoint (i.e. a specific automation, which
-        # is typically reserved for OTP templates) AND this stage event
-        # has NO per-event automation_id override, sending would
-        # misroute customer stage notifications through the OTP
-        # automation. Fail fast with a clear error so the operator
-        # fixes the config in Admin → WhatsApp Provider. Auth events
-        # are exempt — they are the legitimate consumer of an OTP
-        # automation URL.
+        # ── Phase F8.4 — Route resolution ─────────────────────────────
+        # Auth events (otp_*)   → global base_url  (OTP automation)
+        # Stage events (stage_*)→ per-event webhook_url ONLY. If empty,
+        #                         skip cleanly — we NEVER fall back to
+        #                         base_url for stage events, because
+        #                         base_url is reserved for OTP and
+        #                         cross-contaminating the two flows is
+        #                         exactly the bug this phase fixes.
+        # Anything else         → global base_url (legacy path).
         _is_stage_event = (event_key or "").lower().startswith("stage_")
-        _looks_like_single_automation_url = bool(
-            re.search(r"/[^/]+/execute/?$", base_url)
-        )
-        if _is_stage_event and (not automation_id) and _looks_like_single_automation_url:
-            reason = (
-                "stage event blocked: Base URL points to a specific "
-                "automation endpoint (…/execute) that is typically the "
-                "OTP template. Set a per-event automation_id for this "
-                "stage in Admin → WhatsApp Provider → Advanced Settings, "
-                "or change the provider Base URL to the automations "
-                "root (…/api/automations)."
-            )
-            result.update({
-                "success": False,
-                "skipped": False,
-                "reason":  reason,
-            })
-            try:
-                await _write_log(
-                    db,
-                    event_key=event_key,
-                    phone=phone or context.get("customer_phone") or "",
-                    success=False, status_code=None,
-                    request={"guard": "stage_event_blocked_on_otp_url"},
-                    response=None,
-                    error=reason,
-                    duration_ms=0,
-                )
-            except Exception:
-                pass
-            return result
+        _is_auth_event  = (event_key or "").lower().startswith("otp_")
 
-        if not automation_id:
-            # Simple mode: base_url is treated as the full execute
-            # endpoint. Used by events that share the single default
-            # automation (e.g. the shipment-stage triggers). Unchanged
-            # behaviour — do NOT regress these.
-            endpoint = base_url
-        else:
-            # Per-event automation. base_url may be stored either as the
-            # automations *root* (…/api/automations) or as a *full*
-            # execute URL (…/api/automations/<id>/execute) depending on
-            # how the operator saved it. Normalise to the root, then
-            # compose THIS event's own automation endpoint so each
-            # trigger can target a distinct automation (e.g. a dedicated
-            # OTP-template automation for signup/login).
-            root = re.sub(r"/[^/]+/execute/?$", "", base_url.rstrip("/"))
-            if "{automation_id}" in template and "{base_url}" in template:
-                endpoint = template.format(
-                    base_url=root.rstrip("/"),
-                    automation_id=automation_id.strip("/"),
+        if _is_stage_event:
+            if not webhook_url:
+                result["skipped"] = True
+                result["reason"]  = (
+                    "stage event has no webhook URL configured. Add one "
+                    "in Admin → WhatsApp Provider → this stage → "
+                    "Advanced Settings → Webhook URL."
                 )
+                return result
+            if not api_token:
+                result["skipped"] = True
+                result["reason"]  = "provider api_token missing"
+                return result
+            endpoint = webhook_url
+
+        else:
+            # Auth events (otp_*) and any legacy events. Require the
+            # global provider config to be fully set.
+            if not (api_token and base_url):
+                result["skipped"] = True
+                result["reason"]  = "provider not fully configured"
+                return result
+            if not automation_id:
+                # Simple mode: base_url is treated as the full execute
+                # endpoint. This is the auth/OTP happy path.
+                endpoint = base_url
             else:
-                endpoint = f"{root.rstrip('/')}/{automation_id.strip('/')}/execute"
+                # Per-event automation with base_url as the automations
+                # root. Compose the target endpoint.
+                root = re.sub(r"/[^/]+/execute/?$", "", base_url.rstrip("/"))
+                if "{automation_id}" in template and "{base_url}" in template:
+                    endpoint = template.format(
+                        base_url=root.rstrip("/"),
+                        automation_id=automation_id.strip("/"),
+                    )
+                else:
+                    endpoint = f"{root.rstrip('/')}/{automation_id.strip('/')}/execute"
+
+        # Phase F8.5 — Feedback stage: pull the operator's Google
+        # Review URL out of user-level business_links and inject as
+        # `google_review_link` (canonical) + `google_review_url`
+        # (legacy alias, keeps existing templates working) so the
+        # customer's feedback WhatsApp can carry the review link.
+        if event_key == "stage_feedback":
+            try:
+                gurl = await _fetch_business_google_review_link(
+                    db, context.get("_user_id") or "",
+                )
+                if gurl:
+                    context = {
+                        **context,
+                        "google_review_link": gurl,
+                        "google_review_url":  gurl,
+                    }
+            except Exception:
+                _LOG.exception(
+                    "google_review_link injection failed (non-fatal)",
+                )
 
         target_phone = phone or context.get("customer_phone") or ""
         if not target_phone:
@@ -868,6 +910,11 @@ def init() -> None:
             patch["enabled"] = bool(payload.enabled)
         if payload.automation_id is not None:
             patch["automation_id"] = payload.automation_id.strip()
+        # Phase F8.4 — persist per-event webhook URL. Stage events use
+        # this to route to their own dedicated automation, keeping OTP
+        # (auth) traffic completely isolated.
+        if payload.webhook_url is not None:
+            patch["webhook_url"] = payload.webhook_url.strip()
         if payload.template_preview is not None:
             patch["template_preview"] = payload.template_preview
         # Phase F4.9 — persist the Enable-Template toggle.
@@ -966,6 +1013,12 @@ def init() -> None:
             ),
         }
         context = {**defaults, **sample}
+        # Phase F8.5 — expose the current admin's user_id so the
+        # stage_feedback dispatcher can look up their business_links
+        # (Google Review URL) and inject `google_review_link` into
+        # the outgoing payload during test-send as well as prod.
+        if "_user_id" not in context or not context.get("_user_id"):
+            context["_user_id"] = current_user.get("id") or ""
         outcome = await dispatch_event(
             db, payload.event_key, context, phone=payload.phone,
         )
@@ -1036,6 +1089,26 @@ async def resolve_stage_message(
         business_name=business_name,
         business_phone=business_phone,
     )
+
+    # Phase F8.5 — Feedback stage carries the operator's Google Review
+    # link so the customer-facing WhatsApp text can render
+    # {google_review_link}. Same source of truth as the dispatcher's
+    # auto-inject: users.business_links.google_review_url.
+    if event_key == "stage_feedback":
+        try:
+            gurl = await _fetch_business_google_review_link(
+                db, ctx.get("_user_id") or "",
+            )
+            if gurl:
+                ctx = {
+                    **ctx,
+                    "google_review_link": gurl,
+                    "google_review_url":  gurl,
+                }
+        except Exception:
+            _LOG.exception(
+                "resolve_stage_message: review-link fetch failed",
+            )
 
     # Prefer the operator's admin-configured body.
     trigger = await _load_event(db, event_key) or {}

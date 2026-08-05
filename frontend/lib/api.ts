@@ -2649,6 +2649,8 @@ export const Api = {
     body: {
       enabled?: boolean;
       automation_id?: string;
+      // Phase F8.4 — per-event webhook URL for stage events.
+      webhook_url?: string;
       template_preview?: string;
       // Phase F4.9 — persisted Enable-Template toggle
       template_enabled?: boolean;

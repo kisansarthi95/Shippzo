@@ -74,6 +74,9 @@ type EventRow = {
   category: "auth" | "stage";
   enabled: boolean;
   automation_id: string;
+  // Phase F8.4 — per-event webhook URL. Stage events route to THIS
+  // URL only, keeping OTP (auth) traffic on the global base_url.
+  webhook_url: string;
   template_preview: string;
   // Phase F4.9 — persisted boolean so the Enable-Template switch state
   // survives reload (previously derived from template_preview length).
@@ -202,6 +205,8 @@ export default function AdminWhatsAppProviderScreen() {
     try {
       const r = await Api.adminWppUpdateEvent(draft.event_key, {
         automation_id:    draft.automation_id.trim(),
+        // Phase F8.4 — per-event webhook URL for stage events.
+        webhook_url:      (draft.webhook_url || "").trim(),
         template_preview: draft.template_preview,
         // Phase F4.9 — persist Enable-Template toggle.
         template_enabled: !!draft.template_enabled,
@@ -290,21 +295,6 @@ export default function AdminWhatsAppProviderScreen() {
     ((cfg.api_token || "").trim().length > 0 || (cfg.api_token_masked || "").trim().length > 0)
   );
 
-  // Phase F8.2 — Detect if the operator's Base URL is a single
-  // automation endpoint (e.g. ".../<uuid>/execute") — typically the
-  // OTP template. In simple mode (no per-event automation_id), ALL
-  // stage events would fire through this same OTP automation, which
-  // misroutes customer stage messages through the OTP flow. Backend
-  // now blocks these sends; the UI must warn the operator before the
-  // block manifests as a mysterious "silent drop" in logs. Cheap
-  // regex — plain const (no useMemo) to avoid rules-of-hooks after
-  // the early-return guard above.
-  const baseUrlLooksLikeSingleAutomation = (() => {
-    const u = (cfg?.base_url || "").trim();
-    if (!u) return false;
-    return /\/[^/]+\/execute\/?$/.test(u);
-  })();
-
   return (
     <SafeAreaView style={styles.safe} edges={["top"]}>
       <Stack.Screen options={{ headerShown: false }} />
@@ -372,7 +362,6 @@ export default function AdminWhatsAppProviderScreen() {
               key={e.event_key}
               row={e}
               providerReady={providerReady}
-              sharesOtpAutomation={false}
               onToggle={() => toggleEvent(e)}
               onEdit={() => setEditing(e)}
               onTest={() => { setTestFor(e); setTestPhone(""); }}
@@ -388,9 +377,6 @@ export default function AdminWhatsAppProviderScreen() {
               key={e.event_key}
               row={e}
               providerReady={providerReady}
-              sharesOtpAutomation={
-                baseUrlLooksLikeSingleAutomation && !(e.automation_id || "").trim()
-              }
               onToggle={() => toggleEvent(e)}
               onEdit={() => setEditing(e)}
               onTest={() => { setTestFor(e); setTestPhone(""); }}
@@ -730,14 +716,12 @@ function ProviderConfigCard({
 function EventCard({
   row,
   providerReady,
-  sharesOtpAutomation,
   onToggle,
   onEdit,
   onTest,
 }: {
   row: EventRow;
   providerReady: boolean;
-  sharesOtpAutomation: boolean;
   onToggle: () => void;
   onEdit: () => void;
   onTest: () => void;
@@ -753,6 +737,11 @@ function EventCard({
   // needs a per-event override.
   const configured  = providerReady;
   const hasOverride = !!row.automation_id;
+  // Phase F8.4 — Stage cards display their own dedicated webhook URL
+  // status pill so operators can see at a glance which stages are
+  // routed to their own automation vs. still-unconfigured.
+  const isStage    = row.category === "stage";
+  const hasWebhook = !!(row.webhook_url || "").trim();
   return (
     <View style={[styles.card, { paddingBottom: 0 }]}>
       <View style={styles.cardHeader}>
@@ -782,18 +771,6 @@ function EventCard({
         />
       </View>
 
-      {sharesOtpAutomation ? (
-        <View style={styles.otpShareWarn}>
-          <PhIcon name="warning-outline" size={16} color="#B45309" />
-          <Text style={styles.otpShareWarnTxt}>
-            Sharing OTP automation URL. Backend will BLOCK this stage
-            event until you add a per-event Automation ID (Configure →
-            Advanced Settings) or change the provider Base URL to the
-            automations root.
-          </Text>
-        </View>
-      ) : null}
-
       <View style={styles.cardMetaRow}>
         <View style={[styles.metaPill, configured ? styles.metaPillOk : styles.metaPillWarn]}>
           <Text style={[
@@ -805,6 +782,20 @@ function EventCard({
               : "Configure provider first"}
           </Text>
         </View>
+        {isStage ? (
+          <View style={[
+            styles.metaPill,
+            hasWebhook ? styles.metaPillOk : styles.metaPillWarn,
+            { marginLeft: 6 },
+          ]}>
+            <Text style={[
+              styles.metaPillTxt,
+              { color: hasWebhook ? "#15803D" : "#92400E" },
+            ]}>
+              {hasWebhook ? "Webhook set" : "Webhook missing"}
+            </Text>
+          </View>
+        ) : null}
         <Text style={styles.fieldsCount}>
           {row.selected_fields.length} field
           {row.selected_fields.length === 1 ? "" : "s"}
@@ -817,9 +808,9 @@ function EventCard({
           <Text style={styles.actionTxt}>Configure</Text>
         </TouchableOpacity>
         <TouchableOpacity
-          style={[styles.actionBtn, (!configured || sharesOtpAutomation) && { opacity: 0.45 }]}
+          style={[styles.actionBtn, !configured && { opacity: 0.45 }]}
           onPress={onTest}
-          disabled={!configured || sharesOtpAutomation}
+          disabled={!configured}
         >
           <PhIcon name="paper-plane-outline" size={16} color="#1E40AF" />
           <Text style={styles.actionTxt}>Test Send</Text>
@@ -1020,6 +1011,39 @@ function EventEditorModal({
             </TouchableOpacity>
 
             {advancedOpen && <>
+            {/* Phase F8.4 — Per-event Webhook URL (stage events only).
+                Auth events (OTP Login/Signup/Password Reset) continue
+                to use the global Base URL configured at the top of the
+                page — those go through the operator's OTP automation.
+                Stage events (Pending / Shipped / Delivered / …) each
+                get their OWN webhook URL below, so customer stage
+                notifications NEVER share the OTP automation endpoint.
+                If left blank for a stage event, the backend will skip
+                that stage's send with a clear reason (rather than
+                fall through to the OTP URL). */}
+            {draft.category === "stage" && (
+              <View style={{ marginTop: 4 }}>
+                <Text style={styles.fieldLabel}>Webhook URL</Text>
+                <Text style={styles.hint}>
+                  This stage's data will be POSTed ONLY to this URL.
+                  Leave blank to disable this stage's outbound sends.
+                  Never shares the OTP automation link.
+                </Text>
+                <TextInput
+                  style={styles.input}
+                  placeholder="https://…/api/automations/<id>/execute"
+                  placeholderTextColor="#94A3B8"
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  keyboardType="url"
+                  value={draft.webhook_url || ""}
+                  onChangeText={(v) =>
+                    setDraft({ ...draft, webhook_url: v })
+                  }
+                />
+              </View>
+            )}
+
             {/* Phase F5.3 (2026-06-27) — Automation ID field removed.
                 Reason: Base URL configured up top ALREADY contains the
                 per-provider automation ID (FlowConnect gives one URL
@@ -1514,31 +1538,6 @@ const styles = StyleSheet.create({
   metaPillWarn: { backgroundColor: "#FEF3C7" },
   metaPillTxt:  { fontSize: 11.5, fontWeight: "700" },
   fieldsCount:  { fontSize: 11.5, color: "#64748B", marginLeft: "auto" },
-
-  // Phase F8.2 — inline warning banner shown on a stage event card
-  // when the provider's Base URL is a single-automation URL and this
-  // event has no per-event automation_id override. Backend will block
-  // the send in this state.
-  otpShareWarn: {
-    flexDirection: "row",
-    alignItems: "flex-start",
-    backgroundColor: "#FEF3C7",
-    borderWidth: 1,
-    borderColor: "#F59E0B",
-    borderRadius: 8,
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-    marginTop: 6,
-    marginBottom: 4,
-    gap: 6,
-  },
-  otpShareWarnTxt: {
-    flex: 1,
-    fontSize: 11.5,
-    lineHeight: 15,
-    color: "#92400E",
-    fontWeight: "600",
-  },
 
   cardActions: {
     flexDirection: "row",
