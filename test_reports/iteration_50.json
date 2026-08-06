@@ -1,0 +1,55 @@
+{
+  "summary": "Iteration 50 — F10.1 (Amount pill cleanup + Payment Batch deep-link filter). Backend: 5/5 tests passed — GET /api/shipments?payment_batch_id=<id> correctly filters (all returned shipments carry the batch id; count matches batch.total_articles), GET /api/payment-batches list + drill-down /api/payment-batches/{id} return 200 with expected fields. Frontend fix #1 (amount pill): CONFIRMED WORKING — all 21 sampled pills on the Shipments tab render clean 'COD ₹N' / 'Prepaid ₹N' with NO '· Received', '· Pending', or '· Returned' suffix. Frontend fix #2 (Payment Batch deep-link → filtered Shipments): BROKEN — router params flow into the URL (?payment_batch_id=X&payment_batch_label=Y) and the amount-pill screen change is applied, but the shipments list is NOT actually narrowed. Network trace shows GET /api/shipments called WITHOUT the payment_batch_id query param, the 'All' tab counter still reads 500 instead of the batch's 28 articles, and no batch-filter chip is rendered on the header. Root cause identified in shipments.tsx: the `load` useCallback has deps `[search]` while reading paymentBatchPick/importBatchPick via closure — setPaymentBatchPick from the deep-link params useEffect doesn't recreate `load`, so the next call runs the stale closure with paymentBatchPick=null.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {
+        "component": "Shipments screen deep-link filter",
+        "issue": "Opening /(tabs)/shipments?payment_batch_id=<id>&payment_batch_label=<label> does NOT actually filter the list. Network trace shows GET /api/shipments called without payment_batch_id. The 'All' tab counter still shows 500 instead of the batch's 28 articles, and no filter chip appears on screen. Amount pill cleanup (fix #1) works correctly.",
+        "testID": "N/A",
+        "priority": "HIGH"
+      }
+    ],
+    "integration_issues": [
+      {
+        "flow": "Payment Batch drill-down → View in Shipments → filtered list",
+        "issue": "Router params are picked up by the deep-link useEffect (setPaymentBatchPick fires) but the subsequent load() call uses a stale closure. Root cause: `load` in /app/frontend/app/(tabs)/shipments.tsx line 410-478 is `useCallback(async () => { ... if (paymentBatchPick?.id) q.payment_batch_id = ...; }, [search])`. The deps array only lists `search` — it must also include `paymentBatchPick?.id` and `importBatchPick?.id` (or the state objects), otherwise the memoized function keeps referencing the pre-navigation null closure. Additionally, the newly-set paymentBatchPick should trigger a reload via a dedicated useEffect (`useEffect(() => { load(); }, [paymentBatchPick, importBatchPick])`) since useFocusEffect fires on focus but the stale load reference wouldn't help even if it did.",
+        "affected_testIDs": []
+      }
+    ],
+    "design_issues": [
+      {
+        "screen": "Shipments (with deep-link filter)",
+        "issues": [
+          "No batch-filter chip is rendered on the header when payment_batch_label is present in URL — user has no visual cue that a filter is in effect (beyond the small red dot on the funnel icon)."
+        ]
+      }
+    ],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration_50_batch_filter.py",
+    "/app/test_reports/pytest/pytest_iteration_50_f10_1.xml"
+  ],
+  "action_items": [
+    "Fix stale closure in /app/frontend/app/(tabs)/shipments.tsx line 478: add `paymentBatchPick?.id` and `importBatchPick?.id` to the `load` useCallback deps array so setting the batch pick from the deep-link useEffect actually re-fires the server query with `payment_batch_id`. Alternatively add a `useEffect(() => { load().catch(()=>{}); }, [paymentBatchPick, importBatchPick])` right after the pick-setting effect (line 551).",
+    "Optional UX: render a visible filter chip in the header when paymentBatchPick/importBatchPick is active (label + ✕ to clear) so the operator can see which batch is currently filtering the list."
+  ],
+  "critical_code_review_comments": [
+    "shipments.tsx (~4300 lines) far exceeds the 700-line guideline; consider splitting into smaller modules (filters, list, bulk actions, terminal modal, etc.).",
+    "Duplicated filter chain: `dateFilteredItems` (line 556) and `countableItems` (line 1276) repeat ~150 lines of identical predicates for import status / type / booking / delivery / cod / validation / complaint filters. Extract into a shared `applyImportFilters(items)` helper.",
+    "load() useCallback deps = [search] but the body references `importBatchPick`, `paymentBatchPick` — classic stale-closure trap and the root cause of the F10.1 bug reported here."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration_50_batch_filter.py"
+  ],
+  "success_rate": {"backend": "100% (5/5)", "frontend": "50% (1/2 fixes verified working)"},
+  "seed_data_creation": "None — used existing admin data (payment batch CHQ No.000747 with 28 articles).",
+  "retest_needed": true,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "After main agent adds `paymentBatchPick?.id, importBatchPick?.id` to the `load` useCallback deps in shipments.tsx (or adds a separate reload effect), retest by: (1) navigating to /shipments?payment_batch_id=<id>&payment_batch_label=<label>, (2) confirming GET /api/shipments network request includes `payment_batch_id=<id>`, (3) confirming the 'All' tab counter equals the batch's total_articles (28 for CHQ No.000747), and (4) confirming a batch-filter chip is visible in the header.",
+  "rca_of_issue": "Reproduction: Log in as admin@test.com, navigate directly to /shipments?payment_batch_id=66dd423a-a1a8-43b7-bc23-245e2ffca6b5&payment_batch_label=CHQ%20No.000747 (or open the Payment Batches drill-down and tap 'View in Shipments →'). Expected: list narrows to the 28 shipments in that batch; observed: list still shows all 500 shipments, All tab reads 500, network trace shows GET /api/shipments without the payment_batch_id query param. RCA: In /app/frontend/app/(tabs)/shipments.tsx, `const load = useCallback(async () => { ... if (paymentBatchPick?.id) q.payment_batch_id = paymentBatchPick.id; ... }, [search])`. The deps array omits paymentBatchPick and importBatchPick, so the memoized `load` function keeps its original closure (paymentBatchPick=null from first render). The deep-link useEffect (line 534-551) correctly calls setPaymentBatchPick but this state update never invalidates the cached `load`, so subsequent invocations (from useFocusEffect on line 492 or handleClearAllFilters on line 275) all fire the same stale closure. Mitigation: extend the deps array — `}, [search, paymentBatchPick?.id, importBatchPick?.id])` — OR add a dedicated effect `useEffect(() => { load().catch(() => {}); }, [paymentBatchPick?.id, importBatchPick?.id])` immediately after the params-consuming useEffect."
+}

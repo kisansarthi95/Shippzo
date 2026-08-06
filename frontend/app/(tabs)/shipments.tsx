@@ -90,7 +90,18 @@ const LAST_EVENT_BADGE_META: Record<string, { bg: string; fg: string; icon: stri
 export default function Shipments() {
   const router = useRouter();
   const { user } = useAuth();
-  const params = useLocalSearchParams<{ status?: string; select?: string }>();
+  const params = useLocalSearchParams<{
+    status?: string;
+    select?: string;
+    // Phase F10.1 — deep-link into a pre-filtered list from the
+    // Payment Batches drill-down screen ("View in Shipments →" link).
+    payment_batch_id?:    string;
+    payment_batch_label?: string;
+    // Also accept `import_batch_id` symmetrically for future deep-
+    // linking from an import-batch drill-down.
+    import_batch_id?:     string;
+    import_batch_label?:  string;
+  }>();
   // Per-row action visibility — feature flags wired from the admin panel.
   // Admin users see everything; other plans render only what's enabled.
   const flagCopy        = useFeatureFlag("shipment_copy_btn");
@@ -513,8 +524,31 @@ export default function Shipments() {
     if (params.select === "1") {
       setSelectMode(true);
     }
+    // Phase F10.1 — deep-link into a batch-filtered list.
+    // The Payment Batches drill-down screen sends
+    // `payment_batch_id` + `payment_batch_label` as router params;
+    // we lift them into the picker state so the batch filter chip
+    // shows up automatically and the shipments list is pre-narrowed
+    // to just that batch's members. Symmetric handling for
+    // `import_batch_id` for future deep-links from an import drill.
+    if (params.payment_batch_id) {
+      setPaymentBatchPick({
+        id:    String(params.payment_batch_id),
+        label: String(params.payment_batch_label || "Batch"),
+      });
+    }
+    if (params.import_batch_id) {
+      setImportBatchPick({
+        id:    String(params.import_batch_id),
+        label: String(params.import_batch_label || "Import"),
+      });
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [params.status, params.select]);
+  }, [
+    params.status, params.select,
+    params.payment_batch_id, params.payment_batch_label,
+    params.import_batch_id, params.import_batch_label,
+  ]);
 
   const findCourier = (s: Shipment) =>
     couriers.find((c) => c.id === s.courier_id) || null;
@@ -2862,13 +2896,19 @@ export default function Shipments() {
                 const value    = isCOD
                   ? (item.cod_amount ?? item.amount ?? 0)
                   : (item.amount ?? 0);
-                let bg = "#DCFCE7", fg = "#166534", lbl = `Prepaid ₹${value}`;
+                // Phase F10.1 — Badge shows JUST the amount label; the
+                // pill background color (Green/Yellow/Red) alone
+                // communicates the payment state. Suffix strings like
+                // "· Received" / "· Pending" removed per user request
+                // to keep the card lightweight.
+                let bg = "#DCFCE7", fg = "#166534";
+                const lbl = `${isCOD ? "COD" : "Prepaid"} ₹${value}`;
                 if (returned) {
-                  bg = "#FEE2E2"; fg = "#991B1B"; lbl = `${isCOD ? "COD" : "Prepaid"} ₹${value} · Returned`;
+                  bg = "#FEE2E2"; fg = "#991B1B";
                 } else if (isCOD && received) {
-                  bg = "#DCFCE7"; fg = "#166534"; lbl = `COD ₹${value} · Received`;
+                  bg = "#DCFCE7"; fg = "#166534";
                 } else if (isCOD) {
-                  bg = "#FEF9C3"; fg = "#854D0E"; lbl = `COD ₹${value} · Pending`;
+                  bg = "#FEF9C3"; fg = "#854D0E";
                 }
                 return (
                   <View style={[styles.amountPill, { backgroundColor: bg }]}>
