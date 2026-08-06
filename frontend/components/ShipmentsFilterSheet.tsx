@@ -34,7 +34,7 @@ type DateFilterKey = "all" | "today" | "week" | "month" | "custom";
 export type ImportStatusKey = "all" | "imported" | "not_imported";
 export type ImportTypeKey = "booking" | "delivery" | "cod_payment";
 export type ValidationKey = "weight" | "payment_mode" | "amount";
-export type CodPaymentKey = "received" | "pending" | "amount_mismatch";
+export type CodPaymentKey = "received" | "pending" | "amount_mismatch" | "returned";
 export type DeliveryKey = "imported" | "pending" | "confirmed";
 export type BookingKey = "imported" | "pending";
 // Phase F7.1 (Jun-2026) — replaced the old "Complaint Created / No Complaint"
@@ -128,10 +128,14 @@ const DELIVERY_CHIPS: { key: DeliveryKey; label: string }[] = [
   { key: "pending",   label: "Delivery Pending" },
   { key: "confirmed", label: "Delivery Confirmed" },
 ];
-const COD_CHIPS: { key: CodPaymentKey; label: string }[] = [
-  { key: "received",         label: "COD Payment Received" },
-  { key: "pending",          label: "COD Payment Pending" },
-  { key: "amount_mismatch",  label: "COD Amount Mismatch" },
+const COD_CHIPS: { key: CodPaymentKey; label: string; tone?: "green" | "yellow" | "red" }[] = [
+  // Phase F10 — color-coded chips match the amount pill on the
+  // shipment card so operators see the same green/yellow/red across
+  // the list and the filter sheet.
+  { key: "received",         label: "COD Payment Received", tone: "green"  },
+  { key: "pending",          label: "COD Payment Pending",  tone: "yellow" },
+  { key: "amount_mismatch",  label: "COD Amount Mismatch"                  },
+  { key: "returned",         label: "COD Payment Returned", tone: "red"    },
 ];
 const VALIDATION_CHIPS: { key: ValidationKey; label: string }[] = [
   { key: "weight",       label: "Weight Mismatch" },
@@ -423,6 +427,27 @@ export default function ShipmentsFilterSheet({
           <View style={styles.chipWrap}>
             {COD_CHIPS.map((c) => {
               const active = codPaymentFilter.has(c.key);
+              // Phase F10 — tonal palette matches the amount pill on
+              // each shipment card. Inactive chips carry a soft-tinted
+              // background so the color code stays discoverable even
+              // when the operator hasn't tapped anything yet.
+              const tone = c.tone;
+              const inactiveBg =
+                tone === "green"  ? "#DCFCE7" :
+                tone === "yellow" ? "#FEF9C3" :
+                tone === "red"    ? "#FEE2E2" : undefined;
+              const inactiveBorder =
+                tone === "green"  ? "#86EFAC" :
+                tone === "yellow" ? "#FDE68A" :
+                tone === "red"    ? "#FCA5A5" : undefined;
+              const inactiveTxt =
+                tone === "green"  ? "#166534" :
+                tone === "yellow" ? "#854D0E" :
+                tone === "red"    ? "#991B1B" : colors.primary;
+              const activeBg =
+                tone === "green"  ? "#16A34A" :
+                tone === "yellow" ? "#CA8A04" :
+                tone === "red"    ? "#DC2626" : colors.primary;
               return (
                 <TouchableOpacity
                   key={c.key}
@@ -430,12 +455,17 @@ export default function ShipmentsFilterSheet({
                   onPress={() => toggleSet(setCodPaymentFilter, codPaymentFilter, c.key)}
                   style={[
                     styles.chip,
-                    active && { backgroundColor: colors.primary, borderColor: colors.primary },
+                    !active && inactiveBg  ? { backgroundColor: inactiveBg }     : null,
+                    !active && inactiveBorder ? { borderColor: inactiveBorder }  : null,
+                    active && { backgroundColor: activeBg, borderColor: activeBg },
                   ]}
                 >
                   <Text
                     numberOfLines={1} allowFontScaling={false}
-                    style={[styles.chipTxt, { color: active ? "#fff" : colors.primary }]}
+                    style={[
+                      styles.chipTxt,
+                      { color: active ? "#fff" : inactiveTxt },
+                    ]}
                   >
                     {c.label}
                   </Text>

@@ -190,7 +190,7 @@ export default function Shipments() {
   const [importTypes, setImportTypes]           = useState<Set<"booking" | "delivery" | "cod_payment">>(new Set());
   const [bookingFilter, setBookingFilter]       = useState<Set<"imported" | "pending">>(new Set());
   const [deliveryFilter, setDeliveryFilter]     = useState<Set<"imported" | "pending" | "confirmed">>(new Set());
-  const [codPaymentFilter, setCodPaymentFilter] = useState<Set<"received" | "pending" | "amount_mismatch">>(new Set());
+  const [codPaymentFilter, setCodPaymentFilter] = useState<Set<"received" | "pending" | "amount_mismatch" | "returned">>(new Set());
   const [validationFilter, setValidationFilter] = useState<Set<"weight" | "payment_mode" | "amount">>(new Set());
   const [importBatchPick, setImportBatchPick]   = useState<{ id: string; label: string; sub?: string } | null>(null);
   const [paymentBatchPick, setPaymentBatchPick] = useState<{ id: string; label: string; sub?: string } | null>(null);
@@ -613,9 +613,14 @@ export default function Shipments() {
         const pending  = isCOD && !received;
         const amtMismatch = ((anyS.import_validation_alerts || []) as any[])
           .some((a) => a.field === "amount");
+        // Phase F10 — COD Payment Returned: order status = Returned/
+        // Refunded → the money has been reversed to the customer.
+        const st = String(anyS.status || "").toLowerCase();
+        const returned = st === "returned" || st === "refunded";
         if (codPaymentFilter.has("received")        && received)       return true;
         if (codPaymentFilter.has("pending")         && pending)        return true;
         if (codPaymentFilter.has("amount_mismatch") && amtMismatch)    return true;
+        if (codPaymentFilter.has("returned")        && returned)       return true;
         return false;
       });
     }
@@ -1305,9 +1310,14 @@ export default function Shipments() {
         const pending  = isCOD && !received;
         const amtMismatch = ((anyS.import_validation_alerts || []) as any[])
           .some((a) => a.field === "amount");
+        // Phase F10 — COD Payment Returned: order status = Returned/
+        // Refunded → the money has been reversed to the customer.
+        const st = String(anyS.status || "").toLowerCase();
+        const returned = st === "returned" || st === "refunded";
         if (codPaymentFilter.has("received")        && received)       return true;
         if (codPaymentFilter.has("pending")         && pending)        return true;
         if (codPaymentFilter.has("amount_mismatch") && amtMismatch)    return true;
+        if (codPaymentFilter.has("returned")        && returned)       return true;
         return false;
       });
     }
@@ -2837,16 +2847,35 @@ export default function Shipments() {
                 <Text style={styles.order}>Order #{item.order_id}</Text>
               )}
               <Text style={styles.sub} numberOfLines={1}>
-                {item.courier_name} · {item.city || "—"} · {
-                  // Phase-31 — COD list subtitle shows what the courier
-                  // will collect (cod_amount = max(0, amount − token)),
-                  // not the gross total. Prepaid rows still show
-                  // `amount` since there's no COD balance to derive.
-                  item.payment_mode === "COD"
-                    ? `COD ₹${item.cod_amount ?? item.amount ?? 0}`
-                    : `Prepaid ₹${item.amount}`
-                }
+                {item.courier_name} · {item.city || "—"}
               </Text>
+              {/* Phase F10 — Colored amount pill.
+                  Green  → Prepaid  OR  COD payment received.
+                  Yellow → COD payment pending.
+                  Red    → order returned / refunded (money reversed). */}
+              {(() => {
+                const anyIt = item as any;
+                const isCOD    = String(item.payment_mode || "").toUpperCase() === "COD";
+                const received = anyIt.cod_payment_status === "received";
+                const st       = String(item.status || "").toLowerCase();
+                const returned = st === "returned" || st === "refunded";
+                const value    = isCOD
+                  ? (item.cod_amount ?? item.amount ?? 0)
+                  : (item.amount ?? 0);
+                let bg = "#DCFCE7", fg = "#166534", lbl = `Prepaid ₹${value}`;
+                if (returned) {
+                  bg = "#FEE2E2"; fg = "#991B1B"; lbl = `${isCOD ? "COD" : "Prepaid"} ₹${value} · Returned`;
+                } else if (isCOD && received) {
+                  bg = "#DCFCE7"; fg = "#166534"; lbl = `COD ₹${value} · Received`;
+                } else if (isCOD) {
+                  bg = "#FEF9C3"; fg = "#854D0E"; lbl = `COD ₹${value} · Pending`;
+                }
+                return (
+                  <View style={[styles.amountPill, { backgroundColor: bg }]}>
+                    <Text style={[styles.amountPillTxt, { color: fg }]}>{lbl}</Text>
+                  </View>
+                );
+              })()}
               {item.items && item.items.length > 0 && (
                 <Text style={styles.items} numberOfLines={1}>
                   📦 {item.items.join(", ")}
@@ -3995,6 +4024,18 @@ const styles = StyleSheet.create({
   name: { marginTop: 6, fontSize: 15, fontWeight: "700", color: colors.text },
   order: { fontSize: 11, color: colors.primary, fontWeight: "700", marginTop: 2 },
   sub: { marginTop: 3, color: colors.textMuted, fontSize: 12 },
+  // Phase F10 — colored amount pill on each shipment card. Renders
+  // as a self-sized rounded chip below the subtitle so the tone
+  // (green/yellow/red) is immediately glanceable without pulling
+  // the operator's attention off the customer + courier line.
+  amountPill: {
+    alignSelf: "flex-start",
+    marginTop: 5,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 10,
+  },
+  amountPillTxt: { fontSize: 11.5, fontWeight: "800" },
   items: { marginTop: 3, color: colors.text, fontSize: 12, fontWeight: "600" },
   // Phase F2.2 — Created-at timestamp shown discreetly under each card.
   timestamp: { marginTop: 4, color: "#94A3B8", fontSize: 11, fontWeight: "500" },
