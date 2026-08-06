@@ -87,6 +87,20 @@ def init() -> None:
         # compose cleanly with `status` / `search` / `courier_id`.
         import_batch_id:  Optional[str] = None,
         payment_batch_id: Optional[str] = None,
+        # Phase F9 — Shipment Filter Phase B.
+        # `booking_date_from` / `booking_date_to`  — order booking date.
+        # `import_date_from`  / `import_date_to`   — created_at (when
+        #                                            the row landed).
+        # `batch_status` values:
+        #   "in_batch"     — has any payment_batch_id
+        #   "not_in_batch" — has no payment_batch_id
+        #   "reconciled"   — status = "Delivered" AND has payment_batch_id
+        #   "unreconciled" — status = "Delivered" AND has no payment_batch_id
+        booking_date_from: Optional[str] = None,
+        booking_date_to:   Optional[str] = None,
+        import_date_from:  Optional[str] = None,
+        import_date_to:    Optional[str] = None,
+        batch_status:      Optional[str] = None,
         limit: int = 500,
         current_user: Dict[str, Any] = Depends(_get_current_user),
     ):
@@ -97,6 +111,41 @@ def init() -> None:
             q["import_batch_ids"] = import_batch_id
         if payment_batch_id:
             q["payment_batch_id"] = payment_batch_id
+        # ── Phase F9 — date range + batch-status filters ─────────────
+        if booking_date_from or booking_date_to:
+            rng: Dict[str, str] = {}
+            if booking_date_from:
+                rng["$gte"] = booking_date_from
+            if booking_date_to:
+                rng["$lte"] = booking_date_to
+            q["booking_date"] = rng
+        if import_date_from or import_date_to:
+            rng2: Dict[str, str] = {}
+            if import_date_from:
+                rng2["$gte"] = import_date_from
+            if import_date_to:
+                rng2["$lte"] = import_date_to
+            q["created_at"] = rng2
+        if batch_status:
+            bs = batch_status.strip().lower()
+            if bs == "in_batch":
+                q["payment_batch_id"] = {"$exists": True, "$ne": None, "$ne": ""}
+            elif bs == "not_in_batch":
+                q["$or"] = (q.get("$or") or []) + [
+                    {"payment_batch_id": {"$exists": False}},
+                    {"payment_batch_id": None},
+                    {"payment_batch_id": ""},
+                ]
+            elif bs == "reconciled":
+                q["status"] = "Delivered"
+                q["payment_batch_id"] = {"$exists": True, "$ne": None, "$ne": ""}
+            elif bs == "unreconciled":
+                q["status"] = "Delivered"
+                q["$or"] = (q.get("$or") or []) + [
+                    {"payment_batch_id": {"$exists": False}},
+                    {"payment_batch_id": None},
+                    {"payment_batch_id": ""},
+                ]
         if status:
             # Phase-19 — "Modified" is a virtual filter: it shows every
             # shipment that's been edited via the pencil/edit form,

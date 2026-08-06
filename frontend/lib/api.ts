@@ -2460,6 +2460,33 @@ export const Api = {
       )
       .then((r) => r.data),
 
+  // Phase F9 — Drill-down: bulk add / remove shipments on a batch.
+  // Both endpoints return the recomputed `total_articles` +
+  // `total_amount` so the caller can refresh the header card without
+  // an extra fetch.
+  addShipmentsToBatch: (batch_id: string, shipment_ids: string[]) =>
+    api
+      .post<{
+        ok: boolean;
+        added: number;
+        requested: number;
+        total_articles: number;
+        total_amount: number;
+      }>(`/payment-batches/${batch_id}/shipments`, { shipment_ids })
+      .then((r) => r.data),
+
+  removeShipmentsFromBatch: (batch_id: string, shipment_ids: string[]) =>
+    api
+      .delete<{
+        ok: boolean;
+        removed: number;
+        total_articles: number;
+        total_amount: number;
+      }>(`/payment-batches/${batch_id}/shipments`, {
+        data: { shipment_ids },
+      })
+      .then((r) => r.data),
+
   // --- Feature 1: Write headers to user sheet ---
   syncSheetHeaders: (dry_run = false) =>
     api

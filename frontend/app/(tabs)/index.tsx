@@ -1747,6 +1747,18 @@ export default function Dashboard() {
                 tone="neutral"
                 chevron
               />
+              {/* Phase F9 — Payment Batches drill-down hub. Lets the
+                  operator browse every COD-payment batch, tap into a
+                  drill-down, and export CSV — without hunting for the
+                  picker inside the Shipments-tab filter modal. */}
+              <ActionPill
+                testID="quick-payment-batches"
+                icon="wallet-outline"
+                label="Payment Batches"
+                onPress={() => router.push("/payment-batches" as any)}
+                tone="success"
+                chevron
+              />
               {/* Phase-12 + 2026-05-12 visual refresh: Scanner shortcuts.
                   Upgraded from slim pill rows to the same card-style
                   interface that used to live in the Shipments tab

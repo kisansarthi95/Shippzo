@@ -64,6 +64,16 @@ class PaymentBatchIn(BaseModel):
     notes:            Optional[str] = ""
 
 
+# Phase F9 — Batch drill-down: bulk add/remove shipments body. MUST
+# live at module scope because this file uses `from __future__ import
+# annotations` — FastAPI resolves ForwardRefs against module globals,
+# and a class defined inside init() isn't reachable (POST/DELETE
+# would 422 with "Field required" on `body`).
+class _ShipmentIdsPayload(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    shipment_ids: List[str] = Field(default_factory=list)
+
+
 def _iso_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -277,4 +287,106 @@ def init() -> None:
         await db.payment_batches.delete_one({"id": batch_id, "user_id": current_user["id"]})
         return {"ok": True, "unlinked_shipments": len(sids)}
 
-    _logger.info("payment_batches router mounted (5 endpoints)")
+    # ─── Phase F9 — Batch drill-down: bulk add / remove shipments ─────
+    # The drill-down screen lets operators reconcile a batch by adding
+    # more shipments that were paid together but missed the original
+    # COD import, or removing ones that were incorrectly attached.
+    # Both endpoints recompute `total_articles` + `total_amount` so
+    # the batch card in the list always shows correct totals.
+    async def _recompute_batch_totals(batch_id: str, uid: str) -> Dict[str, Any]:
+        batch = await db.payment_batches.find_one(
+            {"id": batch_id, "user_id": uid},
+            {"_id": 0, "shipment_ids": 1},
+        )
+        sids = (batch or {}).get("shipment_ids") or []
+        total_amount = 0.0
+        if sids:
+            async for s in db.shipments.find(
+                {"user_id": uid, "id": {"$in": sids}},
+                {"_id": 0, "cod_collected_amount": 1, "cod_amount": 1,
+                 "cod": 1, "total_amount": 1, "amount": 1},
+            ):
+                v = (s.get("cod_collected_amount")
+                     or s.get("cod_amount") or s.get("cod")
+                     or s.get("total_amount") or s.get("amount") or 0)
+                try:
+                    total_amount += float(v)
+                except Exception:
+                    pass
+        await db.payment_batches.update_one(
+            {"id": batch_id, "user_id": uid},
+            {"$set": {
+                "total_articles": len(sids),
+                "total_amount":   round(total_amount, 2),
+                "updated_at":     _iso_now(),
+            }},
+        )
+        return {"total_articles": len(sids), "total_amount": round(total_amount, 2)}
+
+    @payment_batches_router.post("/payment-batches/{batch_id}/shipments")
+    async def add_shipments_to_batch(
+        batch_id: str,
+        body: _ShipmentIdsPayload,
+        current_user: Dict[str, Any] = Depends(_get_current_user),
+    ):
+        ids = [s for s in (body.shipment_ids or []) if s]
+        if not ids:
+            raise HTTPException(status_code=400, detail="shipment_ids empty")
+        batch = await db.payment_batches.find_one(
+            {"id": batch_id, "user_id": current_user["id"]},
+            {"_id": 0, "shipment_ids": 1},
+        )
+        if not batch:
+            raise HTTPException(status_code=404, detail="Payment batch not found")
+        # Union into the batch's shipment_ids and stamp payment_batch_id
+        # on each matched shipment.
+        await db.payment_batches.update_one(
+            {"id": batch_id, "user_id": current_user["id"]},
+            {"$addToSet": {"shipment_ids": {"$each": ids}}},
+        )
+        upd = await db.shipments.update_many(
+            {"user_id": current_user["id"], "id": {"$in": ids}},
+            {"$set": {"payment_batch_id": batch_id}},
+        )
+        totals = await _recompute_batch_totals(batch_id, current_user["id"])
+        return {
+            "ok":              True,
+            "added":           upd.modified_count,
+            "requested":       len(ids),
+            "total_articles":  totals["total_articles"],
+            "total_amount":    totals["total_amount"],
+        }
+
+    @payment_batches_router.delete("/payment-batches/{batch_id}/shipments")
+    async def remove_shipments_from_batch(
+        batch_id: str,
+        body: _ShipmentIdsPayload,
+        current_user: Dict[str, Any] = Depends(_get_current_user),
+    ):
+        ids = [s for s in (body.shipment_ids or []) if s]
+        if not ids:
+            raise HTTPException(status_code=400, detail="shipment_ids empty")
+        batch = await db.payment_batches.find_one(
+            {"id": batch_id, "user_id": current_user["id"]},
+            {"_id": 0},
+        )
+        if not batch:
+            raise HTTPException(status_code=404, detail="Payment batch not found")
+        await db.payment_batches.update_one(
+            {"id": batch_id, "user_id": current_user["id"]},
+            {"$pullAll": {"shipment_ids": ids}},
+        )
+        upd = await db.shipments.update_many(
+            {"user_id": current_user["id"], "id": {"$in": ids},
+             "payment_batch_id": batch_id},
+            {"$unset": {"payment_batch_id": ""}},
+        )
+        totals = await _recompute_batch_totals(batch_id, current_user["id"])
+        return {
+            "ok":              True,
+            "removed":         upd.modified_count,
+            "total_articles":  totals["total_articles"],
+            "total_amount":    totals["total_amount"],
+        }
+
+    _logger.info("payment_batches router mounted (7 endpoints)")
