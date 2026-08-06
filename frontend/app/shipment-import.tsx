@@ -93,6 +93,18 @@ export default function ShipmentImportScreen() {
   const [pbName, setPbName]                 = useState<string>("");
   const [pbDescription, setPbDescription]   = useState<string>("");
   const [pbPaymentDate, setPbPaymentDate]   = useState<string>("");
+  // Phase F9.1 — Native calendar picker for Payment Date. We store
+  // the date internally as YYYY-MM-DD (canonical ISO — same format
+  // the backend has always accepted) but render DD-MM-YYYY on screen
+  // so operators read it the way they write cheques in India.
+  const [showDatePicker, setShowDatePicker] = useState(false);
+  const _dpModule = (() => {
+    if (Platform.OS === "web") return null;
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      return require("@react-native-community/datetimepicker").default;
+    } catch { return null; }
+  })();
   const [pbPaymentMode, setPbPaymentMode]   = useState<string>("cheque");
   const [pbReferenceNumber, setPbReferenceNumber] = useState<string>("");
   const [pbBankName, setPbBankName]         = useState<string>("");
@@ -271,6 +283,27 @@ export default function ShipmentImportScreen() {
 
   const commit = async () => {
     if (!importType || !picked || !preview) return;
+    // Phase F9.1 — Batch validation. Before firing the commit we make
+    // sure both Batch Name and Payment Date are filled whenever the
+    // user has started typing ANY payment-batch field. Silent skip
+    // (no batch at all) is still allowed if all fields are blank —
+    // this preserves the "plain COD update" path.
+    if (
+      importType === "cod_payment" &&
+      (pbName.trim() || pbReferenceNumber.trim() || pbPaymentDate.trim()
+       || pbBankName.trim() || pbDescription.trim() || pbNotes.trim())
+    ) {
+      const missing: string[] = [];
+      if (!pbName.trim())         missing.push("Batch Name");
+      if (!pbPaymentDate.trim())  missing.push("Payment Date");
+      if (missing.length) {
+        Alert.alert(
+          "Missing required fields",
+          `Please provide: ${missing.join(", ")}.`,
+        );
+        return;
+      }
+    }
     setConfirmOpen(false);
     setCommitting(true);
     try {
@@ -611,12 +644,63 @@ export default function ShipmentImportScreen() {
               </View>
             ) : null}
 
-            <PbField label="Batch Name" value={pbName} onChangeText={setPbName}
+            {/* Phase F9.1 — Batch Name is now REQUIRED. Red asterisk in
+                the label signals the requirement; validation in
+                commit() enforces it. */}
+            <PbField label="Batch Name *" value={pbName} onChangeText={setPbName}
               placeholder="e.g. India Post Aug W2" />
             <View style={{ flexDirection: "row", gap: 10 }}>
               <View style={{ flex: 1 }}>
-                <PbField label="Payment Date" value={pbPaymentDate} onChangeText={setPbPaymentDate}
-                  placeholder="YYYY-MM-DD" />
+                {/* Phase F9.1 — Native calendar Date Picker for Payment
+                    Date. Stored internally as YYYY-MM-DD (backend
+                    canonical) but displayed as DD-MM-YYYY. Manual text
+                    entry is intentionally removed to eliminate the
+                    common "DD/MM vs MM/DD" ambiguity that caused
+                    reconciliation drift in past batches. */}
+                <Text style={styles.pbLabel}>Payment Date *</Text>
+                <TouchableOpacity
+                  onPress={() => setShowDatePicker(true)}
+                  style={styles.pbDateBtn}
+                  activeOpacity={0.75}
+                >
+                  <Text style={[
+                    styles.pbDateTxt,
+                    !pbPaymentDate && { color: "#94A3B8" },
+                  ]}>
+                    {pbPaymentDate
+                      ? (() => {
+                          const [y, m, d] = pbPaymentDate.split("-");
+                          return `${d}-${m}-${y}`;
+                        })()
+                      : "Pick a date"}
+                  </Text>
+                  <PhIcon name="calendar-outline" size={16} color="#64748B" />
+                </TouchableOpacity>
+                {showDatePicker && _dpModule && (() => {
+                  const DateTimePicker = _dpModule;
+                  const parsed = pbPaymentDate
+                    ? new Date(pbPaymentDate + "T00:00:00")
+                    : new Date();
+                  return (
+                    <DateTimePicker
+                      value={parsed}
+                      mode="date"
+                      display={Platform.OS === "ios" ? "inline" : "default"}
+                      maximumDate={new Date()}
+                      onChange={(_event: any, selected?: Date) => {
+                        // On Android the picker auto-closes; on iOS we
+                        // dismiss on any confirm/cancel.
+                        setShowDatePicker(Platform.OS === "ios" ? false : false);
+                        if (selected) {
+                          const y = selected.getFullYear();
+                          const m = String(selected.getMonth() + 1).padStart(2, "0");
+                          const d = String(selected.getDate()).padStart(2, "0");
+                          setPbPaymentDate(`${y}-${m}-${d}`);
+                        }
+                      }}
+                    />
+                  );
+                })()}
               </View>
               <View style={{ flex: 1 }}>
                 <Text style={styles.pbLabel}>Payment Mode</Text>
@@ -1178,6 +1262,22 @@ const styles = StyleSheet.create({
 
   // Phase F6.3 — Payment Batch inputs
   pbLabel: { fontSize: 10, fontWeight: "800", color: "#64748B", letterSpacing: 0.3, marginBottom: 4 },
+  // Phase F9.1 — clickable pill that opens the native calendar picker
+  // for Payment Date. Styled to visually match the neighbouring
+  // <PbField> so the row keeps a consistent rhythm.
+  pbDateBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    borderWidth: 1,
+    borderColor: "#CBD5E1",
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    backgroundColor: "#F8FAFC",
+    minHeight: 40,
+  },
+  pbDateTxt: { fontSize: 13, color: "#0F172A", fontWeight: "600" },
   pbInput: {
     borderWidth: 1, borderColor: "#E5E7EB", borderRadius: 8,
     paddingHorizontal: 10, paddingVertical: 8, fontSize: 13, color: "#0F172A",

@@ -252,6 +252,19 @@ export default function BatchDetailScreen() {
             </>
           )}
         </TouchableOpacity>
+        {/* Phase F9.1 — Explicit labeled "Delete Batch" button in
+            addition to the trash icon in the header. Merchants who
+            accidentally create a batch (e.g. wrong reference number)
+            want an obvious, one-tap route to remove the whole thing
+            and keep the database clean. Unlinks the shipments —
+            never deletes them. */}
+        <TouchableOpacity
+          style={styles.deleteBtn}
+          onPress={confirmDelete}
+        >
+          <Ionicons name="trash-outline" size={16} color="#B91C1C" />
+          <Text style={styles.deleteBtnTxt}>Delete Batch</Text>
+        </TouchableOpacity>
       </View>
 
       <View style={styles.listHead}>
@@ -345,6 +358,22 @@ const styles = StyleSheet.create({
     gap: 6, backgroundColor: colors.primary, paddingVertical: 10, borderRadius: 8,
   },
   exportTxt: { fontSize: 13, fontWeight: "800", color: "#fff" },
+  // Phase F9.1 — explicit Delete Batch pill (paired with the header
+  // trash icon). Red border + red label to unambiguously communicate
+  // the destructive nature of the action.
+  deleteBtn: {
+    marginTop: 8,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    backgroundColor: "#FEF2F2",
+    borderWidth: 1,
+    borderColor: "#FECACA",
+    paddingVertical: 10,
+    borderRadius: 8,
+  },
+  deleteBtnTxt: { fontSize: 13, fontWeight: "800", color: "#B91C1C" },
   listHead: {
     flexDirection: "row", justifyContent: "space-between", alignItems: "center",
     paddingHorizontal: 14, paddingBottom: 6,
