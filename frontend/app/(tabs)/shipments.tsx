@@ -475,7 +475,13 @@ export default function Shipments() {
     } finally {
       setRefreshing(false);
     }
-  }, [search]);
+    // Phase F10.1 — include batch-pick IDs so the memoized `load` gets
+    // a fresh closure whenever the user (or a router deep-link) picks
+    // a batch. Without these, `load()` calls from useFocusEffect
+    // silently drop the `payment_batch_id` / `import_batch_id` query
+    // params (stale-closure bug that broke the "View in Shipments →"
+    // navigation from the Payment Batch drill-down).
+  }, [search, paymentBatchPick?.id, importBatchPick?.id]);
 
   // Load the user's label definitions once (auto-seeds 10 defaults on
   // first visit via the backend). Refetched on focus so newly-created

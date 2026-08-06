@@ -1,0 +1,39 @@
+{
+  "summary": "Iteration 51 — Re-verified Fix #2 only (Payment Batch deep-link → filtered Shipments list) after main agent extended the `load` useCallback deps to `[search, paymentBatchPick?.id, importBatchPick?.id]` in /app/frontend/app/(tabs)/shipments.tsx line 484. RESULT: FIX CONFIRMED WORKING. Steps executed via Playwright at 390×844 mobile viewport, logged in as admin@test.com: (1) Navigated directly to /(tabs)/shipments?payment_batch_id=66dd423a-a1a8-43b7-bc23-245e2ffca6b5&payment_batch_label=CHQ%20No.000747. Network trace shows exactly ONE GET https://logistics-hub-740.preview.emergentagent.com/api/shipments?payment_batch_id=66dd423a-a1a8-43b7-bc23-245e2ffca6b5 fired (batch id present in query string). The 'All' tab counter reads 28 — matches batch.total_articles from GET /api/payment-batches. The visible list is narrowed to the 28 shipments in the batch. (2) Regression check — tapped the red-X filter-icon (testID='filter-icon', which flips to `handleClearAllFilters` when any filter is active). Two follow-up GET /api/shipments requests fire WITHOUT `payment_batch_id`, the 'All' tab counter jumps back to 500, and Pending/Processing counters repopulate. No stale filtered request leaked. Both directions of the toggle work — the stale-closure bug is resolved. Note: the optional UX improvement from iteration 50 (rendering a visible batch-filter chip in the header with the label + ✕) is still NOT implemented — user only sees the small red dot on the funnel icon; the batch label 'CHQ No.000747' is not surfaced anywhere on the shipments header. Flagged as design_issue but not a Fix #2 blocker.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {
+        "screen": "Shipments (with deep-link filter)",
+        "issues": [
+          "Still no visible batch-filter chip in the header when payment_batch_label is present in the URL — only the small red dot on the funnel icon signals a filter is active. User has no in-app cue that shows *which* batch is filtering the list (label 'CHQ No.000747' never appears). Optional UX improvement listed as action item in iteration 50; still open."
+        ]
+      }
+    ],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/test_reports/iteration_50.json",
+    "/app/backend/tests/test_iteration_50_batch_filter.py"
+  ],
+  "action_items": [
+    "(Optional / carried over from iteration 50) Render a visible batch-filter chip in the shipments header when paymentBatchPick/importBatchPick is active — show label + ✕ so the operator sees which batch is currently narrowing the list."
+  ],
+  "critical_code_review_comments": [
+    "Fix is minimal and correct — extending the deps to `[search, paymentBatchPick?.id, importBatchPick?.id]` at shipments.tsx:484 rebuilds the closure whenever a pick is set/cleared. useFocusEffect (line 498-502) also re-runs because `load` is listed in its deps.",
+    "shipments.tsx is still 4302 lines — well past the 700-line guideline. Recommend splitting once the current bug queue is drained.",
+    "handleClearAllFilters (line 275) calls `load()` synchronously right after `setPaymentBatchPick(null)`. Because setState is batched, the synchronous `load()` fires with the still-stale closure — but React re-renders immediately, `load` is re-memoized, and useFocusEffect's dep change on `load` triggers a second unfiltered call. The observed 2 GET /api/shipments requests after clear are this double-fire. Not a bug (both are unfiltered, final state is correct) but the double request is wasted. Consider dropping the explicit `load()` call in handleClearAllFilters and rely solely on the useFocusEffect re-run driven by the new `load` identity."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "N/A (frontend-only re-test)", "frontend": "100% (2/2 scenarios verified)"},
+  "seed_data_creation": "None — reused existing admin payment batch 'CHQ No.000747' (id 66dd423a-a1a8-43b7-bc23-245e2ffca6b5, 28 articles).",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Fix #2 (stale-closure) is fully verified. Only outstanding UX polish (from iteration 50 action items) is the visible batch-filter chip in the header. Backend was already validated 5/5 in iteration 50 (see /app/backend/tests/test_iteration_50_batch_filter.py) — no need to re-run.",
+  "rca_of_issue": "Verification: With fix at shipments.tsx:484 deps=`[search, paymentBatchPick?.id, importBatchPick?.id]`, the deep-link useEffect at line 540 calls setPaymentBatchPick which invalidates the memoized `load`; useFocusEffect (deps=[load,...]) picks up the new identity on the same render pass and fires GET /api/shipments with `payment_batch_id`. Observed network: single request with `payment_batch_id=66dd423a-a1a8-43b7-bc23-245e2ffca6b5`, All tab=28 (matches batch.total_articles). Reset path (tap red-X filter-icon → handleClearAllFilters at line 256) clears paymentBatchPick, load is re-memoized without the batch id, useFocusEffect refires with unfiltered query → All tab returns to 500. Both directions confirmed."
+}
