@@ -437,38 +437,70 @@ def _amount_equal(a: Any, b: Any, tol: float = 0.5) -> bool:
 
 # ─── Phase F11.C — Auto-detect PaymentBatch metadata ────────────────
 #
-# COD remittance sheets from banks and Post Office almost always carry
-# three pieces of metadata in a label→value pair (either adjacent on
-# the same row, or directly beneath the label). Extract them at
-# preview time so the operator sees Batch Name / Payment Date / Notes
-# pre-populated on the import screen — they still confirm/edit before
-# committing, but the "type in the cheque number again" chore is gone.
+# COD remittance sheets (India Post CBS printouts, bank
+# reconciliation statements, etc.) carry a handful of header /
+# footer lines that identify the payment instrument:
 #
-# Detection rules (case-insensitive; whitespace normalised):
-#   • Batch Name   ← "Cheque No"/"Chq No"/"Cheque Number"/"Cheque"
-#   • Payment Date ← "Payment Date"/"Cheque Date"/"Value Date"/"Date"
-#                    (falls back to any recognisable dd-mm-yyyy /
-#                     yyyy-mm-dd near the top of the sheet)
-#   • Notes        ← "Biller"/"Beneficiary"/"Payer Name"/"Name"
+#   CHQ No. 000747
+#   ISSUED ON 15-06-2026
+#   PAYABLE TO ABC LOGISTICS PVT LTD
 #
-# We scan the FIRST 30 rows (title band + header). We never touch
-# rows below the header — those are shipment data.
-_BATCH_NAME_LABELS = (
-    "cheque no", "cheque number", "chq no", "chq number",
-    "cheque", "cheque #", "cheque no.", "chq no.",
+# These lines can live at the top of the sheet, or (very
+# frequently) at the bottom below the tracking rows. We scan the
+# WHOLE grid so both layouts are handled.
+#
+# Detection rules — case-insensitive; punctuation-tolerant:
+#   • Reference Number ← the EXACT phrase "CHQ No. <value>"
+#                        (label preserved, e.g. "CHQ No. 000747")
+#   • Payment Date     ← the date following "ISSUED ON" or "AS ON"
+#   • Notes            ← the name following "PAYABLE TO" or "Biller"
+#
+# Fallback labels (kept from the earlier revision so existing
+# customers with different sheet layouts don't regress):
+#   • Reference ← Cheque No / Chq No / UTR / Txn ID
+#   • Date      ← Payment Date / Cheque Date / Value Date / etc.
+#   • Notes     ← Beneficiary / Remitter / Payer / etc.
+#
+# Value discovery order per label hit:
+#   1. Rest of the SAME cell after the label — handles printouts
+#      where the whole line is one string ("CHQ No. 000747").
+#   2. Next non-empty cell on the same row.
+#   3. Next non-empty cell directly below (within 3 rows).
+
+# Full-phrase capture pattern — the whole "CHQ No. <digits>" string
+# is emitted into the Reference # input verbatim per the user spec.
+# The value token MUST contain at least one digit so a bare "CHQ No."
+# in an isolated cell doesn't false-positive without a number.
+_CHQ_PHRASE_RE = re.compile(
+    r"\bCHQ\.?\s*(?:NO|NUMBER|#)?\.?\s*[\-:.]*\s*[A-Za-z0-9/\-]*\d[A-Za-z0-9/\-]*",
+    re.I,
+)
+# Same for UTR / Txn / Ref — fallback when the sheet doesn't say CHQ.
+_REF_PHRASE_RE = re.compile(
+    r"\b(?:UTR|TXN|TRANSACTION|REF|REFERENCE)\.?\s*(?:NO|NUMBER|#|ID)?\.?\s*[\-:.]*\s*[A-Za-z0-9/\-]*\d[A-Za-z0-9/\-]*",
+    re.I,
+)
+
+# Bare-label match (case- and punctuation-insensitive) for
+# adjacent-cell / below-cell value lookups.
+_REF_LABELS = (
+    "chq no", "chq number", "chq", "cheque no", "cheque number", "cheque",
     "ref no", "reference no", "reference number", "utr", "utr no",
     "transaction id", "txn id",
 )
-_PAYMENT_DATE_LABELS = (
+_DATE_LABELS = (
+    "issued on", "as on",
     "payment date", "paid on", "paid date", "cheque date",
     "chq date", "value date", "settlement date", "remittance date",
-    "date of payment", "transaction date", "txn date",
+    "date of payment", "transaction date", "txn date", "dated",
 )
 _NOTES_LABELS = (
-    "biller", "beneficiary", "payer", "payer name",
+    "payable to", "biller",
+    "beneficiary", "beneficiary name",
+    "payer", "payer name",
     "remitter", "remitter name", "from", "from name",
-    "name", "customer name", "party name",
-    "bank", "bank name",
+    "customer name", "party name",
+    "bank name",
 )
 
 
@@ -480,12 +512,44 @@ def _label_matches(cell: str, labels: Tuple[str, ...]) -> bool:
     return False
 
 
+def _extract_value_after_label(cell: str, labels: Tuple[str, ...]) -> str:
+    """When a cell is 'LABEL VALUE' in one string, split label off and
+    return VALUE. Empty string if the whole cell IS just the label."""
+    norm = re.sub(r"[\s:.\-_]+", " ", str(cell or "").strip().lower()).strip()
+    for lab in labels:
+        if norm.startswith(lab):
+            rest_raw_start = len(lab)
+            # Find where the label ends in the ORIGINAL string —
+            # scan char-by-char while comparing normalised forms.
+            orig = str(cell)
+            # Skip past the label characters and any following
+            # separator run (spaces / colons / dots / dashes / etc).
+            matched = 0
+            i = 0
+            lab_no_space = re.sub(r"\s+", "", lab)
+            for ch in orig:
+                if matched >= len(lab_no_space):
+                    break
+                if re.sub(r"[\s:.\-_]", "", ch).lower() == lab_no_space[matched]:
+                    matched += 1
+                    i += 1
+                elif ch in " \t:.-_":
+                    i += 1
+                else:
+                    break
+            rest = orig[i:].strip(" :.-_\t")
+            _ = rest_raw_start
+            return rest
+    return ""
+
+
 def _parse_datish(cell: Any) -> Optional[str]:
     """Best-effort convert a cell to an ISO YYYY-MM-DD string.
 
-    Handles: datetime/date objects, ISO strings, dd-mm-yyyy / dd/mm/yyyy,
-    yyyy-mm-dd, and a few common Indian variants. Returns None when the
-    cell doesn't look like a date at all — the caller decides fallback.
+    Handles: datetime/date objects, ISO strings, dd-mm-yyyy /
+    dd/mm/yyyy, dd.mm.yyyy, yyyy-mm-dd, and "15 Jun 2026" style
+    (short month name). Returns None when the cell doesn't look
+    like a date at all — the caller decides fallback.
     """
     if cell is None:
         return None
@@ -514,26 +578,73 @@ def _parse_datish(cell: Any) -> Optional[str]:
             return f"{int(y):04d}-{int(mo):02d}-{int(d):02d}"
         except ValueError:
             pass
+    # 15 Jun 2026 / 15-Jun-2026 / 15/June/2026
+    months = {
+        "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
+        "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12,
+        "january": 1, "february": 2, "march": 3, "april": 4, "june": 6,
+        "july": 7, "august": 8, "september": 9, "october": 10,
+        "november": 11, "december": 12,
+    }
+    m = re.match(r"^(\d{1,2})[\s\-/\.]+([A-Za-z]+)[\s\-/\.]+(\d{2,4})", s)
+    if m:
+        d, mon, y = m.groups()
+        mo = months.get(mon.lower())
+        if mo:
+            y = "20" + y if len(y) == 2 else y
+            try:
+                return f"{int(y):04d}-{int(mo):02d}-{int(d):02d}"
+            except ValueError:
+                pass
     return None
 
 
 def _auto_detect_payment_batch(grid: List[List[Any]]) -> Dict[str, str]:
-    """Scan the top of a COD-payment upload for batch metadata.
+    """Scan the WHOLE COD-payment upload for batch metadata.
 
-    Returns a dict with any of `batch_name`, `payment_date`, `notes`
-    populated — plus `_debug` (for logging). All keys are optional;
-    the frontend only pre-fills empty inputs.
+    Emitted keys (all optional; frontend only pre-fills empty inputs):
+      • reference_number — full phrase "CHQ No. 000747"
+      • payment_date     — ISO YYYY-MM-DD (parsed from ISSUED ON / AS ON)
+      • notes            — name after PAYABLE TO / Biller
+      • batch_name       — (legacy) same as reference_number when found
     """
     out: Dict[str, str] = {}
-    scanned = grid[:30]
-    for r_idx, row in enumerate(scanned):
+
+    # ── Pass 1: same-cell regex matches for "CHQ No. XXX" phrase.
+    # Wins first because the entire phrase is user-visible and the
+    # spec calls for capturing it verbatim.
+    for row in grid:
+        for cell in row:
+            if cell is None:
+                continue
+            s = str(cell).strip()
+            if not s:
+                continue
+            if "reference_number" not in out:
+                m = _CHQ_PHRASE_RE.search(s)
+                if m:
+                    out["reference_number"] = m.group(0).strip()
+            if "reference_number" not in out:
+                m2 = _REF_PHRASE_RE.search(s)
+                if m2:
+                    out["reference_number"] = m2.group(0).strip()
+            if len(out) >= 3:
+                break
+        if len(out) >= 3:
+            break
+
+    # ── Pass 2: label-based lookups for remaining fields.
+    for r_idx, row in enumerate(grid):
         for c_idx, cell in enumerate(row):
             if cell is None:
                 continue
             s = str(cell).strip()
             if not s:
                 continue
-            # Adjacent-cell (same row, next non-empty col)
+            # Same-cell value (rest of the string after the label)
+            def _same_cell_value(labels: Tuple[str, ...]) -> str:
+                return _extract_value_after_label(s, labels)
+            # Adjacent-cell value (same row, next non-empty col)
             def _next_val() -> str:
                 for j in range(c_idx + 1, len(row)):
                     nxt = row[j]
@@ -543,10 +654,10 @@ def _auto_detect_payment_batch(grid: List[List[Any]]) -> Dict[str, str]:
                     if v:
                         return v
                 return ""
-            # Below-cell (same col, next non-empty row within scan window)
+            # Below-cell value (same col, within 3 rows)
             def _below_val() -> str:
-                for ri in range(r_idx + 1, min(len(scanned), r_idx + 3)):
-                    row2 = scanned[ri]
+                for ri in range(r_idx + 1, min(len(grid), r_idx + 3)):
+                    row2 = grid[ri]
                     if c_idx < len(row2):
                         v = row2[c_idx]
                         if v is None:
@@ -556,23 +667,34 @@ def _auto_detect_payment_batch(grid: List[List[Any]]) -> Dict[str, str]:
                             return vs
                 return ""
 
-            if "batch_name" not in out and _label_matches(s, _BATCH_NAME_LABELS):
-                val = _next_val() or _below_val()
-                if val and not _label_matches(val, _NOTES_LABELS + _PAYMENT_DATE_LABELS):
-                    out["batch_name"] = val
-            elif "payment_date" not in out and _label_matches(s, _PAYMENT_DATE_LABELS):
-                val = _next_val() or _below_val()
+            # Reference # via bare label (only if regex pass didn't fire)
+            if "reference_number" not in out and _label_matches(s, _REF_LABELS):
+                val = _same_cell_value(_REF_LABELS) or _next_val() or _below_val()
+                if val and re.search(r"\d", val) and not _label_matches(val, _NOTES_LABELS + _DATE_LABELS):
+                    # Rebuild the phrase "CHQ No. <val>" verbatim per
+                    # user spec — preserve the ORIGINAL label form so
+                    # the field shows the exact context ("CHQ No. 000747"
+                    # rather than a normalised "Cheque Number 000747").
+                    clean_label = s.rstrip(":.- \t")
+                    out["reference_number"] = f"{clean_label} {val}".strip()
+            elif "payment_date" not in out and _label_matches(s, _DATE_LABELS):
+                val = _same_cell_value(_DATE_LABELS) or _next_val() or _below_val()
                 iso = _parse_datish(val)
                 if iso:
                     out["payment_date"] = iso
             elif "notes" not in out and _label_matches(s, _NOTES_LABELS):
-                val = _next_val() or _below_val()
-                if val and not _label_matches(val, _BATCH_NAME_LABELS + _PAYMENT_DATE_LABELS):
+                val = _same_cell_value(_NOTES_LABELS) or _next_val() or _below_val()
+                if val and not _label_matches(val, _REF_LABELS + _DATE_LABELS):
                     out["notes"] = val
             if len(out) >= 3:
                 break
         if len(out) >= 3:
             break
+
+    # Legacy alias — Batch Name defaults to the same CHQ phrase so
+    # the required Batch Name input isn't left blank.
+    if "reference_number" in out and "batch_name" not in out:
+        out["batch_name"] = out["reference_number"]
     return out
 
 

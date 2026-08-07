@@ -162,15 +162,23 @@ export default function ShipmentImportScreen() {
         // imports when the file carries obvious hints. We only touch
         // inputs that are currently blank so any operator-supplied
         // value takes precedence.
+        //
+        // Field-mapping (per user spec):
+        //   • auto.reference_number → Reference # field (full phrase
+        //     e.g. "CHQ No. 000747"). Batch Name also seeded from
+        //     the same value since the Batch Name input is REQUIRED
+        //     but the operator hasn't typed anything yet.
+        //   • auto.payment_date     → Payment Date (ISO)
+        //   • auto.notes            → Notes
         if (importType === "cod_payment") {
           const auto = (p as any).auto_detect || {};
-          if (auto.batch_name && !pbName.trim()) {
-            setPbName(String(auto.batch_name));
-            // Cheque numbers are frequently reused as the reference
-            // number too — pre-fill Reference # when blank so the
-            // duplicate-detection warning has something to compare.
+          const refPhrase = auto.reference_number || auto.batch_name || "";
+          if (refPhrase) {
             if (!pbReferenceNumber.trim()) {
-              setPbReferenceNumber(String(auto.batch_name));
+              setPbReferenceNumber(String(refPhrase));
+            }
+            if (!pbName.trim()) {
+              setPbName(String(refPhrase));
             }
           }
           if (auto.payment_date && !pbPaymentDate.trim()) {
@@ -231,6 +239,61 @@ export default function ShipmentImportScreen() {
       Alert.alert("Picker error", e?.message || "Could not open file picker");
     }
   }, [importType, runPreview]);
+
+  // Phase F11.C — Manual re-trigger for the auto-detect scan. Runs a
+  // fresh preview call (which returns `auto_detect`) and FORCE-fills
+  // the three PaymentBatch inputs regardless of current values so the
+  // operator can "reset to what the file says" in one tap.
+  const fetchBatchDetails = useCallback(async () => {
+    if (!picked || !importType) {
+      Alert.alert("Pick a file first", "Upload a COD Payment file before fetching details.");
+      return;
+    }
+    setLoading(true);
+    try {
+      const p = await Api.shipmentImportPreview(
+        picked.uri, picked.name, picked.mime, importType,
+        { header_row: headerRow, data_start_row: dataStartRow, header_col: headerCol },
+        picked.webFile,
+      );
+      setPreview(p);
+      const auto = (p as any).auto_detect || {};
+      const refPhrase = auto.reference_number || auto.batch_name || "";
+      const filled: string[] = [];
+      if (refPhrase) {
+        setPbReferenceNumber(String(refPhrase));
+        setPbName(String(refPhrase));
+        filled.push("Batch Name & Reference #");
+      }
+      if (auto.payment_date) {
+        setPbPaymentDate(String(auto.payment_date));
+        filled.push("Payment Date");
+      }
+      if (auto.notes) {
+        setPbNotes(String(auto.notes));
+        filled.push("Notes");
+      }
+      if (!filled.length) {
+        Alert.alert(
+          "Nothing detected",
+          "Couldn't find any of these patterns in your file:\n\n" +
+          "• CHQ No. / UTR / Ref #\n" +
+          "• ISSUED ON / AS ON date\n" +
+          "• PAYABLE TO / Biller name\n\n" +
+          "Please fill them in manually.",
+        );
+      } else {
+        Alert.alert("Fetched ✓", `Refreshed from file: ${filled.join(", ")}.`);
+      }
+    } catch (e: any) {
+      Alert.alert(
+        "Fetch failed",
+        e?.response?.data?.detail || e?.message || "Try again.",
+      );
+    } finally {
+      setLoading(false);
+    }
+  }, [picked, importType, headerRow, dataStartRow, headerCol]);
 
   const applyLayout = useCallback(
     (patch: Partial<{ header_row: number; data_start_row: number; header_col: number }>) => {
@@ -577,9 +640,12 @@ export default function ShipmentImportScreen() {
             </View>
 
             {/* Peek of first rows (raw) so user can spot the correct
-                header row. Phase F11.C — added vertical ScrollView
-                wrapper so operators can scroll through the full 40-row
-                preview when the sheet has a long title band. */}
+                header row.
+                Phase F11.C revised — VERTICAL scroll is now handled
+                by the parent page ScrollView (previously an inner
+                vertical ScrollView clashed with it on Android). We
+                render every preview row inline; horizontal scroll
+                stays inside so 30 columns fit. */}
             {preview?.raw_preview && preview.raw_preview.length > 0 ? (
               <View style={{ marginTop: 12 }}>
                 <Text style={styles.peekTitle}>
@@ -587,14 +653,15 @@ export default function ShipmentImportScreen() {
                   {typeof preview.raw_total_rows === "number" && preview.raw_total_rows > preview.raw_preview.length
                     ? ` of ${preview.raw_total_rows}`
                     : ""}
-                  )
+                  ) — swipe left/right for more columns · scroll page for more rows
                 </Text>
-                <ScrollView horizontal showsHorizontalScrollIndicator={true} style={styles.peekWrap}>
-                  <ScrollView
-                    nestedScrollEnabled
-                    showsVerticalScrollIndicator={true}
-                    style={{ maxHeight: 260 }}
-                  >
+                <ScrollView
+                  horizontal
+                  showsHorizontalScrollIndicator={true}
+                  style={styles.peekWrap}
+                  contentContainerStyle={{ paddingBottom: 4 }}
+                >
+                  <View>
                     {preview.raw_preview.map((row, rIdx) => {
                       const oneBased = rIdx + 1;
                       const isHeader = oneBased === headerRow;
@@ -616,7 +683,7 @@ export default function ShipmentImportScreen() {
                           >
                             <Text style={styles.peekRowNumTxt}>{oneBased}</Text>
                           </TouchableOpacity>
-                          {row.slice(0, 15).map((cell, cIdx) => {
+                          {row.slice(0, 30).map((cell, cIdx) => {
                             const colOneBased = cIdx + 1;
                             const beforeStart = colOneBased < headerCol;
                             return (
@@ -636,7 +703,7 @@ export default function ShipmentImportScreen() {
                         </View>
                       );
                     })}
-                  </ScrollView>
+                  </View>
                 </ScrollView>
                 <Text style={styles.peekLegend}>
                   <Text style={{ color: "#2563EB", fontWeight: "700" }}>Blue</Text> = header ·{" "}
@@ -668,6 +735,25 @@ export default function ShipmentImportScreen() {
               &quot;which parcels were paid in this cheque / UTR?&quot;. Leave blank to skip.
             </Text>
 
+            {/* Phase F11.C — Manual "Fetch Batch Details" trigger. The
+                auto-fill runs on first preview automatically, but this
+                button lets the operator re-scan the file (e.g. after
+                they've edited a field back to blank, or after picking
+                a different header row that changed what's a footer). */}
+            {picked ? (
+              <TouchableOpacity
+                style={styles.fetchBatchBtn}
+                onPress={fetchBatchDetails}
+                disabled={loading}
+                activeOpacity={0.85}
+              >
+                <PhIcon name="sparkles-outline" size={14} color="#fff" />
+                <Text style={styles.fetchBatchTxt}>
+                  {loading ? "Scanning…" : "Fetch Batch Details from File"}
+                </Text>
+              </TouchableOpacity>
+            ) : null}
+
             {pbDupWarning ? (
               <View style={styles.warnBanner}>
                 <PhIcon name="warning" size={16} color="#B45309" />
@@ -687,7 +773,7 @@ export default function ShipmentImportScreen() {
             {(() => {
               const auto = (preview as any)?.auto_detect || {};
               const bits: string[] = [];
-              if (auto.batch_name)   bits.push("Batch Name");
+              if (auto.reference_number || auto.batch_name) bits.push("Batch Name & Reference #");
               if (auto.payment_date) bits.push("Payment Date");
               if (auto.notes)        bits.push("Notes");
               if (!bits.length) return null;
@@ -1196,6 +1282,14 @@ const styles = StyleSheet.create({
     padding: 10, borderRadius: 8, marginBottom: 10,
   },
   autoBannerTxt: { flex: 1, fontSize: 12, color: "#065F46" },
+  fetchBatchBtn: {
+    flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6,
+    backgroundColor: "#065F46",
+    paddingVertical: 10, paddingHorizontal: 14,
+    borderRadius: 8, marginBottom: 10,
+    alignSelf: "flex-start",
+  },
+  fetchBatchTxt: { color: "#fff", fontSize: 13, fontWeight: "800" },
 
   colRow:    { flexDirection: "row", alignItems: "center", paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: "#F1F5F9" },
   colHeader: { fontSize: 14, fontWeight: "600", color: "#0F172A" },
@@ -1301,7 +1395,9 @@ const styles = StyleSheet.create({
   peekTitle: { fontSize: 11, fontWeight: "700", color: "#64748B", letterSpacing: 0.3, marginBottom: 6 },
   peekWrap: {
     borderWidth: 1, borderColor: "#E5E7EB", borderRadius: 8,
-    backgroundColor: "#FAFAFA", maxHeight: 260,
+    backgroundColor: "#FAFAFA",
+    // Phase F11.C revised — height removed so all preview rows render
+    // inline; page-level ScrollView handles vertical scroll.
   },
   peekRow: { flexDirection: "row", alignItems: "stretch", borderBottomWidth: 1, borderBottomColor: "#F1F5F9" },
   peekRowHeader: { backgroundColor: "#DBEAFE" },

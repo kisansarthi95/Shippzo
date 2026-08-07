@@ -2273,6 +2273,7 @@ export const Api = {
           batch_name?: string;
           payment_date?: string;   // ISO YYYY-MM-DD
           notes?: string;
+          reference_number?: string;
         };
       }>("/shipments/import/preview", fd, {
         headers: { "Content-Type": "multipart/form-data" },
