@@ -103,6 +103,14 @@ type Props = {
   // dedicated /article-mismatches screen.
   onOpenArticleMismatches?: () => void;
   articleMismatchCount?: number;
+
+  // Phase F11.B — Import Date range filter (independent from booking
+  // date). Filters shipments on `last_import_at`.
+  importDateFilter?: DateFilterKey;
+  setImportDateFilter?: (v: DateFilterKey) => void;
+  importDateFrom?: Date | null;
+  importDateTo?: Date | null;
+  onOpenImportDatePicker?: () => void;
 };
 
 const DATE_CHIPS: { key: DateFilterKey; label: string }[] = [
@@ -185,6 +193,11 @@ export default function ShipmentsFilterSheet({
   complaintFilter, setComplaintFilter,
   onOpenArticleMismatches,
   articleMismatchCount = 0,
+  importDateFilter = "all",
+  setImportDateFilter,
+  importDateFrom = null,
+  importDateTo = null,
+  onOpenImportDatePicker,
 }: Props) {
   const togglePayment = (mode: string) => {
     const next = new Set(paymentFilter);
@@ -210,7 +223,9 @@ export default function ShipmentsFilterSheet({
     (validationFilter.size > 0 ? 1 : 0) +
     (importBatch ? 1 : 0) +
     (paymentBatch ? 1 : 0) +
-    (complaintFilter.size > 0 ? 1 : 0);
+    (complaintFilter.size > 0 ? 1 : 0) +
+    // Phase F11.B
+    (importDateFilter !== "all" ? 1 : 0);
 
   const customLabel = (() => {
     if (dateFilter !== "custom") return "Custom";
@@ -337,6 +352,67 @@ export default function ShipmentsFilterSheet({
           {/* ─────────────────────────────────────────────────────
               Phase F6.3 — Shipment Import filters
               ─────────────────────────────────────────────────── */}
+
+          {/* Phase F11.B — Import Date range (independent of the
+              booking-date filter above). Filters on last_import_at.
+              Rendered inside the Import section so operators see
+              date/status/type together when drilling into imports. */}
+          {setImportDateFilter ? (
+            <>
+              <Text style={styles.sectionTitle}>Import Date</Text>
+              <View style={styles.chipWrap}>
+                {DATE_CHIPS.map((c) => {
+                  const active = importDateFilter === c.key;
+                  return (
+                    <TouchableOpacity
+                      key={c.key}
+                      testID={`fs-impdate-${c.key}`}
+                      onPress={() => setImportDateFilter(c.key)}
+                      style={[
+                        styles.chip,
+                        active && { backgroundColor: "#2563EB", borderColor: "#2563EB" },
+                      ]}
+                    >
+                      <Text
+                        numberOfLines={1}
+                        allowFontScaling={false}
+                        style={[styles.chipTxt, { color: active ? "#fff" : "#2563EB" }]}
+                      >
+                        {c.label}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
+                <TouchableOpacity
+                  testID="fs-impdate-custom"
+                  onPress={() => {
+                    setImportDateFilter("custom");
+                    onOpenImportDatePicker && onOpenImportDatePicker();
+                  }}
+                  style={[
+                    styles.chip,
+                    { flexDirection: "row", gap: 6, alignItems: "center" },
+                    importDateFilter === "custom" && { backgroundColor: "#2563EB", borderColor: "#2563EB" },
+                  ]}
+                >
+                  <PhIcon
+                    name="calendar"
+                    size={14}
+                    color={importDateFilter === "custom" ? "#fff" : "#2563EB"}
+                  />
+                  <Text
+                    numberOfLines={1}
+                    allowFontScaling={false}
+                    style={[styles.chipTxt, { color: importDateFilter === "custom" ? "#fff" : "#2563EB" }]}
+                  >
+                    {importDateFilter === "custom" && (importDateFrom || importDateTo)
+                      ? `${importDateFrom ? importDateFrom.toLocaleDateString(undefined, { day: "numeric", month: "short" }) : "…"} → ${importDateTo ? importDateTo.toLocaleDateString(undefined, { day: "numeric", month: "short" }) : "…"}`
+                      : "Custom"}
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            </>
+          ) : null}
 
           <Text style={styles.sectionTitle}>Import Status</Text>
           <View style={styles.chipWrap}>

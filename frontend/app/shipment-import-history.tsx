@@ -41,6 +41,18 @@ export default function ShipmentImportHistoryScreen() {
   const [loading, setLoading]       = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [batches, setBatches]       = useState<Batch[]>([]);
+  // Phase F11.B — Batch History status filter. Local (client-side)
+  // filter over the loaded batches array. The chip semantics:
+  //   • all              — no filter
+  //   • clean            — updated>0 AND mismatch=0 AND unmatched=0 AND errors=0
+  //   • has_mismatch     — matched_mismatch > 0
+  //   • has_unmatched    — unmatched > 0
+  //   • has_errors       — errors > 0
+  //   • has_junk         — junk_skipped > 0
+  type StatusKey = "all" | "clean" | "has_mismatch" | "has_unmatched" | "has_errors" | "has_junk";
+  const [statusFilter, setStatusFilter] = useState<StatusKey>("all");
+  type TypeKey = "all" | "booking" | "delivery" | "cod_payment";
+  const [typeFilter, setTypeFilter] = useState<TypeKey>("all");
 
   const load = useCallback(async () => {
     try {
@@ -56,6 +68,41 @@ export default function ShipmentImportHistoryScreen() {
 
   useEffect(() => { load(); }, [load]);
   const onRefresh = () => { setRefreshing(true); load(); };
+
+  // Apply client-side status + type filters. Order matters — type
+  // filter runs first to keep the empty-state message sensible.
+  const filteredBatches = batches.filter((b) => {
+    if (typeFilter !== "all" && b.import_type !== typeFilter) return false;
+    if (statusFilter === "all") return true;
+    const mm = Number(b.matched_mismatch || 0);
+    const um = Number(b.unmatched || 0);
+    const er = Number((b as any).errors || 0);
+    const jk = Number((b as any).junk_skipped || 0);
+    const up = Number(b.matched_updated || 0);
+    switch (statusFilter) {
+      case "clean":         return up > 0 && mm === 0 && um === 0 && er === 0;
+      case "has_mismatch":  return mm > 0;
+      case "has_unmatched": return um > 0;
+      case "has_errors":    return er > 0;
+      case "has_junk":      return jk > 0;
+    }
+    return true;
+  });
+
+  const STATUS_CHIPS: { key: StatusKey; label: string; tint: string }[] = [
+    { key: "all",           label: "All",              tint: "#0F172A" },
+    { key: "clean",         label: "Clean",            tint: "#10B981" },
+    { key: "has_mismatch",  label: "Has Mismatch",     tint: "#B45309" },
+    { key: "has_unmatched", label: "Has Unmatched",    tint: "#DC2626" },
+    { key: "has_errors",    label: "Has Errors",       tint: "#DC2626" },
+    { key: "has_junk",      label: "Has Junk",         tint: "#94A3B8" },
+  ];
+  const TYPE_CHIPS: { key: TypeKey; label: string; tint: string }[] = [
+    { key: "all",         label: "All Types",   tint: "#0F172A" },
+    { key: "booking",     label: "Booking",     tint: "#2563EB" },
+    { key: "delivery",    label: "Delivery",    tint: "#10B981" },
+    { key: "cod_payment", label: "COD Payment", tint: "#F59E0B" },
+  ];
 
   return (
     <SafeAreaView style={styles.safe} edges={["top"]}>
@@ -79,6 +126,66 @@ export default function ShipmentImportHistoryScreen() {
           contentContainerStyle={{ padding: 12, paddingBottom: 40 }}
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
         >
+          {/* Phase F11.B — Batch History status + type filter chips.
+              Two horizontal rows sitting above the batch list. Purely
+              client-side filter over the already-loaded batches. */}
+          {batches.length > 0 && (
+            <>
+              <ScrollView
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                contentContainerStyle={styles.chipRow}
+              >
+                {TYPE_CHIPS.map((c) => {
+                  const active = typeFilter === c.key;
+                  return (
+                    <TouchableOpacity
+                      key={c.key}
+                      onPress={() => setTypeFilter(c.key)}
+                      style={[
+                        styles.filterChip,
+                        active && { backgroundColor: c.tint, borderColor: c.tint },
+                      ]}
+                    >
+                      <Text style={[
+                        styles.filterChipTxt,
+                        { color: active ? "#fff" : c.tint },
+                      ]}>
+                        {c.label}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </ScrollView>
+              <ScrollView
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                contentContainerStyle={styles.chipRow}
+              >
+                {STATUS_CHIPS.map((c) => {
+                  const active = statusFilter === c.key;
+                  return (
+                    <TouchableOpacity
+                      key={c.key}
+                      onPress={() => setStatusFilter(c.key)}
+                      style={[
+                        styles.filterChip,
+                        active && { backgroundColor: c.tint, borderColor: c.tint },
+                      ]}
+                    >
+                      <Text style={[
+                        styles.filterChipTxt,
+                        { color: active ? "#fff" : c.tint },
+                      ]}>
+                        {c.label}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </ScrollView>
+            </>
+          )}
+
           {batches.length === 0 ? (
             <View style={styles.empty}>
               <PhIcon name="cloud-upload-outline" size={44} color="#CBD5E1" />
@@ -94,7 +201,13 @@ export default function ShipmentImportHistoryScreen() {
                 <Text style={styles.emptyBtnTxt}>Start Import</Text>
               </TouchableOpacity>
             </View>
-          ) : batches.map((b) => {
+          ) : filteredBatches.length === 0 ? (
+            <View style={styles.empty}>
+              <PhIcon name="funnel-outline" size={44} color="#CBD5E1" />
+              <Text style={styles.emptyTitle}>No batches match your filters</Text>
+              <Text style={styles.emptySub}>Tap the &quot;All&quot; chips above to reset.</Text>
+            </View>
+          ) : filteredBatches.map((b) => {
             const meta = TYPE_META[b.import_type] || {
               label: b.import_type, tint: "#64748B", icon: "cube-outline",
             };
@@ -201,5 +314,24 @@ const styles = StyleSheet.create({
   emptyBtnTxt: { color: "#fff", fontWeight: "700", fontSize: 13 },
   trashBtn: {
     padding: 4, borderRadius: 6, backgroundColor: "#FEE2E2",
+  },
+  // Phase F11.B — Filter chip row (horizontal scroll).
+  chipRow: {
+    flexDirection: "row",
+    gap: 8,
+    paddingVertical: 4,
+    paddingHorizontal: 2,
+  },
+  filterChip: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: "#CBD5E1",
+    backgroundColor: "#fff",
+  },
+  filterChipTxt: {
+    fontSize: 12,
+    fontWeight: "700",
   },
 });

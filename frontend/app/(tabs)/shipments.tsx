@@ -123,6 +123,15 @@ export default function Shipments() {
   const [customTo, setCustomTo] = useState<Date | null>(null);
   const [showDateModal, setShowDateModal] = useState(false);
   const [pickerField, setPickerField] = useState<"from" | "to" | null>(null);
+  // Phase F11.B — Shipment Filter Phase B — Import Date range filter.
+  // Independent from the booking-date `dateFilter` above; filters on
+  // `last_import_at` so operators can drill into "who did I import
+  // this week" without disturbing booking-date filters.
+  const [importDateFilter, setImportDateFilter] = useState<DateFilter>("all");
+  const [importDateFrom, setImportDateFrom] = useState<Date | null>(null);
+  const [importDateTo, setImportDateTo] = useState<Date | null>(null);
+  const [showImportDateModal, setShowImportDateModal] = useState(false);
+  const [importDatePickerField, setImportDatePickerField] = useState<"from" | "to" | null>(null);
   const [selectMode, setSelectMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   // ── Label picker state (additive — does not touch selection/bulk flow)
@@ -258,13 +267,17 @@ export default function Shipments() {
       codPaymentFilter.size > 0 ||
       validationFilter.size > 0 ||
       !!importBatchPick || !!paymentBatchPick ||
-      complaintFilter.size > 0,
+      complaintFilter.size > 0 ||
+      // Phase F11.B — Import Date range
+      importDateFilter !== "all" ||
+      !!importDateFrom || !!importDateTo,
     [
       dateFilter, customFrom, customTo, paymentFilter, courierFilter,
       labelFilter, status, printFilter,
       importStatus, importTypes, bookingFilter, deliveryFilter,
       codPaymentFilter, validationFilter,
       importBatchPick, paymentBatchPick, complaintFilter,
+      importDateFilter, importDateFrom, importDateTo,
     ],
   );
 
@@ -286,6 +299,10 @@ export default function Shipments() {
     setImportBatchPick(null);
     setPaymentBatchPick(null);
     setComplaintFilter(new Set());
+    // Phase F11.B — reset the import-date range too.
+    setImportDateFilter("all");
+    setImportDateFrom(null);
+    setImportDateTo(null);
     // Kick a reload since Batch/status filters are server-side.
     load().catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -712,6 +729,38 @@ export default function Shipments() {
         return complaintFilter.has(st as any);
       });
     }
+    // Phase F11.B — Import Date range filter (see corresponding block
+    // in the primary `dateFilteredItems` memo above). Filters on
+    // `last_import_at` — independent from the booking-date filter.
+    if (importDateFilter !== "all") {
+      const parseImp = (s: any): number => Date.parse(s.last_import_at || "");
+      if (importDateFilter === "custom") {
+        if (importDateFrom || importDateTo) {
+          const from = importDateFrom
+            ? new Date(importDateFrom.getFullYear(), importDateFrom.getMonth(), importDateFrom.getDate()).getTime()
+            : 0;
+          const to = importDateTo
+            ? new Date(importDateTo.getFullYear(), importDateTo.getMonth(), importDateTo.getDate(), 23, 59, 59, 999).getTime()
+            : Number.MAX_SAFE_INTEGER;
+          byImp = byImp.filter((s) => {
+            const t = parseImp(s);
+            return !isNaN(t) && t >= from && t <= to;
+          });
+        }
+      } else {
+        const now = Date.now();
+        const cutoff =
+          importDateFilter === "today"
+            ? now - 24 * 60 * 60 * 1000
+            : importDateFilter === "week"
+            ? now - 7 * 24 * 60 * 60 * 1000
+            : now - 30 * 24 * 60 * 60 * 1000;
+        byImp = byImp.filter((s) => {
+          const t = parseImp(s);
+          return !isNaN(t) && t >= cutoff;
+        });
+      }
+    }
     // ─────────────────────────────────────────────────────────────
 
     if (dateFilter === "all") return byImp;
@@ -742,6 +791,8 @@ export default function Shipments() {
     importStatus, importTypes, bookingFilter, deliveryFilter,
     codPaymentFilter, validationFilter,
     complaintFilter,
+    // Phase F11.B
+    importDateFilter, importDateFrom, importDateTo,
   ]);
 
   // ── Phase F7.7 — Priority-first sort ─────────────────────────
@@ -1419,6 +1470,38 @@ export default function Shipments() {
         return complaintFilter.has(st as any);
       });
     }
+    // Phase F11.B — Import Date range filter (see corresponding block
+    // in the primary `dateFilteredItems` memo above). Filters on
+    // `last_import_at` — independent from the booking-date filter.
+    if (importDateFilter !== "all") {
+      const parseImp = (s: any): number => Date.parse(s.last_import_at || "");
+      if (importDateFilter === "custom") {
+        if (importDateFrom || importDateTo) {
+          const from = importDateFrom
+            ? new Date(importDateFrom.getFullYear(), importDateFrom.getMonth(), importDateFrom.getDate()).getTime()
+            : 0;
+          const to = importDateTo
+            ? new Date(importDateTo.getFullYear(), importDateTo.getMonth(), importDateTo.getDate(), 23, 59, 59, 999).getTime()
+            : Number.MAX_SAFE_INTEGER;
+          byImp = byImp.filter((s) => {
+            const t = parseImp(s);
+            return !isNaN(t) && t >= from && t <= to;
+          });
+        }
+      } else {
+        const now = Date.now();
+        const cutoff =
+          importDateFilter === "today"
+            ? now - 24 * 60 * 60 * 1000
+            : importDateFilter === "week"
+            ? now - 7 * 24 * 60 * 60 * 1000
+            : now - 30 * 24 * 60 * 60 * 1000;
+        byImp = byImp.filter((s) => {
+          const t = parseImp(s);
+          return !isNaN(t) && t >= cutoff;
+        });
+      }
+    }
     // ─────────────────────────────────────────────────────────────
 
     if (dateFilter === "all") return byImp;
@@ -1449,6 +1532,8 @@ export default function Shipments() {
     importStatus, importTypes, bookingFilter, deliveryFilter,
     codPaymentFilter, validationFilter,
     complaintFilter,
+    // Phase F11.B
+    importDateFilter, importDateFrom, importDateTo,
   ]);
 
   const statusCounts = useMemo(() => {
@@ -3251,6 +3336,21 @@ export default function Shipments() {
         setPickerField={setPickerField}
       />
 
+      {/* Phase F11.B — Import Date range picker. Reuses the exact same
+          DateRangeModal component to keep UX identical to the booking
+          date picker; state is independent so both filters live side
+          by side without stepping on each other. */}
+      <DateRangeModal
+        visible={showImportDateModal}
+        onClose={() => setShowImportDateModal(false)}
+        from={importDateFrom}
+        to={importDateTo}
+        setFrom={setImportDateFrom}
+        setTo={setImportDateTo}
+        pickerField={importDatePickerField}
+        setPickerField={setImportDatePickerField}
+      />
+
       {/* ============================================================
           Status Picker — bottom sheet with the 7 status options.
           Triggered by tapping the status chip on any shipment card.
@@ -3592,6 +3692,13 @@ export default function Shipments() {
           router.push("/article-mismatches" as any);
         }}
         articleMismatchCount={articleMismatchCount}
+        // Phase F11.B — Import Date range filter (independent of the
+        // booking-date filter above).
+        importDateFilter={importDateFilter}
+        setImportDateFilter={(v) => setImportDateFilter(v)}
+        importDateFrom={importDateFrom}
+        importDateTo={importDateTo}
+        onOpenImportDatePicker={() => setShowImportDateModal(true)}
       />
 
       {/* Phase F6.3 — Batch pickers (import + payment). Server-side
