@@ -27,6 +27,10 @@ const STATUS_META: Record<
   matched_mismatch:  { label: "Mismatch",   tint: "#B45309", icon: "alert-circle" },
   matched_no_change: { label: "No Change",  tint: "#64748B", icon: "remove-circle" },
   unmatched:         { label: "Unmatched",  tint: "#DC2626", icon: "close-circle" },
+  // Phase F11.A — Silent skip for spreadsheet junk (Total/RS/etc).
+  // Kept out of the tally chips by default but shown here if the
+  // batch actually had any so the operator can review.
+  junk_skipped:      { label: "Junk Row",   tint: "#94A3B8", icon: "trash-outline" },
   error:             { label: "Error",      tint: "#DC2626", icon: "warning" },
 };
 
@@ -37,7 +41,7 @@ const TYPE_LABEL: Record<string, string> = {
 };
 
 const FILTERS: (Row["status"] | "all")[] = [
-  "all", "matched_updated", "matched_mismatch", "unmatched", "matched_no_change", "error",
+  "all", "matched_updated", "matched_mismatch", "unmatched", "matched_no_change", "junk_skipped", "error",
 ];
 
 export default function ShipmentImportBatchScreen() {
@@ -218,6 +222,14 @@ export default function ShipmentImportBatchScreen() {
             <StatBox label="Unmatched" n={batch.unmatched}          tint="#DC2626" />
             <StatBox label="No Change" n={batch.matched_no_change} tint="#64748B" />
             <StatBox label="Errors"   n={batch.errors}             tint="#DC2626" />
+            {/* Phase F11.A — silent skip count for spreadsheet junk. */}
+            {((batch as any).junk_skipped || 0) > 0 && (
+              <StatBox
+                label="Junk Skipped"
+                n={(batch as any).junk_skipped || 0}
+                tint="#94A3B8"
+              />
+            )}
           </View>
           {/* Phase F7.6 — Booking Date stats (delivery-import-only).
               Shown only when at least one row was touched by the

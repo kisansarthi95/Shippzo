@@ -435,6 +435,73 @@ def _amount_equal(a: Any, b: Any, tol: float = 0.5) -> bool:
     return abs(af - bf) <= tol
 
 
+# ─── Phase F11.A — Junk tracking-value detector ─────────────────────
+#
+# Courier remit spreadsheets very frequently carry summary rows like
+# "Total", "Sub Total", "Grand Total", "RS 12345", "N/A" mixed into
+# the tracking-id column. Without a filter, every one of those rows
+# lands in the batch tally as an "unmatched" article, polluting the
+# Article Number Mismatch report the operator uses to chase courier
+# discrepancies.
+#
+# `_is_junk_tracking_value()` returns True for cells that look like
+# spreadsheet noise and should be skipped SILENTLY (they never touch
+# the unmatched/error counters). Deliberately conservative — any real
+# tracking-id-looking value (alphanumeric ≥5 chars) passes through.
+_JUNK_TOKENS = {
+    "total", "totals",
+    "sub total", "subtotal", "sub-total",
+    "grand total", "grand-total",
+    "amount total", "total amount",
+    "rs", "rs.", "rupees", "inr", "₹",
+    "sum", "sum total",
+    "n/a", "na", "nil", "none", "null",
+    "-", "--", "—", "–",
+    "0", "0.0", "0.00",
+    # Common column-header echoes that leak into data rows when a
+    # sheet has multiple header bands.
+    "tracking id", "tracking no", "tracking number",
+    "awb", "awb no", "awb number",
+    "article no", "article number", "consignment", "consignment no",
+    "order id", "order no",
+}
+_JUNK_TOKEN_PATTERNS = (
+    re.compile(r"^rs\.?\s*[0-9,\.]+$", re.I),           # "RS 1200" / "Rs.1,200"
+    re.compile(r"^total\s*[:\-]?\s*[0-9,\.]*$", re.I),  # "Total 5", "Total:"
+    re.compile(r"^grand\s*total\b.*$", re.I),           # "Grand Total 8500"
+    re.compile(r"^sub\s*total\b.*$", re.I),
+    re.compile(r"^amount\s*[:\-]?\s*[0-9,\.]+$", re.I), # "Amount: 500"
+    re.compile(r"^page\s+\d+", re.I),                   # "Page 1 of 3"
+)
+
+
+def _is_junk_tracking_value(raw: Any) -> bool:
+    """Detect spreadsheet-junk cells masquerading as a tracking id.
+
+    Rules:
+      • Blank / whitespace-only  → junk
+      • Value in _JUNK_TOKENS    → junk
+      • Matches _JUNK_TOKEN_PATTERNS → junk
+      • Pure whitespace or symbols only → junk
+      • Anything else            → real tracking value (let it flow)
+    """
+    if raw is None:
+        return True
+    s = str(raw).strip()
+    if not s:
+        return True
+    low = s.lower()
+    if low in _JUNK_TOKENS:
+        return True
+    for pat in _JUNK_TOKEN_PATTERNS:
+        if pat.match(s):
+            return True
+    # Non-alphanumeric only? (e.g. "***", "---", "===")
+    if not re.search(r"[A-Za-z0-9]", s):
+        return True
+    return False
+
+
 # ─── Phase F6.4 — Last Event Category classifier ────────────────────
 # India Post / courier remit sheets carry a free-text "Last Event"
 # column like "Item Kept on Hold at Wanri B.O on 09/07/2026 13:04:10".
@@ -1050,6 +1117,10 @@ def init() -> None:
             "matched_no_change": 0,
             "unmatched":         0,
             "errors":            0,
+            # Phase F11.A — Rows whose tracking-id cell was noise
+            # (Total / RS / N-A / blank / etc). We skip them silently
+            # so they never inflate the "unmatched" tally.
+            "junk_skipped":      0,
             # Phase F7.6 — Delivery-import-only stats for the newly
             # mappable `booking_date` field. These counters are 0 for
             # booking / cod_payment imports and never surfaced in
@@ -1071,7 +1142,10 @@ def init() -> None:
                 return ""
             return str(v).strip()
 
-        tracking_values = list({_tracking_of(r) for r in rows if _tracking_of(r)})
+        tracking_values = list({
+            _tracking_of(r) for r in rows
+            if _tracking_of(r) and not _is_junk_tracking_value(_tracking_of(r))
+        })
         # Case-insensitive lookup — build a normalised map.
         existing_lookup: Dict[str, Dict[str, Any]] = {}
         if tracking_values:
@@ -1112,6 +1186,13 @@ def init() -> None:
             try:
                 if not tracking:
                     row_status = "unmatched"
+                elif _is_junk_tracking_value(tracking):
+                    # Phase F11.A — spreadsheet noise. Skip silently so
+                    # it never lands in the unmatched tally / article
+                    # mismatch report. Marked with its own status so
+                    # the batch drill-down UI can still surface these
+                    # rows if the operator wants to double-check.
+                    row_status = "junk_skipped"
                 else:
                     existing = existing_lookup.get(tracking) or existing_lookup.get(tracking.lower())
                     if not existing:
@@ -1377,6 +1458,8 @@ def init() -> None:
                 batch_doc["matched_no_change"] += 1
             elif row_status == "unmatched":
                 batch_doc["unmatched"] += 1
+            elif row_status == "junk_skipped":
+                batch_doc["junk_skipped"] += 1
             elif row_status == "error":
                 batch_doc["errors"] += 1
 
@@ -1469,6 +1552,11 @@ def init() -> None:
             "matched_no_change": batch_doc["matched_no_change"],
             "unmatched":         batch_doc["unmatched"],
             "errors":            batch_doc["errors"],
+            # Phase F11.A — rows dropped as spreadsheet junk (Total /
+            # RS / N-A / etc). Counted separately so the operator can
+            # tell the difference between "10 rows didn't match my DB"
+            # (real problem) and "10 rows were summary noise".
+            "junk_skipped":      batch_doc["junk_skipped"],
             "db_modified":       wrote,
             # Phase F7.6 — Delivery-import booking_date fill counters.
             # Present on ALL commit responses (zero for non-delivery
@@ -1568,7 +1656,89 @@ def init() -> None:
         }
         return Response(content=buf.getvalue(), media_type="text/csv", headers=headers)
 
-    _logger.info("shipment_import router mounted (9 endpoints)")
+    # ── Article Number Mismatch (Phase F11.A) ────────────────────
+    #
+    # Aggregated view of tracking numbers that appeared in bulk
+    # uploads (booking / delivery / cod_payment) but did NOT match
+    # any shipment in the merchant's DB. Junk noise (Total / RS /
+    # etc) is filtered out at import time, so what surfaces here is
+    # the real backlog — courier remit rows for shipments the
+    # merchant hasn't booked yet in the app.
+    #
+    # Response shape:
+    #   {
+    #     "items": [
+    #       {
+    #         "tracking_id":    "AB123456789IN",
+    #         "occurrence":     3,
+    #         "last_import_type": "cod_payment",
+    #         "last_seen":      "...ISO...",
+    #         "batches":        [{id, filename, import_type, created_at}]
+    #       }
+    #     ],
+    #     "total": 12
+    #   }
+    @shipment_import_router.get("/shipments/import/article-mismatches")
+    async def article_mismatches(
+        current_user: Dict[str, Any] = Depends(_get_current_user),
+        import_type: Optional[str] = Query(None, description="booking|delivery|cod_payment"),
+        limit: int = Query(500, ge=1, le=5000),
+    ):
+        if import_type is not None and import_type not in IMPORT_TYPES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"import_type must be one of {sorted(IMPORT_TYPES)}",
+            )
+        # Aggregate across the last N batches (cap for perf) so old
+        # historical batches don't blow this up on large tenants.
+        query: Dict[str, Any] = {"user_id": current_user["id"]}
+        if import_type:
+            query["import_type"] = import_type
+        cursor = db.shipment_import_batches.find(
+            query, {"_id": 0}
+        ).sort("created_at", -1).limit(200)
+
+        agg: Dict[str, Dict[str, Any]] = {}
+        async for batch in cursor:
+            b_meta = {
+                "id":          batch.get("id"),
+                "filename":    batch.get("filename") or "",
+                "import_type": batch.get("import_type"),
+                "created_at":  batch.get("created_at"),
+            }
+            for row in (batch.get("rows") or []):
+                if row.get("status") != "unmatched":
+                    continue
+                tid_raw = row.get("tracking_id") or ""
+                tid = str(tid_raw).strip()
+                if not tid or _is_junk_tracking_value(tid):
+                    continue
+                key = tid.lower()
+                bucket = agg.get(key)
+                if not bucket:
+                    bucket = {
+                        "tracking_id":      tid,
+                        "occurrence":       0,
+                        "last_import_type": b_meta["import_type"],
+                        "last_seen":        b_meta["created_at"],
+                        "batches":          [],
+                    }
+                    agg[key] = bucket
+                bucket["occurrence"] += 1
+                # First iteration = newest batch (sorted DESC), so
+                # last_import_type / last_seen stay pinned to it.
+                # Append batch context (dedup by id).
+                if not any(x["id"] == b_meta["id"] for x in bucket["batches"]):
+                    bucket["batches"].append(b_meta)
+
+        items = sorted(
+            agg.values(),
+            key=lambda x: (x.get("last_seen") or "", x.get("occurrence") or 0),
+            reverse=True,
+        )[:limit]
+        return {"items": items, "total": len(agg)}
+
+    _logger.info("shipment_import router mounted (10 endpoints)")
 
 
 def _csv_val(v: Any) -> str:

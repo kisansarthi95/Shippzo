@@ -2373,6 +2373,7 @@ export const Api = {
         matched_no_change: number;
         unmatched: number;
         errors: number;
+        junk_skipped?: number;
         mapping_used: Record<string, string>;
         rows: {
           row_index: number;
@@ -2382,6 +2383,7 @@ export const Api = {
             | "matched_mismatch"
             | "matched_no_change"
             | "unmatched"
+            | "junk_skipped"
             | "error";
           shipment_id: string;
           applied: Record<string, any>;
@@ -2402,6 +2404,32 @@ export const Api = {
     api
       .delete<{ ok: boolean; deleted: string }>(
         `/shipments/import/batches/${batch_id}`,
+      )
+      .then((r) => r.data),
+
+  /** Phase F11.A — Article Number Mismatch aggregation.
+   *  Returns tracking ids that appeared in past bulk imports
+   *  (booking/delivery/cod_payment) but never matched a shipment
+   *  in the merchant's DB. Junk cells (Total/RS/N-A/etc) are
+   *  filtered at import time so this list is signal, not noise. */
+  articleMismatches: (import_type?: "booking" | "delivery" | "cod_payment") =>
+    api
+      .get<{
+        items: Array<{
+          tracking_id: string;
+          occurrence: number;
+          last_import_type: "booking" | "delivery" | "cod_payment";
+          last_seen: string;
+          batches: Array<{
+            id: string; filename: string;
+            import_type: "booking" | "delivery" | "cod_payment";
+            created_at: string;
+          }>;
+        }>;
+        total: number;
+      }>(
+        `/shipments/import/article-mismatches`,
+        { params: import_type ? { import_type } : {} },
       )
       .then((r) => r.data),
 

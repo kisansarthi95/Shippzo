@@ -214,6 +214,21 @@ export default function Shipments() {
   // Excel path whenever `complaintFilter.size > 0`.
   const [complaintFilter, setComplaintFilter] = useState<Set<"Open" | "In Progress" | "Resolved" | "Closed">>(new Set());
 
+  // Phase F11.A — badge count on the Article Number Mismatch chip in
+  // the Filter Sheet. We fetch a cheap /shipments/import/article-
+  // mismatches call on mount and on filter-sheet open so the chip
+  // stays fresh without polling.
+  const [articleMismatchCount, setArticleMismatchCount] = useState<number>(0);
+  const refreshArticleMismatchCount = useCallback(async () => {
+    try {
+      const r = await Api.articleMismatches();
+      setArticleMismatchCount(r?.total || 0);
+    } catch {
+      // Silent — chip just won't show a count.
+    }
+  }, []);
+  useEffect(() => { refreshArticleMismatchCount(); }, [refreshArticleMismatchCount]);
+
   // ── Phase F7.2 (Jun-2026) — Filter icon acts as "Clear all" ──
   //
   // Consolidates every filter-active check + reset action into a
@@ -2289,7 +2304,10 @@ export default function Shipments() {
             all → tap Apply" 3-tap grind for the common reset case. */}
         <TouchableOpacity
           testID="filter-icon"
-          onPress={anyFilterActive ? handleClearAllFilters : () => setFilterSheetOpen(true)}
+          onPress={anyFilterActive ? handleClearAllFilters : () => {
+            setFilterSheetOpen(true);
+            refreshArticleMismatchCount();
+          }}
           accessibilityLabel={anyFilterActive ? "Clear all filters" : "Open filters"}
           style={{
             width: 44, height: 44, borderRadius: 10, borderWidth: 1,
@@ -3569,6 +3587,11 @@ export default function Shipments() {
         onOpenPaymentBatchPicker={() => setPaymentBatchPickerOpen(true)}
         complaintFilter={complaintFilter}
         setComplaintFilter={setComplaintFilter}
+        onOpenArticleMismatches={() => {
+          setFilterSheetOpen(false);
+          router.push("/article-mismatches" as any);
+        }}
+        articleMismatchCount={articleMismatchCount}
       />
 
       {/* Phase F6.3 — Batch pickers (import + payment). Server-side

@@ -95,6 +95,14 @@ type Props = {
   //   "not_created" → shipments without a complaint record
   complaintFilter: Set<ComplaintKey>;
   setComplaintFilter: (v: Set<ComplaintKey>) => void;
+
+  // Phase F11.A — "Article Number Mismatch" is a NAVIGATION action,
+  // not a shipments-list filter (the tracking ids in question don't
+  // exist as shipments yet by definition). The chip lives under
+  // Validation Alerts and, on tap, closes the sheet and opens the
+  // dedicated /article-mismatches screen.
+  onOpenArticleMismatches?: () => void;
+  articleMismatchCount?: number;
 };
 
 const DATE_CHIPS: { key: DateFilterKey; label: string }[] = [
@@ -175,6 +183,8 @@ export default function ShipmentsFilterSheet({
   importBatch, onOpenImportBatchPicker,
   paymentBatch, onOpenPaymentBatchPicker,
   complaintFilter, setComplaintFilter,
+  onOpenArticleMismatches,
+  articleMismatchCount = 0,
 }: Props) {
   const togglePayment = (mode: string) => {
     const next = new Set(paymentFilter);
@@ -509,6 +519,31 @@ export default function ShipmentsFilterSheet({
                 </TouchableOpacity>
               );
             })}
+            {/* Phase F11.A — Article Number Mismatch (navigates to
+                dedicated /article-mismatches screen). Rendered as a
+                pseudo-chip in the same row so operators looking for
+                mismatch tools find everything in one place. */}
+            {onOpenArticleMismatches ? (
+              <TouchableOpacity
+                testID="fs-val-article-mismatch"
+                onPress={onOpenArticleMismatches}
+                style={[
+                  styles.chip,
+                  { flexDirection: "row", gap: 4, alignItems: "center",
+                    backgroundColor: "#FEF3C7", borderColor: "#F59E0B" },
+                ]}
+              >
+                <PhIcon name="alert-circle" size={11} color="#B45309" />
+                <Text
+                  numberOfLines={1} allowFontScaling={false}
+                  style={[styles.chipTxt, { color: "#92400E" }]}
+                >
+                  Article Number Mismatch
+                  {articleMismatchCount > 0 ? ` (${articleMismatchCount})` : ""}
+                </Text>
+                <PhIcon name="chevron-forward" size={11} color="#B45309" />
+              </TouchableOpacity>
+            ) : null}
           </View>
 
           {/* Import Batch drill-down */}
