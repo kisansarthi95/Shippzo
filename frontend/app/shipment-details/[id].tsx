@@ -166,6 +166,11 @@ export default function ShipmentDetailsScreen() {
   const router  = useRouter();
   const [ship, setShip] = useState<Shipment | null>(null);
   const [loading, setLoading] = useState(true);
+  // Phase F10.3 — "Raise Inquiry" prefill state. Bumped from the
+  // payment-discrepancy alert row; the IndiaPostComplaintSection
+  // useEffect reacts to a non-empty value, expands itself and seeds
+  // the description with the auto-generated mismatch message.
+  const [inquiryPrefill, setInquiryPrefill] = useState<string>("");
   const [savingTracking, setSavingTracking] = useState(false);
 
   const loadShipment = useCallback(async () => {
@@ -640,21 +645,50 @@ export default function ShipmentDetailsScreen() {
                     Validation Alerts ({((ship as any).import_validation_alerts || []).length})
                   </Text>
                 </View>
-                {(((ship as any).import_validation_alerts || []) as any[]).map((a, i) => (
+                {(((ship as any).import_validation_alerts || []) as any[]).map((a, i) => {
+                  const isPaymentField = a.field === "cod_amount" || a.field === "amount";
+                  return (
                   <View key={i} style={styles.alertRow}>
                     <Text style={styles.alertField}>
                       {a.field === "weight"       && "Weight Mismatch"}
                       {a.field === "payment_mode" && "Payment Type Mismatch"}
                       {a.field === "amount"       && "COD Amount Mismatch"}
-                      {!["weight", "payment_mode", "amount"].includes(a.field) && `${a.field} mismatch`}
+                      {a.field === "cod_amount"   && "Payment Discrepancy"}
+                      {!["weight", "payment_mode", "amount", "cod_amount"].includes(a.field) && `${a.field} mismatch`}
                     </Text>
                     <Text style={styles.alertVal}>
-                      Booked: <Text style={styles.alertMono}>{String(a.existing ?? "")}</Text>
+                      {a.field === "cod_amount" ? "Expected" : "Booked"}:{" "}
+                      <Text style={styles.alertMono}>{String(a.existing ?? "")}</Text>
                       {"  ·  "}
-                      Imported: <Text style={styles.alertMono}>{String(a.imported ?? "")}</Text>
+                      {a.field === "cod_amount" ? "Received" : "Imported"}:{" "}
+                      <Text style={styles.alertMono}>{String(a.imported ?? "")}</Text>
                     </Text>
+                    {isPaymentField && (
+                      // Phase F10.3 — Raise Inquiry: prefills the
+                      // India Post Complaint description with the
+                      // discrepancy message and scrolls into view.
+                      <TouchableOpacity
+                        style={styles.raiseInquiryBtn}
+                        testID={`raise-inquiry-btn-${i}`}
+                        onPress={() => {
+                          const msg =
+                            `Payment discrepancy found. ` +
+                            `Expected: ₹${a.existing ?? "?"}, ` +
+                            `Received: ₹${a.imported ?? "?"}. ` +
+                            `Please clarify the difference.`;
+                          // Bump with a nonce so a second click on the
+                          // same alert re-triggers the useEffect even
+                          // if the string is identical.
+                          setInquiryPrefill(`${msg}`);
+                        }}
+                      >
+                        <PhIcon name="megaphone-outline" size={13} color="#B91C1C" />
+                        <Text style={styles.raiseInquiryTxt}>Raise Inquiry</Text>
+                      </TouchableOpacity>
+                    )}
                   </View>
-                ))}
+                  );
+                })}
               </View>
             )}
 
@@ -770,6 +804,7 @@ export default function ShipmentDetailsScreen() {
         <IndiaPostComplaintSection
           ship={ship}
           onSaved={loadShipment}
+          prefillDescription={inquiryPrefill}
         />
 
         {/* Confirmation / Feedback / Return — if any */}
@@ -818,9 +853,16 @@ export default function ShipmentDetailsScreen() {
 function IndiaPostComplaintSection({
   ship,
   onSaved,
+  prefillDescription,
 }: {
   ship: Shipment;
   onSaved: () => Promise<void> | void;
+  // Phase F10.3 — Optional description prefill used by the
+  // "Raise Inquiry" button on payment-discrepancy alerts. When this
+  // prop changes to a non-empty value we expand the form and seed
+  // the description with the auto-generated mismatch message so the
+  // operator can review + submit in one tap.
+  prefillDescription?: string;
 }) {
   const existing = ship as any;
   const [expanded, setExpanded] = useState<boolean>(!!existing.complaint_created);
@@ -839,6 +881,19 @@ function IndiaPostComplaintSection({
   const [description, setDescription] = useState<string>(
     existing.complaint_description || "",
   );
+  // Phase F10.3 — React to a `prefillDescription` change from the
+  // parent's "Raise Inquiry" button. Only replaces the description
+  // when it's empty (or when the user hasn't touched the form yet)
+  // so we never silently overwrite an operator's in-flight draft.
+  React.useEffect(() => {
+    const p = (prefillDescription || "").trim();
+    if (!p) return;
+    setExpanded(true);
+    if (!description.trim()) {
+      setDescription(p);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [prefillDescription]);
   const [complaintStatus, setComplaintStatus] = useState<string>(
     existing.complaint_status || "Open",
   );
@@ -1555,6 +1610,26 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: "700",
     color: "#B45309",
+  },
+  // Phase F10.3 — "Raise Inquiry" button rendered inline on
+  // payment-discrepancy alert rows.
+  raiseInquiryBtn: {
+    marginTop: 6,
+    alignSelf: "flex-start",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 6,
+    backgroundColor: "#FEE2E2",
+    borderWidth: 1,
+    borderColor: "#FCA5A5",
+  },
+  raiseInquiryTxt: {
+    fontSize: 11.5,
+    fontWeight: "800",
+    color: "#B91C1C",
   },
 
   // Phase F6.4 — Last Event (verbatim India Post remit text)
