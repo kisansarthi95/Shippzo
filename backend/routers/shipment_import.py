@@ -179,6 +179,19 @@ class MappingPayload(BaseModel):
     mapping: Dict[str, str]                 # { csv_col: schema_field }
 
 
+# Phase F10.3+ — Manual COD Correction request body.
+#
+# Defined at MODULE scope so FastAPI's dependency-analysis correctly
+# treats the endpoint parameter as a JSON body (a nested-scope Pydantic
+# class was being resolved after route-registration in earlier layouts
+# and getting mistaken for query parameters, producing
+# "query.payload: Field required" 422s).
+class _ManualCodCorrection(BaseModel):
+    cod_collected_amount: float
+    cod_payer_name: Optional[str] = None
+    cod_payment_date: Optional[str] = None  # ISO — optional override
+
+
 # ════════════════════════════════════════════════════════════════════
 #                              Parsers
 # ════════════════════════════════════════════════════════════════════
@@ -999,11 +1012,10 @@ def init() -> None:
     #     import_validation_alerts if the new received amount matches
     #     the booked cod_amount (within tolerance). Non-payment
     #     alerts (weight, payment_mode) are preserved.
-    class _ManualCodCorrection(BaseModel):
-        cod_collected_amount: float
-        cod_payer_name: Optional[str] = None
-        cod_payment_date: Optional[str] = None  # ISO — optional override
-
+    #
+    # The request-body schema `_ManualCodCorrection` is defined at
+    # MODULE scope (see near MappingPayload) — nesting it inside
+    # init() caused FastAPI to mis-route it as a query parameter.
     @shipment_import_router.post("/shipments/{shipment_id}/manual-cod-correction")
     async def manual_cod_correction(
         shipment_id: str,
