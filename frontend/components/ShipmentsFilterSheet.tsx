@@ -34,7 +34,7 @@ type DateFilterKey = "all" | "today" | "week" | "month" | "custom";
 export type ImportStatusKey = "all" | "imported" | "not_imported";
 export type ImportTypeKey = "booking" | "delivery" | "cod_payment";
 export type ValidationKey = "weight" | "payment_mode" | "amount";
-export type CodPaymentKey = "received" | "pending" | "amount_mismatch" | "returned";
+export type CodPaymentKey = "received" | "pending" | "returned";
 export type DeliveryKey = "imported" | "pending" | "confirmed";
 export type BookingKey = "imported" | "pending";
 // Phase F7.1 (Jun-2026) — replaced the old "Complaint Created / No Complaint"
@@ -132,9 +132,16 @@ const COD_CHIPS: { key: CodPaymentKey; label: string; tone?: "green" | "yellow" 
   // Phase F10 — color-coded chips match the amount pill on the
   // shipment card so operators see the same green/yellow/red across
   // the list and the filter sheet.
+  //
+  // Phase F10.M cleanup — the "COD Amount Mismatch" chip that used
+  // to live here was duplicating the one under Validation Alerts
+  // (which is the canonical home for validation-driven filters).
+  // We keep only the validation-alerts copy; the filter logic that
+  // powers it is broadened below to match both `amount` and
+  // `cod_amount` alert fields, so the API/action behaviour stays
+  // fully intact.
   { key: "received",         label: "COD Payment Received", tone: "green"  },
   { key: "pending",          label: "COD Payment Pending",  tone: "yellow" },
-  { key: "amount_mismatch",  label: "COD Amount Mismatch"                  },
   { key: "returned",         label: "COD Payment Returned", tone: "red"    },
 ];
 const VALIDATION_CHIPS: { key: ValidationKey; label: string }[] = [

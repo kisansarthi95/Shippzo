@@ -201,7 +201,7 @@ export default function Shipments() {
   const [importTypes, setImportTypes]           = useState<Set<"booking" | "delivery" | "cod_payment">>(new Set());
   const [bookingFilter, setBookingFilter]       = useState<Set<"imported" | "pending">>(new Set());
   const [deliveryFilter, setDeliveryFilter]     = useState<Set<"imported" | "pending" | "confirmed">>(new Set());
-  const [codPaymentFilter, setCodPaymentFilter] = useState<Set<"received" | "pending" | "amount_mismatch" | "returned">>(new Set());
+  const [codPaymentFilter, setCodPaymentFilter] = useState<Set<"received" | "pending" | "returned">>(new Set());
   const [validationFilter, setValidationFilter] = useState<Set<"weight" | "payment_mode" | "amount">>(new Set());
   const [importBatchPick, setImportBatchPick]   = useState<{ id: string; label: string; sub?: string } | null>(null);
   const [paymentBatchPick, setPaymentBatchPick] = useState<{ id: string; label: string; sub?: string } | null>(null);
@@ -651,24 +651,34 @@ export default function Shipments() {
         const received = anyS.cod_payment_status === "received";
         const isCOD    = String(anyS.payment_mode || "").toUpperCase() === "COD";
         const pending  = isCOD && !received;
-        const amtMismatch = ((anyS.import_validation_alerts || []) as any[])
-          .some((a) => a.field === "amount");
         // Phase F10 — COD Payment Returned: order status = Returned/
         // Refunded → the money has been reversed to the customer.
+        //
+        // Phase F10.M cleanup — the "COD Amount Mismatch" branch was
+        // removed from this block (chip lives under Validation Alerts
+        // now). No functional loss: the same shipments are matched by
+        // the broadened validation-alerts filter just below.
         const st = String(anyS.status || "").toLowerCase();
         const returned = st === "returned" || st === "refunded";
         if (codPaymentFilter.has("received")        && received)       return true;
         if (codPaymentFilter.has("pending")         && pending)        return true;
-        if (codPaymentFilter.has("amount_mismatch") && amtMismatch)    return true;
         if (codPaymentFilter.has("returned")        && returned)       return true;
         return false;
       });
     }
     if (validationFilter.size > 0) {
+      // Phase F10.M — the retained "COD Amount Mismatch" chip lives
+      // here under Validation Alerts and maps to the alert field
+      // `amount`. Backend historically writes payment mismatches
+      // under BOTH `amount` (bulk import path) and `cod_amount`
+      // (manual COD correction path). We collapse `cod_amount` to
+      // `amount` at the filter layer so a single chip still catches
+      // every payment mismatch on the board.
       byImp = byImp.filter((s) => {
         const alerts = ((s as any).import_validation_alerts || []) as any[];
         for (const a of alerts) {
-          if (validationFilter.has(a.field)) return true;
+          const field = a.field === "cod_amount" ? "amount" : a.field;
+          if (validationFilter.has(field)) return true;
         }
         return false;
       });
@@ -1348,24 +1358,34 @@ export default function Shipments() {
         const received = anyS.cod_payment_status === "received";
         const isCOD    = String(anyS.payment_mode || "").toUpperCase() === "COD";
         const pending  = isCOD && !received;
-        const amtMismatch = ((anyS.import_validation_alerts || []) as any[])
-          .some((a) => a.field === "amount");
         // Phase F10 — COD Payment Returned: order status = Returned/
         // Refunded → the money has been reversed to the customer.
+        //
+        // Phase F10.M cleanup — the "COD Amount Mismatch" branch was
+        // removed from this block (chip lives under Validation Alerts
+        // now). No functional loss: the same shipments are matched by
+        // the broadened validation-alerts filter just below.
         const st = String(anyS.status || "").toLowerCase();
         const returned = st === "returned" || st === "refunded";
         if (codPaymentFilter.has("received")        && received)       return true;
         if (codPaymentFilter.has("pending")         && pending)        return true;
-        if (codPaymentFilter.has("amount_mismatch") && amtMismatch)    return true;
         if (codPaymentFilter.has("returned")        && returned)       return true;
         return false;
       });
     }
     if (validationFilter.size > 0) {
+      // Phase F10.M — the retained "COD Amount Mismatch" chip lives
+      // here under Validation Alerts and maps to the alert field
+      // `amount`. Backend historically writes payment mismatches
+      // under BOTH `amount` (bulk import path) and `cod_amount`
+      // (manual COD correction path). We collapse `cod_amount` to
+      // `amount` at the filter layer so a single chip still catches
+      // every payment mismatch on the board.
       byImp = byImp.filter((s) => {
         const alerts = ((s as any).import_validation_alerts || []) as any[];
         for (const a of alerts) {
-          if (validationFilter.has(a.field)) return true;
+          const field = a.field === "cod_amount" ? "amount" : a.field;
+          if (validationFilter.has(field)) return true;
         }
         return false;
       });
