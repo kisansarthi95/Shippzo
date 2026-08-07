@@ -172,6 +172,12 @@ export default function ShipmentDetailsScreen() {
   // the description with the auto-generated mismatch message.
   const [inquiryPrefill, setInquiryPrefill] = useState<string>("");
   const [savingTracking, setSavingTracking] = useState(false);
+  // Phase F10.3+ — Manual COD Correction modal state. Populated when
+  // the operator taps "Manual Correction" on a payment mismatch row.
+  const [manualCodOpen, setManualCodOpen] = useState(false);
+  const [manualCodAmount, setManualCodAmount] = useState<string>("");
+  const [manualCodPayer, setManualCodPayer] = useState<string>("");
+  const [manualCodSaving, setManualCodSaving] = useState(false);
 
   const loadShipment = useCallback(async () => {
     try {
@@ -647,6 +653,18 @@ export default function ShipmentDetailsScreen() {
                 </View>
                 {(((ship as any).import_validation_alerts || []) as any[]).map((a, i) => {
                   const isPaymentField = a.field === "cod_amount" || a.field === "amount";
+                  // Phase F10.M — compute the exact +/- ₹ delta for
+                  // payment mismatches so the operator sees the short
+                  // or excess collection at a glance.
+                  const existingNum = Number(a.existing);
+                  const importedNum = Number(a.imported);
+                  const hasNumericDelta =
+                    isPaymentField
+                    && Number.isFinite(existingNum)
+                    && Number.isFinite(importedNum);
+                  const delta = hasNumericDelta ? (importedNum - existingNum) : 0;
+                  const deltaSign = delta > 0 ? "+" : "";
+                  const deltaAbs = Math.abs(delta);
                   return (
                   <View key={i} style={styles.alertRow}>
                     <Text style={styles.alertField}>
@@ -663,28 +681,72 @@ export default function ShipmentDetailsScreen() {
                       {a.field === "cod_amount" ? "Received" : "Imported"}:{" "}
                       <Text style={styles.alertMono}>{String(a.imported ?? "")}</Text>
                     </Text>
+                    {hasNumericDelta && delta !== 0 && (
+                      <View style={styles.deltaBadge}>
+                        <PhIcon
+                          name={delta > 0 ? "trending-up" : "trending-down"}
+                          size={12}
+                          color={delta > 0 ? "#166534" : "#991B1B"}
+                        />
+                        <Text
+                          style={[
+                            styles.deltaBadgeTxt,
+                            { color: delta > 0 ? "#166534" : "#991B1B" },
+                          ]}
+                        >
+                          Difference: {deltaSign}₹{deltaAbs.toFixed(deltaAbs % 1 === 0 ? 0 : 2)}
+                          {"  "}
+                          <Text style={styles.deltaBadgeHint}>
+                            ({delta > 0 ? "Excess collected" : "Short collected"})
+                          </Text>
+                        </Text>
+                      </View>
+                    )}
                     {isPaymentField && (
-                      // Phase F10.3 — Raise Inquiry: prefills the
-                      // India Post Complaint description with the
-                      // discrepancy message and scrolls into view.
-                      <TouchableOpacity
-                        style={styles.raiseInquiryBtn}
-                        testID={`raise-inquiry-btn-${i}`}
-                        onPress={() => {
-                          const msg =
-                            `Payment discrepancy found. ` +
-                            `Expected: ₹${a.existing ?? "?"}, ` +
-                            `Received: ₹${a.imported ?? "?"}. ` +
-                            `Please clarify the difference.`;
-                          // Bump with a nonce so a second click on the
-                          // same alert re-triggers the useEffect even
-                          // if the string is identical.
-                          setInquiryPrefill(`${msg}`);
-                        }}
-                      >
-                        <PhIcon name="megaphone-outline" size={13} color="#B91C1C" />
-                        <Text style={styles.raiseInquiryTxt}>Raise Inquiry</Text>
-                      </TouchableOpacity>
+                      <View style={{ flexDirection: "row", gap: 8, flexWrap: "wrap" }}>
+                        {/* Phase F10.3 — Raise Inquiry: prefills the
+                            India Post Complaint description with the
+                            discrepancy message and scrolls into view. */}
+                        <TouchableOpacity
+                          style={styles.raiseInquiryBtn}
+                          testID={`raise-inquiry-btn-${i}`}
+                          onPress={() => {
+                            const msg =
+                              `Payment discrepancy found. ` +
+                              `Expected: ₹${a.existing ?? "?"}, ` +
+                              `Received: ₹${a.imported ?? "?"}. ` +
+                              `Please clarify the difference.`;
+                            // Bump with a nonce so a second click on the
+                            // same alert re-triggers the useEffect even
+                            // if the string is identical.
+                            setInquiryPrefill(`${msg}`);
+                          }}
+                        >
+                          <PhIcon name="megaphone-outline" size={13} color="#B91C1C" />
+                          <Text style={styles.raiseInquiryTxt}>Raise Inquiry</Text>
+                        </TouchableOpacity>
+                        {/* Phase F10.3+ — Manual Correction: opens the
+                            edit modal below so the operator can enter
+                            the correct received amount. On save the
+                            alert is cleared if the new amount matches
+                            the booked cod_amount. */}
+                        <TouchableOpacity
+                          style={styles.manualCorrectBtn}
+                          testID={`manual-correct-btn-${i}`}
+                          onPress={() => {
+                            const anyS = ship as any;
+                            const currentReceived =
+                              Number(anyS?.cod_collected_amount || 0)
+                              || Number(a.imported || 0);
+                            setManualCodAmount(String(currentReceived || ""));
+                            setManualCodPayer(String(anyS?.cod_payer_name || ""));
+                            setManualCodOpen(true);
+                          }}
+                        >
+                          <PhIcon name="create-outline" size={13} color="#1D4ED8" />
+                          <Text style={styles.manualCorrectTxt}>Manual Correction</Text>
+                        </TouchableOpacity>
+                      </View>
                     )}
                   </View>
                   );
@@ -772,9 +834,35 @@ export default function ShipmentDetailsScreen() {
                 {!!(ship as any).cod_payment_date && (
                   <Row label="COD Payment Received Date" value={fmtDate((ship as any).cod_payment_date)} />
                 )}
-                {((ship as any).cod_collected_amount ?? 0) > 0 && (
-                  <Row label="COD Amount Received" value={fmtMoney((ship as any).cod_collected_amount)} />
-                )}
+                {((ship as any).cod_collected_amount ?? 0) > 0 && (() => {
+                  // Phase F10.M — red-highlight the Received Amount
+                  // whenever there's an unresolved cod_amount /
+                  // amount validation alert. Green (default Row) means
+                  // the value matches the booked cod_amount.
+                  const alerts = ((ship as any).import_validation_alerts || []) as any[];
+                  const paymentMismatch = alerts.some(
+                    (x) => x.field === "cod_amount" || x.field === "amount",
+                  );
+                  if (!paymentMismatch) {
+                    return (
+                      <Row
+                        label="COD Amount Received"
+                        value={fmtMoney((ship as any).cod_collected_amount)}
+                      />
+                    );
+                  }
+                  return (
+                    <View style={styles.receivedMismatchRow}>
+                      <Text style={styles.receivedMismatchLbl}>COD Amount Received</Text>
+                      <View style={styles.receivedMismatchPill}>
+                        <PhIcon name="alert-circle" size={13} color="#991B1B" />
+                        <Text style={styles.receivedMismatchTxt}>
+                          {fmtMoney((ship as any).cod_collected_amount)}
+                        </Text>
+                      </View>
+                    </View>
+                  );
+                })()}
                 {!!(ship as any).cod_payer_name && (
                   <Row label="Received From" value={(ship as any).cod_payer_name} />
                 )}
@@ -840,6 +928,130 @@ export default function ShipmentDetailsScreen() {
           </Section>
         )}
       </ScrollView>
+
+      {/* ═════════════════════════════════════════════════════════════
+          Phase F10.3+ — Manual COD Correction modal.
+          Lets the operator override cod_collected_amount without
+          re-uploading the courier file. Clears payment mismatch
+          alerts on match; the status flips back to green Received.
+          ═════════════════════════════════════════════════════════════ */}
+      <Modal
+        visible={manualCodOpen}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setManualCodOpen(false)}
+      >
+        <View style={styles.mcOverlay}>
+          <View style={styles.mcCard}>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 4 }}>
+              <PhIcon name="create-outline" size={18} color="#1D4ED8" />
+              <Text style={styles.mcTitle}>Manual COD Correction</Text>
+            </View>
+            <Text style={styles.mcSub}>
+              Update the received amount for this shipment. If it matches
+              the booked COD amount ({fmtMoney((ship as any)?.cod_amount)}),
+              the mismatch alert is cleared and status returns to Received.
+            </Text>
+
+            <Text style={styles.mcLabel}>Received Amount (₹) *</Text>
+            <TextInput
+              style={styles.mcInput}
+              value={manualCodAmount}
+              onChangeText={(t) => setManualCodAmount(t.replace(/[^0-9.]/g, ""))}
+              keyboardType="decimal-pad"
+              placeholder="e.g. 599"
+              placeholderTextColor="#94A3B8"
+              autoFocus
+            />
+
+            <Text style={styles.mcLabel}>Received From (optional)</Text>
+            <TextInput
+              style={styles.mcInput}
+              value={manualCodPayer}
+              onChangeText={setManualCodPayer}
+              placeholder="Courier / Payer name"
+              placeholderTextColor="#94A3B8"
+            />
+
+            {/* Live delta preview */}
+            {(() => {
+              const booked = Number((ship as any)?.cod_amount || 0);
+              const entered = Number(manualCodAmount || 0);
+              if (!Number.isFinite(booked) || !Number.isFinite(entered)) return null;
+              const delta = entered - booked;
+              if (Math.abs(delta) < 0.5) {
+                return (
+                  <View style={[styles.mcHint, { backgroundColor: "#DCFCE7" }]}>
+                    <PhIcon name="checkmark-circle" size={14} color="#166534" />
+                    <Text style={[styles.mcHintTxt, { color: "#166534" }]}>
+                      Matches booked amount. Alert will be cleared on save.
+                    </Text>
+                  </View>
+                );
+              }
+              return (
+                <View style={[styles.mcHint, { backgroundColor: "#FEE2E2" }]}>
+                  <PhIcon name="alert-circle" size={14} color="#991B1B" />
+                  <Text style={[styles.mcHintTxt, { color: "#991B1B" }]}>
+                    {delta > 0 ? "Excess" : "Short"} by ₹
+                    {Math.abs(delta).toFixed(Math.abs(delta) % 1 === 0 ? 0 : 2)}
+                    . Mismatch alert will remain.
+                  </Text>
+                </View>
+              );
+            })()}
+
+            <View style={{ flexDirection: "row", gap: 10, marginTop: 14 }}>
+              <TouchableOpacity
+                style={[styles.mcBtn, styles.mcBtnGhost]}
+                onPress={() => setManualCodOpen(false)}
+                disabled={manualCodSaving}
+              >
+                <Text style={styles.mcBtnGhostTxt}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.mcBtn, styles.mcBtnPrimary, manualCodSaving && { opacity: 0.7 }]}
+                disabled={manualCodSaving}
+                onPress={async () => {
+                  const amt = Number(manualCodAmount);
+                  if (!Number.isFinite(amt) || amt < 0) {
+                    Alert.alert("Invalid amount", "Enter a valid non-negative amount.");
+                    return;
+                  }
+                  setManualCodSaving(true);
+                  try {
+                    const r = await Api.manualCodCorrection(String(id), {
+                      cod_collected_amount: amt,
+                      cod_payer_name: manualCodPayer.trim() || undefined,
+                    });
+                    setShip(r.shipment);
+                    setManualCodOpen(false);
+                    Alert.alert(
+                      r.matched ? "Saved ✓" : "Saved (mismatch remains)",
+                      r.matched
+                        ? "Received amount matches booked. Alert cleared."
+                        : "Amount saved. The mismatch alert has been updated to reflect the new value.",
+                    );
+                  } catch (e: any) {
+                    Alert.alert(
+                      "Couldn't save",
+                      e?.response?.data?.detail || e?.message || "Try again.",
+                    );
+                  } finally {
+                    setManualCodSaving(false);
+                  }
+                }}
+              >
+                {manualCodSaving ? (
+                  <ActivityIndicator color="#fff" size="small" />
+                ) : (
+                  <Text style={styles.mcBtnPrimaryTxt}>Save</Text>
+                )}
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -1631,6 +1843,123 @@ const styles = StyleSheet.create({
     fontWeight: "800",
     color: "#B91C1C",
   },
+  // Phase F10.3+ — Manual Correction button (sibling to Raise Inquiry).
+  manualCorrectBtn: {
+    marginTop: 6,
+    alignSelf: "flex-start",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 6,
+    backgroundColor: "#DBEAFE",
+    borderWidth: 1,
+    borderColor: "#93C5FD",
+  },
+  manualCorrectTxt: {
+    fontSize: 11.5,
+    fontWeight: "800",
+    color: "#1D4ED8",
+  },
+  // Phase F10.M — Numeric delta badge on mismatch rows.
+  deltaBadge: {
+    marginTop: 6,
+    alignSelf: "flex-start",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 6,
+    backgroundColor: "#FFF7ED",
+    borderWidth: 1,
+    borderColor: "#FDBA74",
+  },
+  deltaBadgeTxt: { fontSize: 12, fontWeight: "800" },
+  deltaBadgeHint: { fontSize: 10, fontWeight: "600", color: "#78350F" },
+  // Phase F10.M — Red highlighted Received Amount row in COD Payment block.
+  receivedMismatchRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingVertical: 6,
+    borderBottomWidth: 1,
+    borderBottomColor: "#F1F5F9",
+  },
+  receivedMismatchLbl: {
+    fontSize: 12,
+    color: "#64748B",
+    fontWeight: "600",
+    flex: 1,
+  },
+  receivedMismatchPill: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    backgroundColor: "#FEE2E2",
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "#FCA5A5",
+  },
+  receivedMismatchTxt: {
+    fontSize: 13,
+    fontWeight: "800",
+    color: "#991B1B",
+  },
+  // Phase F10.3+ — Manual COD Correction modal styles.
+  mcOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.55)",
+    justifyContent: "flex-end",
+  },
+  mcCard: {
+    backgroundColor: "#fff",
+    borderTopLeftRadius: 18,
+    borderTopRightRadius: 18,
+    padding: 18,
+    paddingBottom: Platform.OS === "ios" ? 32 : 22,
+  },
+  mcTitle: { fontSize: 17, fontWeight: "800", color: "#0F172A" },
+  mcSub: { fontSize: 12, color: "#64748B", lineHeight: 17, marginBottom: 10 },
+  mcLabel: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: "#334155",
+    marginTop: 10,
+    marginBottom: 4,
+  },
+  mcInput: {
+    borderWidth: 1,
+    borderColor: "#E5E7EB",
+    borderRadius: 10,
+    padding: 12,
+    fontSize: 15,
+    color: "#0F172A",
+    backgroundColor: "#F8FAFC",
+  },
+  mcHint: {
+    marginTop: 10,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    padding: 10,
+    borderRadius: 8,
+  },
+  mcHintTxt: { fontSize: 12, fontWeight: "700", flex: 1 },
+  mcBtn: {
+    flex: 1,
+    height: 46,
+    borderRadius: 10,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  mcBtnGhost: { backgroundColor: "#F1F5F9" },
+  mcBtnGhostTxt: { color: "#475569", fontWeight: "800", fontSize: 14 },
+  mcBtnPrimary: { backgroundColor: "#1D4ED8" },
+  mcBtnPrimaryTxt: { color: "#fff", fontWeight: "800", fontSize: 14 },
 
   // Phase F6.4 — Last Event (verbatim India Post remit text)
   lastEventBox: {

@@ -2890,9 +2890,13 @@ export default function Shipments() {
                 {item.courier_name} · {item.city || "—"}
               </Text>
               {/* Phase F10 — Colored amount pill.
-                  Green  → Prepaid  OR  COD payment received.
+                  Green  → Prepaid  OR  COD payment received (matches).
                   Yellow → COD payment pending.
-                  Red    → order returned / refunded (money reversed). */}
+                  Red    → order returned / refunded (money reversed).
+                  Phase F10.M — When there's a payment mismatch on the
+                  shipment we additionally render a RED "Received ₹X"
+                  pill next to the booked pill so operators can spot
+                  short/excess remittances at a glance. */}
               {(() => {
                 const anyIt = item as any;
                 const isCOD    = String(item.payment_mode || "").toUpperCase() === "COD";
@@ -2902,6 +2906,13 @@ export default function Shipments() {
                 const value    = isCOD
                   ? (item.cod_amount ?? item.amount ?? 0)
                   : (item.amount ?? 0);
+                // Detect an unresolved COD amount mismatch on this row.
+                const alerts = (anyIt.import_validation_alerts || []) as any[];
+                const paymentAlert = alerts.find(
+                  (a) => a.field === "cod_amount" || a.field === "amount",
+                );
+                const collected = Number(anyIt.cod_collected_amount || 0);
+                const mismatch = isCOD && !!paymentAlert;
                 // Phase F10.1 — Badge shows JUST the amount label; the
                 // pill background color (Green/Yellow/Red) alone
                 // communicates the payment state. Suffix strings like
@@ -2911,14 +2922,33 @@ export default function Shipments() {
                 const lbl = `${isCOD ? "COD" : "Prepaid"} ₹${value}`;
                 if (returned) {
                   bg = "#FEE2E2"; fg = "#991B1B";
-                } else if (isCOD && received) {
+                } else if (isCOD && received && !mismatch) {
                   bg = "#DCFCE7"; fg = "#166534";
+                } else if (isCOD && mismatch) {
+                  // Booked pill turns amber to draw the eye; the red
+                  // Received badge next to it carries the delta.
+                  bg = "#FEF3C7"; fg = "#92400E";
                 } else if (isCOD) {
                   bg = "#FEF9C3"; fg = "#854D0E";
                 }
+                // Numeric received amount for the red badge — prefer
+                // the shipment's own cod_collected_amount, fall back
+                // to the alert's imported value if unset.
+                const receivedAmt = collected > 0
+                  ? collected
+                  : Number(paymentAlert?.imported || 0);
                 return (
-                  <View style={[styles.amountPill, { backgroundColor: bg }]}>
-                    <Text style={[styles.amountPillTxt, { color: fg }]}>{lbl}</Text>
+                  <View style={{ flexDirection: "row", alignItems: "center", gap: 6, marginTop: 5, flexWrap: "wrap" }}>
+                    <View style={[styles.amountPill, { backgroundColor: bg, marginTop: 0 }]}>
+                      <Text style={[styles.amountPillTxt, { color: fg }]}>{lbl}</Text>
+                    </View>
+                    {mismatch && (
+                      <View style={[styles.amountPill, { backgroundColor: "#FEE2E2", marginTop: 0 }]}>
+                        <Text style={[styles.amountPillTxt, { color: "#991B1B" }]}>
+                          {`Received ₹${receivedAmt}`}
+                        </Text>
+                      </View>
+                    )}
                   </View>
                 );
               })()}

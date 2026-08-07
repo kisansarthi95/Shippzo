@@ -2405,6 +2405,26 @@ export const Api = {
       )
       .then((r) => r.data),
 
+  /** Phase F10.3+ — Manual COD Correction.
+   *  Fixes a payment mismatch without re-uploading the courier file.
+   *  When the new received amount matches the booked cod_amount,
+   *  payment-related alerts are cleared and status flips to green
+   *  Received. Returns the fresh shipment doc + a `matched` flag. */
+  manualCodCorrection: (
+    shipment_id: string,
+    body: {
+      cod_collected_amount: number;
+      cod_payer_name?: string;
+      cod_payment_date?: string;
+    },
+  ) =>
+    api
+      .post<{ ok: boolean; shipment: any; matched: boolean }>(
+        `/shipments/${shipment_id}/manual-cod-correction`,
+        body,
+      )
+      .then((r) => r.data),
+
   // ─── Phase F6.3 — Payment Batches (COD settlement grouping) ───
   listPaymentBatches: (params?: {
     search?: string;

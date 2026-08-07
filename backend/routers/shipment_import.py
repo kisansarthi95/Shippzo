@@ -655,6 +655,115 @@ def init() -> None:
         get_current_user as _get_current_user,
     )
 
+    # ── Manual Correction (Phase F10.3+) ──────────────────────────
+    #
+    # Lets the operator fix a COD amount mismatch without re-uploading
+    # the entire courier remit file. The user opens Shipment Details
+    # for a flagged shipment, taps "Manual Correction", enters the
+    # correct received amount and (optionally) the payer name, and
+    # this endpoint:
+    #   • updates cod_collected_amount on the shipment
+    #   • sets cod_payment_status="received" + cod_payment_date if
+    #     the row was still pending
+    #   • drops any payment/cod_amount entries from
+    #     import_validation_alerts if the new received amount matches
+    #     the booked cod_amount (within tolerance). Non-payment
+    #     alerts (weight, payment_mode) are preserved.
+    class _ManualCodCorrection(BaseModel):
+        cod_collected_amount: float
+        cod_payer_name: Optional[str] = None
+        cod_payment_date: Optional[str] = None  # ISO — optional override
+
+    @shipment_import_router.post("/shipments/{shipment_id}/manual-cod-correction")
+    async def manual_cod_correction(
+        shipment_id: str,
+        payload: _ManualCodCorrection,
+        current_user: Dict[str, Any] = Depends(_get_current_user),
+    ):
+        ship = await db.shipments.find_one(
+            {"id": shipment_id, "user_id": current_user["id"]},
+            {"_id": 0},
+        )
+        if not ship:
+            raise HTTPException(status_code=404, detail="Shipment not found")
+
+        received = float(payload.cod_collected_amount or 0.0)
+        if received < 0:
+            raise HTTPException(status_code=400, detail="Amount cannot be negative")
+
+        booked = ship.get("cod_amount")
+        now = _iso_now()
+
+        set_fields: Dict[str, Any] = {
+            "cod_collected_amount": received,
+            "cod_payment_status": "received",
+            "last_import_at": now,
+            "last_import_type": "manual_correction",
+            "modified_at": now,
+        }
+        if not ship.get("cod_payment_date"):
+            set_fields["cod_payment_date"] = payload.cod_payment_date or now
+        elif payload.cod_payment_date:
+            set_fields["cod_payment_date"] = payload.cod_payment_date
+        if payload.cod_payer_name is not None:
+            set_fields["cod_payer_name"] = payload.cod_payer_name
+
+        # Prune payment-related alerts from import_validation_alerts
+        # when the correction resolves the discrepancy. Preserve
+        # non-payment alerts (weight / payment_mode) untouched.
+        alerts = list(ship.get("import_validation_alerts") or [])
+        payment_fields = {"cod_amount", "amount"}
+        if alerts:
+            if booked is not None and _amount_equal(booked, received):
+                kept = [a for a in alerts if a.get("field") not in payment_fields]
+                set_fields["import_validation_alerts"] = kept
+            else:
+                # Refresh the payment alert entries to reflect the new
+                # received value so the UI shows the current delta.
+                new_alerts = []
+                had_payment_alert = False
+                for a in alerts:
+                    if a.get("field") in payment_fields:
+                        had_payment_alert = True
+                        new_alerts.append({
+                            "field":    "cod_amount",
+                            "existing": booked,
+                            "imported": received,
+                            "at":       now,
+                        })
+                    else:
+                        new_alerts.append(a)
+                if not had_payment_alert and booked is not None:
+                    new_alerts.append({
+                        "field":    "cod_amount",
+                        "existing": booked,
+                        "imported": received,
+                        "at":       now,
+                    })
+                set_fields["import_validation_alerts"] = new_alerts
+        elif booked is not None and not _amount_equal(booked, received):
+            # No prior alerts but the manual correction creates a
+            # mismatch — seed one so the UI stays accurate.
+            set_fields["import_validation_alerts"] = [{
+                "field":    "cod_amount",
+                "existing": booked,
+                "imported": received,
+                "at":       now,
+            }]
+
+        await db.shipments.update_one(
+            {"id": shipment_id, "user_id": current_user["id"]},
+            {"$set": set_fields},
+        )
+        fresh = await db.shipments.find_one(
+            {"id": shipment_id, "user_id": current_user["id"]}, {"_id": 0},
+        )
+        return {
+            "ok": True,
+            "shipment": fresh,
+            "matched": booked is not None and _amount_equal(booked, received),
+        }
+
     # ── Saved default mapping (per user × import_type) ────────────
 
     @shipment_import_router.get("/me/shipment-import-mapping")
@@ -1459,7 +1568,7 @@ def init() -> None:
         }
         return Response(content=buf.getvalue(), media_type="text/csv", headers=headers)
 
-    _logger.info("shipment_import router mounted (8 endpoints)")
+    _logger.info("shipment_import router mounted (9 endpoints)")
 
 
 def _csv_val(v: Any) -> str:
