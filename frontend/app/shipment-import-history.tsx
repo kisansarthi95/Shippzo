@@ -98,6 +98,32 @@ export default function ShipmentImportHistoryScreen() {
             const meta = TYPE_META[b.import_type] || {
               label: b.import_type, tint: "#64748B", icon: "cube-outline",
             };
+            const askDelete = () => {
+              Alert.alert(
+                "Delete this batch record?",
+                `Are you sure you want to delete "${b.filename || "(no filename)"}"?\n\n` +
+                "This removes only the import history entry. Shipments that were " +
+                "already updated by this import will keep their new values.",
+                [
+                  { text: "Cancel", style: "cancel" },
+                  {
+                    text: "Delete",
+                    style: "destructive",
+                    onPress: async () => {
+                      try {
+                        await Api.deleteShipmentImportBatch(b.id);
+                        setBatches((prev) => prev.filter((x) => x.id !== b.id));
+                      } catch (e: any) {
+                        Alert.alert(
+                          "Delete failed",
+                          e?.response?.data?.detail || e?.message || "Try again.",
+                        );
+                      }
+                    },
+                  },
+                ],
+              );
+            };
             return (
               <TouchableOpacity
                 key={b.id}
@@ -111,7 +137,16 @@ export default function ShipmentImportHistoryScreen() {
                       {meta.label}
                     </Text>
                   </View>
-                  <Text style={styles.whenTxt}>{fmtWhen(b.created_at)}</Text>
+                  <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
+                    <Text style={styles.whenTxt}>{fmtWhen(b.created_at)}</Text>
+                    <TouchableOpacity
+                      onPress={askDelete}
+                      hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                      style={styles.trashBtn}
+                    >
+                      <PhIcon name="trash-outline" size={16} color="#DC2626" />
+                    </TouchableOpacity>
+                  </View>
                 </View>
                 <Text style={styles.fileTxt} numberOfLines={1}>
                   📄 {b.filename || "(no filename)"} · {b.format.toUpperCase()}
@@ -164,4 +199,7 @@ const styles = StyleSheet.create({
   emptySub:{ fontSize: 12, color: "#64748B", textAlign: "center", lineHeight: 17 },
   emptyBtn:{ marginTop: 12, backgroundColor: colors.primary, paddingHorizontal: 20, paddingVertical: 10, borderRadius: 10 },
   emptyBtnTxt: { color: "#fff", fontWeight: "700", fontSize: 13 },
+  trashBtn: {
+    padding: 4, borderRadius: 6, backgroundColor: "#FEE2E2",
+  },
 });

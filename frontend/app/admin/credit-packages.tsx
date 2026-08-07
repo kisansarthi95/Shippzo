@@ -80,7 +80,23 @@ export default function AdminCreditPackagesScreen() {
   };
 
   const removeRow = (idx: number) => {
-    setPackages((prev) => prev.filter((_, i) => i !== idx));
+    const p = packages[idx];
+    const label = p?.label
+      ? `"${p.label}"`
+      : `Package #${idx + 1} (₹${p?.amount_inr || 0})`;
+    Alert.alert(
+      "Delete package?",
+      `Are you sure you want to delete ${label}?\n\nThis takes effect after you tap Save.`,
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Delete",
+          style: "destructive",
+          onPress: () =>
+            setPackages((prev) => prev.filter((_, i) => i !== idx)),
+        },
+      ],
+    );
   };
 
   const addRow = () => {

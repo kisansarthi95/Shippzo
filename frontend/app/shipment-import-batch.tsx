@@ -50,6 +50,7 @@ export default function ShipmentImportBatchScreen() {
   const [filter, setFilter]         = useState<(Row["status"] | "all")>("all");
   const [downloading, setDownloading] = useState(false);
   const [expandedRow, setExpandedRow] = useState<number | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
   const load = useCallback(async () => {
     if (!id) { setLoading(false); return; }
@@ -73,8 +74,38 @@ export default function ShipmentImportBatchScreen() {
     return batch.rows.filter((r) => r.status === filter);
   }, [batch, filter]);
 
-  const downloadMismatches = async () => {
+  const confirmDeleteBatch = () => {
     if (!batch) return;
+    Alert.alert(
+      "Delete this batch record?",
+      `Are you sure you want to delete "${batch.filename || "(no filename)"}"?\n\n` +
+      "This removes only the import history entry. Shipments that were " +
+      "already updated by this import will keep their new values.",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Delete",
+          style: "destructive",
+          onPress: async () => {
+            setDeleting(true);
+            try {
+              await Api.deleteShipmentImportBatch(batch.id);
+              router.back();
+            } catch (e: any) {
+              Alert.alert(
+                "Delete failed",
+                e?.response?.data?.detail || e?.message || "Try again.",
+              );
+            } finally {
+              setDeleting(false);
+            }
+          },
+        },
+      ],
+    );
+  };
+
+  const downloadMismatches = async () => {    if (!batch) return;
     setDownloading(true);
     try {
       // Use authenticated axios instance to fetch CSV blob.
@@ -155,7 +186,18 @@ export default function ShipmentImportBatchScreen() {
         <Text style={styles.title} numberOfLines={1}>
           {TYPE_LABEL[batch.import_type] || batch.import_type}
         </Text>
-        <View style={{ width: 22 }} />
+        <TouchableOpacity
+          onPress={confirmDeleteBatch}
+          hitSlop={8}
+          disabled={deleting}
+          style={{ opacity: deleting ? 0.5 : 1 }}
+        >
+          {deleting ? (
+            <ActivityIndicator size="small" color="#DC2626" />
+          ) : (
+            <PhIcon name="trash-outline" size={20} color="#DC2626" />
+          )}
+        </TouchableOpacity>
       </View>
 
       <ScrollView

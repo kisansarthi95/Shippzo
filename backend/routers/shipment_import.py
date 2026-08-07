@@ -1399,6 +1399,26 @@ def init() -> None:
             raise HTTPException(status_code=404, detail="Batch not found")
         return doc
 
+    # ── Delete a batch history record ─────────────────────────────
+    #
+    # This ONLY removes the audit trail entry for a bulk import
+    # (Booking / Delivery Status / COD Payment). Shipment records
+    # that were already updated by the import remain updated — this
+    # endpoint does NOT revert any changes applied to shipments or
+    # to related payment batches. That's a conscious trade-off: a
+    # full undo would be prohibitively expensive to track.
+    @shipment_import_router.delete("/shipments/import/batches/{batch_id}")
+    async def delete_batch(
+        batch_id: str,
+        current_user: Dict[str, Any] = Depends(_get_current_user),
+    ):
+        res = await db.shipment_import_batches.delete_one(
+            {"id": batch_id, "user_id": current_user["id"]},
+        )
+        if res.deleted_count == 0:
+            raise HTTPException(status_code=404, detail="Batch not found")
+        return {"ok": True, "deleted": batch_id}
+
     @shipment_import_router.get("/shipments/import/batches/{batch_id}/mismatches.csv")
     async def download_mismatches(
         batch_id: str,
@@ -1439,7 +1459,7 @@ def init() -> None:
         }
         return Response(content=buf.getvalue(), media_type="text/csv", headers=headers)
 
-    _logger.info("shipment_import router mounted (7 endpoints)")
+    _logger.info("shipment_import router mounted (8 endpoints)")
 
 
 def _csv_val(v: Any) -> str:

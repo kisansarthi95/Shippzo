@@ -2395,6 +2395,16 @@ export const Api = {
   shipmentImportMismatchesUrl: (batch_id: string) =>
     `/shipments/import/batches/${batch_id}/mismatches.csv`,
 
+  /** Delete a bulk-import batch history record (Booking / Delivery /
+   *  COD Payment). This does NOT revert shipments already updated —
+   *  it only removes the audit-log entry from Import History. */
+  deleteShipmentImportBatch: (batch_id: string) =>
+    api
+      .delete<{ ok: boolean; deleted: string }>(
+        `/shipments/import/batches/${batch_id}`,
+      )
+      .then((r) => r.data),
+
   // ─── Phase F6.3 — Payment Batches (COD settlement grouping) ───
   listPaymentBatches: (params?: {
     search?: string;
