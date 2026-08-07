@@ -3009,17 +3009,14 @@ export default function Shipments() {
               {!!item.order_id && (
                 <Text style={styles.order}>Order #{item.order_id}</Text>
               )}
-              <Text style={styles.sub} numberOfLines={1}>
-                {item.courier_name} · {item.city || "—"}
-              </Text>
-              {/* Phase F10 — Colored amount pill.
-                  Green  → Prepaid  OR  COD payment received (matches).
-                  Yellow → COD payment pending.
-                  Red    → order returned / refunded (money reversed).
-                  Phase F10.M — When there's a payment mismatch on the
-                  shipment we additionally render a RED "Received ₹X"
-                  pill next to the booked pill so operators can spot
-                  short/excess remittances at a glance. */}
+              {/* Phase F10 / F11.D — Courier · City · Amount Pill.
+                  Amount pill is rendered INLINE with the sub-text row
+                  (was a separate line below) to shave ~24px off each
+                  card. Colours (Green/Yellow/Red) preserved on the
+                  badge background so the payment state stays
+                  glance-able.
+                  Mismatch row still gets the extra red "Received ₹X"
+                  pill inline, wrapping if the sub-text is long. */}
               {(() => {
                 const anyIt = item as any;
                 const isCOD    = String(item.payment_mode || "").toUpperCase() === "COD";
@@ -3029,18 +3026,12 @@ export default function Shipments() {
                 const value    = isCOD
                   ? (item.cod_amount ?? item.amount ?? 0)
                   : (item.amount ?? 0);
-                // Detect an unresolved COD amount mismatch on this row.
                 const alerts = (anyIt.import_validation_alerts || []) as any[];
                 const paymentAlert = alerts.find(
                   (a) => a.field === "cod_amount" || a.field === "amount",
                 );
                 const collected = Number(anyIt.cod_collected_amount || 0);
                 const mismatch = isCOD && !!paymentAlert;
-                // Phase F10.1 — Badge shows JUST the amount label; the
-                // pill background color (Green/Yellow/Red) alone
-                // communicates the payment state. Suffix strings like
-                // "· Received" / "· Pending" removed per user request
-                // to keep the card lightweight.
                 let bg = "#DCFCE7", fg = "#166534";
                 const lbl = `${isCOD ? "COD" : "Prepaid"} ₹${value}`;
                 if (returned) {
@@ -3048,25 +3039,24 @@ export default function Shipments() {
                 } else if (isCOD && received && !mismatch) {
                   bg = "#DCFCE7"; fg = "#166534";
                 } else if (isCOD && mismatch) {
-                  // Booked pill turns amber to draw the eye; the red
-                  // Received badge next to it carries the delta.
                   bg = "#FEF3C7"; fg = "#92400E";
                 } else if (isCOD) {
                   bg = "#FEF9C3"; fg = "#854D0E";
                 }
-                // Numeric received amount for the red badge — prefer
-                // the shipment's own cod_collected_amount, fall back
-                // to the alert's imported value if unset.
                 const receivedAmt = collected > 0
                   ? collected
                   : Number(paymentAlert?.imported || 0);
                 return (
-                  <View style={{ flexDirection: "row", alignItems: "center", gap: 6, marginTop: 5, flexWrap: "wrap" }}>
-                    <View style={[styles.amountPill, { backgroundColor: bg, marginTop: 0 }]}>
+                  <View style={styles.subInlineRow}>
+                    <Text style={styles.subInline} numberOfLines={1}>
+                      {item.courier_name} · {item.city || "—"}
+                    </Text>
+                    <Text style={styles.subInlineDot}>·</Text>
+                    <View style={[styles.amountPillInline, { backgroundColor: bg }]}>
                       <Text style={[styles.amountPillTxt, { color: fg }]}>{lbl}</Text>
                     </View>
                     {mismatch && (
-                      <View style={[styles.amountPill, { backgroundColor: "#FEE2E2", marginTop: 0 }]}>
+                      <View style={[styles.amountPillInline, { backgroundColor: "#FEE2E2" }]}>
                         <Text style={[styles.amountPillTxt, { color: "#991B1B" }]}>
                           {`Received ₹${receivedAmt}`}
                         </Text>
@@ -3097,11 +3087,11 @@ export default function Shipments() {
                 <View style={labelStyles.divider} />
                 <TouchableOpacity
                   onPress={() => setLabelPickerFor(item.id)}
-                  hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                  hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
                   style={labelStyles.plusBtn}
                   accessibilityLabel="Add label"
                 >
-                  <PhIcon name="add" size={16} color={colors.primary} />
+                  <PhIcon name="add" size={13} color={colors.primary} />
                 </TouchableOpacity>
               </View>
               {(shipmentLabels[item.id] || []).length > 0 && (
@@ -4262,6 +4252,33 @@ const styles = StyleSheet.create({
     borderRadius: 10,
   },
   amountPillTxt: { fontSize: 11.5, fontWeight: "800" },
+  // Phase F11.D — Inline sub-text row that carries courier · city ·
+  // amount-pill on ONE line. Replaces the previous stacked layout
+  // (sub-text on one line, pills on the next) so each card is ~24px
+  // shorter without losing any information.
+  subInlineRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    flexWrap: "wrap",
+    gap: 6,
+    marginTop: 3,
+  },
+  subInline: {
+    fontSize: 12,
+    color: colors.textMuted,
+    fontWeight: "500",
+    flexShrink: 1,
+  },
+  subInlineDot: {
+    fontSize: 12,
+    color: colors.textMuted,
+    fontWeight: "500",
+  },
+  amountPillInline: {
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 10,
+  },
   items: { marginTop: 3, color: colors.text, fontSize: 12, fontWeight: "600" },
   // Phase F2.2 — Created-at timestamp shown discreetly under each card.
   timestamp: { marginTop: 4, color: "#94A3B8", fontSize: 11, fontWeight: "500" },

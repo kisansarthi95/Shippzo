@@ -211,8 +211,11 @@ export const labelStyles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
-    marginTop: 6,
-    marginBottom: 2,
+    // Phase F11.D — tightened from marginTop:6 / marginBottom:2 so
+    // the "+" Create-Label divider hugs the card content more
+    // closely (~6px removed per card).
+    marginTop: 2,
+    marginBottom: 0,
   },
   divider: {
     flex: 1,
@@ -220,9 +223,11 @@ export const labelStyles = StyleSheet.create({
     backgroundColor: "#E5E7EB",
   },
   plusBtn: {
-    width: 24,
-    height: 24,
-    borderRadius: 12,
+    // Phase F11.D — smaller circular target (was 24×24). Still meets
+    // the 44×44 tappable region via `hitSlop` (see shipments.tsx card).
+    width: 20,
+    height: 20,
+    borderRadius: 10,
     borderWidth: 1,
     borderColor: "#E5E7EB",
     alignItems: "center",
@@ -230,7 +235,8 @@ export const labelStyles = StyleSheet.create({
     backgroundColor: "#F8FAFC",
   },
   chipRow: {
-    marginTop: 6,
-    marginBottom: 2,
+    // Phase F11.D — tightened chip row vertical margins.
+    marginTop: 2,
+    marginBottom: 0,
   },
 });
