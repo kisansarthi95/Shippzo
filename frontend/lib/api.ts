@@ -2267,6 +2267,13 @@ export const Api = {
         header_col: number;
         raw_preview: string[][];
         raw_total_rows: number;
+        /** Phase F11.C — auto-detected PaymentBatch metadata for
+         *  cod_payment imports. Empty dict for other types. */
+        auto_detect?: {
+          batch_name?: string;
+          payment_date?: string;   // ISO YYYY-MM-DD
+          notes?: string;
+        };
       }>("/shipments/import/preview", fd, {
         headers: { "Content-Type": "multipart/form-data" },
       })

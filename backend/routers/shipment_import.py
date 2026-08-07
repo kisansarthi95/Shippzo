@@ -435,6 +435,147 @@ def _amount_equal(a: Any, b: Any, tol: float = 0.5) -> bool:
     return abs(af - bf) <= tol
 
 
+# ─── Phase F11.C — Auto-detect PaymentBatch metadata ────────────────
+#
+# COD remittance sheets from banks and Post Office almost always carry
+# three pieces of metadata in a label→value pair (either adjacent on
+# the same row, or directly beneath the label). Extract them at
+# preview time so the operator sees Batch Name / Payment Date / Notes
+# pre-populated on the import screen — they still confirm/edit before
+# committing, but the "type in the cheque number again" chore is gone.
+#
+# Detection rules (case-insensitive; whitespace normalised):
+#   • Batch Name   ← "Cheque No"/"Chq No"/"Cheque Number"/"Cheque"
+#   • Payment Date ← "Payment Date"/"Cheque Date"/"Value Date"/"Date"
+#                    (falls back to any recognisable dd-mm-yyyy /
+#                     yyyy-mm-dd near the top of the sheet)
+#   • Notes        ← "Biller"/"Beneficiary"/"Payer Name"/"Name"
+#
+# We scan the FIRST 30 rows (title band + header). We never touch
+# rows below the header — those are shipment data.
+_BATCH_NAME_LABELS = (
+    "cheque no", "cheque number", "chq no", "chq number",
+    "cheque", "cheque #", "cheque no.", "chq no.",
+    "ref no", "reference no", "reference number", "utr", "utr no",
+    "transaction id", "txn id",
+)
+_PAYMENT_DATE_LABELS = (
+    "payment date", "paid on", "paid date", "cheque date",
+    "chq date", "value date", "settlement date", "remittance date",
+    "date of payment", "transaction date", "txn date",
+)
+_NOTES_LABELS = (
+    "biller", "beneficiary", "payer", "payer name",
+    "remitter", "remitter name", "from", "from name",
+    "name", "customer name", "party name",
+    "bank", "bank name",
+)
+
+
+def _label_matches(cell: str, labels: Tuple[str, ...]) -> bool:
+    norm = re.sub(r"[\s:.\-_]+", " ", str(cell or "").strip().lower()).strip()
+    for lab in labels:
+        if norm == lab or norm.rstrip(" .") == lab or norm.startswith(lab + " "):
+            return True
+    return False
+
+
+def _parse_datish(cell: Any) -> Optional[str]:
+    """Best-effort convert a cell to an ISO YYYY-MM-DD string.
+
+    Handles: datetime/date objects, ISO strings, dd-mm-yyyy / dd/mm/yyyy,
+    yyyy-mm-dd, and a few common Indian variants. Returns None when the
+    cell doesn't look like a date at all — the caller decides fallback.
+    """
+    if cell is None:
+        return None
+    if hasattr(cell, "isoformat"):
+        try:
+            return cell.isoformat()[:10]
+        except Exception:
+            pass
+    s = str(cell).strip()
+    if not s:
+        return None
+    # yyyy-mm-dd
+    m = re.match(r"^(\d{4})[\-/\.](\d{1,2})[\-/\.](\d{1,2})", s)
+    if m:
+        y, mo, d = m.groups()
+        try:
+            return f"{int(y):04d}-{int(mo):02d}-{int(d):02d}"
+        except ValueError:
+            pass
+    # dd-mm-yyyy  (India default)
+    m = re.match(r"^(\d{1,2})[\-/\.](\d{1,2})[\-/\.](\d{2,4})", s)
+    if m:
+        d, mo, y = m.groups()
+        y = "20" + y if len(y) == 2 else y
+        try:
+            return f"{int(y):04d}-{int(mo):02d}-{int(d):02d}"
+        except ValueError:
+            pass
+    return None
+
+
+def _auto_detect_payment_batch(grid: List[List[Any]]) -> Dict[str, str]:
+    """Scan the top of a COD-payment upload for batch metadata.
+
+    Returns a dict with any of `batch_name`, `payment_date`, `notes`
+    populated — plus `_debug` (for logging). All keys are optional;
+    the frontend only pre-fills empty inputs.
+    """
+    out: Dict[str, str] = {}
+    scanned = grid[:30]
+    for r_idx, row in enumerate(scanned):
+        for c_idx, cell in enumerate(row):
+            if cell is None:
+                continue
+            s = str(cell).strip()
+            if not s:
+                continue
+            # Adjacent-cell (same row, next non-empty col)
+            def _next_val() -> str:
+                for j in range(c_idx + 1, len(row)):
+                    nxt = row[j]
+                    if nxt is None:
+                        continue
+                    v = str(nxt).strip()
+                    if v:
+                        return v
+                return ""
+            # Below-cell (same col, next non-empty row within scan window)
+            def _below_val() -> str:
+                for ri in range(r_idx + 1, min(len(scanned), r_idx + 3)):
+                    row2 = scanned[ri]
+                    if c_idx < len(row2):
+                        v = row2[c_idx]
+                        if v is None:
+                            continue
+                        vs = str(v).strip()
+                        if vs:
+                            return vs
+                return ""
+
+            if "batch_name" not in out and _label_matches(s, _BATCH_NAME_LABELS):
+                val = _next_val() or _below_val()
+                if val and not _label_matches(val, _NOTES_LABELS + _PAYMENT_DATE_LABELS):
+                    out["batch_name"] = val
+            elif "payment_date" not in out and _label_matches(s, _PAYMENT_DATE_LABELS):
+                val = _next_val() or _below_val()
+                iso = _parse_datish(val)
+                if iso:
+                    out["payment_date"] = iso
+            elif "notes" not in out and _label_matches(s, _NOTES_LABELS):
+                val = _next_val() or _below_val()
+                if val and not _label_matches(val, _BATCH_NAME_LABELS + _PAYMENT_DATE_LABELS):
+                    out["notes"] = val
+            if len(out) >= 3:
+                break
+        if len(out) >= 3:
+            break
+    return out
+
+
 # ─── Phase F11.A — Junk tracking-value detector ─────────────────────
 #
 # Courier remit spreadsheets very frequently carry summary rows like
@@ -965,11 +1106,21 @@ def init() -> None:
             "header_row":     header_row,
             "data_start_row": data_start_row,
             "header_col":     header_col,
-            # First 12 rows × 20 cols of the ORIGINAL grid (pre-layout)
+            # First 40 rows × 30 cols of the ORIGINAL grid (pre-layout)
             # so the UI can render a scrollable peek widget the user
-            # taps to say "row 3 IS my header".
-            "raw_preview":    _raw_preview_grid(grid, max_rows=12, max_cols=20),
+            # taps to say "row 3 IS my header". Bumped from 12×20 in
+            # Phase F11.C so operators can vertically scroll through
+            # the whole title band + several header candidates.
+            "raw_preview":    _raw_preview_grid(grid, max_rows=40, max_cols=30),
             "raw_total_rows": len(grid),
+            # Phase F11.C — Auto-detected PaymentBatch metadata.
+            # Populated only for cod_payment imports; empty dict for
+            # booking / delivery so the frontend can pre-fill inputs
+            # unconditionally without a type guard.
+            "auto_detect": (
+                _auto_detect_payment_batch(grid)
+                if import_type == "cod_payment" else {}
+            ),
         }
 
     # ── Commit (validate + apply) ─────────────────────────────────

@@ -158,6 +158,28 @@ export default function ShipmentImportScreen() {
           file.uri, file.name, file.mime, importType, layout, file.webFile,
         );
         setPreview(p);
+        // Phase F11.C — Auto-fill PaymentBatch fields for cod_payment
+        // imports when the file carries obvious hints. We only touch
+        // inputs that are currently blank so any operator-supplied
+        // value takes precedence.
+        if (importType === "cod_payment") {
+          const auto = (p as any).auto_detect || {};
+          if (auto.batch_name && !pbName.trim()) {
+            setPbName(String(auto.batch_name));
+            // Cheque numbers are frequently reused as the reference
+            // number too — pre-fill Reference # when blank so the
+            // duplicate-detection warning has something to compare.
+            if (!pbReferenceNumber.trim()) {
+              setPbReferenceNumber(String(auto.batch_name));
+            }
+          }
+          if (auto.payment_date && !pbPaymentDate.trim()) {
+            setPbPaymentDate(String(auto.payment_date));
+          }
+          if (auto.notes && !pbNotes.trim()) {
+            setPbNotes(String(auto.notes));
+          }
+        }
         // Merge SUGGESTED with any saved mapping — saved wins.
         setMapping((prev) => {
           const merged: Record<string, string> = { ...(p.suggested || {}) };
@@ -176,7 +198,8 @@ export default function ShipmentImportScreen() {
         setLoading(false);
       }
     },
-    [importType, headerRow, dataStartRow, headerCol],
+    [importType, headerRow, dataStartRow, headerCol,
+     pbName, pbReferenceNumber, pbPaymentDate, pbNotes],
   );
 
   const pickFile = useCallback(async () => {
@@ -553,12 +576,25 @@ export default function ShipmentImportScreen() {
               />
             </View>
 
-            {/* Peek of first 8 rows (raw) so user can spot the correct header row */}
+            {/* Peek of first rows (raw) so user can spot the correct
+                header row. Phase F11.C — added vertical ScrollView
+                wrapper so operators can scroll through the full 40-row
+                preview when the sheet has a long title band. */}
             {preview?.raw_preview && preview.raw_preview.length > 0 ? (
               <View style={{ marginTop: 12 }}>
-                <Text style={styles.peekTitle}>File preview (first {preview.raw_preview.length} rows)</Text>
+                <Text style={styles.peekTitle}>
+                  File preview (first {preview.raw_preview.length} rows
+                  {typeof preview.raw_total_rows === "number" && preview.raw_total_rows > preview.raw_preview.length
+                    ? ` of ${preview.raw_total_rows}`
+                    : ""}
+                  )
+                </Text>
                 <ScrollView horizontal showsHorizontalScrollIndicator={true} style={styles.peekWrap}>
-                  <View>
+                  <ScrollView
+                    nestedScrollEnabled
+                    showsVerticalScrollIndicator={true}
+                    style={{ maxHeight: 260 }}
+                  >
                     {preview.raw_preview.map((row, rIdx) => {
                       const oneBased = rIdx + 1;
                       const isHeader = oneBased === headerRow;
@@ -580,7 +616,7 @@ export default function ShipmentImportScreen() {
                           >
                             <Text style={styles.peekRowNumTxt}>{oneBased}</Text>
                           </TouchableOpacity>
-                          {row.slice(0, 10).map((cell, cIdx) => {
+                          {row.slice(0, 15).map((cell, cIdx) => {
                             const colOneBased = cIdx + 1;
                             const beforeStart = colOneBased < headerCol;
                             return (
@@ -600,7 +636,7 @@ export default function ShipmentImportScreen() {
                         </View>
                       );
                     })}
-                  </View>
+                  </ScrollView>
                 </ScrollView>
                 <Text style={styles.peekLegend}>
                   <Text style={{ color: "#2563EB", fontWeight: "700" }}>Blue</Text> = header ·{" "}
@@ -643,6 +679,27 @@ export default function ShipmentImportScreen() {
                 </Text>
               </View>
             ) : null}
+
+            {/* Phase F11.C — surface which fields were auto-populated
+                from the uploaded file so the operator knows to
+                review-and-confirm rather than assume they were saved
+                from a previous run. */}
+            {(() => {
+              const auto = (preview as any)?.auto_detect || {};
+              const bits: string[] = [];
+              if (auto.batch_name)   bits.push("Batch Name");
+              if (auto.payment_date) bits.push("Payment Date");
+              if (auto.notes)        bits.push("Notes");
+              if (!bits.length) return null;
+              return (
+                <View style={styles.autoBanner}>
+                  <PhIcon name="sparkles-outline" size={14} color="#065F46" />
+                  <Text style={styles.autoBannerTxt}>
+                    Auto-filled from file: <Text style={{ fontWeight: "800" }}>{bits.join(" · ")}</Text>. Review and edit as needed.
+                  </Text>
+                </View>
+              );
+            })()}
 
             {/* Phase F9.1 — Batch Name is now REQUIRED. Red asterisk in
                 the label signals the requirement; validation in
@@ -1131,6 +1188,14 @@ const styles = StyleSheet.create({
     padding: 10, borderRadius: 8, marginBottom: 10,
   },
   warnBannerTxt: { flex: 1, fontSize: 12, color: "#92400E" },
+
+  // Phase F11.C — Auto-fill notice for cod_payment imports.
+  autoBanner: {
+    flexDirection: "row", alignItems: "center", gap: 8,
+    backgroundColor: "#ECFDF5", borderColor: "#A7F3D0", borderWidth: 1,
+    padding: 10, borderRadius: 8, marginBottom: 10,
+  },
+  autoBannerTxt: { flex: 1, fontSize: 12, color: "#065F46" },
 
   colRow:    { flexDirection: "row", alignItems: "center", paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: "#F1F5F9" },
   colHeader: { fontSize: 14, fontWeight: "600", color: "#0F172A" },
