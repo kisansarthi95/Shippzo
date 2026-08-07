@@ -1210,6 +1210,26 @@ def init() -> None:
                                     "imported": uploaded_cod,
                                 })
 
+                            # Phase F10.2 — Project current-run mismatches
+                            # onto the shipment doc so the Shipment
+                            # Details screen surfaces the "Payment
+                            # discrepancy" alert. Mirrors the booking-
+                            # branch behaviour (lines 1134-1142) that
+                            # was previously scoped only to booking
+                            # imports. Overwrites any prior alerts by
+                            # design — the newest cod_payment run is
+                            # the source of truth for the alert state.
+                            if mismatches:
+                                applied["import_validation_alerts"] = [
+                                    {
+                                        "field":    mm["field"],
+                                        "existing": mm["existing"],
+                                        "imported": mm["imported"],
+                                        "at":       now,
+                                    }
+                                    for mm in mismatches
+                                ]
+
                         if applied:
                             row_status = "matched_mismatch" if mismatches else "matched_updated"
                             updates_to_write.append((shipment_id, applied))

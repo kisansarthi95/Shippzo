@@ -1,0 +1,35 @@
+{
+  "summary": "Phase F10.2 cod_payment mismatch fix RE-VERIFIED. All 5/5 tests now pass (previously 4/5 in iteration 52). The previously-failing scenario — GET /api/shipments/{id} after a discrepant cod_payment import surfacing `import_validation_alerts` — now works correctly. Confirmed the alert-projection block was added inside the `if import_type == 'cod_payment':` branch at /app/backend/routers/shipment_import.py:1213-1231, guarded by `if mismatches:` so exact matches produce no alert. Discrepant upload (cod_collected=719 vs cod_amount=669 on EG350860354IN) now stamps `import_validation_alerts=[{field:'cod_amount', existing:669, imported:719, at:<iso>}]` on the shipment doc. Regression tests (baseline correction, batch tally mismatch registration, exact-match clean, booking match, booking diverge) all continue to pass.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "POST /api/shipments/import/commit (import_type=delivery)",
+        "issue": "Same projection gap likely still exists for delivery imports — cross-verify mismatches populate the batch but may not reach `shipment.import_validation_alerts`. Not in scope for F10.2 but worth unifying the alert-stamping into a shared post-loop block."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_phase_f10_2_cod_payment_mismatch.py",
+    "/app/test_reports/pytest/pytest_iteration_53_f10_2.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "Fix is correctly scoped: the projection block sits inside the `if import_type == 'cod_payment':` branch (shipment_import.py:1213-1231), guarded by `if mismatches:`, so clean matches leave the field untouched (verified by test_cod_payment_matching_upload_no_mismatch).",
+    "Alert projection overwrites (not appends to) `import_validation_alerts` — this is called out in the code comment (line 1219-1221) and is by-design: newest run wins. That matches the booking branch behaviour.",
+    "shipment_import.py is now 1451 lines — still above the 700-line guideline. Consider extracting per-import-type post-processing into helper modules to improve maintainability. Non-blocking."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "100%", "frontend": "n/a"},
+  "seed_data_creation": "None. Reused existing shipment EG350860354IN (amount=719, cod_amount=669) from admin@test.com account.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "F10.2 cod_payment mismatch flow is fully verified. If future changes touch shipment_import.py's commit endpoint, re-run /app/backend/tests/test_phase_f10_2_cod_payment_mismatch.py. Delivery-import branch was flagged as a similar-gap candidate in iteration 52 but is out of scope for F10.2.",
+  "rca_of_issue": "Iteration 52 identified that the cod_payment branch of the /api/shipments/import/commit endpoint detected mismatches correctly (batch row flagged matched_mismatch with a `cod_amount` entry) but never projected them onto `shipment.import_validation_alerts`, so the Shipment Details 'Payment discrepancy' alert stayed silent. Fix applied at shipment_import.py:1213-1231 mirrors the booking-branch stamping (lines 1134-1142) inside the cod_payment branch, guarded by `if mismatches:` for safety on exact-match remits. Verified in iteration 53 by test_shipment_details_surfaces_import_alert which now passes."
+}
