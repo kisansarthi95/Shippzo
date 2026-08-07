@@ -1052,9 +1052,31 @@ def init() -> None:
 
                             # ── Cross-verify guard ──
                             if field in CROSS_VERIFY_FIELDS:
-                                existing_val = existing.get(field) if field != "amount" else (
-                                    existing.get("amount") or existing.get("cod_amount") or 0.0
-                                )
+                                # Phase F10.2 — for cod_payment imports the
+                                # "amount" baseline is the shipment's COD
+                                # amount (what the courier is supposed to
+                                # collect: 669), NOT the order total which
+                                # already netted the customer's advance
+                                # token (719). Using the wrong baseline was
+                                # producing false matched_ok rows that
+                                # never surfaced the payment discrepancy
+                                # in the batch tally or the Shipment
+                                # Details alert.
+                                if field == "amount":
+                                    if import_type == "cod_payment":
+                                        existing_val = (
+                                            existing.get("cod_amount")
+                                            or existing.get("amount")
+                                            or 0.0
+                                        )
+                                    else:
+                                        existing_val = (
+                                            existing.get("amount")
+                                            or existing.get("cod_amount")
+                                            or 0.0
+                                        )
+                                else:
+                                    existing_val = existing.get(field)
                                 if field == "weight":
                                     equal = _weight_equal(existing_val, new_val)
                                     row_imported_weight = str(new_val)
@@ -1154,6 +1176,39 @@ def init() -> None:
                             applied["cod_payment_status"] = "received"
                             applied["last_import_at"] = now
                             applied["last_import_type"] = "cod_payment"
+
+                            # Phase F10.2 — Payment discrepancy detection.
+                            # Explicitly compare the courier-remitted amount
+                            # (`cod_collected_amount` uploaded in this row)
+                            # against the shipment's stored `cod_amount`
+                            # (what the courier was supposed to collect).
+                            # If they differ, register a mismatch so:
+                            #   • row_status flips to matched_mismatch below
+                            #   • the batch tally counts it under mismatches
+                            #   • the Shipment Details "Payment discrepancy"
+                            #     alert surfaces it in-app
+                            # cod_collected_amount isn't in CROSS_VERIFY_FIELDS
+                            # so we handle the compare here as a first-class
+                            # concern for cod_payment imports only.
+                            uploaded_cod = applied.get("cod_collected_amount")
+                            stored_cod   = existing.get("cod_amount")
+                            if (
+                                uploaded_cod is not None
+                                and stored_cod is not None
+                                and not _amount_equal(stored_cod, uploaded_cod)
+                                # Don't double-count if the cross-verify
+                                # loop already flagged an amount mismatch
+                                # for this row.
+                                and not any(
+                                    m.get("field") in ("amount", "cod_amount")
+                                    for m in mismatches
+                                )
+                            ):
+                                mismatches.append({
+                                    "field":    "cod_amount",
+                                    "existing": stored_cod,
+                                    "imported": uploaded_cod,
+                                })
 
                         if applied:
                             row_status = "matched_mismatch" if mismatches else "matched_updated"

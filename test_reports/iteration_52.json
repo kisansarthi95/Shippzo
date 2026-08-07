@@ -1,0 +1,51 @@
+{
+  "summary": "Phase F10.2 cod_payment mismatch fix — backend regression tested against article EG350860354IN (amount=719, cod_amount=669). 4/5 assertions pass (80%). Fix (A) — cod_amount baseline for cross-verify — and Fix (B) — explicit cod_collected vs cod_amount compare — both verified: discrepant upload (719) produces row_status='matched_mismatch' with a mismatches[] entry {field:'cod_amount', existing:669, imported:719} and increments batch_doc.matched_mismatch. Matching upload (669) correctly produces matched_updated with empty mismatches. Booking-import regression is clean — order-total baseline preserved. FAILURE: the Shipment Details endpoint (GET /api/shipments/{id}) does NOT surface the cod_amount mismatch through `import_validation_alerts` because that field is only stamped inside the `if import_type == 'booking':` branch (lines 1134-1142 of shipment_import.py). The cod_payment branch registers the mismatch in the batch but never projects it onto the shipment document, so the in-app 'Payment discrepancy' alert on Shipment Details will not appear after a cod_payment import.",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "POST /api/shipments/import/commit (import_type=cod_payment) → GET /api/shipments/{id}",
+        "issue": "Cod_payment mismatches never propagate to shipment.import_validation_alerts, so the Shipment Details 'Payment discrepancy' alert stays silent even though the batch row is correctly flagged matched_mismatch. Fix scope missed the projection step. Add an `applied['import_validation_alerts'] = [...]` block inside the `if import_type == 'cod_payment':` branch (mirror lines 1134-1142 from the booking branch) so the same mismatches[] list is stamped on the shipment doc. Reference: /app/backend/routers/shipment_import.py:1170-1211.",
+        "priority": "HIGH"
+      }
+    ],
+    "minor": [
+      {
+        "endpoint": "POST /api/shipments/import/commit (import_type=delivery)",
+        "issue": "Same projection gap exists for delivery imports — cross-verify mismatches populate the batch but never reach `shipment.import_validation_alerts`. Consider unifying the alert-stamping into a shared post-loop block for all import_types."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [
+      {
+        "flow": "COD Payment Import → Shipment Details Payment-discrepancy alert",
+        "issue": "Frontend read path (import_validation_alerts on the shipment document) is intact and works for booking imports, but the backend does not populate it after a cod_payment mismatch, so the badge will never render for the very scenario the bug fix targets.",
+        "affected_testIDs": []
+      }
+    ],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_phase_f10_2_cod_payment_mismatch.py",
+    "/app/test_reports/pytest/pytest_iteration_52_f10_2.xml"
+  ],
+  "action_items": [
+    "In /app/backend/routers/shipment_import.py inside the `if import_type == 'cod_payment':` block (around line 1170), add: `applied['import_validation_alerts'] = [{'field': mm['field'], 'existing': mm['existing'], 'imported': mm['imported'], 'at': now} for mm in mismatches]`. This makes the Shipment Details 'Payment discrepancy' alert light up as the review request specifies.",
+    "Consider hoisting the import_validation_alerts stamping out of the booking-only branch and applying it uniformly for booking, delivery, and cod_payment so the delivery import also surfaces cross-verify alerts in-app.",
+    "After the fix, re-run /app/backend/tests/test_phase_f10_2_cod_payment_mismatch.py — all 5 tests should pass. The failing test is `test_shipment_details_surfaces_import_alert`."
+  ],
+  "critical_code_review_comments": [
+    "Fix (A) & (B) are correctly scoped and guarded by `import_type == 'cod_payment'`, and the double-count guard `not any(m.get('field') in ('amount','cod_amount') ...)` correctly prevents duplicate flags when a CSV maps both `amount` and `cod_collected_amount`.",
+    "The `import_validation_alerts` projection is booking-only (line 1134). This is inconsistent — the batch tally treats mismatches uniformly across import types but the shipment-doc alert only reflects booking. This is why the cod_payment 'Payment discrepancy' alert never renders in-app.",
+    "shipment_import.py is 1431 lines — approaching the 700-line guideline threshold; consider splitting per-import-type post-processing into helper modules for maintainability."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "80%", "frontend": "n/a"},
+  "seed_data_creation": "None. Used existing shipment EG350860354IN (id=5e255905-22ba-4c8a-9d73-343ea3a38fcf, amount=719, cod_amount=669) already present in admin@test.com account.",
+  "retest_needed": true,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Re-run /app/backend/tests/test_phase_f10_2_cod_payment_mismatch.py after the alert-projection fix. Note: the tests are order-dependent within the module (the booking regression test's amount=999 mismatch will overwrite import_validation_alerts if it runs after the cod_payment test). If you want strict isolation, run only the cod_payment discrepant test and then check the shipment doc immediately. The test file already uses `pytest -k` friendly names.",
+  "rca_of_issue": "Bug fix in shipment_import.py addressed the mismatch DETECTION correctly (both (A) baseline swap for cod_amount and (B) explicit cod_collected vs cod_amount compare produce a mismatches[] entry with field='cod_amount'). However, the review request also required propagating this to the Shipment Details in-app alert. That alert is powered by `shipment.import_validation_alerts`, which is only written inside `if import_type == 'booking':` (lines 1134-1142). The cod_payment branch never stamps this field, so `GET /api/shipments/{id}` returns the stale/empty alert list even though the batch record shows `matched_mismatch=1`. Reproduction: (1) Upload cod_payment CSV mapping cod_collected_amount=719 for EG350860354IN; (2) batch response returns matched_mismatch=1 and row.mismatches contains the cod_amount entry — CORRECT; (3) GET /api/shipments/5e255905-22ba-4c8a-9d73-343ea3a38fcf shows import_validation_alerts is unchanged (either empty or stale from a prior booking import) — INCORRECT. Mitigation: mirror the booking-branch alert-stamping (lines 1134-1142) inside the cod_payment branch (after the explicit compare, around line 1211)."
+}
