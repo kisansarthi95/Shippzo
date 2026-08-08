@@ -391,7 +391,7 @@ export default function AdminWhatsAppProviderScreen() {
         <Stack.Screen options={{ headerShown: false }} />
         <View style={styles.center}>
           <ActivityIndicator size="large" color={colors.primary} />
-          <Text style={styles.muted}>Loading WhatsApp Provider…</Text>
+          <Text style={styles.muted}>Loading API Plugin 1.0…</Text>
         </View>
       </SafeAreaView>
     );
@@ -417,7 +417,7 @@ export default function AdminWhatsAppProviderScreen() {
           <PhIcon name="arrow-back" size={22} color="#0F172A" />
         </TouchableOpacity>
         <View style={{ flex: 1 }}>
-          <Text style={styles.headerTitle}>WhatsApp Provider</Text>
+          <Text style={styles.headerTitle}>API Plugin 1.0</Text>
           <Text style={styles.headerSub}>
             Global config & per-event automation
           </Text>
@@ -592,6 +592,22 @@ export default function AdminWhatsAppProviderScreen() {
           allEvents={events}
           onClose={() => setEditing(null)}
           onSave={saveEvent}
+          onDelete={async (ev) => {
+            // Phase F11.G — delete event trigger. Backend already
+            // enforces "custom events only can be truly deleted",
+            // built-ins get reset via the seed_default_events
+            // idempotent path on next restart.
+            try {
+              await Api.adminWppDeleteEvent(ev.event_key);
+              setEditing(null);
+              await load();
+            } catch (e: any) {
+              Alert.alert(
+                "Delete failed",
+                e?.response?.data?.detail || e?.message || "Try again.",
+              );
+            }
+          }}
           saving={savingEvent}
         />
       )}
@@ -1038,7 +1054,7 @@ function ProviderConfigCard({
               name they use ("FlowConnect", "WATI", …, or anything
               else).  Value still persists to `provider` on save so
               existing backend logic stays untouched. */}
-          <Text style={styles.fieldLabel}>WhatsApp Provider Name</Text>
+          <Text style={styles.fieldLabel}>API Plugin Name</Text>
           <TextInput
             value={draft.provider}
             onChangeText={(v) => setDraft({ ...draft, provider: v })}
@@ -1258,6 +1274,7 @@ function EventEditorModal({
   allEvents,
   onClose,
   onSave,
+  onDelete,
   saving,
 }: {
   event: EventRow;
@@ -1265,9 +1282,13 @@ function EventEditorModal({
   allEvents: EventRow[];
   onClose: () => void;
   onSave: (draft: EventRow) => void;
+  onDelete?: (event: EventRow) => void;
   saving: boolean;
 }) {
   const [draft, setDraft] = useState<EventRow>(event);
+  // Phase F11.G — Android fallback rename modal state.
+  const [renameOpen, setRenameOpen]   = useState(false);
+  const [renameDraft, setRenameDraft] = useState<string>(event.label || "");
   // Phase F5.3 — Simple/Advanced toggle. Everything beyond "Enable"
   // + "Test Send" is now advanced. Default OFF so the happy path
   // (API key + Base URL → just send data) is un-blocked by config.
@@ -1336,6 +1357,122 @@ function EventEditorModal({
   const [manualEditFor, setManualEditFor] = useState<string | null>(null);
   const [manualEditDraft, setManualEditDraft] = useState<string>("");
 
+  // Phase F11.G — 6 categorized dropdown ("Select Variant") UI state.
+  // Replaces the flat chip-cloud so operators can find fields fast
+  // even when the backend catalogue grows to 60+ entries. Each
+  // category is independently collapsible; state per key.
+  const [categoryOpen, setCategoryOpen] = useState<Record<string, boolean>>({});
+  const toggleCategory = (k: string) =>
+    setCategoryOpen((prev) => ({ ...prev, [k]: !prev[k] }));
+
+  // Phase F11.G — Categorized field buckets. Field keys are mapped
+  // into the 6 categories the user specified in the master command.
+  // Any field not explicitly listed falls into "Custom & Links"
+  // automatically (covers auto-discovered DB columns + custom_values).
+  const FIELD_CATEGORIES: {
+    key: string;
+    label: string;
+    icon: string;
+    tint: string;
+    keys: string[];
+  }[] = [
+    {
+      key: "identity",
+      label: "Core Identity & Stage",
+      icon: "shield-checkmark-outline",
+      tint: "#2563EB",
+      keys: [
+        "tracking_id", "order_id", "master_id", "id",
+        "current_stage", "status", "confirmation_status",
+        "courier_name", "items", "product_name", "quantity",
+        "payment_mode", "eta_days",
+      ],
+    },
+    {
+      key: "customer",
+      label: "Customer Info",
+      icon: "person-outline",
+      tint: "#0E7490",
+      keys: [
+        "customer_name", "customer_phone", "alt_phone",
+        "customer_email", "gstin",
+        "address", "city", "pincode", "state",
+      ],
+    },
+    {
+      key: "financials",
+      label: "Financials",
+      icon: "cash-outline",
+      tint: "#B45309",
+      keys: [
+        "cod_amount", "token_amount", "cod_collected_amount",
+        "cod_payment_date", "cod_payment_status", "cod_payer_name",
+        "amount", "total_amount",
+      ],
+    },
+    {
+      key: "timestamps",
+      label: "Timestamps",
+      icon: "time-outline",
+      tint: "#7C3AED",
+      keys: [
+        "booking_date", "created_at", "updated_at", "modified_at",
+        "shipped_at", "out_for_delivery_at", "delivered_at",
+        "last_import_at",
+      ],
+    },
+    {
+      key: "logistics",
+      label: "Logistics & System",
+      icon: "cube-outline",
+      tint: "#059669",
+      keys: [
+        "weight", "box_dimensions",
+        "package_type", "category", "variant_name",
+        "business_name", "business_phone",
+      ],
+    },
+    {
+      key: "custom",
+      label: "Custom & Links",
+      icon: "sparkles-outline",
+      tint: "#DC2626",
+      // Special sentinel — everything NOT covered above falls in
+      // here (notes / links / auto-discovered DB fields /
+      // custom_values keys).
+      keys: [
+        "notes", "shipment_notes",
+        "google_review_link", "checkout_url",
+        "otp", "otp_type", "contact_email", "event_type",
+      ],
+    },
+  ];
+
+  // Compute the effective field list per category (respect the
+  // catchall behaviour for "custom").
+  const categorizedFields = useMemo(() => {
+    const byCat: Record<string, AvailableField[]> = {};
+    for (const c of FIELD_CATEGORIES) byCat[c.key] = [];
+    for (const f of available) {
+      let placed = false;
+      for (const c of FIELD_CATEGORIES) {
+        if (c.key === "custom") continue;
+        if (c.keys.includes(f.key)) {
+          byCat[c.key].push(f);
+          placed = true;
+          break;
+        }
+      }
+      if (!placed) {
+        // Falls to Custom & Links — either explicitly listed there
+        // or auto-discovered from the DB / custom_values dict.
+        byCat.custom.push(f);
+      }
+    }
+    return byCat;
+    // eslint-disable-next-line
+  }, [available]);
+
   const toggleField = (key: string) => {
     setDraft((d) => ({
       ...d,
@@ -1398,10 +1535,113 @@ function EventEditorModal({
               <PhIcon name="close" size={22} color="#0F172A" />
             </TouchableOpacity>
             <View style={{ flex: 1 }}>
-              <Text style={styles.headerTitle}>{event.label}</Text>
+              <Text style={styles.headerTitle}>{draft.label || event.label}</Text>
               <Text style={styles.headerSub}>{event.sub}</Text>
             </View>
+            {/* Phase F11.G — Top-right block management icons.
+                Pencil = Rename this block's display label (persists
+                to `draft.label` — saved with the rest of the form).
+                Trash  = Delete this event (custom automations wipe;
+                built-in events reset to catalogue defaults). Both
+                confirm before acting. */}
+            <TouchableOpacity
+              onPress={() => {
+                Alert.prompt?.(
+                  "Rename Block",
+                  "Enter a new display name for this block:",
+                  [
+                    { text: "Cancel", style: "cancel" },
+                    {
+                      text: "Save",
+                      onPress: (t?: string) => {
+                        const v = (t || "").trim();
+                        if (v) setDraft({ ...draft, label: v });
+                      },
+                    },
+                  ],
+                  "plain-text",
+                  draft.label || event.label,
+                );
+                // Android doesn't have Alert.prompt — provide fallback
+                // via a simple in-place toggle to editable header.
+                if (!(Alert as any).prompt) {
+                  setRenameOpen(true);
+                }
+              }}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              style={styles.headerIconBtn}
+              testID="block-rename"
+              accessibilityLabel="Rename block"
+            >
+              <PhIcon name="create-outline" size={20} color="#2563EB" />
+            </TouchableOpacity>
+            <TouchableOpacity
+              onPress={() => {
+                Alert.alert(
+                  "Delete this block?",
+                  event.category === "custom"
+                    ? `"${draft.label || event.label}" will be permanently deleted.`
+                    : `"${draft.label || event.label}" is a built-in block. Deleting it will reset it to catalogue defaults on next restart.`,
+                  [
+                    { text: "Cancel", style: "cancel" },
+                    {
+                      text: "Delete",
+                      style: "destructive",
+                      onPress: () => {
+                        onDelete && onDelete(event);
+                      },
+                    },
+                  ],
+                );
+              }}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              style={styles.headerIconBtn}
+              testID="block-delete"
+              accessibilityLabel="Delete block"
+            >
+              <PhIcon name="trash-outline" size={20} color="#DC2626" />
+            </TouchableOpacity>
           </View>
+
+          {/* Phase F11.G — Fallback rename modal for Android (Alert.prompt
+              only exists on iOS). Simple centered TextInput card. */}
+          {renameOpen && (
+            <View style={styles.renameOverlay}>
+              <TouchableOpacity
+                style={styles.renameBackdrop}
+                onPress={() => setRenameOpen(false)}
+                activeOpacity={1}
+              />
+              <View style={styles.renameCard}>
+                <Text style={styles.renameTitle}>Rename Block</Text>
+                <TextInput
+                  style={styles.input}
+                  value={renameDraft}
+                  onChangeText={setRenameDraft}
+                  placeholder="New block name"
+                  autoFocus
+                />
+                <View style={{ flexDirection: "row", gap: 10, marginTop: 12 }}>
+                  <TouchableOpacity
+                    style={[styles.mcBtnGhost, { flex: 1 }]}
+                    onPress={() => setRenameOpen(false)}
+                  >
+                    <Text style={styles.mcBtnGhostTxt}>Cancel</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.mcBtnPrimary, { flex: 1 }]}
+                    onPress={() => {
+                      const v = renameDraft.trim();
+                      if (v) setDraft({ ...draft, label: v });
+                      setRenameOpen(false);
+                    }}
+                  >
+                    <Text style={styles.mcBtnPrimaryTxt}>Save</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            </View>
+          )}
 
           <ScrollView
             style={{ flex: 1 }}
@@ -1683,33 +1923,82 @@ function EventEditorModal({
               </>
             )}
 
-            {/* Selected fields */}
+            {/* Phase F11.G — Categorized "Select Variant" dropdown.
+                Replaces the flat chip-cloud with 6 collapsible
+                category sections so operators can find fields fast
+                even when the catalogue reaches 60+ entries. Tapping
+                a chip toggles the field (same underlying behaviour
+                as the old cloud), so all existing mapping logic
+                keeps working verbatim. */}
             <Text style={[styles.fieldLabel, { marginTop: 16 }]}>
               Fields to Send ({draft.selected_fields.length})
             </Text>
             <Text style={styles.hint}>
-              Tick which app fields should be pushed to the provider. The
-              outgoing parameter name = field key (unless renamed below).
+              Pick fields from the categorized dropdowns below. Any
+              new column added to your Shipment / Pending Order
+              database automatically appears under the matching
+              category — no code change required.
             </Text>
-            <View style={styles.fieldsBox}>
-              {available.map((f) => {
-                const on = draft.selected_fields.includes(f.key);
-                return (
+
+            {FIELD_CATEGORIES.map((cat) => {
+              const fields = categorizedFields[cat.key] || [];
+              if (!fields.length) return null;
+              const isOpen = !!categoryOpen[cat.key];
+              const pickedCount = fields.filter(
+                (f) => draft.selected_fields.includes(f.key),
+              ).length;
+              return (
+                <View key={cat.key} style={styles.catBlock}>
                   <TouchableOpacity
-                    key={f.key}
-                    style={[styles.fieldChip, on && styles.fieldChipOn]}
-                    onPress={() => toggleField(f.key)}
+                    style={styles.catHeader}
+                    onPress={() => toggleCategory(cat.key)}
+                    activeOpacity={0.7}
+                    testID={`cat-header-${cat.key}`}
                   >
-                    {on && (
-                      <PhIcon name="checkmark" size={14} color="#fff" />
-                    )}
-                    <Text style={[styles.fieldChipTxt, on && { color: "#fff" }]}>
-                      {f.label}
+                    <PhIcon name={cat.icon as any} size={16} color={cat.tint} />
+                    <Text style={[styles.catHeaderTxt, { color: cat.tint }]}>
+                      {cat.label}
                     </Text>
+                    {pickedCount > 0 && (
+                      <View style={[styles.catCountPill, { backgroundColor: cat.tint }]}>
+                        <Text style={styles.catCountTxt}>{pickedCount}</Text>
+                      </View>
+                    )}
+                    <View style={{ flex: 1 }} />
+                    <Text style={styles.catFieldCount}>
+                      {fields.length} field{fields.length === 1 ? "" : "s"}
+                    </Text>
+                    <PhIcon
+                      name={isOpen ? "chevron-up" : "chevron-down"}
+                      size={16}
+                      color="#64748B"
+                    />
                   </TouchableOpacity>
-                );
-              })}
-            </View>
+                  {isOpen && (
+                    <View style={styles.catBody}>
+                      {fields.map((f) => {
+                        const on = draft.selected_fields.includes(f.key);
+                        return (
+                          <TouchableOpacity
+                            key={f.key}
+                            style={[styles.fieldChip, on && styles.fieldChipOn]}
+                            onPress={() => toggleField(f.key)}
+                            testID={`field-chip-${f.key}`}
+                          >
+                            {on && (
+                              <PhIcon name="checkmark" size={14} color="#fff" />
+                            )}
+                            <Text style={[styles.fieldChipTxt, on && { color: "#fff" }]}>
+                              {f.label}
+                            </Text>
+                          </TouchableOpacity>
+                        );
+                      })}
+                    </View>
+                  )}
+                </View>
+              );
+            })}
 
             {/* Variable mapping (only for ticked fields) — Phase F4.9
                 revamp: tap-to-pick from AVAILABLE_FIELDS instead of
@@ -2287,6 +2576,111 @@ const styles = StyleSheet.create({
   },
   fieldChipOn: { backgroundColor: colors.primary, borderColor: colors.primary },
   fieldChipTxt: { fontSize: 12, color: "#475569", fontWeight: "600" },
+  // Phase F11.G — Categorized "Select Variant" dropdown styles.
+  catBlock: {
+    marginBottom: 8,
+    borderWidth: 1,
+    borderColor: "#E5E7EB",
+    borderRadius: 10,
+    backgroundColor: "#FAFAFA",
+    overflow: "hidden",
+  },
+  catHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    backgroundColor: "#fff",
+  },
+  catHeaderTxt: {
+    fontSize: 13,
+    fontWeight: "800",
+  },
+  catCountPill: {
+    minWidth: 20,
+    height: 18,
+    paddingHorizontal: 5,
+    borderRadius: 9,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  catCountTxt: {
+    color: "#fff",
+    fontSize: 10,
+    fontWeight: "800",
+  },
+  catFieldCount: {
+    fontSize: 11,
+    color: "#94A3B8",
+    fontWeight: "600",
+  },
+  catBody: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 6,
+    padding: 10,
+    paddingTop: 8,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: "#E5E7EB",
+  },
+  // Phase F11.G — Header-icon buttons (pencil rename + trash delete)
+  // rendered top-right of the event editor modal.
+  headerIconBtn: {
+    width: 34,
+    height: 34,
+    borderRadius: 8,
+    alignItems: "center",
+    justifyContent: "center",
+    marginLeft: 2,
+    backgroundColor: "#F1F5F9",
+  },
+  // Android-fallback rename modal.
+  renameOverlay: {
+    position: "absolute",
+    top: 0, right: 0, bottom: 0, left: 0,
+    backgroundColor: "rgba(0,0,0,0.5)",
+    alignItems: "center",
+    justifyContent: "center",
+    zIndex: 100,
+  },
+  renameBackdrop: {
+    position: "absolute",
+    top: 0, right: 0, bottom: 0, left: 0,
+  },
+  renameCard: {
+    width: "86%",
+    maxWidth: 380,
+    backgroundColor: "#fff",
+    borderRadius: 12,
+    padding: 18,
+    elevation: 4,
+    shadowColor: "#000",
+    shadowOpacity: 0.15,
+    shadowRadius: 12,
+  },
+  renameTitle: {
+    fontSize: 15,
+    fontWeight: "800",
+    color: "#0F172A",
+    marginBottom: 10,
+  },
+  mcBtnGhost: {
+    height: 42,
+    borderRadius: 8,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#F1F5F9",
+  },
+  mcBtnGhostTxt: { color: "#475569", fontWeight: "800", fontSize: 13 },
+  mcBtnPrimary: {
+    height: 42,
+    borderRadius: 8,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: colors.primary,
+  },
+  mcBtnPrimaryTxt: { color: "#fff", fontWeight: "800", fontSize: 13 },
 
   mapRow: {
     flexDirection: "row",

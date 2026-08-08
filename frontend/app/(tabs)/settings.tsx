@@ -1115,7 +1115,7 @@ export default function SettingsScreen() {
                       <View style={[styles.hubIconWrap, { backgroundColor: "#FEF3C7" }]}>
                         <PhIcon name="cloud-upload-outline" size={22} color="#92400E" />
                       </View>
-                      <Text style={styles.hubTitle}>WhatsApp Provider</Text>
+                      <Text style={styles.hubTitle}>API Plugin 1.0</Text>
                       <View style={styles.adminPill}>
                         <Text style={styles.adminPillTxt}>ADMIN</Text>
                       </View>

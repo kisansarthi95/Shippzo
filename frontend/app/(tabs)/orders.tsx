@@ -1233,7 +1233,7 @@ export default function OrdersFromSheet() {
               When Auto is ON, we send an abandoned_cart_recovery
               WhatsApp message to the customer after your chosen delay.
               Requires the trigger's Webhook URL to be set in Admin →
-              WhatsApp Provider → Recovery.
+              API Plugin 1.0 → Recovery.
             </Text>
 
             <Text style={acStyles.sectionLbl}>Mode</Text>
