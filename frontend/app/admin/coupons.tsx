@@ -275,22 +275,22 @@ export default function AdminCouponsScreen() {
               <Text style={styles.dashTitle}>📊  Analytics</Text>
               <View style={styles.statRow}>
                 <View style={styles.statBox}>
-                  <Text style={styles.statNum}>{analytics.total_coupons}</Text>
+                  <Text style={styles.statNum}>{analytics?.total_coupons ?? 0}</Text>
                   <Text style={styles.statLbl}>Coupons</Text>
                 </View>
                 <View style={styles.statBox}>
-                  <Text style={styles.statNum}>{analytics.totals.redemptions}</Text>
+                  <Text style={styles.statNum}>{analytics?.totals?.redemptions ?? 0}</Text>
                   <Text style={styles.statLbl}>Redemptions</Text>
                 </View>
                 <View style={styles.statBox}>
                   <Text style={[styles.statNum, { fontSize: 16 }]}>
-                    ₹{analytics.totals.total_discount.toLocaleString("en-IN")}
+                    ₹{(analytics?.totals?.total_discount ?? 0).toLocaleString("en-IN")}
                   </Text>
                   <Text style={styles.statLbl}>Discount given</Text>
                 </View>
               </View>
               <View style={styles.statusRow}>
-                {Object.entries(analytics.status_counts).map(([k, v]) => {
+                {Object.entries(analytics?.status_counts ?? {}).map(([k, v]) => {
                   if (!v) return null;
                   const sc = STATUS_COLORS[k] || STATUS_COLORS.active;
                   return (
@@ -302,14 +302,14 @@ export default function AdminCouponsScreen() {
                   );
                 })}
               </View>
-              {analytics.coupons.length > 0 ? (
+              {(analytics?.coupons?.length ?? 0) > 0 ? (
                 <>
                   <Text style={styles.dashSubTitle}>Top performers</Text>
-                  {analytics.coupons.slice(0, 5).map((c) => (
+                  {(analytics?.coupons ?? []).slice(0, 5).map((c) => (
                     <View key={c.code} style={styles.topRow}>
                       <Text style={styles.topCode}>{c.code}</Text>
                       <Text style={styles.topMeta}>
-                        {c.redemptions} uses · ₹{c.total_discount.toLocaleString("en-IN")} discount
+                        {c.redemptions ?? 0} uses · ₹{(c.total_discount ?? 0).toLocaleString("en-IN")} discount
                       </Text>
                     </View>
                   ))}

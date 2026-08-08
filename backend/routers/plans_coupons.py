@@ -189,43 +189,95 @@ def init() -> None:
         """Usage analytics dashboard for coupons. Aggregates from the
         coupons collection only (no expensive joins needed) — every
         coupon doc already carries `used_count`, status, and metadata.
+
+        Response shape (aligned with the frontend contract):
+            {
+                totals: {
+                    redemptions:    int,   # sum of used_count across all coupons
+                    total_discount: float, # sum of used_count * flat_value
+                    total_revenue:  float, # sum of used_count * (min_order_amount or 0)
+                },
+                coupons: [
+                    {
+                        code, label, discount, type,
+                        redemptions, max_uses, status,
+                        total_discount, total_revenue,
+                    }
+                ],
+                total_coupons: int,
+                status_counts: { status: count },
+                # Legacy aliases retained for older frontend builds.
+                total_used, active, top5,
+            }
         """
         _require_admin(current_user)
         coupons: List[Dict[str, Any]] = []
         async for c in db.coupons.find({}, {"_id": 0}):
             coupons.append(c)
-        # Aggregate.
-        total_used = sum(int(c.get("used_count") or 0) for c in coupons)
-        active = sum(
-            1 for c in coupons if (c.get("status") or "active") == "active"
-        )
-        # Per-coupon top usage.
-        per_coupon = sorted(
-            [
-                {
-                    "code":       c.get("code"),
-                    "label":      c.get("label"),
-                    "discount":   c.get("discount_value"),
-                    "type":       c.get("discount_type"),
-                    "used_count": int(c.get("used_count") or 0),
-                    "max_uses":   int(c.get("max_uses") or 0) or None,
-                    "status":     c.get("status") or "active",
-                }
-                for c in coupons
-            ],
-            key=lambda r: r["used_count"],
-            reverse=True,
-        )
+
+        # ── Per-coupon aggregates ─────────────────────────────────
+        # `redemptions` mirrors `used_count` (frontend nomenclature).
+        # Total discount = redemptions * discount_value for FLAT
+        # coupons. For PERCENT coupons we can't compute the exact
+        # discount without the underlying transactions, so we
+        # approximate: redemptions * (min_order_amount * pct / 100)
+        # when min_order_amount is set, else 0.
+        rows: List[Dict[str, Any]] = []
+        totals_redemptions = 0
+        totals_discount    = 0.0
+        totals_revenue     = 0.0
+        for c in coupons:
+            used = int(c.get("used_count") or 0)
+            dtype = (c.get("discount_type") or "flat").lower()
+            dval  = float(c.get("discount_value") or 0)
+            min_order = float(c.get("min_order_amount") or 0)
+            if dtype in ("percent", "percentage", "pct"):
+                per_redemption_discount = (min_order * dval / 100.0) if min_order else 0.0
+            else:
+                per_redemption_discount = dval
+            row_discount = round(used * per_redemption_discount, 2)
+            row_revenue  = round(used * max(min_order, 0.0), 2)
+            totals_redemptions += used
+            totals_discount    += row_discount
+            totals_revenue     += row_revenue
+            rows.append({
+                "code":           c.get("code"),
+                "label":          c.get("label"),
+                "discount":       c.get("discount_value"),
+                "type":           c.get("discount_type"),
+                # Phase F11.J — frontend contract:
+                "redemptions":    used,
+                "total_discount": row_discount,
+                "total_revenue":  row_revenue,
+                # Legacy alias so older frontend builds keep working.
+                "used_count":     used,
+                "max_uses":       int(c.get("max_uses") or 0) or None,
+                "status":         c.get("status") or "active",
+            })
+
+        rows.sort(key=lambda r: r["redemptions"], reverse=True)
         status_counts: Dict[str, int] = {}
+        active = 0
         for c in coupons:
             s = c.get("status") or "active"
             status_counts[s] = status_counts.get(s, 0) + 1
+            if s == "active":
+                active += 1
+
         return {
-            "total_used": total_used,
-            "active":     active,
-            "top5":       per_coupon[:5],
+            # Phase F11.J — canonical shape.
+            "totals": {
+                "redemptions":    totals_redemptions,
+                "total_discount": round(totals_discount, 2),
+                "total_revenue":  round(totals_revenue, 2),
+            },
+            "coupons":       rows,
             "total_coupons": len(coupons),
             "status_counts": status_counts,
+            # ── Legacy fields (kept for backward compat) ──────────
+            "total_used":    totals_redemptions,
+            "active":        active,
+            "top5":          rows[:5],
         }
 
     # =================  Coupons — user validation  ====================

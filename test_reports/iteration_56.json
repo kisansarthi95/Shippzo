@@ -1,0 +1,31 @@
+{
+  "summary": "Phase F11.J backend-only verification of GET /api/admin/coupons/analytics reshape. Created pytest suite /app/backend/tests/test_phase_f11j_coupon_analytics.py with 12 tests spanning canonical shape (totals + coupons array), backward-compat legacy fields (total_used, active, top5, total_coupons, status_counts), used_count→redemptions mapping, flat coupon math (100 × 3 used = 300 total_discount), auth guard (401/403 for non-admin & unauth), and empty-state shape determinism. All 12 tests PASSED. Endpoint response shape fully aligns with the frontend contract while retaining legacy keys for older builds.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_phase_f11j_coupon_analytics.py",
+    "/app/test_reports/pytest/pytest_iteration_56_f11j.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "admin_coupon_analytics: percent coupons still approximate discount using min_order_amount * pct / 100 * used — accurate only when min_order_amount is set and equals actual order value. Not a bug for this phase (documented in docstring), but worth revisiting once redemption-level transactions become queryable.",
+    "used_count is intentionally excluded from CouponUpdate — good design (only bumped on payment-verify). Tests seed used_count directly via pymongo to validate math."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_phase_f11j_coupon_analytics.py (new)"
+  ],
+  "success_rate": {"backend": "100% (12/12)", "frontend": "N/A (frontend testing skipped per request)"},
+  "seed_data_creation": "Ephemeral TEST_* coupons created & deleted within each test; used_count seeded directly in Mongo for math tests; all cleaned up in teardown.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Endpoint /api/admin/coupons/analytics now returns canonical {totals:{redemptions,total_discount,total_revenue}, coupons:[{code,redemptions,total_discount,total_revenue,status,...}]} plus legacy fields. Coupon creation via POST /api/admin/coupons REQUIRES valid_from & valid_to (ISO strings). used_count is not settable via CouponUpdate — seed via pymongo if needed for math tests. Admin creds: admin@test.com/Admin@12345, non-admin: user2@test.com/User@12345.",
+  "rca_of_issue": "N/A — this iteration verified a completed fix. Bug RCA (pre-fix): the endpoint used to only emit {total_used, active, top5, total_coupons, status_counts} which caused the frontend to crash reading analytics.totals.redemptions (undefined). Backend now emits both canonical and legacy shapes; frontend also has optional-chaining safety as defensive measure."
+}
