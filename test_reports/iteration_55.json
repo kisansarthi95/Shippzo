@@ -1,0 +1,33 @@
+{
+  "summary": "Phase F11.I backend fix VERIFIED end-to-end. 13/13 pytest cases pass against the public preview URL. The consolidated 'auth_authentication' event now (a) seeds with the canonical FlowConnect webhook URL 'https://login.flowconnect.ai/api/automations/69ff6d211a1dc/execute' via _build_event_doc_from_catalog + backfill migration, (b) accepts and persists webhook_url via PUT /api/admin/whatsapp-provider/events/auth_authentication, (c) accepts and persists label via the same PUT (Phase F11.H inline rename — blank/whitespace label correctly ignored), (d) exposes 'otp_type' field with section='Auth' in GET /available-fields (Phase F11.G), (e) OTP dispatches for login / signup / password_reset all route to the event_trigger path (delivery.provider='event_trigger') — no more 'Skipped: provider not fully configured'. Extra coverage: with webhook_url wiped to empty, dispatch_event correctly falls back to the global base_url per the F11.I priority order (auth events prefer explicit webhook_url when set, else fall back to base_url).",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_phase_f11i_auth_authentication_webhook.py",
+    "/app/test_reports/pytest/pytest_iteration_55_f11i.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "routers/whatsapp_provider.py is now 1400+ lines. Consider splitting the init() route handlers (events / config / test-send / available-fields / custom-events) into a sub-package. Non-blocking.",
+    "Phase F11.I fallback path in dispatch_event allows auth events with a blank webhook_url to still succeed as long as api_token+base_url are set. This is correct per the requirement, but means an operator who deliberately clears the auth webhook can never opt-in to a 'skip' outcome — dispatches will always try the legacy global base_url. Behaviour matches spec; flagged only for awareness.",
+    "otp_auth.py returns delivery.provider='event_trigger' even when the underlying HTTP POST to FlowConnect failed (e.g. 4xx / DNS). The Boolean success field is authoritative but a UI that only inspects .provider could misread this. Not a bug per the spec; noted."
+  ],
+  "updated_files": [],
+  "success_rate": {
+    "backend": "100% (13/13)",
+    "frontend": "n/a (backend-only per request)"
+  },
+  "seed_data_creation": "None. Tests are idempotent — they PUT webhook_url + label, verify persistence, then restore the original value. auth_authentication is left with webhook_url=DEFAULT (https://login.flowconnect.ai/api/automations/69ff6d211a1dc/execute) after the run.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Test file: /app/backend/tests/test_phase_f11i_auth_authentication_webhook.py. Reads EXPO_PUBLIC_BACKEND_URL from /app/frontend/.env (not the deprecated EXPO_BACKEND_URL). Uses admin@test.com / Admin@12345. OTP dispatch tests generate fresh 10-digit phone strings each run to sidestep the 60s cooldown / 30-min lockout on shared preview env; if rate-limited they SKIP rather than fail. To re-run: `pytest backend/tests/test_phase_f11i_auth_authentication_webhook.py -v`.",
+  "rca_of_issue": "Original bug: the consolidated auth_authentication event (Phase F11.G merger of otp_login/otp_signup/otp_password_reset) had no webhook_url in the seed doc, and the dispatch_event() auth branch previously skipped any auth event whose base_url+api_token weren't fully configured. Combined with the frontend hiding the webhook_url TextInput on category='auth' events, operators had NO way to fix the config from the UI → OTPs Skipped silently. Fix: (1) _build_event_doc_from_catalog seeds webhook_url=DEFAULT on auth_authentication; (2) seed_default_events() runs a one-shot backfill on any auth_authentication doc with blank/missing webhook_url; (3) dispatch_event() now treats auth_authentication as auth-eligible AND prefers explicit webhook_url when set (F11.I priority), falling back to global base_url; (4) EventTriggerUpdate now accepts optional 'label' for the F11.H inline-rename feature; (5) available-fields now emits 'otp_type' with section=Auth. All five validations pass in the automated test."
+}

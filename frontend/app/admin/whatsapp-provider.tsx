@@ -1700,34 +1700,43 @@ function EventEditorModal({
             </TouchableOpacity>
 
             {advancedOpen && <>
-            {/* Phase F8.4 + F8.9 / F11.G — Per-event Webhook URL for
-                every non-auth event (stages, recovery, custom
-                automations). Authentication events continue to use
-                the global Base URL configured at the top of the page
-                — those go through the operator's Authentication
-                automation. */}
-            {draft.category !== "auth" && (
-              <View style={{ marginTop: 4 }}>
-                <Text style={styles.fieldLabel}>Webhook URL</Text>
-                <Text style={styles.hint}>
-                  This stage's data will be POSTed ONLY to this URL.
-                  Leave blank to disable this stage's outbound sends.
-                  Never shares the Authentication automation link.
-                </Text>
-                <TextInput
-                  style={styles.input}
-                  placeholder="https://…/api/automations/<id>/execute"
-                  placeholderTextColor="#94A3B8"
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                  keyboardType="url"
-                  value={draft.webhook_url || ""}
-                  onChangeText={(v) =>
-                    setDraft({ ...draft, webhook_url: v })
-                  }
-                />
-              </View>
-            )}
+            {/* Phase F8.4 + F8.9 / F11.I — Per-event Webhook URL for
+                EVERY event (stages, recovery, custom automations, AND
+                now Authentication too). Authentication uses this URL
+                directly when set; if left blank it falls back to the
+                global Base URL for backward compat. */}
+            <View style={{ marginTop: 4 }}>
+              <Text style={styles.fieldLabel}>Webhook URL (API Link)</Text>
+              <Text style={styles.hint}>
+                {draft.category === "auth" ? (
+                  <>
+                    This Authentication event will POST its OTP payload
+                    to this URL. Pre-filled with a working FlowConnect
+                    automation link — you can override with your own
+                    integration if needed. If blank, falls back to the
+                    global Base URL.
+                  </>
+                ) : (
+                  <>
+                    This stage's data will be POSTed ONLY to this URL.
+                    Leave blank to disable this stage's outbound sends.
+                    Never shares the Authentication automation link.
+                  </>
+                )}
+              </Text>
+              <TextInput
+                style={styles.input}
+                placeholder="https://…/api/automations/<id>/execute"
+                placeholderTextColor="#94A3B8"
+                autoCapitalize="none"
+                autoCorrect={false}
+                keyboardType="url"
+                value={draft.webhook_url || ""}
+                onChangeText={(v) =>
+                  setDraft({ ...draft, webhook_url: v })
+                }
+              />
+            </View>
 
             {/* Phase F5.3 (2026-06-27) — Automation ID field removed.
                 Reason: Base URL configured up top ALREADY contains the

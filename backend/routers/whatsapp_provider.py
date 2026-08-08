@@ -379,6 +379,13 @@ def _normalise_phone(raw: str, default_cc: str = "91") -> str:
 
 def _build_event_doc_from_catalog(item: Dict[str, Any]) -> Dict[str, Any]:
     """Translate a catalogue entry into the persisted DB shape."""
+    # Phase F11.I — Seed the consolidated Authentication event with a
+    # default FlowConnect webhook URL so first-time tenants don't need
+    # to configure it manually before their first login/signup OTP.
+    # Operators can override this any time from the UI.
+    default_webhook = ""
+    if item.get("event_key") == "auth_authentication":
+        default_webhook = "https://login.flowconnect.ai/api/automations/69ff6d211a1dc/execute"
     return {
         "event_key":         item["event_key"],
         "label":             item["label"],
@@ -386,7 +393,7 @@ def _build_event_doc_from_catalog(item: Dict[str, Any]) -> Dict[str, Any]:
         "category":          item["category"],
         "enabled":           True,
         "automation_id":     "",
-        "webhook_url":       "",
+        "webhook_url":       default_webhook,
         "template_preview":  item.get("default_template") or "",
         "selected_fields":   list(item.get("default_fields") or []),
         "custom_fields":     [],
@@ -478,6 +485,23 @@ async def seed_default_events(db: Any) -> None:
             _LOG.warning(
                 "seed event %s failed: %s", item["event_key"], e,
             )
+
+    # ── Phase F11.I — Backfill default webhook_url on existing
+    # auth_authentication rows that were seeded before this default
+    # was introduced. Only touches rows where webhook_url is still
+    # blank so any operator override wins.
+    try:
+        await col.update_one(
+            {"event_key": "auth_authentication",
+             "$or": [{"webhook_url": ""}, {"webhook_url": {"$exists": False}}]},
+            {"$set": {
+                "webhook_url": "https://login.flowconnect.ai/api/automations/69ff6d211a1dc/execute",
+                "updated_at": _now_iso(),
+                "updated_by": "system_backfill_f11i",
+            }},
+        )
+    except Exception:
+        _LOG.exception("Phase F11.I webhook_url backfill failed")
 
     # ── Phase F11.G — Auto-migrate legacy Authentication events ────
     #
@@ -922,15 +946,19 @@ async def dispatch_event(
         base_url      = (cfg.get("base_url") or "").strip()
         template      = (cfg.get("endpoint_template") or "").strip()
 
-        # ── Phase F8.4 + F8.9 — Route resolution ──────────────────────
-        # Auth events (otp_*)                   → global base_url (OTP)
+        # ── Phase F8.4 + F8.9 / F11.I — Route resolution ──────────────
+        # Auth events (otp_* + auth_authentication) → prefer explicit
+        #    webhook_url when set; else fall back to global base_url.
         # Everything else (stage_*, recovery_*,
-        #   abandoned_cart_recovery, custom_*)  → per-event webhook_url
+        #   abandoned_cart_recovery, custom_*) → per-event webhook_url.
         # If webhook_url is empty for a non-auth event, skip cleanly.
         # We NEVER fall back to base_url for non-auth events because
         # base_url is reserved for the OTP automation and cross-
         # contaminating those flows is exactly the bug we prevent.
-        _is_auth_event  = (event_key or "").lower().startswith("otp_")
+        _is_auth_event  = (
+            (event_key or "").lower().startswith("otp_")
+            or event_key == "auth_authentication"
+        )
         _needs_webhook  = not _is_auth_event
 
         if _needs_webhook:
@@ -938,7 +966,7 @@ async def dispatch_event(
                 result["skipped"] = True
                 result["reason"]  = (
                     "event has no webhook URL configured. Add one in "
-                    "Admin → WhatsApp Provider → this event → "
+                    "Admin → API Plugin 1.0 → this event → "
                     "Advanced Settings → Webhook URL."
                 )
                 return result
@@ -949,13 +977,26 @@ async def dispatch_event(
             endpoint = webhook_url
 
         else:
-            # Auth events (otp_*) and any legacy events. Require the
-            # global provider config to be fully set.
-            if not (api_token and base_url):
+            # Auth events (otp_* + auth_authentication).
+            #
+            # Phase F11.I — Priority order:
+            #   1. Per-event webhook_url when set — required by
+            #      operators who want to isolate the auth automation
+            #      from the global base_url.
+            #   2. Global base_url as the fallback (legacy OTP path).
+            if webhook_url:
+                # Explicit auth webhook. api_token still required so
+                # the provider can authorise the send.
+                if not api_token:
+                    result["skipped"] = True
+                    result["reason"]  = "provider api_token missing"
+                    return result
+                endpoint = webhook_url
+            elif not (api_token and base_url):
                 result["skipped"] = True
                 result["reason"]  = "provider not fully configured"
                 return result
-            if not automation_id:
+            elif not automation_id:
                 # Simple mode: base_url is treated as the full execute
                 # endpoint. This is the auth/OTP happy path.
                 endpoint = base_url
