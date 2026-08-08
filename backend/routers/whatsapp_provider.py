@@ -291,6 +291,11 @@ class CustomField(BaseModel):
 
 class EventTriggerUpdate(BaseModel):
     enabled:          Optional[bool]              = None
+    # Phase F11.H — Editable display label. Lets the operator rename
+    # any block ("Stage: Pending" → "Global Shipment Updates") inline
+    # from the editor modal. Trimmed + length-capped; blank ignored
+    # so we never wipe an existing label on accident.
+    label:            Optional[str]               = Field(None, max_length=120)
     automation_id:    Optional[str]               = Field(None, max_length=120)
     # Phase F8.4 — per-event webhook URL. Stage events now route to
     # THIS URL (bypassing the global base_url which is reserved for
@@ -1157,6 +1162,13 @@ def init() -> None:
         patch: Dict[str, Any] = {}
         if payload.enabled is not None:
             patch["enabled"] = bool(payload.enabled)
+        # Phase F11.H — editable display label. Blank/whitespace-only
+        # values ignored so the operator can't wipe the label to an
+        # empty string by mistake.
+        if payload.label is not None:
+            lbl = payload.label.strip()
+            if lbl:
+                patch["label"] = lbl
         if payload.automation_id is not None:
             patch["automation_id"] = payload.automation_id.strip()
         # Phase F8.4 — persist per-event webhook URL. Stage events use

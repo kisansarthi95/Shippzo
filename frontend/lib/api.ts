@@ -2741,6 +2741,8 @@ export const Api = {
     event_key: string,
     body: {
       enabled?: boolean;
+      /** Phase F11.H — Editable display label for the block. */
+      label?: string;
       automation_id?: string;
       // Phase F8.4 — per-event webhook URL for stage events.
       webhook_url?: string;

@@ -592,6 +592,18 @@ export default function AdminWhatsAppProviderScreen() {
           allEvents={events}
           onClose={() => setEditing(null)}
           onSave={saveEvent}
+          onRenamed={(ek, newLabel) => {
+            // Phase F11.H — Optimistic list update so the block
+            // shows its new name immediately on the underlying page
+            // without needing a full refetch.
+            setEvents((prev) =>
+              prev.map((e) => (e.event_key === ek ? { ...e, label: newLabel } : e)),
+            );
+            // Also update the currently-open modal's `editing` ref
+            // so the header keeps the new name if the operator opens
+            // it a second time without closing.
+            setEditing((prev) => (prev ? { ...prev, label: newLabel } : prev));
+          }}
           onDelete={async (ev) => {
             // Phase F11.G — delete event trigger. Backend already
             // enforces "custom events only can be truly deleted",
@@ -1275,6 +1287,7 @@ function EventEditorModal({
   onClose,
   onSave,
   onDelete,
+  onRenamed,
   saving,
 }: {
   event: EventRow;
@@ -1283,12 +1296,19 @@ function EventEditorModal({
   onClose: () => void;
   onSave: (draft: EventRow) => void;
   onDelete?: (event: EventRow) => void;
+  onRenamed?: (event_key: string, newLabel: string) => void;
   saving: boolean;
 }) {
   const [draft, setDraft] = useState<EventRow>(event);
-  // Phase F11.G — Android fallback rename modal state.
-  const [renameOpen, setRenameOpen]   = useState(false);
-  const [renameDraft, setRenameDraft] = useState<string>(event.label || "");
+  // Phase F11.H — Inline rename mode. When true, the header title
+  // renders a TextInput instead of a Text label. Committing via
+  // onBlur / onSubmitEditing:
+  //   • updates draft.label locally
+  //   • immediately PATCHes the event on the backend so the new name
+  //     appears in the list without needing to hit "Save" first
+  //     (matches the "Save on Blur" behaviour the user asked for).
+  const [renamingInline, setRenamingInline] = useState(false);
+  const [inlineRenameDraft, setInlineRenameDraft] = useState<string>(event.label || "");
   // Phase F5.3 — Simple/Advanced toggle. Everything beyond "Enable"
   // + "Test Send" is now advanced. Default OFF so the happy path
   // (API key + Base URL → just send data) is un-blocked by config.
@@ -1535,38 +1555,65 @@ function EventEditorModal({
               <PhIcon name="close" size={22} color="#0F172A" />
             </TouchableOpacity>
             <View style={{ flex: 1 }}>
-              <Text style={styles.headerTitle}>{draft.label || event.label}</Text>
+              {/* Phase F11.H — Inline rename. Toggling to TextInput
+                  keeps the operator in-place; onBlur/onSubmitEditing
+                  persists to backend so the list reflects the new
+                  name immediately without needing the full Save
+                  round-trip. */}
+              {renamingInline ? (
+                <TextInput
+                  style={styles.headerRenameInput}
+                  value={inlineRenameDraft}
+                  onChangeText={setInlineRenameDraft}
+                  placeholder="Block name"
+                  autoFocus
+                  selectTextOnFocus
+                  returnKeyType="done"
+                  onBlur={async () => {
+                    const v = (inlineRenameDraft || "").trim();
+                    setRenamingInline(false);
+                    if (!v || v === (draft.label || event.label)) return;
+                    setDraft({ ...draft, label: v });
+                    try {
+                      await Api.adminWppUpdateEvent(event.event_key, { label: v });
+                      onRenamed && onRenamed(event.event_key, v);
+                    } catch (e: any) {
+                      Alert.alert(
+                        "Rename failed",
+                        e?.response?.data?.detail || e?.message || "Try again.",
+                      );
+                    }
+                  }}
+                  onSubmitEditing={async () => {
+                    const v = (inlineRenameDraft || "").trim();
+                    setRenamingInline(false);
+                    if (!v || v === (draft.label || event.label)) return;
+                    setDraft({ ...draft, label: v });
+                    try {
+                      await Api.adminWppUpdateEvent(event.event_key, { label: v });
+                      onRenamed && onRenamed(event.event_key, v);
+                    } catch (e: any) {
+                      Alert.alert(
+                        "Rename failed",
+                        e?.response?.data?.detail || e?.message || "Try again.",
+                      );
+                    }
+                  }}
+                  testID="block-rename-input"
+                />
+              ) : (
+                <Text style={styles.headerTitle}>
+                  {draft.label || event.label}
+                </Text>
+              )}
               <Text style={styles.headerSub}>{event.sub}</Text>
             </View>
-            {/* Phase F11.G — Top-right block management icons.
-                Pencil = Rename this block's display label (persists
-                to `draft.label` — saved with the rest of the form).
-                Trash  = Delete this event (custom automations wipe;
-                built-in events reset to catalogue defaults). Both
-                confirm before acting. */}
+            {/* Phase F11.H — Pencil = enter inline rename mode.
+                Trash = confirm + delete via backend. */}
             <TouchableOpacity
               onPress={() => {
-                Alert.prompt?.(
-                  "Rename Block",
-                  "Enter a new display name for this block:",
-                  [
-                    { text: "Cancel", style: "cancel" },
-                    {
-                      text: "Save",
-                      onPress: (t?: string) => {
-                        const v = (t || "").trim();
-                        if (v) setDraft({ ...draft, label: v });
-                      },
-                    },
-                  ],
-                  "plain-text",
-                  draft.label || event.label,
-                );
-                // Android doesn't have Alert.prompt — provide fallback
-                // via a simple in-place toggle to editable header.
-                if (!(Alert as any).prompt) {
-                  setRenameOpen(true);
-                }
+                setInlineRenameDraft(draft.label || event.label || "");
+                setRenamingInline(true);
               }}
               hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
               style={styles.headerIconBtn}
@@ -1602,46 +1649,6 @@ function EventEditorModal({
               <PhIcon name="trash-outline" size={20} color="#DC2626" />
             </TouchableOpacity>
           </View>
-
-          {/* Phase F11.G — Fallback rename modal for Android (Alert.prompt
-              only exists on iOS). Simple centered TextInput card. */}
-          {renameOpen && (
-            <View style={styles.renameOverlay}>
-              <TouchableOpacity
-                style={styles.renameBackdrop}
-                onPress={() => setRenameOpen(false)}
-                activeOpacity={1}
-              />
-              <View style={styles.renameCard}>
-                <Text style={styles.renameTitle}>Rename Block</Text>
-                <TextInput
-                  style={styles.input}
-                  value={renameDraft}
-                  onChangeText={setRenameDraft}
-                  placeholder="New block name"
-                  autoFocus
-                />
-                <View style={{ flexDirection: "row", gap: 10, marginTop: 12 }}>
-                  <TouchableOpacity
-                    style={[styles.mcBtnGhost, { flex: 1 }]}
-                    onPress={() => setRenameOpen(false)}
-                  >
-                    <Text style={styles.mcBtnGhostTxt}>Cancel</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    style={[styles.mcBtnPrimary, { flex: 1 }]}
-                    onPress={() => {
-                      const v = renameDraft.trim();
-                      if (v) setDraft({ ...draft, label: v });
-                      setRenameOpen(false);
-                    }}
-                  >
-                    <Text style={styles.mcBtnPrimaryTxt}>Save</Text>
-                  </TouchableOpacity>
-                </View>
-              </View>
-            </View>
-          )}
 
           <ScrollView
             style={{ flex: 1 }}
@@ -2634,6 +2641,20 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     marginLeft: 2,
     backgroundColor: "#F1F5F9",
+  },
+  // Phase F11.H — Inline rename TextInput style (replaces the
+  // header title Text when the operator taps the pencil).
+  headerRenameInput: {
+    fontSize: 17,
+    fontWeight: "800",
+    color: "#0F172A",
+    paddingVertical: 3,
+    paddingHorizontal: 8,
+    borderRadius: 6,
+    borderWidth: 1.5,
+    borderColor: "#2563EB",
+    backgroundColor: "#EFF6FF",
+    minWidth: 200,
   },
   // Android-fallback rename modal.
   renameOverlay: {
