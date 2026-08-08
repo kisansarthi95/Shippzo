@@ -205,42 +205,74 @@ STAGE_TO_EVENT_KEY: Dict[str, str] = {
 }
 
 
+# ─── Field Catalogue (Phase F11.F — API Builder 1.0) ────────────────
+#
 # Catalogue of fields the admin can tick — these are the things our
-# context-builder knows how to extract. Adding a new field here is
-# safe; absent contexts just yield blank values.
+# context-builder knows how to extract. Grouped into sections so the
+# frontend can render them under collapsible category headers.
+#
+# `section` is a display-only hint (Shipment · Timestamps · Financial
+# · Business · Auth · Custom). Adding a new field here is safe;
+# absent contexts just yield blank values.
+#
+# The list is intentionally exhaustive — every DB column an operator
+# might reasonably want to push into an external WhatsApp / webhook
+# integration lives here. Dynamic custom_values keys are appended at
+# request-time by the /available-fields endpoint below.
 AVAILABLE_FIELDS: List[Dict[str, str]] = [
-    {"key": "customer_name",     "label": "Customer Name"},
-    {"key": "customer_phone",    "label": "Customer Phone"},
-    {"key": "order_id",          "label": "Order / Shipment ID"},
-    {"key": "tracking_id",       "label": "Tracking ID"},
-    {"key": "courier_name",      "label": "Courier Name"},
-    {"key": "token_amount",      "label": "Token Amount"},
-    {"key": "total_amount",      "label": "Total Amount"},
-    {"key": "cod_amount",        "label": "COD Amount"},
-    {"key": "address",           "label": "Customer Address"},
-    {"key": "city",              "label": "Customer City"},
-    {"key": "pincode",           "label": "Pincode"},
-    {"key": "state",             "label": "State"},
-    {"key": "product_name",      "label": "Product Name"},
-    {"key": "quantity",          "label": "Quantity"},
-    {"key": "eta_days",          "label": "ETA (days)"},
-    {"key": "current_stage",     "label": "Current Stage"},
-    {"key": "business_name",     "label": "Business / Shop Name"},
-    {"key": "business_phone",    "label": "Business Phone"},
-    {"key": "otp",               "label": "OTP Code (auth events only)"},
-    {"key": "contact_email",     "label": "Registered Email (auth events)"},
-    # Phase F8.8 — stage-side email carries the SHIPMENT's customer
-    # email pulled straight from the shipments row. Never falls back
-    # to the operator's own admin email, so admin@… can never leak
-    # into a customer-facing stage payload.
-    {"key": "customer_email",    "label": "Customer Email"},
-    # Phase F8.10 — Abandoned-cart checkout link. Populated by the
-    # auto-recovery worker (server.py::_abandoned_recovery_worker) as
-    # the SAME short URL the operator sends manually — so customers
-    # see one consistent link across both flows.
-    {"key": "checkout_url",      "label": "Checkout URL (abandoned cart)"},
-    {"key": "google_review_link","label": "Google Review Link (feedback events)"},
-    {"key": "event_type",        "label": "Event Type"},
+    # ── Shipment form fields ──────────────────────────────────────
+    {"key": "customer_name",     "label": "Customer Name",        "section": "Shipment"},
+    {"key": "customer_phone",    "label": "Customer Phone",       "section": "Shipment"},
+    {"key": "alt_phone",         "label": "Alt Phone",            "section": "Shipment"},
+    {"key": "customer_email",    "label": "Customer Email",       "section": "Shipment"},
+    {"key": "gstin",             "label": "GSTIN",                "section": "Shipment"},
+    {"key": "order_id",          "label": "Order ID",             "section": "Shipment"},
+    {"key": "master_id",         "label": "Master ID",            "section": "Shipment"},
+    {"key": "tracking_id",       "label": "Tracking ID",          "section": "Shipment"},
+    {"key": "courier_name",      "label": "Courier Partner",      "section": "Shipment"},
+    {"key": "product_name",      "label": "Product Name",         "section": "Shipment"},
+    {"key": "items",             "label": "Items",                "section": "Shipment"},
+    {"key": "quantity",          "label": "Quantity",             "section": "Shipment"},
+    {"key": "weight",            "label": "Weight",               "section": "Shipment"},
+    {"key": "box_dimensions",    "label": "Box Dimensions",       "section": "Shipment"},
+    {"key": "address",           "label": "Address",              "section": "Shipment"},
+    {"key": "city",              "label": "City",                 "section": "Shipment"},
+    {"key": "pincode",           "label": "Pincode",              "section": "Shipment"},
+    {"key": "state",             "label": "State",                "section": "Shipment"},
+    # ── Financial / Payment ───────────────────────────────────────
+    {"key": "payment_mode",      "label": "Payment Mode",         "section": "Financial"},
+    {"key": "amount",            "label": "Amount",               "section": "Financial"},
+    {"key": "total_amount",      "label": "Total Amount",         "section": "Financial"},
+    {"key": "cod_amount",        "label": "COD Amount",           "section": "Financial"},
+    {"key": "token_amount",      "label": "Token Paid",           "section": "Financial"},
+    {"key": "cod_collected_amount", "label": "Actual Received Amount", "section": "Financial"},
+    {"key": "cod_payment_status","label": "COD Payment Status",   "section": "Financial"},
+    {"key": "cod_payment_date",  "label": "Payment Received Date","section": "Financial"},
+    {"key": "cod_payer_name",    "label": "Payer Name",           "section": "Financial"},
+    # ── Status / Workflow ─────────────────────────────────────────
+    {"key": "current_stage",     "label": "Current Stage",        "section": "Status"},
+    {"key": "status",            "label": "Status",               "section": "Status"},
+    {"key": "confirmation_status","label": "Confirmation Status", "section": "Status"},
+    {"key": "eta_days",          "label": "ETA (days)",           "section": "Status"},
+    # ── Timestamps ────────────────────────────────────────────────
+    {"key": "created_at",        "label": "Created At",           "section": "Timestamps"},
+    {"key": "updated_at",        "label": "Updated At",           "section": "Timestamps"},
+    {"key": "modified_at",       "label": "Modified At",          "section": "Timestamps"},
+    {"key": "booking_date",      "label": "Booking Date",         "section": "Timestamps"},
+    {"key": "shipped_at",        "label": "Shipped At",           "section": "Timestamps"},
+    {"key": "out_for_delivery_at","label": "Out For Delivery At", "section": "Timestamps"},
+    {"key": "delivered_at",      "label": "Delivered At",         "section": "Timestamps"},
+    {"key": "last_import_at",    "label": "Last Import At",       "section": "Timestamps"},
+    # ── Business / Sender ─────────────────────────────────────────
+    {"key": "business_name",     "label": "Business / Shop Name", "section": "Business"},
+    {"key": "business_phone",    "label": "Business Phone",       "section": "Business"},
+    # ── Auth / OTP (unchanged behaviour) ──────────────────────────
+    {"key": "otp",               "label": "OTP Code (auth events only)", "section": "Auth"},
+    {"key": "contact_email",     "label": "Registered Email (auth events)", "section": "Auth"},
+    # ── Event-specific extras ─────────────────────────────────────
+    {"key": "checkout_url",      "label": "Checkout URL (abandoned cart)", "section": "Event"},
+    {"key": "google_review_link","label": "Google Review Link (feedback events)", "section": "Event"},
+    {"key": "event_type",        "label": "Event Type",           "section": "Event"},
 ]
 
 
@@ -461,46 +493,135 @@ async def seed_default_events(db: Any) -> None:
 
 
 # ─── Context builder + dispatcher (used by other routers) ───────────
+#
+# Phase F11.F — API Builder 1.0
+#
+# The historical context builder emitted a fixed 15-key dict. Every
+# time an operator wanted to reference a new column ("box_dimensions",
+# "gstin", "cod_collected_amount", …) we had to ship a code change.
+#
+# Rebuilt as a full-document flattener:
+#
+#   1. Copy every scalar column from the shipment row VERBATIM so any
+#      column in the DB becomes a mappable variable automatically.
+#      Nested objects / arrays are JSON-stringified so they render
+#      cleanly inside a WhatsApp template.
+#   2. Merge the curated aliases the old catalogue expected
+#      (`current_stage` ← `status`, `total_amount` ← `amount`, etc.)
+#      so existing saved mappings keep working.
+#   3. Flatten `custom_values` — every dynamic user-added field is
+#      promoted to a top-level context key so the operator can
+#      reference it just like a built-in.
+#   4. Preserve underscore-prefixed sidecar keys (`_user_id`) used
+#      by the dispatcher for downstream lookups — `_build_payload`
+#      strips them before hitting the BSP.
+
+_SCALAR_ALLOWED_TYPES = (str, int, float, bool)
+
+
+def _stringify_ctx_value(v: Any) -> Any:
+    """Convert a DB value to a WhatsApp-safe context value.
+
+    • None → ""
+    • scalars → as-is
+    • datetime-like → ISO
+    • list / dict → JSON string so it renders deterministically
+    """
+    if v is None:
+        return ""
+    if isinstance(_SCALAR_ALLOWED_TYPES, tuple) and isinstance(v, _SCALAR_ALLOWED_TYPES):
+        return v
+    if hasattr(v, "isoformat"):
+        try:
+            return v.isoformat()
+        except Exception:
+            return str(v)
+    if isinstance(v, (list, dict)):
+        try:
+            import json as _json
+            return _json.dumps(v, ensure_ascii=False, default=str)
+        except Exception:
+            return str(v)
+    return str(v)
+
+
 def _shipment_to_context(
     shipment: Dict[str, Any],
     business_name: str = "",
     business_phone: str = "",
 ) -> Dict[str, Any]:
     """Flatten a Shippzo shipment row into the canonical context the
-    event-trigger system uses to fill variables."""
+    event-trigger system uses to fill variables.
+
+    Every top-level column of the shipment doc becomes a context key.
+    Additionally, `custom_values` entries are promoted to first-class
+    keys so operators can reference `custom_values.my_key` simply as
+    `my_key` in their variable_mapping.
+    """
     if not shipment:
         return {}
-    return {
-        "customer_name":  shipment.get("customer_name") or "",
-        "customer_phone": shipment.get("customer_phone") or shipment.get("phone") or "",
-        "order_id":       shipment.get("order_id") or shipment.get("id") or "",
-        "tracking_id":    shipment.get("tracking_id") or "",
-        "courier_name":   shipment.get("courier") or shipment.get("courier_name") or "",
-        "token_amount":   str(shipment.get("token_amount") or shipment.get("token") or ""),
-        "total_amount":   str(shipment.get("total_amount") or shipment.get("amount") or ""),
-        "cod_amount":     str(shipment.get("cod_amount") or shipment.get("cod") or ""),
-        "address":        shipment.get("address") or "",
-        "city":           shipment.get("city") or "",
-        "pincode":        str(shipment.get("pincode") or ""),
-        "state":          shipment.get("state") or "",
-        "product_name":   shipment.get("product_name") or shipment.get("product") or "",
-        "quantity":       str(shipment.get("quantity") or shipment.get("qty") or ""),
-        "eta_days":       str(shipment.get("eta_days") or ""),
-        "current_stage":  shipment.get("status") or "",
-        "business_name":  business_name or "",
-        "business_phone": business_phone or "",
-        # Phase F8.8 — customer email pulled from the shipments row.
-        # Blank when the row has none; NEVER auto-fills to the
-        # operator's admin email (that lived under `contact_email`
-        # and is now scoped strictly to auth/OTP events).
-        "customer_email": (shipment.get("customer_email") or "").strip(),
-        # Phase F8.5 — non-outgoing sidecar used by the dispatcher to
-        # look up per-user business_links (Google Review link etc.)
-        # for the Feedback stage. Underscore-prefixed keys are stripped
-        # from the outgoing payload by `_build_payload` (only ticked
-        # `selected_fields` / `custom_fields` are sent to the BSP).
-        "_user_id":       shipment.get("user_id") or "",
-    }
+
+    ctx: Dict[str, Any] = {}
+
+    # ── Pass 1: verbatim scalar copy of every column ────────────────
+    for k, v in shipment.items():
+        if k.startswith("_"):
+            # Mongo `_id` and internal cursors — skip.
+            continue
+        ctx[k] = _stringify_ctx_value(v)
+
+    # ── Pass 2: legacy aliases so old saved mappings keep working ──
+    # Values only fall back to the alias source when the primary key
+    # is missing / blank so newer explicit columns always win.
+    def _alias(dst: str, *sources: str) -> None:
+        cur = ctx.get(dst)
+        if cur not in (None, "", 0):
+            return
+        for s in sources:
+            val = shipment.get(s)
+            if val not in (None, ""):
+                ctx[dst] = _stringify_ctx_value(val)
+                return
+
+    _alias("customer_phone", "phone")
+    _alias("courier_name",   "courier")
+    _alias("token_amount",   "token")
+    _alias("total_amount",   "amount")
+    _alias("cod_amount",     "cod")
+    _alias("product_name",   "product")
+    _alias("quantity",       "qty")
+    _alias("current_stage",  "status")
+    _alias("order_id",       "id")
+    _alias("weight",         "weight_kg", "weight_grams")
+    _alias("box_dimensions", "dimensions", "package_dimensions")
+    _alias("alt_phone",      "alternate_phone", "phone2", "phone_alt")
+
+    # ── Pass 3: flatten custom_values ───────────────────────────────
+    # Every user-added key gets promoted to top-level. Prefixed
+    # counterparts (`custom_<name>`) are also emitted for operators
+    # who prefer a namespaced key — either form works in
+    # variable_mapping without ambiguity.
+    cvs = shipment.get("custom_values") or {}
+    if isinstance(cvs, dict):
+        for k, v in cvs.items():
+            if not k or k.startswith("_"):
+                continue
+            val = _stringify_ctx_value(v)
+            # Never clobber a first-class column with a same-named
+            # custom entry — DB fields win.
+            ctx.setdefault(str(k), val)
+            ctx.setdefault(f"custom_{k}", val)
+
+    # ── Pass 4: fixed injections ────────────────────────────────────
+    ctx["business_name"]  = business_name or ctx.get("business_name") or ""
+    ctx["business_phone"] = business_phone or ctx.get("business_phone") or ""
+    # Phase F8.8 — customer email must not fall back to admin email.
+    ctx["customer_email"] = (shipment.get("customer_email") or "").strip()
+    # Phase F8.5 — non-outgoing sidecar for dispatcher lookups.
+    # Underscore-prefixed keys are stripped from outbound payload.
+    ctx["_user_id"]       = shipment.get("user_id") or ""
+
+    return ctx
 
 
 async def _fetch_business_google_review_link(db: Any, user_id: str) -> str:
@@ -1043,12 +1164,87 @@ def init() -> None:
         return {"ok": True, "item": _event_doc_to_dto(fresh)}
 
     # ── GET /available-fields ─────────────────────────────────────
+    #
+    # Phase F11.F — Future-proof dynamic discovery.
+    #
+    # Merges the curated catalogue (`AVAILABLE_FIELDS`) with EVERY
+    # top-level key discovered on recent shipment / pending_order
+    # documents PLUS every dynamic `custom_values` sub-key.
+    #
+    # Result: when the schema evolves and a new column starts landing
+    # on shipments (e.g. `insurance_amount`, `handling_charges`,
+    # `pickup_slot_at`), it shows up in the "+ Add Field" dropdown
+    # automatically on the very next refresh — no code change, no
+    # deploy required.
     @whatsapp_provider_router.get("/available-fields")
     async def get_available_fields(
         current_user: Dict[str, Any] = Depends(_get_current_user),
     ) -> Dict[str, Any]:
         _require_admin_helper(current_user)
-        return {"fields": AVAILABLE_FIELDS}
+
+        # 1. Seed with the curated catalogue — well-known fields keep
+        #    their friendly labels + section grouping.
+        by_key: Dict[str, Dict[str, str]] = {}
+        for f in AVAILABLE_FIELDS:
+            k = f.get("key")
+            if k:
+                by_key[k] = dict(f)
+
+        # 2. Scan the last N shipments + pending_orders for any keys
+        #    the catalogue doesn't cover yet. We only fetch documents
+        #    that BELONG to the current admin so a tenant's exotic
+        #    custom columns can't leak between accounts.
+        sample_query = {"user_id": current_user["id"]}
+        # Cap the scan so this endpoint remains fast on large tenants.
+        SCAN_LIMIT = 200
+
+        def _humanize(k: str) -> str:
+            """`snake_case_key` → `Snake Case Key` for the dropdown."""
+            return " ".join(w.capitalize() for w in str(k).replace("-", "_").split("_") if w) or k
+
+        for coll_name, section in (("shipments", "Shipment"), ("pending_orders", "Pending Order")):
+            try:
+                cursor = db[coll_name].find(sample_query, {"_id": 0}).limit(SCAN_LIMIT)
+                async for doc in cursor:
+                    for k, v in doc.items():
+                        if not k or k.startswith("_") or k == "user_id":
+                            continue
+                        if k not in by_key:
+                            by_key[k] = {
+                                "key":     k,
+                                "label":   _humanize(k),
+                                "section": f"Auto ({section})",
+                            }
+                    # Custom values — surface every dynamic sub-key.
+                    cvs = doc.get("custom_values") or {}
+                    if isinstance(cvs, dict):
+                        for ck in cvs.keys():
+                            if not ck or str(ck).startswith("_"):
+                                continue
+                            if ck not in by_key:
+                                by_key[ck] = {
+                                    "key":     str(ck),
+                                    "label":   _humanize(str(ck)),
+                                    "section": "Custom Fields",
+                                }
+            except Exception:
+                _LOG.exception("available-fields: %s scan failed", coll_name)
+
+        # 3. Emit sorted: curated sections first (in the order they
+        #    appear in AVAILABLE_FIELDS), then auto-discovered.
+        curated_order = [f["key"] for f in AVAILABLE_FIELDS if f.get("key")]
+        seen: Dict[str, None] = {}
+        out: List[Dict[str, str]] = []
+        for k in curated_order:
+            if k in by_key and k not in seen:
+                out.append(by_key[k])
+                seen[k] = None
+        for k, meta in by_key.items():
+            if k not in seen:
+                out.append(meta)
+                seen[k] = None
+
+        return {"fields": out}
 
     # ── POST /custom-events ───────────────────────────────────────
     # Phase F8.9 — Create a new Custom Automation. Uses the standard
