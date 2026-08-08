@@ -1316,6 +1316,15 @@ function EventEditorModal({
   // from the server, so any field added to the registry appears here
   // automatically without a frontend deploy.
   const [pickerOpen, setPickerOpen] = useState<null | { forFieldKey: string }>(null);
+  // Phase F11.E — Optional per-row "edit key manually" mode. When
+  // `manualEditFor === fk`, the row swaps its picker button for a
+  // TextInput so the operator can paste any custom variable key
+  // (including special-char keys like `{%contact.customer_name%}`
+  // that external WhatsApp automation systems require verbatim).
+  // Existing tap-to-pick UX is unchanged for all other rows — this
+  // is an ADDITIVE capability the user opts into per row.
+  const [manualEditFor, setManualEditFor] = useState<string | null>(null);
+  const [manualEditDraft, setManualEditDraft] = useState<string>("");
 
   const toggleField = (key: string) => {
     setDraft((d) => ({
@@ -1701,7 +1710,11 @@ function EventEditorModal({
                   Left = app field (data source). Right = WhatsApp
                   template variable name (what your provider expects).
                   Tap the right side to pick from the available
-                  fields list. Empty = keep same key.
+                  fields list. Empty = keep same key. Tap the pencil
+                  icon to enter a custom key manually (supports{" "}
+                  <Text style={styles.code}>{"{"}, {"}"}, %, ., _</Text>{" "}
+                  and any other special characters your external
+                  automation system needs).
                 </Text>
                 {draft.selected_fields.map((fk) => {
                   const targetKey = draft.variable_mapping[fk] || fk;
@@ -1710,6 +1723,7 @@ function EventEditorModal({
                     || targetKey;
                   const sourceLabel =
                     available.find((a) => a.key === fk)?.label || fk;
+                  const isEditing = manualEditFor === fk;
                   return (
                     <View key={fk} style={styles.mapRow}>
                       <View style={styles.mapCell}>
@@ -1717,17 +1731,98 @@ function EventEditorModal({
                         <Text style={styles.mapKey}>{fk}</Text>
                       </View>
                       <PhIcon name="arrow-forward" size={16} color="#94A3B8" />
-                      <TouchableOpacity
-                        testID={`map-picker-${fk}`}
-                        style={styles.mapPick}
-                        onPress={() => setPickerOpen({ forFieldKey: fk })}
-                      >
-                        <View style={{ flex: 1 }}>
-                          <Text style={styles.mapLbl}>{targetLabel}</Text>
-                          <Text style={styles.mapKey}>{targetKey}</Text>
+                      {isEditing ? (
+                        /* Phase F11.E — inline TextInput mode. Bound to
+                           `manualEditDraft` while the operator is
+                           typing; committed to variable_mapping only
+                           on save so the picker/preview keep their
+                           previous value if the user cancels.
+
+                           Save behaviour:
+                             • trims whitespace
+                             • blank OR matches original key `fk`
+                               → delete entry (keeps payload clean)
+                             • anything else → set as verbatim override
+                        */
+                        <View style={[styles.mapPick, { paddingVertical: 6 }]}>
+                          <TextInput
+                            style={styles.manualKeyInput}
+                            value={manualEditDraft}
+                            onChangeText={setManualEditDraft}
+                            placeholder={fk}
+                            placeholderTextColor="#94A3B8"
+                            autoCapitalize="none"
+                            autoCorrect={false}
+                            autoFocus
+                            selectTextOnFocus
+                            testID={`map-manual-input-${fk}`}
+                          />
+                          <TouchableOpacity
+                            onPress={() => {
+                              const v = manualEditDraft.trim();
+                              setDraft((d) => {
+                                const next = { ...d.variable_mapping };
+                                if (!v || v === fk) {
+                                  // Blank or unchanged → remove entry so
+                                  // the outbound payload doesn't carry
+                                  // redundant identity mappings.
+                                  delete next[fk];
+                                } else {
+                                  next[fk] = v;
+                                }
+                                return { ...d, variable_mapping: next };
+                              });
+                              setManualEditFor(null);
+                              setManualEditDraft("");
+                            }}
+                            hitSlop={{ top: 8, bottom: 8, left: 6, right: 6 }}
+                            testID={`map-manual-save-${fk}`}
+                          >
+                            <PhIcon name="checkmark" size={18} color="#10B981" />
+                          </TouchableOpacity>
+                          <TouchableOpacity
+                            onPress={() => {
+                              setManualEditFor(null);
+                              setManualEditDraft("");
+                            }}
+                            hitSlop={{ top: 8, bottom: 8, left: 6, right: 6 }}
+                            testID={`map-manual-cancel-${fk}`}
+                          >
+                            <PhIcon name="close" size={18} color="#94A3B8" />
+                          </TouchableOpacity>
                         </View>
-                        <PhIcon name="chevron-down" size={16} color="#94A3B8" />
-                      </TouchableOpacity>
+                      ) : (
+                        <TouchableOpacity
+                          testID={`map-picker-${fk}`}
+                          style={styles.mapPick}
+                          onPress={() => setPickerOpen({ forFieldKey: fk })}
+                        >
+                          <View style={{ flex: 1 }}>
+                            <Text style={styles.mapLbl}>{targetLabel}</Text>
+                            <Text style={styles.mapKey}>{targetKey}</Text>
+                          </View>
+                          {/* Phase F11.E — manual-edit trigger.
+                              Pencil icon opens the TextInput mode for
+                              THIS row only. All existing picker
+                              behaviour is untouched. */}
+                          <TouchableOpacity
+                            onPress={(e) => {
+                              e.stopPropagation?.();
+                              setManualEditDraft(
+                                draft.variable_mapping[fk] ?? fk,
+                              );
+                              setManualEditFor(fk);
+                            }}
+                            hitSlop={{ top: 8, bottom: 8, left: 6, right: 6 }}
+                            style={{ marginRight: 4 }}
+                            testID={`map-manual-edit-${fk}`}
+                            accessibilityLabel="Edit key manually"
+                          >
+                            <PhIcon name="create-outline" size={15} color="#2563EB" />
+                          </TouchableOpacity>
+                          <PhIcon name="chevron-down" size={16} color="#94A3B8" />
+                        </TouchableOpacity>
+                      )}
                     </View>
                   );
                 })}
@@ -2201,6 +2296,21 @@ const styles = StyleSheet.create({
   },
   mapLbl: { fontSize: 13, fontWeight: "700", color: "#0F172A" },
   mapKey: { fontSize: 11, color: "#64748B", marginTop: 1 },
+  // Phase F11.E — inline TextInput for manual "custom key" edit mode.
+  // Monospace so special chars like `{%contact.customer_name%}` line
+  // up character-by-character during typing/paste.
+  manualKeyInput: {
+    flex: 1,
+    fontSize: 13,
+    color: "#0F172A",
+    fontFamily: Platform.select({ ios: "Menlo", android: "monospace", default: "monospace" }),
+    paddingVertical: 4,
+    paddingHorizontal: 6,
+    backgroundColor: "#fff",
+    borderRadius: 4,
+    borderWidth: 1,
+    borderColor: "#93C5FD",
+  },
   previewBox: {
     marginTop: 12,
     padding: 10,
