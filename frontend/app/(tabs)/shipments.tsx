@@ -3079,23 +3079,12 @@ export default function Shipments() {
                   {"  "}{formatTimestamp(item.created_at)}
                 </Text>
               )}
-              {/* ── Phase F4.1 / F11.D2 — Label divider row.
-                     A single hairline divider with a slim tag icon
-                     sitting ON the line (no circular chrome, no
-                     border). Tapping the icon opens the Label picker
-                     — same behaviour as the previous "+" button. */}
-              <View style={labelStyles.dividerRow}>
-                <View style={labelStyles.divider} />
-                <TouchableOpacity
-                  onPress={() => setLabelPickerFor(item.id)}
-                  hitSlop={{ top: 14, bottom: 14, left: 14, right: 14 }}
-                  style={labelStyles.plusBtn}
-                  accessibilityLabel="Add label"
-                >
-                  <PhIcon name="pricetag-outline" size={14} color={colors.primary} />
-                </TouchableOpacity>
-                <View style={labelStyles.divider} />
-              </View>
+              {/* Phase F11.D3 — Middle "Divider + Label" row REMOVED
+                     entirely; the trigger now lives as an absolute-
+                     positioned tag icon at the bottom-right corner of
+                     the card (see the Card wrapper's absolute child
+                     below). Existing label chips still render inline
+                     here when the shipment already has labels. */}
               {(shipmentLabels[item.id] || []).length > 0 && (
                 <ScrollView
                   horizontal
@@ -3311,6 +3300,26 @@ export default function Shipments() {
                 </View>
               );
             })()}
+            {/* ── Phase F11.D3 — Absolute-positioned Label trigger.
+                Sits at the bottom-right corner of the card, overlaid
+                on top of the actions row so it adds 0px to the card
+                height. Small slim tag icon (WhatsApp Labels style)
+                with a generous hitSlop so tapping stays easy despite
+                the small visual footprint. Same behaviour as the
+                previous divider "+" button. */}
+            <TouchableOpacity
+              onPress={() => setLabelPickerFor(item.id)}
+              hitSlop={{ top: 12, bottom: 8, left: 12, right: 8 }}
+              style={styles.floatingLabelBtn}
+              accessibilityLabel="Add label"
+              testID={`add-label-${item.tracking_id}`}
+            >
+              <PhIcon
+                name="pricetag-outline"
+                size={13}
+                color={colors.primary}
+              />
+            </TouchableOpacity>
           </View>
           );
         }}
@@ -4233,6 +4242,11 @@ const styles = StyleSheet.create({
   card: {
     backgroundColor: colors.surface, borderWidth: 2, borderColor: "#E5E7EB",
     borderRadius: 12, padding: 14, marginBottom: 10,
+    // Phase F11.D3 — anchor for the absolute-positioned floating
+    // Label trigger at the bottom-right corner. React Native treats
+    // every View as a containing block so `position:relative` is
+    // implicit, but we set it explicitly for clarity.
+    position: "relative",
   },
   row: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
   track: {
@@ -4280,6 +4294,22 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8,
     paddingVertical: 2,
     borderRadius: 10,
+  },
+  // Phase F11.D3 — Floating Label trigger, absolutely positioned at
+  // the bottom-right of each shipment card. Zero-height-impact: it
+  // overlays the actions row rather than pushing it down. Slim tag
+  // icon, no chrome, ~13px so it doesn't fight the action buttons
+  // for visual weight while still being tappable via hitSlop.
+  floatingLabelBtn: {
+    position: "absolute",
+    bottom: 5,
+    right: 5,
+    width: 18,
+    height: 18,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "transparent",
+    zIndex: 5,
   },
   items: { marginTop: 3, color: colors.text, fontSize: 12, fontWeight: "600" },
   // Phase F2.2 — Created-at timestamp shown discreetly under each card.
