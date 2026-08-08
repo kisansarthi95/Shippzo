@@ -3079,20 +3079,22 @@ export default function Shipments() {
                   {"  "}{formatTimestamp(item.created_at)}
                 </Text>
               )}
-              {/* ── Phase F4.1 — Label row (additive, does NOT touch
-                     any existing action button). Divider + "+" on the
-                     right; chips render below when the shipment has
-                     any assigned labels. Horizontal scroll when many. */}
+              {/* ── Phase F4.1 / F11.D2 — Label divider row.
+                     A single hairline divider with a slim tag icon
+                     sitting ON the line (no circular chrome, no
+                     border). Tapping the icon opens the Label picker
+                     — same behaviour as the previous "+" button. */}
               <View style={labelStyles.dividerRow}>
                 <View style={labelStyles.divider} />
                 <TouchableOpacity
                   onPress={() => setLabelPickerFor(item.id)}
-                  hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+                  hitSlop={{ top: 14, bottom: 14, left: 14, right: 14 }}
                   style={labelStyles.plusBtn}
                   accessibilityLabel="Add label"
                 >
-                  <PhIcon name="add" size={13} color={colors.primary} />
+                  <PhIcon name="pricetag-outline" size={14} color={colors.primary} />
                 </TouchableOpacity>
+                <View style={labelStyles.divider} />
               </View>
               {(shipmentLabels[item.id] || []).length > 0 && (
                 <ScrollView

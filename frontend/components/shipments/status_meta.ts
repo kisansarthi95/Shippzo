@@ -210,10 +210,10 @@ export const labelStyles = StyleSheet.create({
   dividerRow: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 8,
-    // Phase F11.D — tightened from marginTop:6 / marginBottom:2 so
-    // the "+" Create-Label divider hugs the card content more
-    // closely (~6px removed per card).
+    gap: 6,
+    // Phase F11.D2 — divider row sits flush with the sub-text row
+    // above; icon is inline on the line itself, no extra vertical
+    // padding.
     marginTop: 2,
     marginBottom: 0,
   },
@@ -222,20 +222,20 @@ export const labelStyles = StyleSheet.create({
     height: StyleSheet.hairlineWidth,
     backgroundColor: "#E5E7EB",
   },
+  // Phase F11.D2 — slim tag icon that sits ON the divider line (no
+  // circular chrome, no fill, no border). Same tappable region kept
+  // via `hitSlop` on the TouchableOpacity in the card.
   plusBtn: {
-    // Phase F11.D — smaller circular target (was 24×24). Still meets
-    // the 44×44 tappable region via `hitSlop` (see shipments.tsx card).
-    width: 20,
-    height: 20,
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: "#E5E7EB",
+    width: 18,
+    height: 18,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "#F8FAFC",
+    // Intentionally NO background / border — icon reads as part of
+    // the divider line, matching the WhatsApp Labels affordance.
+    backgroundColor: "transparent",
   },
   chipRow: {
-    // Phase F11.D — tightened chip row vertical margins.
+    // Phase F11.D2 — tightened chip row vertical margins.
     marginTop: 2,
     marginBottom: 0,
   },
