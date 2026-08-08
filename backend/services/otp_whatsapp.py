@@ -161,27 +161,61 @@ async def send_otp_via_whatsapp(
     if event_type in ("login", "signup", "phone_verification", "password_reset"):
         try:
             from routers.whatsapp_provider import dispatch_event as _wpp_dispatch
-            event_key_map = {
+            # Phase F11.G — Consolidated Authentication.
+            #
+            # All auth flows now dispatch to ONE event key
+            # (`auth_authentication`); the specific sub-flow travels
+            # in the `otp_type` context field so the operator can
+            # branch in their external automation. Legacy per-flow
+            # events (otp_login / otp_signup / otp_password_reset)
+            # are honoured as a fallback so existing tenants who
+            # already customised those don't lose their config until
+            # they explicitly migrate.
+            otp_type_map = {
+                "login":              "login",
+                "signup":             "signup",
+                "phone_verification": "signup",
+                "password_reset":     "reset",
+            }
+            otp_type_val = otp_type_map.get(str(event_type)) or "login"
+            ev_key = "auth_authentication"
+            legacy_key_map = {
                 "login":              "otp_login",
                 "signup":             "otp_signup",
                 "phone_verification": "otp_signup",
                 "password_reset":     "otp_password_reset",
             }
-            ev_key = event_key_map.get(str(event_type)) or "otp_login"
+            legacy_key = legacy_key_map.get(str(event_type)) or "otp_login"
             ctx = {
                 "customer_name":  user_name or "Customer",
                 "customer_phone": phone,
                 "otp":            str(otp),
+                # Phase F11.G — the specific sub-flow (login/signup/
+                # reset) so the operator's external automation can
+                # branch without needing 3 separate events.
+                "otp_type":       otp_type_val,
+                # Legacy alias — kept so any existing template that
+                # referenced `event_type` keeps working verbatim.
                 "event_type":     str(event_type),
                 "business_name":  "Shippzo",
-                "current_stage":  "Auth",
+                "current_stage":  "Authentication",
                 # Phase F8.1 — the user's registered email travels with
                 # the webhook payload as "contact_email" so the
                 # operator's automation can deliver the OTP via email.
                 "contact_email":  (contact_email or "").strip(),
+                # Convenience alias so operators can map to either
+                # `customer_email` or `contact_email`.
+                "customer_email": (contact_email or "").strip(),
             }
             t0 = datetime.now(timezone.utc).timestamp()
             outcome = await _wpp_dispatch(db, ev_key, ctx, phone=phone)
+            # If the consolidated event isn't configured yet (skipped),
+            # fall through to the legacy per-flow event so old
+            # customers keep receiving OTPs while they migrate.
+            if outcome.get("skipped"):
+                outcome = await _wpp_dispatch(db, legacy_key, ctx, phone=phone)
+                if not outcome.get("skipped"):
+                    ev_key = legacy_key
             if not outcome.get("skipped"):
                 duration_ms = (datetime.now(timezone.utc).timestamp() - t0) * 1000.0
                 _LOG.info(

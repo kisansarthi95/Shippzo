@@ -624,14 +624,14 @@ export default function AdminWhatsAppProviderScreen() {
               keyboardShouldPersistTaps="handled"
               showsVerticalScrollIndicator
             >
-            {/* Phase F8.6 — Auth events keep the "6-digit OTP auto-
-                generated" hint (that IS what happens for them). Stage
-                events replace it with a stage-appropriate hint and a
-                Manual/Auto-Fetch tab bar. */}
+            {/* Phase F8.6 / F11.G — Authentication events auto-generate
+                a 6-digit code for every test. Stage events replace this
+                with a stage-appropriate hint and a Manual/Auto-Fetch
+                tab bar. */}
             {testFor?.category === "auth" ? (
               <View style={styles.testHint}>
                 <Text style={styles.testHintTxt}>
-                  A random <Text style={{ fontWeight: "800" }}>6-digit OTP</Text>{" "}
+                  A random <Text style={{ fontWeight: "800" }}>6-digit code</Text>{" "}
                   is auto-generated for every test. The full payload &
                   provider response are shown below after Send.
                 </Text>
@@ -835,12 +835,19 @@ export default function AdminWhatsAppProviderScreen() {
                   </Text>
                 </View>
 
-                {/* Generated OTP — only for OTP events */}
-                {(testFor?.event_key === "otp_login" ||
-                  testFor?.event_key === "otp_signup") &&
+                {/* Generated code — for Authentication events.
+                    Phase F11.G: consolidated `auth_authentication`
+                    plus legacy `otp_login`/`otp_signup`/
+                    `otp_password_reset` all show the auto-generated
+                    6-digit value here so the operator can verify
+                    exactly what was sent. */}
+                {(testFor?.event_key === "auth_authentication" ||
+                  testFor?.event_key === "otp_login" ||
+                  testFor?.event_key === "otp_signup" ||
+                  testFor?.event_key === "otp_password_reset") &&
                   !!testResult.generated_otp && (
                     <View style={styles.otpBox}>
-                      <Text style={styles.otpLabel}>Generated OTP (6-digit)</Text>
+                      <Text style={styles.otpLabel}>Generated Code (6-digit)</Text>
                       <Text
                         selectable
                         style={styles.otpValue}
@@ -1265,11 +1272,14 @@ function EventEditorModal({
   // + "Test Send" is now advanced. Default OFF so the happy path
   // (API key + Base URL → just send data) is un-blocked by config.
   const [advancedOpen, setAdvancedOpen] = useState(false);
-  // Phase F5.2 — Detect if this OTP event's automation_id is SHARED
-  // with any non-OTP event. This is the #1 cause of "OTP delivered
-  // without the code" bug reports.
+  // Phase F5.2 / F11.G — Detect if this Authentication event's
+  // automation_id is SHARED with any non-auth event. This is the #1
+  // cause of "code delivered without the number" bug reports.
   const isOtpEvent =
-    event.event_key === "otp_login" || event.event_key === "otp_signup";
+    event.event_key === "auth_authentication" ||
+    event.event_key === "otp_login" ||
+    event.event_key === "otp_signup" ||
+    event.event_key === "otp_password_reset";
   const sharedWith = useMemo(() => {
     const target = (draft.automation_id || "").trim();
     if (!target) return [] as string[];
@@ -1443,18 +1453,19 @@ function EventEditorModal({
             </TouchableOpacity>
 
             {advancedOpen && <>
-            {/* Phase F8.4 + F8.9 — Per-event Webhook URL for every
-                non-auth event (stages, recovery, custom automations).
-                Auth events (OTP Login/Signup/Password Reset) continue
-                to use the global Base URL configured at the top of the
-                page — those go through the operator's OTP automation. */}
+            {/* Phase F8.4 + F8.9 / F11.G — Per-event Webhook URL for
+                every non-auth event (stages, recovery, custom
+                automations). Authentication events continue to use
+                the global Base URL configured at the top of the page
+                — those go through the operator's Authentication
+                automation. */}
             {draft.category !== "auth" && (
               <View style={{ marginTop: 4 }}>
                 <Text style={styles.fieldLabel}>Webhook URL</Text>
                 <Text style={styles.hint}>
                   This stage's data will be POSTed ONLY to this URL.
                   Leave blank to disable this stage's outbound sends.
-                  Never shares the OTP automation link.
+                  Never shares the Authentication automation link.
                 </Text>
                 <TextInput
                   style={styles.input}
@@ -1486,14 +1497,15 @@ function EventEditorModal({
                 Template, Custom Fields) stay so ops can revive them
                 if a future provider needs per-event overrides. */}
 
-            {/* Phase F5.2 — OTP-specific warning. FlowConnect (and every
-                other BSP we've integrated) attaches ONE template per
-                automation_id. When the same automation is reused for
-                both OTP + stage messages, the OTP branch inherits the
-                stage template — which has no {{otp}} placeholder — so
+            {/* Phase F5.2 / F11.G — Authentication-specific warning.
+                FlowConnect (and every other BSP we've integrated)
+                attaches ONE template per automation_id. When the same
+                automation is reused for both Authentication + stage
+                messages, the Authentication branch inherits the stage
+                template — which has no {{otp}} placeholder — so
                 customers get a generic message without the code. This
-                banner catches the shared-automation antipattern before
-                the operator ever tests it. */}
+                banner catches the shared-automation antipattern
+                before the operator ever tests it. */}
             {isOtpEvent && otpSharedWithStage && (
               <View style={styles.otpWarn} testID="otp-shared-warning">
                 <View style={styles.otpWarnHeader}>
@@ -1503,28 +1515,29 @@ function EventEditorModal({
                   </Text>
                 </View>
                 <Text style={styles.otpWarnBody}>
-                  This OTP event shares its automation ID with:{" "}
+                  This Authentication event shares its automation ID with:{" "}
                   <Text style={{ fontWeight: "700" }}>
                     {sharedWith.join(", ")}
                   </Text>
                   . FlowConnect binds ONE template per automation ID, so
-                  your OTP messages are being delivered using the stage
-                  template — which does not include the OTP code.
+                  your Authentication messages are being delivered using
+                  the stage template — which does not include the code.
                 </Text>
                 <Text style={[styles.otpWarnBody, { marginTop: 8 }]}>
                   <Text style={{ fontWeight: "700" }}>Fix:</Text>{" "}
                   Create a NEW automation on FlowConnect dedicated to
-                  OTP delivery (template must reference{" "}
+                  Authentication delivery (template must reference{" "}
                   <Text style={styles.code}>{"{{otp}}"}</Text>) and paste
                   that automation ID here.
                 </Text>
               </View>
             )}
 
-            {/* Phase F5.2 — OTP variable cheat sheet + copy-ready
-                reference template. Shown for OTP events regardless of
-                shared-automation status so operators always know which
-                placeholders their FlowConnect template must reference. */}
+            {/* Phase F5.2 / F11.G — Authentication variable cheat sheet
+                + copy-ready reference template. Shown for Authentication
+                events regardless of shared-automation status so
+                operators always know which placeholders their
+                FlowConnect template must reference. */}
             {isOtpEvent && (
               <View style={styles.otpCheatBox} testID="otp-cheatsheet">
                 <View style={styles.otpCheatHeader}>
@@ -1536,6 +1549,10 @@ function EventEditorModal({
                 <View style={styles.otpVarRow}>
                   <Text style={styles.otpVarChip}>{"{{otp}}"}</Text>
                   <Text style={styles.otpVarDesc}>the one-time code (required)</Text>
+                </View>
+                <View style={styles.otpVarRow}>
+                  <Text style={styles.otpVarChip}>{"{{otp_type}}"}</Text>
+                  <Text style={styles.otpVarDesc}>login / signup / reset (dynamic)</Text>
                 </View>
                 <View style={styles.otpVarRow}>
                   <Text style={styles.otpVarChip}>{"{{customer_name}}"}</Text>
@@ -1568,7 +1585,7 @@ function EventEditorModal({
                 >
                   <PhIcon name="copy-outline" size={14} color="#1E40AF" />
                   <Text style={styles.otpCopyBtnTxt}>
-                    Copy ready-made OTP template
+                    Copy ready-made Authentication template
                   </Text>
                 </TouchableOpacity>
               </View>
@@ -1846,8 +1863,17 @@ function EventEditorModal({
                   })}
                   {draft.selected_fields.includes("otp") && (
                     <Text style={[styles.previewLine, { marginTop: 6, color: "#166534" }]}>
-                      ✓ OTP is auto-supplied by the login/signup flow —
+                      ✓ Code is auto-supplied by the Authentication flow —
                       no manual value needed. Just keep `otp` ticked.
+                    </Text>
+                  )}
+                  {draft.selected_fields.includes("otp_type") && (
+                    <Text style={[styles.previewLine, { marginTop: 4, color: "#166534" }]}>
+                      ✓ `otp_type` auto-populates with{" "}
+                      <Text style={styles.code}>login</Text> ·{" "}
+                      <Text style={styles.code}>signup</Text> ·{" "}
+                      <Text style={styles.code}>reset</Text> based on the
+                      triggering flow.
                     </Text>
                   )}
                 </View>

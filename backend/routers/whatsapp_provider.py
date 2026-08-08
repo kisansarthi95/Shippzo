@@ -85,34 +85,22 @@ whatsapp_provider_router = APIRouter(
 # one-line addition (plus a hook at the call site).
 EVENT_CATALOG: List[Dict[str, Any]] = [
     # ── Auth events ──
-    {"event_key": "otp_login",        "category": "auth",
-     "label":   "OTP — Login",
-     "sub":     "Sent when an existing user signs in with their phone",
-     "default_fields": ["customer_name", "customer_phone", "otp", "event_type",
-                        "contact_email"],
+    # Phase F11.G — Consolidated Authentication event. Replaces the
+    # earlier 3 separate events (otp_login / otp_signup /
+    # otp_password_reset). Every login / signup / password-reset flow
+    # now dispatches to THIS single event with `otp_type` carrying
+    # the specific sub-flow (`"login"` | `"signup"` | `"reset"`) so
+    # the operator can branch inside their external automation if
+    # they want to. UI labels this "Authentication" — "OTP" wording
+    # is retired everywhere.
+    {"event_key": "auth_authentication", "category": "auth",
+     "label":   "Authentication",
+     "sub":     "Sent for every login, signup, and password-reset flow. `otp_type` distinguishes them.",
+     "default_fields": ["customer_name", "customer_phone", "customer_email",
+                        "otp", "otp_type"],
      "default_template":
-        "🔐 Your Shippzo login OTP is *{otp}*.\n"
+        "🔐 Your Shippzo verification code is *{otp}*.\n"
         "It expires in 10 minutes. Don't share it with anyone."},
-    {"event_key": "otp_signup",       "category": "auth",
-     "label":   "OTP — Signup",
-     "sub":     "Sent when a new account is being created",
-     "default_fields": ["customer_name", "customer_phone", "otp", "event_type",
-                        "contact_email"],
-     "default_template":
-        "👋 Welcome to Shippzo!\n"
-        "Your signup verification OTP is *{otp}*.\n"
-        "It expires in 10 minutes."},
-    # Phase F8.1 — OTP-verified password reset. `contact_email` carries
-    # the user's registered email so the operator's automation can also
-    # deliver the code via email.
-    {"event_key": "otp_password_reset", "category": "auth",
-     "label":   "OTP — Password Reset",
-     "sub":     "Sent when a user resets their password (includes contact_email)",
-     "default_fields": ["customer_name", "customer_phone", "otp", "event_type",
-                        "contact_email"],
-     "default_template":
-        "🔑 Your Shippzo password reset OTP is *{otp}*.\n"
-        "It expires in 10 minutes. If you didn't request this, ignore it."},
 
     # ── Shipment-stage events (must mirror stage_rules.STAGES) ──
     {"event_key": "stage_pending",       "category": "stage",
@@ -266,9 +254,14 @@ AVAILABLE_FIELDS: List[Dict[str, str]] = [
     # ── Business / Sender ─────────────────────────────────────────
     {"key": "business_name",     "label": "Business / Shop Name", "section": "Business"},
     {"key": "business_phone",    "label": "Business Phone",       "section": "Business"},
-    # ── Auth / OTP (unchanged behaviour) ──────────────────────────
-    {"key": "otp",               "label": "OTP Code (auth events only)", "section": "Auth"},
-    {"key": "contact_email",     "label": "Registered Email (auth events)", "section": "Auth"},
+    # ── Auth / Authentication (unchanged behaviour) ──────────────
+    {"key": "otp",               "label": "OTP Code (Authentication)",       "section": "Auth"},
+    # Phase F11.G — new dynamic field carrying the exact auth sub-flow:
+    # "login" | "signup" | "reset" — populated automatically by the
+    # OTP dispatch service so the operator's external automation can
+    # branch inside a single consolidated Authentication event.
+    {"key": "otp_type",          "label": "OTP Type (login / signup / reset)", "section": "Auth"},
+    {"key": "contact_email",     "label": "Registered Email (Authentication)", "section": "Auth"},
     # ── Event-specific extras ─────────────────────────────────────
     {"key": "checkout_url",      "label": "Checkout URL (abandoned cart)", "section": "Event"},
     {"key": "google_review_link","label": "Google Review Link (feedback events)", "section": "Event"},
@@ -480,6 +473,60 @@ async def seed_default_events(db: Any) -> None:
             _LOG.warning(
                 "seed event %s failed: %s", item["event_key"], e,
             )
+
+    # ── Phase F11.G — Auto-migrate legacy Authentication events ────
+    #
+    # If an operator previously configured `otp_login` /
+    # `otp_signup` / `otp_password_reset` (custom template,
+    # automation_id, webhook_url, etc.) and hasn't touched the new
+    # consolidated `auth_authentication` yet, copy the first non-
+    # default legacy config over so they don't lose their setup on
+    # first login after the upgrade.
+    try:
+        auth_doc = await col.find_one({"event_key": "auth_authentication"})
+        # Consider "untouched" = auth_doc exists but was just seeded
+        # (i.e. still holds catalog defaults + no automation_id and no
+        # webhook_url and template_enabled False).
+        seeded_untouched = bool(
+            auth_doc
+            and not (auth_doc.get("automation_id") or "").strip()
+            and not (auth_doc.get("webhook_url") or "").strip()
+            and not auth_doc.get("template_enabled")
+        )
+        if seeded_untouched:
+            for legacy_key in ("otp_login", "otp_signup", "otp_password_reset"):
+                legacy = await col.find_one({"event_key": legacy_key})
+                if not legacy:
+                    continue
+                has_config = (
+                    (legacy.get("automation_id") or "").strip()
+                    or (legacy.get("webhook_url") or "").strip()
+                    or legacy.get("template_enabled")
+                )
+                if not has_config:
+                    continue
+                patch = {
+                    "automation_id":     legacy.get("automation_id") or "",
+                    "webhook_url":       legacy.get("webhook_url") or "",
+                    "template_enabled":  bool(legacy.get("template_enabled")),
+                    "template_body":     legacy.get("template_body")
+                                         or auth_doc.get("template_body")
+                                         or "",
+                    "custom_fields":     legacy.get("custom_fields") or [],
+                    "variable_mapping":  legacy.get("variable_mapping") or {},
+                    "migrated_from":     legacy_key,
+                }
+                await col.update_one(
+                    {"event_key": "auth_authentication"},
+                    {"$set": patch},
+                )
+                _LOG.info(
+                    "Phase F11.G auto-migrated %s → auth_authentication",
+                    legacy_key,
+                )
+                break
+    except Exception:
+        _LOG.exception("Phase F11.G auto-migrate failed")
     # Seed the provider config doc if missing.
     try:
         if not await db["whatsapp_provider_config"].find_one({"_id": "main"}):
