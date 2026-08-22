@@ -101,22 +101,56 @@ def init() -> None:
     ):
         """Parse pasted text only (no save) — for preview/dry-run.
 
-        Phase-4b+: we now try the LLM (ShipBot-style 18-line schema)
-        first, then fall back to the deterministic regex parser on any
-        failure so the UI never has a blank state. The LLM result also
-        carries:
-            missing[]  — fields the user still needs to provide
-            complexity — simple/medium/complex classification
-            ai_reason  — one-line rationale surfaced in the dialog
+        Phase F11.K — Rule-First, AI-Fallback model:
+          1. Run the deterministic `parse_structured_paste` regex first.
+          2. If ALL mandatory fields (name / phone / address_line1 /
+             city / pincode) are extracted with confidence, RETURN the
+             regex result immediately — SKIP the LLM call entirely so
+             structured / labeled paste costs 0 AI credits.
+          3. Only fall through to the LLM path when the regex misses
+             at least one mandatory field OR the text is unlabelled.
+          4. The LLM path merges its extraction into the regex result
+             (non-empty LLM values win) so we get the best of both.
         NO wallet charge here — that happens at the final create step.
         """
         text = (payload.text or "").strip()
         legacy = parse_structured_paste(text)
 
+        # ── Phase F11.K — Deterministic short-circuit ────────────────
+        # Fields the operator MUST supply for a valid shipment record.
+        # If the regex found all of them, the text is clearly labelled
+        # / structured — LLM would add zero value, so we skip the call
+        # and any billing that comes with it.
+        MANDATORY = ("customer_name", "customer_phone",
+                     "address_line1", "city", "pincode")
+        legacy_fields = legacy.get("fields", {}) or {}
+
+        def _filled(k: str) -> bool:
+            v = legacy_fields.get(k)
+            if v is None:
+                return False
+            if isinstance(v, str) and not v.strip():
+                return False
+            return True
+
+        regex_complete = all(_filled(k) for k in MANDATORY)
+
         ai_block: Dict[str, Any] = {
             "used": False, "missing": [], "complexity": "", "reason": "",
             "source": "regex",
         }
+
+        # If regex nailed every mandatory field, hand back immediately.
+        # `use_ai=false` from the caller also short-circuits.
+        if regex_complete or payload.use_ai is False:
+            if regex_complete:
+                ai_block["reason"] = (
+                    "All mandatory fields extracted via regex — AI skipped."
+                )
+            legacy["ai"] = ai_block
+            return legacy
+
+        # ── AI fallback ──────────────────────────────────────────────
         if payload.use_ai is not False:
             s = await db.settings.find_one(
                 {"user_id": current_user["id"]},
@@ -184,56 +218,76 @@ def init() -> None:
         ai_source = "regex"
         ai_warnings: List[str] = []
         pincode_warnings: List[str] = []
-        try:
-            s = await db.settings.find_one(
-                {"user_id": current_user["id"]},
-                {
-                    "_id": 0,
-                    "smart_paste_instructions": 1,
-                    "smart_paste_ai_enabled": 1,
-                },
-            ) or {}
-            if s.get("smart_paste_ai_enabled", True):
-                ai = await parse_paste_via_llm(
-                    text,
-                    custom_instructions=(
-                        s.get("smart_paste_instructions") or ""
-                    ).strip(),
-                )
-                if ai.get("source") == "llm":
-                    ai_warnings = list(ai.get("warnings") or [])
-                    mapped, pincode_warnings = (
-                        await _legacy_with_pincode_enrich_v2(ai["fields"])
+
+        # ── Phase F11.K — Rule-First short-circuit ───────────────────
+        # Skip the LLM entirely when the regex extracted every
+        # mandatory field. Zero AI credits for cleanly labelled paste.
+        MANDATORY = ("customer_name", "customer_phone",
+                     "address_line1", "city", "pincode")
+
+        def _filled(k: str) -> bool:
+            v = fields.get(k)
+            if v is None:
+                return False
+            if isinstance(v, str) and not v.strip():
+                return False
+            return True
+
+        regex_complete = all(_filled(k) for k in MANDATORY)
+
+        if not regex_complete:
+            try:
+                s = await db.settings.find_one(
+                    {"user_id": current_user["id"]},
+                    {
+                        "_id": 0,
+                        "smart_paste_instructions": 1,
+                        "smart_paste_ai_enabled": 1,
+                    },
+                ) or {}
+                if s.get("smart_paste_ai_enabled", True):
+                    ai = await parse_paste_via_llm(
+                        text,
+                        custom_instructions=(
+                            s.get("smart_paste_instructions") or ""
+                        ).strip(),
                     )
-                    for k, v in mapped.items():
-                        if v:
-                            fields[k] = v
-                    if isinstance(fields.get("amount"), str):
-                        m = re.search(
-                            r"(\d+(?:\.\d+)?)",
-                            fields["amount"].replace(",", ""),
+                    if ai.get("source") == "llm":
+                        ai_warnings = list(ai.get("warnings") or [])
+                        mapped, pincode_warnings = (
+                            await _legacy_with_pincode_enrich_v2(ai["fields"])
                         )
-                        if m:
-                            try:
-                                fields["amount"] = float(m.group(1))
-                            except Exception:
-                                pass
-                    ai_source = "llm"
-                    ai_complexity = ai.get("complexity", "")
-                    ai_reason = ai.get("ai_reason", "")
-                    for (_sk, _lk) in [
-                        ("NAME", "customer_name"), ("PHONE", "customer_phone"),
-                        ("ADDRESS_1", "address_line1"), ("CITY", "city"),
-                        ("STATE", "state"), ("PINCODE", "pincode"),
-                        ("ITEMS", "items"), ("AMOUNT", "amount"),
-                    ]:
-                        v = fields.get(_lk)
-                        if not v and (isinstance(v, str) or v in (None, 0)):
-                            ai_missing.append(_sk)
-        except Exception:
-            _logger.exception(
-                "LLM path failed on check-duplicate — using regex only",
-            )
+                        for k, v in mapped.items():
+                            if v:
+                                fields[k] = v
+                        if isinstance(fields.get("amount"), str):
+                            m = re.search(
+                                r"(\d+(?:\.\d+)?)",
+                                fields["amount"].replace(",", ""),
+                            )
+                            if m:
+                                try:
+                                    fields["amount"] = float(m.group(1))
+                                except Exception:
+                                    pass
+                        ai_source = "llm"
+                        ai_complexity = ai.get("complexity", "")
+                        ai_reason = ai.get("ai_reason", "")
+                        for (_sk, _lk) in [
+                            ("NAME", "customer_name"), ("PHONE", "customer_phone"),
+                            ("ADDRESS_1", "address_line1"), ("CITY", "city"),
+                            ("STATE", "state"), ("PINCODE", "pincode"),
+                            ("ITEMS", "items"), ("AMOUNT", "amount"),
+                        ]:
+                            v = fields.get(_lk)
+                            if not v and (isinstance(v, str) or v in (None, 0)):
+                                ai_missing.append(_sk)
+            except Exception:
+                _logger.exception(
+                    "LLM path failed on check-duplicate — using regex only",
+                )
+        else:
+            ai_reason = "All mandatory fields extracted via regex — AI skipped."
 
         duplicates = await find_duplicate_matches(
             phone=fields.get("customer_phone", ""),

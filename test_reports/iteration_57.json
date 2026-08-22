@@ -1,0 +1,32 @@
+{
+  "summary": "Phase F11.K — Rule-First, AI-Fallback for Smart Paste — VERIFIED. Created 10 pytest cases covering /smart-paste/parse and /smart-paste/check-duplicate. All 10 passed. Manual curl confirmation: (a) fully-labeled paste returns ai.source='regex', ai.used=false, reason='All mandatory fields extracted via regex — AI skipped.' — LLM not called, zero AI credits consumed. (b) Unstructured/messy WhatsApp paste falls through to LLM (ai.source='llm', ai.used=true). (c) Partial paste missing pincode also invokes LLM (regex short-circuit correctly NOT triggered). (d) use_ai=false payload skips LLM regardless. (e) check-duplicate mirrors the same behaviour. (f) Auth guard preserved — 403 without Bearer token. Response shape on regex path still contains full fields + confidence + warnings + duplicates + ai blocks.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_phase_f11k_smart_paste_rule_first.py",
+    "/app/test_reports/pytest/pytest_iteration_57_f11k.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "smart_paste.py:145 — the `if regex_complete or payload.use_ai is False:` branch is defensive and correct. However, when use_ai=false AND regex_complete=false, the reason field stays empty (only regex_complete populates the 'AI skipped' reason). Consider adding a distinct reason like 'AI disabled by caller' for observability.",
+    "smart_paste.py:154 — `if payload.use_ai is not False:` is dead code since the outer if already short-circuits when use_ai is False. Safe to simplify but not urgent.",
+    "smart_paste.py:238 — check-duplicate honours settings.smart_paste_ai_enabled while parse (line 154) does NOT check that flag; parse only skips LLM on regex-complete or explicit use_ai=false. Inconsistent — parse could also respect smart_paste_ai_enabled for a per-user global kill switch. Not a bug for this phase but worth flagging."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_phase_f11k_smart_paste_rule_first.py (new)"
+  ],
+  "success_rate": {"backend": "100%", "frontend": "n/a"},
+  "seed_data_creation": "None — used existing admin@test.com account.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Env var used: EXPO_PUBLIC_BACKEND_URL (from frontend/.env). Fallback to EXPO_BACKEND_URL supported in test file. Run: `cd /app && EXPO_PUBLIC_BACKEND_URL=<url> pytest backend/tests/test_phase_f11k_smart_paste_rule_first.py -v`. Regex short-circuit reason string is exactly 'All mandatory fields extracted via regex — AI skipped.' (em-dash, not hyphen).",
+  "rca_of_issue": "N/A — feature-verification pass, no bug encountered."
+}
