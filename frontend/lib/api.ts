@@ -3179,7 +3179,7 @@ export const Api = {
       .get<AudienceStats>("/me/audience/stats")
       .then((r) => r.data),
   listAudience: (params?: {
-    segment?: "all" | "new" | "returning" | "imported";
+    segment?: "all" | "new" | "returning" | "imported" | "vip";
     q?: string;
     limit?: number;
     offset?: number;
@@ -3388,6 +3388,7 @@ export type AudienceStats = {
   new: number;
   returning: number;
   imported: number;
+  vip?: number;
 };
 
 export type AudienceCustomer = {
@@ -3404,6 +3405,8 @@ export type AudienceCustomer = {
   total_sales: number;
   is_imported: boolean;
   last_order_at: string;
+  /** Only present when segment === 'vip' — 1-based rank by total_sales desc. */
+  rank?: number;
 };
 
 export type AudienceOrderHistoryItem = {

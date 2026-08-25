@@ -41,7 +41,7 @@ import { screenCache } from "../../lib/screenCache";
 import { SkeletonList, SkeletonStatsStrip } from "../../components/Skeleton";
 import { usePermissions } from "../../lib/permissions";
 
-type Segment = "all" | "new" | "returning" | "imported";
+type Segment = "all" | "new" | "returning" | "imported" | "vip";
 
 const CACHE_KEY_LIST = "audience:list";
 const CACHE_KEY_STATS = "audience:stats";
@@ -134,9 +134,10 @@ export default function AudienceScreen() {
   };
 
   const segments = useMemo(() => {
-    const s = stats || { all: 0, new: 0, returning: 0, imported: 0 };
+    const s = stats || { all: 0, new: 0, returning: 0, imported: 0, vip: 0 };
     return [
       { key: "all",       label: "All",       count: s.all },
+      { key: "vip",       label: "👑 VIP",    count: s.vip ?? 0 },
       { key: "new",       label: "New",       count: s.new },
       { key: "returning", label: "Returning", count: s.returning },
       { key: "imported",  label: "Imported",  count: s.imported },
@@ -147,13 +148,34 @@ export default function AudienceScreen() {
     const line2Parts: string[] = [];
     if (item.customer_phone) line2Parts.push(item.customer_phone);
     if (item.customer_email) line2Parts.push(item.customer_email);
+    const rank = item.rank || 0;
+    const isVipCard = segment === "vip" && rank > 0;
+    const medal =
+      rank === 1 ? "🥇" :
+      rank === 2 ? "🥈" :
+      rank === 3 ? "🥉" : "";
     return (
       <TouchableOpacity
-        style={styles.card}
+        style={[
+          styles.card,
+          isVipCard && rank <= 3 && styles.cardTop3,
+        ]}
         activeOpacity={0.75}
         onPress={() => openProfile(item)}
         testID={`audience-card-${item.key}`}
       >
+        {isVipCard ? (
+          <View style={styles.rankBadge}>
+            {medal ? (
+              <Text style={styles.rankMedal}>{medal}</Text>
+            ) : (
+              <Text style={styles.rankNumberOnly}>#{rank}</Text>
+            )}
+            {medal ? (
+              <Text style={styles.rankNumber}>#{rank}</Text>
+            ) : null}
+          </View>
+        ) : null}
         <Text style={styles.cardName} numberOfLines={1}>
           {item.customer_name || "Unknown customer"}
         </Text>
@@ -183,7 +205,14 @@ export default function AudienceScreen() {
           </View>
           <View style={styles.statColRight}>
             <Text style={styles.statLbl}>TOTAL SALES</Text>
-            <Text style={styles.statValue}>{formatINR(item.total_sales)}</Text>
+            <Text
+              style={[
+                styles.statValue,
+                isVipCard && styles.statValueVip,
+              ]}
+            >
+              {formatINR(item.total_sales)}
+            </Text>
           </View>
         </View>
       </TouchableOpacity>
@@ -195,6 +224,7 @@ export default function AudienceScreen() {
       case "new":       return "new";
       case "returning": return "returning";
       case "imported":  return "imported";
+      case "vip":       return "VIP";
       default:          return "";
     }
   }, [segment]);
@@ -340,6 +370,40 @@ const styles = StyleSheet.create({
       },
       android: { elevation: 1 },
     }),
+  },
+  cardTop3: {
+    borderColor: "#F59E0B",
+    borderWidth: 1.5,
+    backgroundColor: "#FFFBEB",
+  },
+  rankBadge: {
+    position: "absolute",
+    top: 10,
+    right: 10,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    backgroundColor: "#FEF3C7",
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 999,
+    zIndex: 1,
+  },
+  rankMedal: { fontSize: 14 },
+  rankNumber: {
+    fontSize: 11,
+    fontWeight: "800",
+    color: "#92400E",
+    letterSpacing: 0.3,
+  },
+  rankNumberOnly: {
+    fontSize: 11,
+    fontWeight: "800",
+    color: "#92400E",
+    letterSpacing: 0.3,
+  },
+  statValueVip: {
+    color: "#B45309",
   },
   cardName: {
     fontSize: 16,

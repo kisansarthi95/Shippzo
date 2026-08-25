@@ -57,3 +57,10 @@
 - **Testing:** `tests/test_phase_f11l_tracking_atomic.py` (7 pass): concurrent 20-way allocation → 20 unique IDs; direct-Mongo dup insert → DuplicateKeyError; per-tenant isolation (same tracking_id allowed under different user_id); partial filter allows blank tracking rows.
 
   - Uses `$group` aggregation over shipments by `customer_phone` then Python-side re-merges by normalized last-10-digits so "+91 98..." and "98..." collapse to one card.
+
+## Phase F12.1 (Aug-2026) — VIP Leaderboard Chip
+- New `👑 VIP` filter chip on the Audience tab. Backend adds a fifth segment `vip` to `GET /api/me/audience` that returns customers with `total_sales > 0 AND delivered_count >= 1`, sorted by lifetime sales descending. Each row carries a 1-based `rank` field (pagination-aware, so offset=5 gives ranks 6..).
+- `GET /api/me/audience/stats` now returns a `vip` count alongside all/new/returning/imported.
+- Frontend renders 🥇🥈🥉 medal badges + amber card border for the top 3 VIPs, and #N badges for the rest. Total-sales value colored amber on VIP cards.
+- Tests: `tests/test_phase_f12_1_vip_leaderboard.py` (18 pass) — sort order, pagination-aware ranks, non-VIP segments have no rank, invalid segment→422, auth guard, multi-tenant isolation.
+

@@ -215,18 +215,25 @@ def init() -> None:
         new_c     = sum(1 for r in rows if r.get("orders_count") == 1)
         returning = sum(1 for r in rows if r.get("orders_count", 0) >= 2)
         imported  = sum(1 for r in rows if r.get("any_imported"))
+        # VIP = customers with delivered_count >= 1 AND non-zero sales.
+        vip       = sum(
+            1 for r in rows
+            if float(r.get("total_sales") or 0) > 0
+            and int(r.get("delivered_count") or 0) >= 1
+        )
         return {
             "all":       total,
             "new":       new_c,
             "returning": returning,
             "imported":  imported,
+            "vip":       vip,
         }
 
     # ─────────────────────────────  LIST  ─────────────────────────────
 
     @audience_router.get("/me/audience")
     async def list_audience(
-        segment: str = Query(default="all", regex="^(all|new|returning|imported)$"),
+        segment: str = Query(default="all", regex="^(all|new|returning|imported|vip)$"),
         q:       Optional[str] = Query(default=None),
         limit:   int = Query(default=100, ge=1, le=500),
         offset:  int = Query(default=0, ge=0),
@@ -241,11 +248,31 @@ def init() -> None:
             rows = [r for r in rows if r.get("orders_count", 0) >= 2]
         elif segment == "imported":
             rows = [r for r in rows if r.get("any_imported")]
+        elif segment == "vip":
+            # Phase F12.1 — VIP Leaderboard: customers ranked by
+            # lifetime sales (delivered only). Requires at least one
+            # successful delivery + positive sales.
+            rows = [
+                r for r in rows
+                if float(r.get("total_sales") or 0) > 0
+                and int(r.get("delivered_count") or 0) >= 1
+            ]
+            rows.sort(
+                key=lambda r: float(r.get("total_sales") or 0),
+                reverse=True,
+            )
 
         total = len(rows)
         page = rows[offset:offset + limit]
+
+        # For VIP segment, stamp a 1-based rank so the UI can render
+        # 🥇 🥈 🥉 badges without recomputing on the client.
+        serialised = [_format_customer_row(r) for r in page]
+        if segment == "vip":
+            for i, row in enumerate(serialised):
+                row["rank"] = offset + i + 1
         return {
-            "customers": [_format_customer_row(r) for r in page],
+            "customers": serialised,
             "count":     len(page),
             "total":     total,
             "segment":   segment,

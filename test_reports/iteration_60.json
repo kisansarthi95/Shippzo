@@ -1,0 +1,31 @@
+{
+  "summary": "Phase F12.1 VIP Leaderboard backend tests: created /app/backend/tests/test_phase_f12_1_vip_leaderboard.py with 18 pytest cases. All 18 PASSED against the public EXPO_PUBLIC_BACKEND_URL. Verified: stats.vip key + type + count consistency with segment=vip total; segment=vip filters rows to (total_sales>0 AND delivered_count>=1) — zero-sales and pending-only customers excluded; rows sorted strictly DESC by total_sales; 1-based contiguous `rank` field present; non-VIP segments (all/new/returning/imported) do NOT carry `rank`; pagination offset shifts the rank base (offset=3 -> rank starts at 4, offset=5 -> rank starts at 6); invalid segment=foo -> HTTP 422; auth guard (no token -> 401/403); multi-tenant isolation between admin@test.com and user2@test.com (user2 does not see admin's VIP seeds, stats differ). Seeded 7 shipments via direct Mongo (5 delivered VIP + 1 delivered-zero + 1 pending) and cleaned up on teardown.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_phase_f12_1_vip_leaderboard.py",
+    "/app/test_reports/pytest/pytest_iteration_60_f12_1.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "audience.py list_audience uses FastAPI Query(regex=...) which still works but is deprecated in favour of `pattern=`. Non-blocking.",
+    "VIP filter/sort/rank logic is clean and correctly applied AFTER the segment filter but BEFORE pagination slicing — this is the right order for pagination-aware ranks."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_phase_f12_1_vip_leaderboard.py (new)"
+  ],
+  "success_rate": {"backend": "100% (18/18)", "frontend": "N/A - skipped per request"},
+  "seed_data_creation": "7 shipments seeded under admin@test.com via direct Mongo insert (TEST_VIP1..VIP5 delivered, TEST_NONVIP_ZERO delivered@0, TEST_NONVIP_PENDING pending@999) with module-scoped fixture that cleans up on teardown.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Phase F12.1 VIP Leaderboard is fully verified backend-side. Reuse /app/backend/tests/test_phase_f12_1_vip_leaderboard.py for regressions. Frontend UI chip integration for the VIP segment was not tested (per E1 instructions).",
+  "rca_of_issue": "N/A — feature works as specified."
+}
