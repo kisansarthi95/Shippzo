@@ -6031,7 +6031,7 @@ async def _ensure_pending_orders_dedup_index() -> None:
             name="uniq_user_trackingId",
             unique=True,
             partialFilterExpression={
-                "tracking_id": {"$exists": True, "$gt": ""},
+                "tracking_id": {"$exists": True, "$type": "string", "$gt": ""},
             },
         )
     except Exception:

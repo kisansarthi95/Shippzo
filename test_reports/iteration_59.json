@@ -1,0 +1,33 @@
+{
+  "summary": "Phase F11.L — Atomic tracking-ID allocation VERIFIED. All 4 acceptance criteria pass in 7 pytest cases (7/7 green, 28.4s). Coverage: (1) MongoDB unique index `uniq_user_trackingId` is present on shipments with unique=true, key={user_id, tracking_id}, and a partialFilterExpression that excludes blank/missing tracking ids. (2) POST /api/couriers/{id}/consume-tracking is atomic — 20 concurrent calls (ThreadPoolExecutor) all returned 200 and produced 20 UNIQUE tracking_ids in the expected ATM##### zero-padded format (no collisions, atomic $inc via find_one_and_update). (3) POST /api/shipments with courier_id + blank tracking_id auto-fills a server-derived tracking_id (verified prefix + 5-digit padding + counter value 500/501 after a start-at-500 courier). Also verified 5-way concurrent POST /shipments on the same courier produced 5 DISTINCT tracking_ids. (4) Direct-Mongo insert bypass proves the DB rejects a duplicate (user_id, tracking_id) write with DuplicateKeyError; and the multi-tenant test confirms user2@test.com CAN insert a shipment with the SAME tracking_id that admin@test.com already has (composite (user_id, tracking_id) uniqueness is per-tenant). (5) Partial filter allows two blank-tracking rows under the same user (manual-mode couriers pre-AWB workflow).",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_phase_f11l_tracking_atomic.py",
+    "/app/test_reports/pytest/pytest_iteration_59_f11l.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "backend/routers/couriers.py:232-241 consume_tracking uses `return_document=False` (pre-update doc) and formats tracking_id from `next_number` PRE-inc. This is correct for atomicity BUT means the first caller after next_number=1 emits '00001' and the counter becomes 2. Behaviour is consistent — just noteworthy: the tracking_id shown to the user is the PRE-inc number, not POST-inc. Tests already validated ATM##### numbering starts at 00001 for next_number=1.",
+    "backend/routers/shipments_write.py:366-375 create_shipment allocates via the SAME find_one_and_update pattern INLINE (not through _allocate_tracking_id helper). Minor DRY violation — the helper exists on couriers_router.allocate_tracking_id but the writer duplicates the logic. If padding/prefix rules ever change, both call sites must be edited. Consider consolidating to a single helper import.",
+    "backend/routers/shipments_write.py:1188-1199 ship_pending_order path uses the same atomic $inc pattern (third copy) — consolidation opportunity.",
+    "Phase F11.L docstring on couriers.py line 210 mentions 'PRE-update document is returned; we format the tracking id from ITS next_number' — accurate; but note that if a caller reads pre_courier.get('next_number') and formats from it, and simultaneously another writer $inc's, both callers walk away with the SAME number if using the pre-value. The code however uses the RETURNED pre-doc uniquely per caller (each $inc is atomic in MongoDB and each caller gets its own pre-image snapshot), so uniqueness IS guaranteed and my 20-way concurrency test confirms this empirically."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_phase_f11l_tracking_atomic.py (new — 7 test cases)"
+  ],
+  "success_rate": {"backend": "100% (7/7)", "frontend": "n/a (skipped by request)"},
+  "seed_data_creation": "Tests create temporary couriers under admin@test.com prefixed 'TEST-Atomic-<prefix>-<hex>' (ATM/AUT/RCE series). Direct-Mongo probe rows are inserted with tracking_id 'DUP-…' / 'MT-…' / blank and cleaned up in finally blocks. No cleanup required for the created couriers — they're prefixed for easy identification and are additive.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Run: `pytest /app/backend/tests/test_phase_f11l_tracking_atomic.py -v`. Env vars auto-loaded from /app/backend/.env (MONGO_URL, DB_NAME) and /app/frontend/.env (EXPO_PUBLIC_BACKEND_URL). Concurrency test uses ThreadPoolExecutor(max_workers=20) — if the backend rate-limits or the Kubernetes ingress caps concurrent requests, some hits could 429; today all 20 land 200. Direct-Mongo tests require pymongo + python-dotenv (already installed in backend requirements).",
+  "rca_of_issue": "N/A — feature verification pass. Phase F11.L atomic allocator (find_one_and_update+$inc) + unique compound index + per-tenant partial filter all working correctly."
+}

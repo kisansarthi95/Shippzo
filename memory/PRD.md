@@ -48,4 +48,12 @@
   - `GET /me/audience/stats` — { all, new, returning, imported }
   - `GET /me/audience?segment=&q=&limit=&offset=` — segmented + searchable list
   - `GET /me/audience/{customer_key}` — profile + full order history
+
+## Phase F11.L (Aug-2026) — Atomic Tracking Allocation + Cleanup COMPLETE
+- Backend: `couriers.py::consume_tracking` uses `find_one_and_update` with `$inc:{next_number:1}` — atomic under concurrent creates.
+- `shipments_write.py` allocates tracking server-side inside the insert path (no client-side counter allocation).
+- `server.py` creates MongoDB unique partial index `uniq_user_trackingId` on `(user_id, tracking_id)` with `partialFilterExpression={tracking_id:{$exists:true, $type:"string", $gt:""}}` — allows blank tracking rows for manual-mode couriers.
+- **One-time cleanup executed:** the cleanup script (`/tmp/cleanup_dupes_v2.py`) walked all `shipments`, kept the oldest doc per duplicate `(user_id, tracking_id)` and reassigned fresh atomic IDs (with unused-check loop) to the losers. 50+ duplicates cleared including the ND00013 case.
+- **Testing:** `tests/test_phase_f11l_tracking_atomic.py` (7 pass): concurrent 20-way allocation → 20 unique IDs; direct-Mongo dup insert → DuplicateKeyError; per-tenant isolation (same tracking_id allowed under different user_id); partial filter allows blank tracking rows.
+
   - Uses `$group` aggregation over shipments by `customer_phone` then Python-side re-merges by normalized last-10-digits so "+91 98..." and "98..." collapse to one card.
