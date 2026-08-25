@@ -1,0 +1,33 @@
+{
+  "summary": "Phase F12 — Audience Hub backend router VERIFIED. Created /app/backend/tests/test_phase_f12_audience.py with 17 pytest cases covering all 3 endpoints. 17/17 passed. Coverage: (1) auth guard on all 3 endpoints returns 401 without Bearer, (2) GET /api/me/audience/stats returns {all,new,returning,imported} ints with correct counts, (3) segment=all default lists unique customers with orders_count/delivered_count/total_sales and is sorted by last_order_at desc, (4) segment=new returns ONLY orders_count==1, (5) segment=returning returns ONLY orders_count>=2, (6) segment=imported returns ONLY rows with is_imported=true (seeded via import_batch_ids), (7) q=<phone tail> and q=<name> both filter correctly, (8) invalid segment rejected with 422, (9) profile endpoint returns full shape (identity + summary + orders array), (10) total_sales sums amount ONLY for Delivered orders — verified with seeded 500 delivered + 125 pending returning=500.0 exact, (11) invalid customer_key → 404, (12) multi-tenant isolation: user2 gets 404 for admin's customer_key and stats differ between tenants. Seed strategy: 3 new shipments via POST /api/shipments (returning×2, new×1) + 1 direct-Mongo insert with import_batch_ids for the imported segment (POST /api/shipments does not accept import_batch_ids).",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_phase_f12_audience.py",
+    "/app/test_reports/pytest/pytest_iteration_58_f12.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "routers/audience.py:131 — Mongo $group uses `_id: '$_phone_raw'` (raw customer_phone). This means '+91 98…' and '98…' rows land in separate raw groups and only re-merge on the Python side. The pipeline works correctly but the intermediate memory footprint is 2× for shops with mixed phone formats. Consider adding a $project stage that emits a `_phone_norm` using $regexFind/$substrCP so the initial group is already canonicalised — cleaner & lower memory.",
+    "routers/audience.py:197 — string comparison on ISO timestamps ('2026-01-05T…' > '2026-01-04T…') works because Python zero-pads ISO strings, but it silently breaks if any row stores a legacy non-ISO date. Non-blocking today; add a defensive datetime.fromisoformat parse when older shops are onboarded.",
+    "routers/audience.py:290 — profile lookup uses `customer_phone: {$regex: <tail>$}` without $options:'i'. Phone strings should be case-agnostic (letters shouldn't exist), but if a row stores 'IN91-98…' the query would still match because the tail is digits-only; this is fine. However the regex is UN-escaped — since we strip non-digits first the value is always safe, but keeping a `re.escape` defensive layer would future-proof the endpoint if the extraction changes.",
+    "routers/audience.py:298-303 — profile aggregates orders_count/delivered_count/total_sales by re-scanning shipments in Python. For a shop with tens of thousands of orders per customer this is a full-collection tail scan. Not an issue for MVP but noteworthy for scale."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_phase_f12_audience.py (new)"
+  ],
+  "success_rate": {"backend": "100%", "frontend": "n/a (skipped by request)"},
+  "seed_data_creation": "Test fixture creates 3 shipments under admin@test.com via POST /api/shipments (returning phone with 2 orders — 1 Delivered @ ₹500 + 1 Pending @ ₹125; new phone with 1 Delivered @ ₹999) and 1 direct-Mongo insert stamped with import_batch_ids for the imported segment. Phones are all-digit synthesised per-run — no cleanup required (tests are additive & idempotent).",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Env var: EXPO_PUBLIC_BACKEND_URL (fallback EXPO_BACKEND_URL). Run: `set -a; . /app/backend/.env; set +a; EXPO_PUBLIC_BACKEND_URL=<url> pytest /app/backend/tests/test_phase_f12_audience.py -v`. MONGO_URL + DB_NAME must be exported for the direct-Mongo import seeding to work. Phones MUST be all-digit — if you generate synthetic phones with hex tags (letters), the profile endpoint's `re.sub(r'\\D','',key)[-10:]` regex-tail matcher will fail to find them (my first iteration hit exactly this — 3/17 failed, fixed by switching to `f\"{randint(0,999999):06d}\"`).",
+  "rca_of_issue": "N/A — feature verification pass, no product bugs. One transient test-authoring bug (letters in synthetic phone) was caught & fixed before final run."
+}

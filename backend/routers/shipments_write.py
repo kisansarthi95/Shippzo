@@ -339,6 +339,40 @@ def init() -> None:
             )
             if c:
                 data["courier_name"] = c.get("name", "")
+
+        # Phase F11.L — ATOMIC server-side tracking-id allocation.
+        #
+        # Historically the frontend Add-Shipment screen called
+        # POST /couriers/{id}/consume-tracking BEFORE the shipment
+        # insert, then posted the freshly-minted id in `tracking_id`.
+        # Any error between those two calls (validation, wallet,
+        # timeout) burned a tracking number — and simultaneous
+        # creates racing on the shared counter minted the SAME id.
+        #
+        # New rule: if `courier_id` is set, `tracking_id` is blank AND
+        # `manual_tracking_id` is blank, the counter is incremented
+        # HERE, inside the same request-scope where the insert runs.
+        # Atomic $inc via find_one_and_update means concurrent creates
+        # each walk away with a unique number; the frontend can drop
+        # the pre-flight consume call entirely.
+        _tid_incoming = str(data.get("tracking_id") or "").strip()
+        _mid_incoming = str(data.get("manual_tracking_id") or "").strip()
+        if data.get("courier_id") and not _tid_incoming and not _mid_incoming:
+            pre_courier = await db.couriers.find_one(
+                {"id": data["courier_id"], "user_id": current_user["id"]},
+                {"_id": 0},
+            )
+            if pre_courier and not pre_courier.get("manual_tracking"):
+                allocated = await db.couriers.find_one_and_update(
+                    {"id": data["courier_id"], "user_id": current_user["id"]},
+                    {"$inc": {"next_number": 1}},
+                    return_document=False,
+                )
+                if allocated:
+                    _prefix = allocated.get("series_prefix") or ""
+                    _pad    = int(allocated.get("number_padding") or 4)
+                    _nxt    = int(allocated.get("next_number") or 1)
+                    data["tracking_id"] = f"{_prefix}{str(_nxt).zfill(_pad)}"
         # Phase-34 — Use the canonical compute_order_amounts() helper
         # for the POST /shipments path. Single source of truth for
         # `amount = cod + token` (COD) or `amount = entered` (Prepaid).
@@ -1142,17 +1176,27 @@ def init() -> None:
             # at home and walk to the post office later.
             tracking_id = ""
         else:
-            # Auto-mode courier with no override → original sequential
-            # path runs verbatim, counter is incremented atomically.
-            padding  = int(courier.get("number_padding") or 4)
-            next_num = int(courier.get("next_number") or 1)
-            tracking_id = (
-                f"{courier.get('series_prefix','')}"
-                f"{str(next_num).zfill(padding)}"
-            )
-            await db.couriers.update_one(
+            # Auto-mode courier with no override → Phase F11.L —
+            # ATOMIC allocation via `find_one_and_update($inc)`. The
+            # previous read-then-update pattern allowed two concurrent
+            # creates to see the same `next_number` and mint the same
+            # tracking id (bug: duplicate ND00013). We now compute the
+            # id from the PRE-update document returned by
+            # `find_one_and_update` — each caller walks away with a
+            # unique number even under a race.
+            padding_default  = int(courier.get("number_padding") or 4)
+            pre_courier = await db.couriers.find_one_and_update(
                 {"id": courier["id"], "user_id": current_user["id"]},
                 {"$inc": {"next_number": 1}},
+                return_document=False,
+            )
+            if not pre_courier:
+                raise HTTPException(status_code=404, detail="Courier not found")
+            padding  = int(pre_courier.get("number_padding") or padding_default)
+            next_num = int(pre_courier.get("next_number") or 1)
+            tracking_id = (
+                f"{pre_courier.get('series_prefix','')}"
+                f"{str(next_num).zfill(padding)}"
             )
 
         # Build shipment from order + optional overrides

@@ -5716,6 +5716,20 @@ except Exception as _cu_exc:
         f"Failed to mount customers router: {_cu_exc}",
     )
 
+# Phase F12 — Audience Hub (aggregates unique customers from shipments).
+try:
+    from routers.audience import (
+        audience_router as _audience_router,
+        init as _init_audience_router,
+    )
+    _init_audience_router()
+    app.include_router(_audience_router)
+except Exception as _aud_exc:
+    import logging as _lg
+    _lg.getLogger("server.bootstrap").exception(
+        f"Failed to mount audience router: {_aud_exc}",
+    )
+
 # Phase F4.0 — Courier Status Auto Sync (India Post via Android
 # NotificationListenerService, Phase 1). Adds /api/courier-sync/* routes
 # for partner discovery, per-user config, raw-SMS ingest, and audit log.
@@ -6002,6 +6016,27 @@ async def _ensure_pending_orders_dedup_index() -> None:
     except Exception:
         logger.exception(
             "pending_orders sheet_row_key unique index creation skipped (non-fatal)",
+        )
+
+    # ── Phase F11.L — Unique (user_id, tracking_id) on shipments ──
+    # Guards against duplicate tracking numbers at the DB level so
+    # even a bug in the atomic allocator can't produce a second
+    # shipment row with the same tracking_id for the same tenant.
+    # Partial filter excludes blank tracking_ids (manual-mode
+    # couriers deliberately leave it empty until the AWB is entered
+    # from the physical sticker).
+    try:
+        await db.shipments.create_index(
+            [("user_id", 1), ("tracking_id", 1)],
+            name="uniq_user_trackingId",
+            unique=True,
+            partialFilterExpression={
+                "tracking_id": {"$exists": True, "$gt": ""},
+            },
+        )
+    except Exception:
+        logger.exception(
+            "shipments tracking_id unique index creation skipped (non-fatal)",
         )
 
 

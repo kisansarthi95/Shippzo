@@ -36,3 +36,16 @@
 - New event `otp_password_reset` auto-seeded into whatsapp_event_triggers; `contact_email` added to AVAILABLE_FIELDS + auth defaults; test-send debug includes it.
 - Frontend: 2-step Forgot Password screen (Send OTP → OTP+new password, resend cooldown); Settings → My Account → "Contact Email (for OTP)" editor.
 - Tests: tests/test_phase_f81_contact_email_otp.py (11 pass). Dedicated test user f81-reset-user@example.com.
+
+
+## Phase F12 (Aug-2026) — Audience Hub & Navigation Overhaul
+- **Nav bar redesign:** bottom tab bar reduced to 5 tabs — Home, Orders, **Audience**, Shipments, Settings. Central "+" (Ship) tab removed. The legacy `/(tabs)/add` screen still exists but is hidden from the tab bar (href:null) and reached via router.push("/add") from the Audience FAB.
+- **New Audience tab** (`/(tabs)/audience.tsx`) — premium customer cards derived directly from the `shipments` collection. Four filter chips with live counts: All / New (1 order) / Returning (2+) / Imported (any shipment with `import_batch_ids`). Search bar, pull-to-refresh, screenCache-backed stale-while-revalidate.
+- **Card layout matches spec:** name (bold) → "phone | email" line → city/state with pin icon → optional IMPORTED badge → stats row split (TOTAL ORDERS | TOTAL SALES). Sales sums `amount` only for Delivered orders (successful orders).
+- **Floating "+" FAB** on Audience tab replaces the old central tab button; opens the existing manual-entry screen. Permission-gated (shipments_create / smart_paste_ai / file_import_csv).
+- **New Audience Profile screen** (`/audience/[key].tsx`) — avatar, name, tap-to-call phone chip, tap-to-mail email chip, default address, Total Orders + Total Sales summary strip, and a clickable Order History list linking each row to `/shipment-details/[id]`.
+- **New backend router** `routers/audience.py` (3 endpoints, prefix /api):
+  - `GET /me/audience/stats` — { all, new, returning, imported }
+  - `GET /me/audience?segment=&q=&limit=&offset=` — segmented + searchable list
+  - `GET /me/audience/{customer_key}` — profile + full order history
+  - Uses `$group` aggregation over shipments by `customer_phone` then Python-side re-merges by normalized last-10-digits so "+91 98..." and "98..." collapse to one card.

@@ -1,23 +1,10 @@
 import { Tabs } from "expo-router";
 import PhIcon from "../../components/PhIcon";
 import { colors } from "../../lib/theme";
-import { View } from "react-native";
-import { usePermissions } from "../../lib/permissions";
 import { NewOrderAlertProvider } from "../../lib/new_order_alert";
 import { OfdAlertProvider } from "../../lib/ofd_alerts";
 
 export default function TabsLayout() {
-  // Phase B+C — hide tabs the active team-member doesn't have
-  // permission for. Owners pass through hasPerm() unconditionally.
-  const { hasPerm, isTeamMember } = usePermissions();
-  // Phase F4.7 — `shipments_create` isn't a key in FEATURE_REGISTRY.
-  // Fall back to any of the standard "can add data" permissions so
-  // Sales staff (who own Smart Paste / File Import via the preset)
-  // still see the + tab. Owners always pass hasPerm().
-  const canAdd =
-    hasPerm("shipments_create") ||
-    hasPerm("smart_paste_ai") ||
-    hasPerm("file_import_csv");
   return (
     <NewOrderAlertProvider>
     <OfdAlertProvider>
@@ -44,8 +31,8 @@ export default function TabsLayout() {
         name="index"
         options={{
           title: "Home",
-          tabBarIcon: ({ color, size }) => (
-            <PhIcon name="home" size={26} color={color} />
+          tabBarIcon: ({ color }) => (
+            <PhIcon name="home" size={24} color={color} />
           ),
         }}
       />
@@ -53,45 +40,26 @@ export default function TabsLayout() {
         name="orders"
         options={{
           title: "Orders",
-          tabBarIcon: ({ color, size }) => (
-            <PhIcon name="list" size={26} color={color} />
+          tabBarIcon: ({ color }) => (
+            <PhIcon name="list" size={24} color={color} />
           ),
         }}
       />
       <Tabs.Screen
-        name="add"
+        name="audience"
         options={{
-          title: "Ship",
-          // When the team member lacks shipments_create we strip the
-          // tab from the bar entirely (href:null) so they can't even
-          // see the Ship button. Owners get the normal centred FAB.
-          href: canAdd ? "/add" : null,
+          title: "Audience",
           tabBarIcon: ({ color }) => (
-            <View
-              style={{
-                backgroundColor: colors.primary,
-                width: 52,
-                height: 52,
-                borderRadius: 26,
-                justifyContent: "center",
-                alignItems: "center",
-                marginBottom: 4,
-                boxShadow: `0px 4px 8px ${colors.primary}59`,
-                elevation: 6,
-              }}
-            >
-              <PhIcon name="add" size={32} color="#fff" />
-            </View>
+            <PhIcon name="people" size={24} color={color} />
           ),
-          tabBarLabel: () => null,
         }}
       />
       <Tabs.Screen
         name="shipments"
         options={{
           title: "Shipments",
-          tabBarIcon: ({ color, size }) => (
-            <PhIcon name="cube" size={26} color={color} />
+          tabBarIcon: ({ color }) => (
+            <PhIcon name="cube" size={24} color={color} />
           ),
         }}
       />
@@ -99,9 +67,18 @@ export default function TabsLayout() {
         name="settings"
         options={{
           title: "Settings",
-          tabBarIcon: ({ color, size }) => (
-            <PhIcon name="settings-sharp" size={26} color={color} />
+          tabBarIcon: ({ color }) => (
+            <PhIcon name="settings-sharp" size={24} color={color} />
           ),
+        }}
+      />
+      {/* Phase F12 — the old central "+" (Ship) tab is hidden from the
+          bar. The manual entry screen lives on at /add and is opened
+          via the FAB on the Audience tab. */}
+      <Tabs.Screen
+        name="add"
+        options={{
+          href: null,
         }}
       />
     </Tabs>

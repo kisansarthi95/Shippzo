@@ -207,18 +207,66 @@ def init() -> None:
         courier_id: str,
         current_user: Dict[str, Any] = Depends(_get_current_user),
     ):
-        doc = await db.couriers.find_one(
+        """Atomically allocate the next tracking id for a courier.
+
+        Phase F11.L — replaces the previous read-then-increment
+        pattern (which produced duplicate numbers under concurrent
+        creates) with a single `find_one_and_update` using `$inc`.
+        The pre-update document is returned; we format the tracking
+        id from ITS `next_number` value so parallel callers each
+        walk away with a unique id even under a race.
+
+        Also honours the `manual_tracking` flag — those couriers
+        don't have an auto-generated series so we return blank.
+        """
+        # Manual-tracking short-circuit — no counter to advance.
+        pre = await db.couriers.find_one(
             {"id": courier_id, "user_id": current_user["id"]}, {"_id": 0}
+        )
+        if not pre:
+            raise HTTPException(status_code=404, detail="Courier not found")
+        if pre.get("manual_tracking"):
+            return {"tracking_id": "", "manual_tracking": True}
+
+        # ── Atomic allocation ────────────────────────────────────────
+        doc = await db.couriers.find_one_and_update(
+            {"id": courier_id, "user_id": current_user["id"]},
+            {"$inc": {"next_number": 1}},
+            return_document=False,   # pymongo BEFORE by default; explicit for clarity
         )
         if not doc:
             raise HTTPException(status_code=404, detail="Courier not found")
         c = _Courier(**doc)
         tid = f"{c.series_prefix}{str(c.next_number).zfill(c.number_padding)}"
-        await db.couriers.update_one(
-            {"id": courier_id, "user_id": current_user["id"]},
-            {"$inc": {"next_number": 1}},
+        return {"tracking_id": tid, "manual_tracking": False}
+
+    # Phase F11.L — Module-level helper reused by the shipments writer
+    # so that server-side allocation happens INSIDE the insert path
+    # (atomic + one round-trip). Keeps consume_tracking as a fallback
+    # endpoint for older frontends.
+    async def _allocate_tracking_id(
+        db_ref: Any, courier_id: str, user_id: str,
+    ) -> Optional[str]:
+        pre = await db_ref.couriers.find_one(
+            {"id": courier_id, "user_id": user_id}, {"_id": 0}
         )
-        return {"tracking_id": tid}
+        if not pre:
+            return None
+        if pre.get("manual_tracking"):
+            return ""
+        doc = await db_ref.couriers.find_one_and_update(
+            {"id": courier_id, "user_id": user_id},
+            {"$inc": {"next_number": 1}},
+            return_document=False,
+        )
+        if not doc:
+            return None
+        prefix  = doc.get("series_prefix") or ""
+        pad     = int(doc.get("number_padding") or 5)
+        nxt     = int(doc.get("next_number") or 1)
+        return f"{prefix}{str(nxt).zfill(pad)}"
+
+    couriers_router.allocate_tracking_id = _allocate_tracking_id  # type: ignore[attr-defined]
 
     # ================  Phase F5.0 — Per-courier Auto SMS Sync  ============
     # These endpoints power the "📡 Auto SMS Sync" section that lives

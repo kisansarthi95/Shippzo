@@ -3173,6 +3173,32 @@ export const Api = {
     api.delete<{ ok: boolean; deleted: string }>(`/me/customers/${id}`)
       .then((r) => r.data),
 
+  // ── Phase F12 — Audience Hub (aggregated from shipments) ──────────
+  audienceStats: () =>
+    api
+      .get<AudienceStats>("/me/audience/stats")
+      .then((r) => r.data),
+  listAudience: (params?: {
+    segment?: "all" | "new" | "returning" | "imported";
+    q?: string;
+    limit?: number;
+    offset?: number;
+  }) =>
+    api
+      .get<{
+        customers: AudienceCustomer[];
+        count: number;
+        total: number;
+        segment: string;
+      }>("/me/audience", { params })
+      .then((r) => r.data),
+  getAudienceProfile: (customerKey: string) =>
+    api
+      .get<AudienceProfile>(
+        `/me/audience/${encodeURIComponent(customerKey)}`,
+      )
+      .then((r) => r.data),
+
   // ── Phase F4.0 — Courier Status Auto Sync (India Post via Android
   //    NotificationListenerService, Phase 1).
   courierSyncListPartners: () =>
@@ -3354,6 +3380,66 @@ export type Customer = {
   source_app: string;
   webhook_name: string;
   last_event: string;
+};
+
+// ── Phase F12 — Audience Hub types ─────────────────────────────────
+export type AudienceStats = {
+  all: number;
+  new: number;
+  returning: number;
+  imported: number;
+};
+
+export type AudienceCustomer = {
+  key: string;
+  customer_name: string;
+  customer_phone: string;
+  customer_email: string;
+  city: string;
+  state: string;
+  address: string;
+  pincode: string;
+  orders_count: number;
+  delivered_count: number;
+  total_sales: number;
+  is_imported: boolean;
+  last_order_at: string;
+};
+
+export type AudienceOrderHistoryItem = {
+  id: string;
+  tracking_id: string;
+  order_id: string;
+  status: string;
+  amount: number;
+  cod_amount: number;
+  payment_mode: string;
+  created_at: string;
+  delivered_at: string;
+  courier_name: string;
+  items: any[];
+  city: string;
+  state: string;
+  is_imported: boolean;
+};
+
+export type AudienceProfile = {
+  key: string;
+  customer_name: string;
+  customer_phone: string;
+  customer_email: string;
+  city: string;
+  state: string;
+  address: string;
+  pincode: string;
+  default_address: string;
+  orders_count: number;
+  delivered_count: number;
+  total_sales: number;
+  is_imported: boolean;
+  first_order_at: string;
+  last_order_at: string;
+  orders: AudienceOrderHistoryItem[];
 };
 
 export type CustomField = {
