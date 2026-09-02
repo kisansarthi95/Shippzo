@@ -244,17 +244,27 @@ export default function AudienceProfileScreen() {
         ) : (
           profile.orders.map((o) => {
             const chip = statusChipStyle(o.status);
+            const isCancelled = !!o.is_cancelled;
             return (
               <TouchableOpacity
                 key={o.id}
-                style={styles.orderRow}
+                style={[
+                  styles.orderRow,
+                  isCancelled && styles.orderRowCancelled,
+                ]}
                 activeOpacity={0.75}
                 onPress={() => openOrder(o.id)}
                 testID={`profile-order-${o.id}`}
               >
                 <View style={{ flex: 1 }}>
                   <View style={styles.orderTopRow}>
-                    <Text style={styles.orderTracking} numberOfLines={1}>
+                    <Text
+                      style={[
+                        styles.orderTracking,
+                        isCancelled && styles.textStrike,
+                      ]}
+                      numberOfLines={1}
+                    >
                       {o.tracking_id || o.order_id || "—"}
                     </Text>
                     <View
@@ -280,10 +290,20 @@ export default function AudienceProfileScreen() {
                         · {o.courier_name}
                       </Text>
                     ) : null}
+                    {isCancelled ? (
+                      <Text style={styles.notCountedBadge}>
+                        · Not in totals
+                      </Text>
+                    ) : null}
                   </View>
                 </View>
                 <View style={styles.orderRight}>
-                  <Text style={styles.orderAmount}>
+                  <Text
+                    style={[
+                      styles.orderAmount,
+                      isCancelled && styles.textStrike,
+                    ]}
+                  >
                     {formatINR(o.amount)}
                   </Text>
                   {o.payment_mode ? (
@@ -445,6 +465,21 @@ const styles = StyleSheet.create({
     borderColor: "#E5E7EB",
     padding: 12,
     marginBottom: 8,
+  },
+  orderRowCancelled: {
+    backgroundColor: "#FAFAFA",
+    borderColor: "#F1F5F9",
+    opacity: 0.75,
+  },
+  textStrike: {
+    textDecorationLine: "line-through",
+    color: "#94A3B8",
+  },
+  notCountedBadge: {
+    fontSize: 11,
+    color: "#B91C1C",
+    fontWeight: "700",
+    fontStyle: "italic",
   },
   orderTopRow: {
     flexDirection: "row",

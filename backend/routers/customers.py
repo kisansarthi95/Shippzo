@@ -16,6 +16,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional
 
+import re
+
 from fastapi import APIRouter, Depends, HTTPException, Path, Query
 
 
@@ -99,11 +101,12 @@ def init() -> None:
         if q:
             qs = q.strip()
             if qs:
+                qsafe = re.escape(qs)
                 flt["$or"] = [
-                    {"customer_name":        {"$regex": qs, "$options": "i"}},
-                    {"customer_phone":       {"$regex": qs, "$options": "i"}},
-                    {"customer_email":       {"$regex": qs, "$options": "i"}},
-                    {"external_customer_id": {"$regex": qs, "$options": "i"}},
+                    {"customer_name":        {"$regex": qsafe, "$options": "i"}},
+                    {"customer_phone":       {"$regex": qsafe, "$options": "i"}},
+                    {"customer_email":       {"$regex": qsafe, "$options": "i"}},
+                    {"external_customer_id": {"$regex": qsafe, "$options": "i"}},
                 ]
         cur = (
             db.customers.find(flt, {"_id": 0})

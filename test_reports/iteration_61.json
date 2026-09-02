@@ -1,0 +1,37 @@
+{
+  "summary": "Phase F13 — Analytics Data Integrity Overhaul: All 10/10 acceptance tests PASSED (100% backend success). Verified the shared lib/analytics_scope.eligible_ship_match predicate correctly excludes Cancelled/Cancel-by-buyer/Returned, is_demo:true, and soft-deleted rows from /api/shipments/stats (Home KPIs), /api/me/audience[/stats|/{key}] (Audience list, stats, VIP ranking), /api/analytics/overview, while still preserving them in the audience profile's `orders` history array with is_cancelled=true. Case-normalisation (shipped vs Shipped merging), explicit status=Cancelled override on /api/analytics/overview, and multi-tenant isolation (admin vs user2) all verified. No frontend testing performed per request.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_phase_f13_analytics_integrity.py",
+    "/app/test_reports/pytest/pytest_iteration_61_f13.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "analytics_scope.py is well-documented and correctly composes filters; the $expr/$or merge logic in eligible_ship_match() handles the tricky case of multiple $expr / $or clauses without clobbering.",
+    "audience.py: get_audience_profile fetches all shipments (including cancelled) then filters via is_eligible_status for KPIs — correct per requirement E.",
+    "shipments_read.py: shipments_stats uses aggregation with normalize_status_expr() to case-merge 'shipped'/'Shipped' into a single lowercase bucket — verified.",
+    "analytics.py: overview endpoint correctly detects explicit terminal-status override (status=Cancelled) via explicit_terminal flag and passes include_cancelled=True to eligible_ship_match — verified with test.",
+    "reports.py _weight_aggregate correctly uses eligible_only=True; return-analysis intentionally uses eligible_only=False so it can see terminal-status rows (correct)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_phase_f13_analytics_integrity.py (created)"
+  ],
+  "success_rate": {
+    "backend": "100%",
+    "frontend": "not_tested"
+  },
+  "seed_data_creation": "Tests create shipments tagged with 'F13TEST_<uuid6>' via /api/shipments API and delete them via DELETE /api/shipments/{id} in a finally block. All seeded data is cleaned up per-test; no persistent test data.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Test file at /app/backend/tests/test_phase_f13_analytics_integrity.py covers 10 acceptance scenarios (A/B COD cancel, C Prepaid cancel, D demo/deleted exclusion, E cancelled-in-history-not-in-KPI, F VIP ranking safety, G cross-endpoint consistency (2 tests), status case-normalisation with drift seeding, analytics/overview default-exclude vs explicit-include cancelled, multi-tenant isolation). Requires env var EXPO_PUBLIC_BACKEND_URL to be set. Use `EXPO_PUBLIC_BACKEND_URL=$(grep EXPO_PUBLIC_BACKEND_URL /app/frontend/.env | cut -d= -f2) pytest tests/test_phase_f13_analytics_integrity.py -v`.",
+  "rca_of_issue": "N/A — feature acceptance passed, no bugs found."
+}

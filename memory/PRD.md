@@ -64,3 +64,29 @@
 - Frontend renders 🥇🥈🥉 medal badges + amber card border for the top 3 VIPs, and #N badges for the rest. Total-sales value colored amber on VIP cards.
 - Tests: `tests/test_phase_f12_1_vip_leaderboard.py` (18 pass) — sort order, pagination-aware ranks, non-VIP segments have no rank, invalid segment→422, auth guard, multi-tenant isolation.
 
+
+## Phase F13 (Sep-2026) — Analytics Data Integrity Overhaul
+**Problem**: Dashboard/Audience/VIP were double-counting cancelled + returned + demo orders in Revenue/Sales/Top-customer rankings. Each router had its own subtly-different filter (or none). Rankings capped at `.to_list(5000/8000)` before sorting → silently dropped high-value customers.
+
+**Solution**: Single source of truth — `/app/backend/lib/analytics_scope.py`
+- `eligible_ship_match(user_id, extra=..., include_cancelled=False, ...)` returns the Mongo filter for "eligible business orders": excludes `deleted_at`, `is_demo:true`, terminal statuses (Cancelled/Cancel by buyer/Returned case-insensitive), and optionally rows lacking customer identity.
+- `normalize_status_expr()` — `$toLower` snippet so "shipped" and "Shipped" merge into one bucket.
+- `is_eligible_status(s)` — python-side helper.
+
+**Callers migrated to the shared predicate:**
+- `routers/shipments_read.py` — `/api/shipments/stats` (Home Dashboard COD/Prepaid/Revenue).
+- `routers/audience.py` — `/api/me/audience`, `/api/me/audience/stats`, `/api/me/audience/{key}` (VIP + all segments now use eligible-only totals).
+- `routers/analytics.py` — `/api/analytics/overview` (KPI cards). Explicit `status=Cancelled` override still surfaces those rows on demand.
+- `routers/reports.py` — courier-billing + weight-wise now use `eligible_only=True` and removed the silent `.to_list(5000/8000)` caps that were truncating large-range reports.
+
+**Audience profile behaviour**: Cancelled shipments still appear in the `orders` array (per user requirement #10 — must remain visible in history) with a new `is_cancelled:true` flag. Frontend renders them dimmed + strikethrough + "Not in totals" italic pill. `orders_count`/`total_sales` counts eligible rows only.
+
+**Verified numbers on admin@test.com**:
+- Before: total=520 shipments (including 262 cancelled). Home showed inflated Revenue.
+- After: total=258 eligible shipments. Revenue = ₹231,549 (COD ₹170,160 + Prepaid ₹61,390). Audience.all=137 (was 145). Returning=9 (was 15).
+- Live test: customer 9510693141 has 1 Delivered + 1 Cancelled. Profile shows `orders_count=1, total_sales=749`, history array has both rows with `is_cancelled` set correctly.
+
+**SEC-001 partial fix**: `customers.py` search query now `re.escape()`s user input to close the regex-DoS attack surface flagged by the security audit.
+
+**Testing**: `tests/test_phase_f13_analytics_integrity.py` (10 acceptance cases pass) covering: A) create COD → cancel → totals decrement; B) same for Prepaid; C) is_demo hidden; D) soft-deleted hidden; E) profile mix of delivered+cancelled; F) VIP ranking safety; G) cross-endpoint consistency; H) status case-normalisation; I) explicit Cancelled override; J) multi-tenant isolation. Iteration_61.
+

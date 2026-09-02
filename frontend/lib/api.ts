@@ -3424,6 +3424,9 @@ export type AudienceOrderHistoryItem = {
   city: string;
   state: string;
   is_imported: boolean;
+  /** Phase F13 — true when the order is Cancelled/Returned/Cancel-by-buyer.
+   *  These rows appear in history but do NOT count toward orders_count/total_sales. */
+  is_cancelled?: boolean;
 };
 
 export type AudienceProfile = {

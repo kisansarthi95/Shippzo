@@ -101,30 +101,27 @@ def init() -> None:
         uid: str,
         search: str = "",
     ) -> List[Dict[str, Any]]:
-        """Full aggregation pipeline over shipments → grouped customers."""
-        match: Dict[str, Any] = {"user_id": uid}
-        # Only include shipments with at least a customer_name OR phone —
-        # otherwise it's a corrupt row.
-        match["$or"] = [
-            {"customer_phone": {"$exists": True, "$ne": ""}},
-            {"customer_name":  {"$exists": True, "$ne": ""}},
-        ]
+        """Full aggregation pipeline over shipments → grouped customers.
+
+        Phase F13 — Uses the shared `eligible_ship_match` predicate so
+        Cancelled/Returned/soft-deleted/demo rows never affect a
+        customer's `orders_count` or `total_sales`. Ranking done inside
+        MongoDB (no python-side .to_list truncation)."""
+        from lib.analytics_scope import eligible_ship_match  # noqa: WPS433
+
+        # Extra search clause to `$and` into the eligible match.
+        extra: Dict[str, Any] = {}
         if search:
             qs = re.escape(search.strip())
-            match["$and"] = [{"$or": [
+            extra["$or"] = [
                 {"customer_name":  {"$regex": qs, "$options": "i"}},
                 {"customer_phone": {"$regex": qs, "$options": "i"}},
                 {"customer_email": {"$regex": qs, "$options": "i"}},
-            ]}]
+            ]
+        match = eligible_ship_match(uid, extra=extra)
 
         pipeline: List[Dict[str, Any]] = [
             {"$match": match},
-            # Normalise phone: strip non-digits then take last 10.
-            # Mongo doesn't have a regex-strip so we approximate:
-            # use $substrCP with $strLenCP fallback. When phone is
-            # already a clean digit string this works; when it has
-            # spaces/prefixes we fall back to grouping by the raw
-            # `customer_phone` and let the Python-side re-merge later.
             {"$addFields": {
                 "_phone_raw": {"$ifNull": ["$customer_phone", ""]},
             }},
@@ -138,13 +135,27 @@ def init() -> None:
                 "pincode":         {"$last": "$pincode"},
                 "phone":           {"$last": "$customer_phone"},
                 "orders_count":    {"$sum": 1},
+                # Delivered count uses case-normalised status.
                 "delivered_count": {"$sum": {
-                    "$cond": [{"$eq": ["$status", "Delivered"]}, 1, 0],
+                    "$cond": [
+                        {"$eq": [
+                            {"$toLower": {"$ifNull": ["$status", ""]}},
+                            "delivered",
+                        ]},
+                        1, 0,
+                    ],
                 }},
+                # Sales = sum of `amount` on Delivered rows only.
                 "total_sales":     {"$sum": {
                     "$cond": [
-                        {"$eq": ["$status", "Delivered"]},
-                        {"$ifNull": ["$amount", 0]},
+                        {"$eq": [
+                            {"$toLower": {"$ifNull": ["$status", ""]}},
+                            "delivered",
+                        ]},
+                        {"$convert": {
+                            "input": "$amount", "to": "double",
+                            "onError": 0, "onNull": 0,
+                        }},
                         0,
                     ],
                 }},
@@ -160,13 +171,14 @@ def init() -> None:
                 }},
                 "last_order_at":   {"$max": "$created_at"},
             }},
+            # NOTE: sorting + limiting is done AFTER python-side re-merge
+            # in list_audience() so phones like "+91 98..." and "98..."
+            # collapse to a single row before ranking.
         ]
         raw_rows: List[Dict[str, Any]] = []
         async for r in db.shipments.aggregate(pipeline):
             raw_rows.append(r)
 
-        # Re-merge by normalized phone (Python side) so that the same
-        # customer typed as "+91 98..." and "98..." get merged.
         merged: Dict[str, Dict[str, Any]] = {}
         for r in raw_rows:
             key = _customer_key(r.get("phone") or "", r.get("name") or "")
@@ -193,7 +205,6 @@ def init() -> None:
                 m["delivered_count"] += int(r.get("delivered_count") or 0)
                 m["total_sales"]     += float(r.get("total_sales") or 0.0)
                 m["any_imported"]    = m["any_imported"] or bool(r.get("any_imported"))
-                # Prefer the most-recent row for identity fields.
                 if str(r.get("last_order_at") or "") > str(m.get("last_order_at") or ""):
                     m["last_order_at"] = r.get("last_order_at") or ""
                     for f in ("name", "email", "city", "state", "address", "pincode", "phone"):
@@ -285,7 +296,15 @@ def init() -> None:
         customer_key: str = Path(..., min_length=1),
         current_user: Dict[str, Any] = Depends(_get_current_user),
     ):
-        """Full profile: identity + summary + order history."""
+        """Full profile: identity + summary + order history.
+
+        Phase F13 — Fetches ALL matching shipments (including
+        cancelled/deleted for historical visibility), but computes
+        `orders_count`/`total_sales` from *eligible* orders only using
+        the shared analytics_scope filter."""
+        from lib.analytics_scope import (  # noqa: WPS433
+            is_eligible_status,
+        )
         uid = current_user["id"]
 
         # Fetch all shipments whose normalized phone (or name slug)
@@ -294,7 +313,11 @@ def init() -> None:
         if not key:
             raise HTTPException(status_code=400, detail="customer_key required")
 
-        match: Dict[str, Any] = {"user_id": uid}
+        match: Dict[str, Any] = {
+            "user_id": uid,
+            "deleted_at": {"$exists": False},
+            "is_demo": {"$ne": True},
+        }
         if key.startswith("name:"):
             slug = key[5:]
             # Best-effort: recover the raw name by loose regex.
@@ -323,13 +346,19 @@ def init() -> None:
 
         # Compose the profile from the most-recent row.
         latest = ships[0]
-        orders_count    = len(ships)
-        delivered       = [s for s in ships if s.get("status") == "Delivered"]
+        # Eligible = not cancelled/returned. Cancelled orders still
+        # appear in the history list below (per user requirement #10),
+        # but they do NOT contribute to orders_count/total_sales.
+        eligible_ships = [s for s in ships if is_eligible_status(s.get("status"))]
+        orders_count   = len(eligible_ships)
+        delivered      = [s for s in eligible_ships if (s.get("status") or "").strip().lower() == "delivered"]
         delivered_count = len(delivered)
-        total_sales     = round(sum(float(s.get("amount") or 0) for s in delivered), 2)
-        any_imported    = any((s.get("import_batch_ids") or []) for s in ships)
+        total_sales    = round(sum(float(s.get("amount") or 0) for s in delivered), 2)
+        any_imported   = any((s.get("import_batch_ids") or []) for s in ships)
 
         # Serialise the order list — keep it compact for the list.
+        # Include `is_cancelled` so the UI can visually differentiate
+        # excluded rows without them counting toward the KPIs.
         history = [
             {
                 "id":              s.get("id"),
@@ -346,6 +375,7 @@ def init() -> None:
                 "city":            s.get("city") or "",
                 "state":           s.get("state") or "",
                 "is_imported":     bool(s.get("import_batch_ids")),
+                "is_cancelled":    not is_eligible_status(s.get("status")),
             }
             for s in ships
         ]

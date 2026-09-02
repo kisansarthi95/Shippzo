@@ -15,6 +15,7 @@ at the route level for the platform-wide views):
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
@@ -66,7 +67,18 @@ def init() -> None:
     ):
         """Unified analytics — user's own data by default, admin can flip
         `scope=platform` to see platform-wide aggregates. Filters narrow
-        every aggregation: courier, status, payment_mode, state."""
+        every aggregation: courier, status, payment_mode, state.
+
+        Phase F13 — Uses the shared `eligible_ship_match` filter so
+        Cancelled/Returned/Demo/soft-deleted rows never appear in
+        totals or revenue. When the caller passes a specific
+        `status=Cancelled` filter, that acts as an explicit override
+        and the filter is applied on top (i.e. show the user their
+        cancelled subset)."""
+        from lib.analytics_scope import (  # noqa: WPS433
+            eligible_ship_match,
+            normalize_status_expr,
+        )
         is_admin = bool(current_user.get("is_admin"))
         if scope == "platform" and not is_admin:
             raise HTTPException(status_code=403, detail="Platform scope is admin-only.")
@@ -74,37 +86,57 @@ def init() -> None:
         since = _range_to_since(range_key)
         iso_since = since.isoformat() if since else None
 
-        # Base shipment match (always excludes soft-deleted rows).
-        ship_match: Dict[str, Any] = {"deleted_at": {"$exists": False}}
-        if scope != "platform":
-            ship_match["user_id"] = current_user["id"]
-        if iso_since:
-            ship_match["created_at"] = {"$gte": iso_since}
-        if courier and courier != "all":
-            ship_match["courier_name"] = courier
+        # Explicit status filter override: when user asks specifically
+        # for "Cancelled" (or "Returned"), skip the auto-exclusion so
+        # they can actually see those rows.
+        explicit_terminal = False
         if status and status != "all":
-            ship_match["status"] = status
+            explicit_terminal = status.strip().lower() in {
+                "cancelled", "cancel by buyer", "returned",
+            }
+
+        # Build extra clauses for the shared predicate.
+        extra: Dict[str, Any] = {}
+        if iso_since:
+            extra["created_at"] = {"$gte": iso_since}
+        if courier and courier != "all":
+            extra["courier_name"] = courier
+        if status and status != "all":
+            extra["status"] = status
         if payment_mode and payment_mode != "all":
-            # Accept "COD" / "Prepaid" / "PAID" — normalize.
             pm_norm = payment_mode.strip().upper()
             if pm_norm == "PAID":
                 pm_norm = "PREPAID"
-            ship_match["payment_mode"] = {"$in": [pm_norm, pm_norm.lower(), pm_norm.title()]}
+            extra["payment_mode"] = {"$in": [pm_norm, pm_norm.lower(), pm_norm.title()]}
         if state and state != "all":
-            ship_match["state"] = {"$regex": f"^{state.strip()}$", "$options": "i"}
+            extra["state"] = {"$regex": f"^{re.escape(state.strip())}$", "$options": "i"}
+
+        ship_match = eligible_ship_match(
+            user_id=current_user["id"] if scope != "platform" else None,
+            extra=extra,
+            include_cancelled=explicit_terminal,
+            # Analytics/reports are ok to include rows lacking a
+            # customer name — they still contribute to courier/status/
+            # revenue KPIs that don't care about the customer.
+            require_customer_identity=False,
+        )
 
         total_shipments = await db.shipments.count_documents(ship_match)
 
-        # By status -----------------------------------------------------
+        # By status (case-normalised so "shipped" and "Shipped" merge)
         by_status: Dict[str, int] = {}
         async for row in db.shipments.aggregate([
             {"$match": ship_match},
-            {"$group": {"_id": "$status", "count": {"$sum": 1}}},
+            {"$addFields": {"_lc": normalize_status_expr()}},
+            {"$group": {"_id": "$_lc", "count": {"$sum": 1}}},
             {"$sort": {"count": -1}},
         ]):
-            by_status[row["_id"] or "Unknown"] = int(row["count"])
+            lc = row["_id"] or ""
+            # Title-case for display so the UI shows "Delivered" not "delivered".
+            display = " ".join(w.capitalize() for w in lc.split()) or "Unknown"
+            by_status[display] = int(row["count"])
 
-        delivered_count = sum(int(v) for k, v in by_status.items() if (k or "").lower() == "delivered")
+        delivered_count = by_status.get("Delivered", 0)
         pending_count = total_shipments - delivered_count
 
         # By courier ----------------------------------------------------
@@ -174,12 +206,11 @@ def init() -> None:
         trend_since = (datetime.now(timezone.utc) - timedelta(days=29)).replace(
             hour=0, minute=0, second=0, microsecond=0,
         )
-        trend_match: Dict[str, Any] = {
-            "deleted_at": {"$exists": False},
-            "created_at": {"$gte": trend_since.isoformat()},
-        }
-        if scope != "platform":
-            trend_match["user_id"] = current_user["id"]
+        trend_match = eligible_ship_match(
+            user_id=current_user["id"] if scope != "platform" else None,
+            extra={"created_at": {"$gte": trend_since.isoformat()}},
+            require_customer_identity=False,
+        )
         if courier and courier != "all":
             trend_match["courier_name"] = courier
         by_day_raw: Dict[str, int] = {}
@@ -200,13 +231,18 @@ def init() -> None:
             for i in range(30)
         ]
 
-        # Filter option lists (so the UI can populate dropdowns) -------
+        # Filter option lists (so the UI can populate dropdowns). These
+        # intentionally *include* cancelled/demo so the user can filter
+        # to those statuses if they want — the analytics-scope filter
+        # only applies to the numbers/aggregates, not to the option
+        # dropdowns themselves.
+        _opt_base: Dict[str, Any] = {"deleted_at": {"$exists": False}}
+        if scope != "platform":
+            _opt_base["user_id"] = current_user["id"]
+
         courier_options: List[str] = []
         async for row in db.shipments.aggregate([
-            {"$match": (
-                {"deleted_at": {"$exists": False}, "user_id": current_user["id"]}
-                if scope != "platform" else {"deleted_at": {"$exists": False}}
-            )},
+            {"$match": _opt_base},
             {"$group": {"_id": "$courier_name"}},
             {"$sort": {"_id": 1}},
             {"$limit": 30},
@@ -217,10 +253,7 @@ def init() -> None:
 
         state_options: List[str] = []
         async for row in db.shipments.aggregate([
-            {"$match": (
-                {"deleted_at": {"$exists": False}, "user_id": current_user["id"]}
-                if scope != "platform" else {"deleted_at": {"$exists": False}}
-            )},
+            {"$match": _opt_base},
             {"$group": {"_id": "$state"}},
             {"$sort": {"_id": 1}},
             {"$limit": 50},
@@ -231,10 +264,7 @@ def init() -> None:
 
         status_options: List[str] = []
         async for row in db.shipments.aggregate([
-            {"$match": (
-                {"deleted_at": {"$exists": False}, "user_id": current_user["id"]}
-                if scope != "platform" else {"deleted_at": {"$exists": False}}
-            )},
+            {"$match": _opt_base},
             {"$group": {"_id": "$status"}},
         ]):
             nm = (row["_id"] or "").strip()

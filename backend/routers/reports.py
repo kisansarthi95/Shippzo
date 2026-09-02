@@ -125,14 +125,22 @@ def init() -> None:
         from_iso: Optional[str],
         to_iso: Optional[str],
     ) -> Dict[str, Any]:
+        # Phase F13 — use shared analytics-scope filter to exclude
+        # cancelled/deleted/demo rows, and remove the .to_list(5000)
+        # cap that used to silently drop the tail of large ranges.
+        from lib.analytics_scope import eligible_ship_match  # noqa: WPS433
+
         period = _resolve_period(range_key, from_iso, to_iso)
-        match: Dict[str, Any] = {
-            "user_id":    user_id,
-            "deleted_at": {"$exists": False},
+        extra: Dict[str, Any] = {
             "created_at": {"$gte": period["from"], "$lt": period["to"]},
         }
         if courier_id and courier_id != "all":
-            match["courier_id"] = courier_id
+            extra["courier_id"] = courier_id
+        match = eligible_ship_match(
+            user_id=user_id,
+            extra=extra,
+            require_customer_identity=False,
+        )
 
         cursor = db.shipments.find(match, {
             "_id": 0, "id": 1, "courier_id": 1, "courier_name": 1,
@@ -142,7 +150,9 @@ def init() -> None:
             "rate_applied": 1, "rate_basis": 1, "package_type": 1,
             "category": 1, "variant_name": 1,
         }).sort("created_at", 1)
-        rows: List[Dict[str, Any]] = await cursor.to_list(5000)
+        # No cap — a shop with 50k monthly shipments should still see
+        # the full report. Motor streams these lazily.
+        rows: List[Dict[str, Any]] = await cursor.to_list(length=None)
 
         by_courier: Dict[str, Dict[str, Any]] = {}
         rows_without_rate = 0
@@ -279,13 +289,29 @@ def init() -> None:
     async def _fetch_shipments(
         user_id: str, range_key: str,
         from_iso: Optional[str], to_iso: Optional[str],
+        *,
+        eligible_only: bool = False,
     ):
+        """Fetch shipments for a report. When `eligible_only=True` the
+        shared analytics-scope filter is applied (excludes cancelled/
+        deleted/demo). When False (default, for Return Analysis), the
+        raw broad set is returned so the caller can inspect terminal
+        statuses. The 8000-row cap that used to silently drop the tail
+        of a large date range has been removed."""
         period = _resolve_period(range_key, from_iso, to_iso)
-        match = {
-            "user_id":    user_id,
-            "deleted_at": {"$exists": False},
-            "created_at": {"$gte": period["from"], "$lt": period["to"]},
-        }
+        if eligible_only:
+            from lib.analytics_scope import eligible_ship_match  # noqa: WPS433
+            match = eligible_ship_match(
+                user_id=user_id,
+                extra={"created_at": {"$gte": period["from"], "$lt": period["to"]}},
+                require_customer_identity=False,
+            )
+        else:
+            match = {
+                "user_id":    user_id,
+                "deleted_at": {"$exists": False},
+                "created_at": {"$gte": period["from"], "$lt": period["to"]},
+            }
         rows = await db.shipments.find(match, {
             "_id": 0, "id": 1, "courier_id": 1, "courier_name": 1,
             "tracking_id": 1, "order_id": 1, "customer_name": 1,
@@ -294,7 +320,7 @@ def init() -> None:
             "status": 1, "created_at": 1, "delivered_at": 1,
             "rate_applied": 1, "package_type": 1, "category": 1,
             "return_reason": 1, "cod_received": 1, "payment_received": 1,
-        }).sort("created_at", 1).to_list(8000)
+        }).sort("created_at", 1).to_list(length=None)
         return period, rows
 
     def _parse_weight_grams(raw) -> Optional[float]:
@@ -424,7 +450,11 @@ def init() -> None:
 
     # ─── Weight-wise Breakup ─────────────────────────────────────
     async def _weight_aggregate(user_id, range_key, from_iso, to_iso):
-        period, rows = await _fetch_shipments(user_id, range_key, from_iso, to_iso)
+        # Phase F13 — exclude cancelled/returned rows from the weight
+        # billing view (they don't represent successful revenue).
+        period, rows = await _fetch_shipments(
+            user_id, range_key, from_iso, to_iso, eligible_only=True,
+        )
         buckets: Dict[str, Dict[str, Any]] = {b: {
             "bucket": b, "count": 0, "revenue": 0.0, "rate_total": 0.0,
         } for b in _WEIGHT_ORDER}

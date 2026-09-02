@@ -243,45 +243,67 @@ def init() -> None:
     async def shipments_stats(
         current_user: Dict[str, Any] = Depends(_get_current_user),
     ):
-        base = {"user_id": current_user["id"]}
-        total = await db.shipments.count_documents(base)
-        delivered = await db.shipments.count_documents(
-            {**base, "status": "Delivered"},
+        # Phase F13 — Home Dashboard KPIs use the shared "eligible
+        # business order" filter: excludes deleted, demo, cancelled/
+        # returned rows and requires a customer identity.
+        from lib.analytics_scope import (  # noqa: WPS433
+            eligible_ship_match,
+            normalize_status_expr,
         )
-        pending = await db.shipments.count_documents(
-            {**base, "status": "Pending"},
-        )
-        # Phase-9: "Dispatch" is an intermediate status between Pending
-        # and Shipped used by the barcode "Scan to Dispatch" workflow.
-        # Counted separately so the Shipments filter tab can badge it.
-        dispatch = await db.shipments.count_documents(
-            {**base, "status": "Dispatch"},
-        )
-        shipped = await db.shipments.count_documents(
-            {**base, "status": "Shipped"},
-        )
-        cod_cursor = db.shipments.aggregate([
-            {"$match": {**base, "payment_mode": "COD",
-                        "status": {"$ne": "Cancelled"}}},
-            {"$group": {"_id": None, "sum": {"$sum": "$amount"},
-                        "count": {"$sum": 1}}},
-        ])
+
+        uid = current_user["id"]
+        # Home KPIs measure business volume — a row without a customer
+        # identity still generated revenue, so we deliberately do NOT
+        # gate on customer_name/phone here. We still exclude
+        # cancelled/deleted/demo.
+        eligible = eligible_ship_match(uid, require_customer_identity=False)
+
+        # `total` = count of eligible business shipments.
+        total = await db.shipments.count_documents(eligible)
+
+        # Grouped status counts (case-normalised so "shipped" and
+        # "Shipped" merge into a single bucket).
+        by_status: Dict[str, int] = {}
+        async for row in db.shipments.aggregate([
+            {"$match": eligible},
+            {"$addFields": {"_lc": normalize_status_expr()}},
+            {"$group": {"_id": "$_lc", "count": {"$sum": 1}}},
+        ]):
+            by_status[row["_id"] or ""] = int(row["count"])
+        delivered = by_status.get("delivered", 0)
+        pending   = by_status.get("pending",   0)
+        dispatch  = by_status.get("dispatch",  0)
+        shipped   = by_status.get("shipped",   0)
+
+        # Payment-mode revenue split — sums `amount` on eligible rows only.
         cod_sum = 0.0
         cod_count = 0
-        async for row in cod_cursor:
-            cod_sum = float(row.get("sum", 0.0))
-            cod_count = int(row.get("count", 0))
-        prepaid_cursor = db.shipments.aggregate([
-            {"$match": {**base, "payment_mode": "Prepaid",
-                        "status": {"$ne": "Cancelled"}}},
-            {"$group": {"_id": None, "sum": {"$sum": "$amount"},
-                        "count": {"$sum": 1}}},
-        ])
         prepaid_sum = 0.0
         prepaid_count = 0
-        async for row in prepaid_cursor:
-            prepaid_sum = float(row.get("sum", 0.0))
-            prepaid_count = int(row.get("count", 0))
+        async for row in db.shipments.aggregate([
+            {"$match": eligible},
+            {"$addFields": {
+                "_pm": {"$toUpper": {"$ifNull": ["$payment_mode", ""]}},
+            }},
+            {"$group": {
+                "_id":   "$_pm",
+                "sum":   {"$sum": {"$convert": {
+                    "input": "$amount", "to": "double",
+                    "onError": 0, "onNull": 0,
+                }}},
+                "count": {"$sum": 1},
+            }},
+        ]):
+            pm = (row["_id"] or "").strip().upper()
+            s = float(row.get("sum") or 0.0)
+            c = int(row.get("count") or 0)
+            if pm == "COD":
+                cod_sum += s
+                cod_count += c
+            elif pm in ("PREPAID", "PAID"):
+                prepaid_sum += s
+                prepaid_count += c
+
         return {
             "total":         total,
             "delivered":     delivered,
